@@ -1,0 +1,50 @@
+{
+  "sessionid": "MTX-BAD-001",
+  "match_type": "Echo_Arena",
+  "map_name": "mpl_arena_a",
+  "game_status": "playing",
+  "game_clock": 100.0,
+  "blue_points": 0,
+  "orange_points": 0,
+  "disc": {
+    "position": [0.0, 0.0, 0.0],
+    "velocity": [0.0, 0.0, 0.0]
+  },
+  "teams": [
+    {
+      "team": "BLUE TEAM",
+      "players": [
+        {
+          "name": "ZeroPositionPlayer",
+          "userid": 111,
+          "playerid": 0,
+          "position": [0.0, 0.0, 0.0],
+          "forward": [0.0, 0.0, 0.0],
+          "left": [0.0, 0.0, 0.0],
+          "up": [0.0, 0.0, 0.0],
+          "lhand": {"pos": [0.0, 0.0, 0.0], "forward": [0,0,0], "left": [0,0,0], "up": [0,0,0]},
+          "rhand": {"pos": [0.0, 0.0, 0.0], "forward": [0,0,0], "left": [0,0,0], "up": [0,0,0]},
+          "stunned": false,
+          "stats": {"goals": 0, "stuns": 0}
+        },
+        {
+          "name": "ValidPlayer",
+          "userid": 222,
+          "playerid": 1,
+          "position": [5.0, 1.6, 0.0],
+          "forward": [0.0, 0.0, 1.0],
+          "left": [-1.0, 0.0, 0.0],
+          "up": [0.0, 1.0, 0.0],
+          "lhand": {"pos": [4.7, 1.9, 0.2], "forward": [0,0,1], "left": [-1,0,0], "up": [0,1,0]},
+          "rhand": {"pos": [5.3, 1.9, -0.2], "forward": [0,0,1], "left": [-1,0,0], "up": [0,1,0]},
+          "stunned": true,
+          "stats": {"goals": 2, "stuns": 5}
+        }
+      ]
+    },
+    {
+      "team": "ORANGE TEAM",
+      "players": []
+    }
+  ]
+}

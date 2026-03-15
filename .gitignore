@@ -1,0 +1,7 @@
+*.db
+*.prof
+*.exe
+nevr-ac
+nevr-server
+nevr-compat
+/tmp/

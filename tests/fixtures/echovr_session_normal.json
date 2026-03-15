@@ -1,0 +1,121 @@
+{
+  "sessionid": "MTX-20260315-173022-EU2",
+  "match_type": "Echo_Arena",
+  "map_name": "mpl_arena_a",
+  "game_status": "playing",
+  "game_clock": 245.5,
+  "game_clock_display": "04:05",
+  "private_match": false,
+  "client_name": "TestPlayer1",
+  "disc": {
+    "position": [5.0, 2.1, 0.0],
+    "velocity": [12.5, 1.0, -0.5],
+    "bounce_count": 0
+  },
+  "blue_points": 4,
+  "orange_points": 2,
+  "teams": [
+    {
+      "team": "BLUE TEAM",
+      "players": [
+        {
+          "name": "PlayerOne",
+          "userid": 1234567890,
+          "playerid": 0,
+          "level": 50,
+          "position": [3.5, 1.6, -2.0],
+          "forward": [0.0, 0.0, 1.0],
+          "left": [-1.0, 0.0, 0.0],
+          "up": [0.0, 1.0, 0.0],
+          "velocity": [2.0, 0.0, 1.5],
+          "lhand": {
+            "pos": [3.2, 1.9, -1.8],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "rhand": {
+            "pos": [3.8, 1.9, -2.2],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "head": {
+            "pos": [3.5, 1.7, -2.0],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "stunned": false,
+          "invulnerable": false,
+          "blocking": false,
+          "stats": {
+            "points": 4,
+            "goals": 1,
+            "assists": 1,
+            "saves": 0,
+            "steals": 2,
+            "stuns": 3,
+            "passes": 5,
+            "catches": 8,
+            "blocks": 0,
+            "interceptions": 1,
+            "possession_time": 45.2,
+            "shots_taken": 6
+          }
+        }
+      ]
+    },
+    {
+      "team": "ORANGE TEAM",
+      "players": [
+        {
+          "name": "PlayerTwo",
+          "userid": 9876543210,
+          "playerid": 1,
+          "level": 35,
+          "position": [-4.0, 1.5, 1.0],
+          "forward": [0.0, 0.0, -1.0],
+          "left": [1.0, 0.0, 0.0],
+          "up": [0.0, 1.0, 0.0],
+          "velocity": [-1.0, 0.5, 0.0],
+          "lhand": {
+            "pos": [-4.3, 1.8, 1.2],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "rhand": {
+            "pos": [-3.7, 1.8, 0.8],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "head": {
+            "pos": [-4.0, 1.6, 1.0],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "stunned": false,
+          "invulnerable": false,
+          "blocking": false,
+          "stats": {
+            "points": 2,
+            "goals": 1,
+            "assists": 0,
+            "saves": 1,
+            "steals": 1,
+            "stuns": 2,
+            "passes": 3,
+            "catches": 6,
+            "blocks": 1,
+            "interceptions": 0,
+            "possession_time": 32.8,
+            "shots_taken": 4
+          }
+        }
+      ]
+    }
+  ]
+}

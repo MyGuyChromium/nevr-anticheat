@@ -1,0 +1,343 @@
+# NEVR-Anticheat Default Configuration
+# Copy this file and adjust settings for your deployment.
+
+# =============================================================================
+# General Settings
+# =============================================================================
+[general]
+mode       = "offline"         # "offline" (replay analysis) or "online" (live server)
+log_level  = "info"            # "debug", "info", "warn", "error"
+log_format = "json"            # "json" or "text"
+max_workers = 4                # parallel analysis workers for batch mode
+db_path    = "./nevr-anticheat.db"
+
+# =============================================================================
+# Game Physics Constants
+# These must match the game server's physics configuration.
+# =============================================================================
+[physics]
+disc_speed_cap   = 18.7       # maximum disc speed in m/s
+boost_speed_cap  = 5.0        # maximum boost speed in m/s
+max_player_speed = 55.0       # maximum player speed (including boost) in m/s
+max_throw_speed  = 20.0       # maximum throw release speed in m/s
+stun_duration    = 3.0        # stun duration in seconds
+shield_cooldown  = 5.0        # shield cooldown in seconds
+immunity_window  = 1.5        # post-respawn immunity in seconds
+grab_range       = 0.8        # disc grab range in meters
+
+# =============================================================================
+# Pipeline Settings
+# =============================================================================
+[pipeline]
+history_window                   = 30    # frames of history kept per player
+min_frame_dt                     = 0.01  # minimum valid delta-time between frames (seconds)
+max_frame_dt                     = 0.2   # maximum valid delta-time between frames (seconds)
+max_events_per_player_per_detector = 100 # rate limit per player per detector per match
+high_ping_threshold_ms           = 150   # frames above this ping get confidence reduction
+cooldown_frames                  = 300   # min frames between same-detector events per player
+
+# =============================================================================
+# Scoring Settings
+# =============================================================================
+[scoring]
+decay_half_life_hours              = 168.0  # score decay half-life (7 days)
+review_threshold                   = 15.0   # score threshold to enter moderator review queue
+auto_enforce_threshold             = 50.0   # score threshold for auto-enforcement (if enabled)
+auto_enforce_min_confidence        = 0.95   # minimum confidence for auto-enforcement
+min_matches_for_cross_match        = 3      # minimum matches before cross-match patterns apply
+max_single_contribution            = 40.0   # maximum score contribution from a single event
+max_contrib_per_detector_per_match = 3      # maximum events counted per detector per match
+in_match_decay_points_per_min      = 2.0    # score decay rate during a match (per minute)
+cross_match_decay_factor           = 0.95   # decay factor applied between matches
+clean_match_reset_count            = 100    # consecutive clean matches before full score reset
+correlation_bonus_cap              = 30.0   # maximum bonus from correlated detections
+same_category_diminishing          = 0.8    # diminishing return factor for same-category events
+
+# =============================================================================
+# Baseline Modeling
+# =============================================================================
+[baseline]
+min_baseline_matches     = 10   # matches needed before baseline comparison applies
+baseline_update_interval = 5    # update baseline every N matches
+player_baseline_weight   = 0.3  # weight of player-specific baseline vs. population
+
+# =============================================================================
+# Shadow Mode
+# Detectors listed here log results but do not contribute to enforcement.
+# All detectors default to shadow mode via their individual [detector.X] mode.
+# =============================================================================
+[shadow]
+shadow_detectors = []
+
+# =============================================================================
+# Throw Detectors
+# =============================================================================
+
+[detector.THROW_001]
+enabled           = true
+enforcement_weight = 0.8
+auto_enforce      = true
+mode              = "shadow"
+[detector.THROW_001.params]
+speed_threshold       = 20.0   # m/s throw speed cap
+base_tolerance        = 1.3    # multiplier tolerance above cap
+ping_tolerance_scalar = 5.0    # additional tolerance per ms of ping
+max_speed_ratio       = 3.0    # ratio above which severity is critical
+sigmoid_steepness     = 2.0    # sigmoid curve steepness for confidence
+
+[detector.THROW_002]
+enabled           = true
+enforcement_weight = 0.7
+mode              = "shadow"
+[detector.THROW_002.params]
+max_release_acceleration = 500.0   # max disc acceleration at release (m/s^2)
+release_window_frames    = 3       # frames around release to measure
+max_accel_ratio          = 5.0     # ratio triggering critical severity
+
+[detector.THROW_003]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.THROW_003.params]
+max_release_angle_deviation = 45.0  # max angle between hand velocity and disc velocity (degrees)
+min_hand_speed              = 1.0   # minimum hand speed to evaluate (m/s)
+min_throw_speed             = 5.0   # minimum throw speed to evaluate (m/s)
+min_angle_stddev            = 1.0   # minimum standard deviation in release angles
+consistency_min_throws      = 5     # minimum throws before consistency check
+
+[detector.THROW_004]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.THROW_004.params]
+min_throws                = 5      # minimum throws for distribution analysis
+min_generalized_variance  = 0.001  # minimum multivariate variance
+min_bhattacharyya         = 0.3    # minimum Bhattacharyya distance from population
+
+[detector.THROW_005]
+enabled           = true
+enforcement_weight = 0.7
+mode              = "shadow"
+[detector.THROW_005.params]
+max_mean_deviation         = 2.0   # max z-score of mean throw params vs baseline
+max_stddev_deviation       = 1.5   # max z-score of stddev vs baseline
+min_throws_for_pattern     = 8     # minimum throws before pattern check
+
+[detector.THROW_006]
+enabled           = true
+enforcement_weight = 0.8
+mode              = "shadow"
+[detector.THROW_006.params]
+min_trajectory_change        = 3.0    # minimum angle change post-release (degrees)
+post_release_frames          = 15     # frames to track after release
+min_distance_from_thrower    = 2.0    # minimum distance for trajectory analysis (meters)
+max_cumulative_change        = 10.0   # cumulative angle change triggering critical
+
+[detector.THROW_007]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.THROW_007.params]
+expected_penalty_speed_loss = 0.5   # expected speed loss in penalty field
+penalty_tolerance           = 0.1   # tolerance around expected loss
+min_entry_speed             = 5.0   # minimum speed at field entry to analyze
+
+[detector.THROW_008]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.THROW_008.params]
+speed_increase_tolerance  = 0.5   # allowed speed increase after release (m/s)
+speed_distance_tolerance  = 1.5   # max distance-corrected speed tolerance
+max_tracking_frames       = 30    # frames to track disc post-release
+
+# =============================================================================
+# Bio/Biomechanical Detectors
+# =============================================================================
+
+[detector.BIO_001]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.BIO_001.params]
+max_wrist_angular_velocity = 30.0  # max wrist rotation rate (rad/s)
+min_violation_frames       = 2     # consecutive frames required
+
+[detector.BIO_002]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.BIO_002.params]
+max_hand_speed       = 15.0  # max hand speed (m/s)
+min_violation_frames = 2     # consecutive frames required
+
+[detector.BIO_003]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.BIO_003.params]
+max_jitter_variance    = 0.00001  # max acceptable jitter variance (indicates synthetic input)
+jitter_window_frames   = 30       # frame window for jitter measurement
+min_active_frames      = 20       # minimum active (non-stunned) frames in window
+
+[detector.BIO_004]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.BIO_004.params]
+max_wobble_variance    = 0.0001  # max acceptable aim wobble variance
+wobble_window_frames   = 30      # frame window for wobble measurement
+active_only            = true    # only measure during active gameplay
+
+# =============================================================================
+# Movement Detectors
+# =============================================================================
+
+[detector.MOV_001]
+enabled           = true
+enforcement_weight = 0.7
+mode              = "shadow"
+[detector.MOV_001.params]
+max_legitimate_speed     = 55.0  # maximum legitimate player speed (m/s)
+sustained_speed_window   = 30    # frames for sustained speed check
+
+[detector.MOV_002]
+enabled           = true
+enforcement_weight = 0.8
+mode              = "shadow"
+[detector.MOV_002.params]
+teleport_threshold        = 8.0    # distance jump threshold (meters)
+velocity_mismatch_factor  = 3.0    # velocity mismatch multiplier
+max_frame_gap_ms          = 200.0  # max frame gap before discounting (ms)
+
+[detector.MOV_003]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.MOV_003.params]
+min_reversal_angle        = 175.0  # minimum angle for zero-inertia reversal (degrees)
+min_speed                 = 12.0   # minimum speed for reversal check (m/s)
+collision_lookback_frames = 5      # frames to check for collision before reversal
+
+[detector.MOV_004]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.MOV_004.params]
+boost_speed_cap = 5.0   # boost speed cap (m/s)
+boost_margin    = 1.5   # margin above cap before flagging
+
+[detector.MOV_005]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.MOV_005.params]
+max_boosts_per_10s        = 25    # max boost activations in 10s window
+max_consecutive_boosts    = 8     # max consecutive boost frames without recharge
+recharge_pause_threshold  = 2.0   # minimum pause between boost sequences (seconds)
+min_sequences_to_surface  = 2     # minimum suspicious sequences to flag
+
+# =============================================================================
+# State Manipulation Detectors
+# =============================================================================
+
+[detector.STATE_001]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.STATE_001.params]
+grab_distance_threshold = 1.2  # max distance for disc grab (meters)
+
+[detector.STATE_002]
+enabled           = true
+enforcement_weight = 0.7
+mode              = "shadow"
+[detector.STATE_002.params]
+min_stun_frames          = 20   # minimum expected stun duration (frames)
+min_incidents_to_surface = 2    # minimum short-stun incidents to flag
+
+[detector.STATE_003]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.STATE_003.params]
+suspicious_frames = 75    # shield duration threshold for suspicious (frames)
+high_frames       = 100   # shield duration threshold for high severity
+impossible_frames = 150   # shield duration threshold for critical
+
+[detector.STATE_004]
+enabled           = true
+enforcement_weight = 0.8
+mode              = "shadow"
+[detector.STATE_004.params]
+immunity_threshold_frames = 300  # frames of immunity before flagging
+
+[detector.STATE_005]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.STATE_005.params]
+cooldown_bypass_threshold_frames = 15  # minimum cooldown frames before re-use
+min_violations_to_surface        = 3   # minimum violations before flagging
+
+[detector.STATE_006]
+enabled           = true
+enforcement_weight = 1.0
+auto_enforce      = true
+mode              = "shadow"
+# STATE_006 (score manipulation) has no configurable parameters.
+# Any score change without a corresponding game event is flagged.
+
+[detector.STATE_007]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.STATE_007.params]
+punch_range_threshold     = 2.0  # max punch range (meters)
+min_incidents_to_surface  = 2    # minimum incidents to flag
+
+# =============================================================================
+# Pattern/Behavioral Detectors
+# =============================================================================
+
+[detector.PAT_001]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.PAT_001.params]
+max_cov             = 0.05   # max coefficient of variation for throw timing
+max_stddev_frames   = 3.0    # max standard deviation in inter-throw frames
+min_throw_count     = 12     # minimum throws for pattern analysis
+
+[detector.PAT_002]
+enabled           = true
+enforcement_weight = 0.6
+mode              = "shadow"
+[detector.PAT_002.params]
+min_release_spread = 0.01   # minimum spread in release parameters
+min_throw_count    = 12     # minimum throws for pattern analysis
+
+[detector.PAT_003]
+enabled           = true
+enforcement_weight = 0.8
+mode              = "shadow"
+[detector.PAT_003.params]
+min_matches_soft      = 3    # soft threshold: matches with any detections
+min_matches_hard      = 2    # hard threshold: matches with high-confidence detections
+min_avg_confidence    = 0.6  # minimum average confidence across matches
+match_history_depth   = 20   # number of recent matches to consider
+
+[detector.PAT_004]
+enabled           = true
+enforcement_weight = 0.9
+mode              = "shadow"
+[detector.PAT_004.params]
+min_categories = 3  # minimum distinct detector categories triggering together
+
+[detector.PAT_005]
+enabled           = true
+enforcement_weight = 0.5
+mode              = "shadow"
+[detector.PAT_005.params]
+max_hand_to_head_distance = 1.6   # max distance from hand to head (meters)
+playspace_abuse_samples   = 45    # frames to sample for playspace analysis
