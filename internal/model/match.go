@@ -57,9 +57,11 @@ func DefaultPhysics() PhysicsConstants {
 		ShieldCooldown: 5.0,
 		ImmunityWindow: 1.5,
 		GrabRange:      0.8,
-		ArenaLength:    80.0,
-		ArenaWidth:     30.0,
-		ArenaHeight:    30.0,
+		// CONFIRMED from real replay: Z range is [-77, +77], X range is [-5, +5], Y range is [-4, +7].
+		// Arena is elongated on Z axis. Goals at Z ≈ ±36.
+		ArenaLength:    154.0,  // Z axis (was 80 — confirmed wrong from real data)
+		ArenaWidth:     15.0,   // X axis
+		ArenaHeight:    15.0,   // Y axis
 		GoalRadius:     1.0,
 	}
 }

@@ -158,17 +158,17 @@ func (m *Mapper) mapPlayer(
 	var warnings []MappingWarning
 	pid := playerID(*p)
 
-	// CONFIRMED: position is [3]float64
-	pos := model.Vec3(p.Position)
+	// CONFIRMED from real replay: position is under body.position, NOT top-level.
+	pos := model.Vec3(p.Body.Position)
 	if pos.IsZero() {
-		return nil, nil, &MappingError{PlayerName: p.Name, Field: "position", Message: "zero position"}
+		return nil, nil, &MappingError{PlayerName: p.Name, Field: "body.position", Message: "zero position"}
 	}
 	if pos.HasNaN() || pos.HasInf() {
-		return nil, nil, &MappingError{PlayerName: p.Name, Field: "position", Message: "NaN/Inf position"}
+		return nil, nil, &MappingError{PlayerName: p.Name, Field: "body.position", Message: "NaN/Inf position"}
 	}
 
-	// CONFIRMED: body rotation from direction vectors, NOT quaternion
-	bodyRot := directionVectorsToQuat(p.Forward, p.Left, p.Up)
+	// CONFIRMED from real replay: body rotation from body.forward/left/up direction vectors.
+	bodyRot := directionVectorsToQuat(p.Body.Forward, p.Body.Left, p.Body.Up)
 	if !bodyRot.IsUnit() {
 		warnings = append(warnings, MappingWarning{Field: "rotation", Message: "non-unit body quaternion, normalizing"})
 		bodyRot = bodyRot.Normalize()

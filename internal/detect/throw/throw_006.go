@@ -143,9 +143,9 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Track alignment with nearest goal for net-alignment-improvement detection
 		if disc.Velocity.Magnitude() > 0.1 && matchCtx.Physics.ArenaLength > 0 {
 			halfLen := matchCtx.Physics.ArenaLength / 2.0
-			// Determine nearest goal center (goals at +/- ArenaLength/2 on X axis)
-			goalPosA := model.Vec3{halfLen, 0, 0}
-			goalPosB := model.Vec3{-halfLen, 0, 0}
+			// CONFIRMED from real replay: goals are on the Z axis, not X.
+			goalPosA := model.Vec3{0, 0, halfLen}
+			goalPosB := model.Vec3{0, 0, -halfLen}
 			toGoalA := goalPosA.Sub(disc.Position)
 			toGoalB := goalPosB.Sub(disc.Position)
 			// Pick nearer goal

@@ -285,8 +285,10 @@ func (fe *FeatureExtractor) detectThrow(
 	// Estimate target (nearest goal)
 	var targetPos *model.Vec3
 	targetDev := 0.0
-	goalBlue := model.Vec3{-matchCtx.Physics.ArenaLength / 2, 0, 0}
-	goalOrange := model.Vec3{matchCtx.Physics.ArenaLength / 2, 0, 0}
+	// CONFIRMED from real replay: goals are on the Z axis, not X.
+	// Disc position at goal was Z=36.078, arena half-length ~36-40.
+	goalBlue := model.Vec3{0, 0, -matchCtx.Physics.ArenaLength / 2}
+	goalOrange := model.Vec3{0, 0, matchCtx.Physics.ArenaLength / 2}
 	distBlue := releasePos.Distance(goalBlue)
 	distOrange := releasePos.Distance(goalOrange)
 	nearestGoal := goalBlue

@@ -12,6 +12,8 @@
 //   ABSENT     = Field does not exist in Echo VR telemetry; always uses safe default
 package adapter
 
+import "encoding/json"
+
 // EchoVRSessionResponse represents the raw JSON from Echo VR's /session API endpoint.
 // Based on community documentation (VRML, Spark, IgniteBot).
 //
@@ -36,9 +38,10 @@ type EchoVRSessionResponse struct {
 	Teams []EchoVRTeam `json:"teams"` // CONFIRMED: array of 2 teams (blue=0, orange=1)
 		// Note: some API versions use [2]EchoVRTeam, others []EchoVRTeam
 
-	// Possession
-	Possession *EchoVRPossession `json:"possession"` // LIKELY: array with [2] entries (team possession)
-		// Format uncertain: may be [2]int, [2]bool, or nested object
+	// CONFIRMED from real replay: top-level "possession" is [team_idx, player_idx] array.
+	// Per-player "possession" boolean is the reliable field for disc ownership.
+	// We ignore this top-level array and use the per-player boolean instead.
+	Possession json.RawMessage `json:"possession"` // CONFIRMED: [int, int] array, ignored
 
 	// Blue/Orange points
 	BluePoints   int `json:"blue_points"`    // CONFIRMED
@@ -73,29 +76,18 @@ type EchoVRPlayer struct {
 	PlayerID int    `json:"playerid"`  // CONFIRMED: in-match player slot index (0-based)
 	Level    int    `json:"level"`     // LIKELY: player level
 
-	// Spatial data
-	// CONFIRMED: Position as [3]float64 [x, y, z] in meters, Y-up coordinate system.
-	Position [3]float64 `json:"position"`
+	// CONFIRMED from real replay data: players do NOT have a top-level "position" field.
+	// Position is under "body.position" and "head.position" (identical in all observed frames).
+	// Body and Head are nested objects with position + direction vectors.
+	Body EchoVRBodyHead `json:"body"` // CONFIRMED: body position + orientation
+	Head EchoVRBodyHead `json:"head"` // CONFIRMED: head position + orientation (== body.position in practice)
 
-	// CONFIRMED: The API provides direction vectors, NOT a quaternion.
-	// Format: [fx, fy, fz] for each direction.
-	Forward [3]float64 `json:"forward"` // CONFIRMED: forward direction vector
-	Left    [3]float64 `json:"left"`    // CONFIRMED: left direction vector
-	Up      [3]float64 `json:"up"`      // CONFIRMED: up direction vector
+	// CONFIRMED: Player velocity as top-level [3]float64.
+	Velocity [3]float64 `json:"velocity"` // CONFIRMED
 
-	// Velocity
-	// LIKELY: Player velocity. May not be present in all API versions.
-	Velocity [3]float64 `json:"velocity"` // LIKELY
-
-	// Hand/Controller data
-	// CONFIRMED: Hand data is nested objects with position and direction vectors.
-	// Format: {"pos": [x,y,z], "forward": [fx,fy,fz], "left": [lx,ly,lz], "up": [ux,uy,uz]}
+	// CONFIRMED: Hand data is nested objects with pos + direction vectors.
 	LHand EchoVRHand `json:"lhand"` // CONFIRMED: left hand/controller
 	RHand EchoVRHand `json:"rhand"` // CONFIRMED: right hand/controller
-
-	// Head data
-	// LIKELY: Head tracking data, same format as hands.
-	Head EchoVRHand `json:"head"` // LIKELY
 
 	// Game state booleans
 	Stunned      bool `json:"stunned"`      // CONFIRMED: player is stunned
@@ -114,12 +106,22 @@ type EchoVRPlayer struct {
 	Stats EchoVRPlayerStats `json:"stats"` // CONFIRMED: nested stats object
 }
 
-// EchoVRHand represents hand/head tracking data.
+// EchoVRBodyHead represents body or head tracking data.
+// CONFIRMED from real replay: uses "position" (not "pos") as key.
+type EchoVRBodyHead struct {
+	Position [3]float64 `json:"position"` // CONFIRMED
+	Forward  [3]float64 `json:"forward"`  // CONFIRMED
+	Left     [3]float64 `json:"left"`     // CONFIRMED
+	Up       [3]float64 `json:"up"`       // CONFIRMED
+}
+
+// EchoVRHand represents hand/controller tracking data.
+// CONFIRMED from real replay: uses "pos" (not "position") as key.
 type EchoVRHand struct {
 	Position [3]float64 `json:"pos"`     // CONFIRMED: [x, y, z] position
 	Forward  [3]float64 `json:"forward"` // CONFIRMED: forward direction vector
-	Left     [3]float64 `json:"left"`    // LIKELY: left direction vector
-	Up       [3]float64 `json:"up"`      // LIKELY: up direction vector
+	Left     [3]float64 `json:"left"`    // CONFIRMED: left direction vector
+	Up       [3]float64 `json:"up"`      // CONFIRMED: up direction vector
 }
 
 // EchoVRPlayerStats contains per-player match statistics.
@@ -155,10 +157,6 @@ type EchoVRLastScore struct {
 	AssistedBy    string  `json:"assisted_by"`      // LIKELY
 }
 
-// EchoVRPossession represents disc possession state.
-// UNKNOWN: The exact format varies in community documentation.
-// Some sources show [2]int (team possession), others show a nested object.
-type EchoVRPossession struct {
-	TeamIdx    int    `json:"-"` // which team has possession (0=blue, 1=orange, -1=none)
-	PlayerName string `json:"-"` // which player holds the disc
-}
+// Note: Top-level "possession" is a [2]int array (team_idx, player_idx).
+// CONFIRMED from real replay data. Parsed as json.RawMessage and ignored
+// in favor of per-player "possession" booleans.

@@ -162,12 +162,14 @@ func TestStrictMapper_ZeroHandRotation(t *testing.T) {
 				TeamName: "BLUE TEAM",
 				Players: []adapter.EchoVRPlayer{
 					{
-						Name:     "NoHandRot",
-						UserID:   999,
-						Position: [3]float64{5, 1.6, 0},
-						Forward:  [3]float64{0, 0, 1},
-						Left:     [3]float64{-1, 0, 0},
-						Up:       [3]float64{0, 1, 0},
+						Name:   "NoHandRot",
+						UserID: 999,
+						Body: adapter.EchoVRBodyHead{
+							Position: [3]float64{5, 1.6, 0},
+							Forward:  [3]float64{0, 0, 1},
+							Left:     [3]float64{-1, 0, 0},
+							Up:       [3]float64{0, 1, 0},
+						},
 						LHand: adapter.EchoVRHand{
 							Position: [3]float64{4.7, 1.9, 0.2},
 							// Forward/Left/Up all zero — tracking lost
@@ -216,11 +218,13 @@ func TestStrictMapper_DiscHeldHighSpeed(t *testing.T) {
 						Name:       "Holder",
 						UserID:     888,
 						Possession: true, // has disc
-						Position:   [3]float64{5, 1.6, 0},
-						Forward:    [3]float64{0, 0, 1},
-						Left:       [3]float64{-1, 0, 0},
-						Up:         [3]float64{0, 1, 0},
-						LHand:      adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}, Forward: [3]float64{0, 0, 1}, Left: [3]float64{-1, 0, 0}, Up: [3]float64{0, 1, 0}},
+						Body: adapter.EchoVRBodyHead{
+							Position: [3]float64{5, 1.6, 0},
+							Forward:  [3]float64{0, 0, 1},
+							Left:     [3]float64{-1, 0, 0},
+							Up:       [3]float64{0, 1, 0},
+						},
+						LHand: adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}, Forward: [3]float64{0, 0, 1}, Left: [3]float64{-1, 0, 0}, Up: [3]float64{0, 1, 0}},
 						RHand:      adapter.EchoVRHand{Position: [3]float64{5.3, 1.9, -0.2}, Forward: [3]float64{0, 0, 1}, Left: [3]float64{-1, 0, 0}, Up: [3]float64{0, 1, 0}},
 						Stats:      adapter.EchoVRPlayerStats{},
 					},

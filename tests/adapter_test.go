@@ -116,7 +116,7 @@ func TestMapper_MalformedSession(t *testing.T) {
 	}
 	foundZeroPosError := false
 	for _, e := range result.Errors {
-		if e.PlayerName == "ZeroPositionPlayer" && e.Field == "position" {
+		if e.PlayerName == "ZeroPositionPlayer" && e.Field == "body.position" {
 			foundZeroPosError = true
 		}
 	}
@@ -215,13 +215,15 @@ func TestMapper_HandRotationWarning(t *testing.T) {
 				TeamName: "BLUE TEAM",
 				Players: []adapter.EchoVRPlayer{
 					{
-						Name:     "NoHandRotation",
-						UserID:   333,
-						Position: [3]float64{5.0, 1.6, 0.0},
-						Forward:  [3]float64{0, 0, 1},
-						Left:     [3]float64{-1, 0, 0},
-						Up:       [3]float64{0, 1, 0},
-						LHand:    adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
+						Name:   "NoHandRotation",
+						UserID: 333,
+						Body: adapter.EchoVRBodyHead{
+							Position: [3]float64{5.0, 1.6, 0.0},
+							Forward:  [3]float64{0, 0, 1},
+							Left:     [3]float64{-1, 0, 0},
+							Up:       [3]float64{0, 1, 0},
+						},
+						LHand: adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
 						// LHand.Forward/Left/Up are all zero
 						RHand: adapter.EchoVRHand{Position: [3]float64{5.3, 1.9, -0.2}},
 						Stats: adapter.EchoVRPlayerStats{},
@@ -275,11 +277,13 @@ func TestMapper_PossessionDetection(t *testing.T) {
 						Name:       "Holder",
 						UserID:     444,
 						Possession: true,
-						Position:   [3]float64{5.0, 1.6, 0.0},
-						Forward:  [3]float64{0, 0, 1},
-						Left:     [3]float64{-1, 0, 0},
-						Up:       [3]float64{0, 1, 0},
-						LHand:    adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
+						Body: adapter.EchoVRBodyHead{
+							Position: [3]float64{5.0, 1.6, 0.0},
+							Forward:  [3]float64{0, 0, 1},
+							Left:     [3]float64{-1, 0, 0},
+							Up:       [3]float64{0, 1, 0},
+						},
+						LHand: adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
 						RHand:    adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}}, // matches disc
 						Stats:    adapter.EchoVRPlayerStats{},
 					},
@@ -320,13 +324,15 @@ func TestMapper_NoPossessionHighSpeed(t *testing.T) {
 				TeamName: "BLUE TEAM",
 				Players: []adapter.EchoVRPlayer{
 					{
-						Name:     "NearDisc",
-						UserID:   555,
-						Position: [3]float64{5.0, 1.6, 0.0},
-						Forward:  [3]float64{0, 0, 1},
-						Left:     [3]float64{-1, 0, 0},
-						Up:       [3]float64{0, 1, 0},
-						RHand:    adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}},
+						Name:   "NearDisc",
+						UserID: 555,
+						Body: adapter.EchoVRBodyHead{
+							Position: [3]float64{5.0, 1.6, 0.0},
+							Forward:  [3]float64{0, 0, 1},
+							Left:     [3]float64{-1, 0, 0},
+							Up:       [3]float64{0, 1, 0},
+						},
+						RHand: adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}},
 						LHand:    adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
 						Stats:    adapter.EchoVRPlayerStats{},
 					},
@@ -394,8 +400,12 @@ func TestMapper_GamePhaseMapping(t *testing.T) {
 			Teams: []adapter.EchoVRTeam{
 				{Players: []adapter.EchoVRPlayer{{
 					Name: "P", UserID: 1,
-					Position: [3]float64{1, 1, 1},
-					Forward: [3]float64{0, 0, 1}, Left: [3]float64{-1, 0, 0}, Up: [3]float64{0, 1, 0},
+					Body: adapter.EchoVRBodyHead{
+						Position: [3]float64{1, 1, 1},
+						Forward:  [3]float64{0, 0, 1},
+						Left:     [3]float64{-1, 0, 0},
+						Up:       [3]float64{0, 1, 0},
+					},
 					LHand: adapter.EchoVRHand{Position: [3]float64{0.7, 1.3, 1.2}},
 					RHand: adapter.EchoVRHand{Position: [3]float64{1.3, 1.3, 0.8}},
 				}}},

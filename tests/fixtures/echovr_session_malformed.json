@@ -18,10 +18,12 @@
           "name": "ZeroPositionPlayer",
           "userid": 111,
           "playerid": 0,
-          "position": [0.0, 0.0, 0.0],
-          "forward": [0.0, 0.0, 0.0],
-          "left": [0.0, 0.0, 0.0],
-          "up": [0.0, 0.0, 0.0],
+          "body": {
+            "position": [0.0, 0.0, 0.0],
+            "forward": [0.0, 0.0, 0.0],
+            "left": [0.0, 0.0, 0.0],
+            "up": [0.0, 0.0, 0.0]
+          },
           "lhand": {"pos": [0.0, 0.0, 0.0], "forward": [0,0,0], "left": [0,0,0], "up": [0,0,0]},
           "rhand": {"pos": [0.0, 0.0, 0.0], "forward": [0,0,0], "left": [0,0,0], "up": [0,0,0]},
           "stunned": false,
@@ -31,10 +33,12 @@
           "name": "ValidPlayer",
           "userid": 222,
           "playerid": 1,
-          "position": [5.0, 1.6, 0.0],
-          "forward": [0.0, 0.0, 1.0],
-          "left": [-1.0, 0.0, 0.0],
-          "up": [0.0, 1.0, 0.0],
+          "body": {
+            "position": [5.0, 1.6, 0.0],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
           "lhand": {"pos": [4.7, 1.9, 0.2], "forward": [0,0,1], "left": [-1,0,0], "up": [0,1,0]},
           "rhand": {"pos": [5.3, 1.9, -0.2], "forward": [0,0,1], "left": [-1,0,0], "up": [0,1,0]},
           "stunned": true,

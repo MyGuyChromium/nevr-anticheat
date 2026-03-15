@@ -161,12 +161,12 @@ func (dr *DiagnosticReport) RecordSession(raw *EchoVRSessionResponse) {
 			dr.PlayersSeenIDs[pid] = true
 
 			// Position
-			dr.recordVec3("position", p.Position)
+			dr.recordVec3("position", p.Body.Position)
 
 			// Direction vectors
-			dr.recordVec3("forward", p.Forward)
-			dr.recordVec3("left", p.Left)
-			dr.recordVec3("up", p.Up)
+			dr.recordVec3("forward", p.Body.Forward)
+			dr.recordVec3("left", p.Body.Left)
+			dr.recordVec3("up", p.Body.Up)
 
 			// Hand positions
 			dr.recordVec3("lhand.pos", p.LHand.Position)
@@ -185,7 +185,7 @@ func (dr *DiagnosticReport) RecordSession(raw *EchoVRSessionResponse) {
 			}
 
 			// Check hand-to-body distance
-			bodyPos := p.Position
+			bodyPos := p.Body.Position
 			for _, hand := range [][3]float64{p.LHand.Position, p.RHand.Position} {
 				dx := hand[0] - bodyPos[0]
 				dy := hand[1] - bodyPos[1]
@@ -197,7 +197,7 @@ func (dr *DiagnosticReport) RecordSession(raw *EchoVRSessionResponse) {
 			}
 
 			// Direction vector unit-ness check
-			fwd := p.Forward
+			fwd := p.Body.Forward
 			fwdMag := math.Sqrt(fwd[0]*fwd[0] + fwd[1]*fwd[1] + fwd[2]*fwd[2])
 			if fwdMag > 0 && (fwdMag < 0.95 || fwdMag > 1.05) {
 				dr.NonUnitQuaternions++ // misnomer but tracks direction vector quality
@@ -223,7 +223,8 @@ func (dr *DiagnosticReport) RecordSession(raw *EchoVRSessionResponse) {
 			dr.recordFloat("stats.saves", float64(p.Stats.Saves))
 
 			// Arena bounds check
-			if math.Abs(p.Position[0]) > 45 || math.Abs(p.Position[1]) > 20 || math.Abs(p.Position[2]) > 20 {
+			// CONFIRMED from real replay: X range [-5,+5], Y range [-4,+7], Z range [-77,+77]
+			if math.Abs(p.Body.Position[0]) > 15 || math.Abs(p.Body.Position[1]) > 15 || math.Abs(p.Body.Position[2]) > 82 {
 				dr.PositionOutOfBounds++
 			}
 		}
