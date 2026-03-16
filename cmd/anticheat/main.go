@@ -6,8 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/bio"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
@@ -165,11 +169,28 @@ func runAnalyze(configPath, replayPath string) {
 		os.Exit(1)
 	}
 	defer store.Close()
-	reader := replay.NewReplayReader(replayPath, replay.NewJSONFrameParser())
-	matchCtx, frames, err := reader.ReadMatch()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading replay: %v\n", err)
-		os.Exit(1)
+
+	// Auto-detect format: .echoreplay (NDJSON/ZIP) vs legacy JSON replay
+	var matchCtx *model.MatchContext
+	var frames []model.PlayerTelemetryFrame
+
+	if isEchoReplay(replayPath) {
+		parser := adapter.NewEchoReplayParser()
+		var diag *adapter.DiagnosticReport
+		matchCtx, frames, diag, err = parser.ParseFile(replayPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading echoreplay: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Parsed %d player-frames from %s (%d rejected)\n",
+			len(frames), replayPath, diag.FramesRejected)
+	} else {
+		reader := replay.NewReplayReader(replayPath, replay.NewJSONFrameParser())
+		matchCtx, frames, err = reader.ReadMatch()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading replay: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	result, err := p.ProcessMatch(context.Background(), matchCtx, frames)
 	if err != nil {
@@ -247,4 +268,10 @@ func runReport(configPath, caseID string) {
 		os.Exit(1)
 	}
 	fmt.Print(evidence.FormatReport(rc))
+}
+
+// isEchoReplay returns true if the file path looks like an Echo VR replay.
+func isEchoReplay(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".echoreplay"
 }
