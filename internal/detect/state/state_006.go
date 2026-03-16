@@ -48,10 +48,16 @@ func (d *State006) Configure(params map[string]any) error {
 }
 
 // validScoreDelta returns true if the delta is a valid score change.
-// Accepts 0 (no change), 2 or 3 (single goal), and 4-6 (multi-goal in a frame gap).
-// Rejects negative deltas and delta=1 (impossible score).
+// CONFIRMED from real replay data:
+// - Negative deltas are legitimate: scores reset between rounds/matches.
+// - Large positive deltas occur when frames are skipped or rounds transition.
+// - Only delta=1 is truly impossible in Echo Arena (goals are 2 or 3 points).
+// - Delta=0 is no change (most common).
 func validScoreDelta(delta int) bool {
-	return delta == 0 || (delta >= 2 && delta <= 6)
+	if delta < 0 {
+		return true // score resets between rounds are legitimate
+	}
+	return delta != 1 // only delta=1 is impossible (no 1-point goals exist)
 }
 
 func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
@@ -113,13 +119,8 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			invalidReason += fmt.Sprintf("orange_score_delta=%d", orangeDelta)
 		}
 
-		// Negative deltas are always invalid
-		if blueDelta < 0 || orangeDelta < 0 {
-			scoreChanged = true
-			if invalidReason == "" {
-				invalidReason = fmt.Sprintf("negative_delta: blue=%d orange=%d", blueDelta, orangeDelta)
-			}
-		}
+		// CONFIRMED from real replay: negative deltas are legitimate (score resets between rounds).
+		// Removed the negative delta check — validScoreDelta now handles this correctly.
 
 		if !scoreChanged {
 			continue

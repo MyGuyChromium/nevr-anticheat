@@ -85,10 +85,10 @@ func TestPipeline_SpeedHack_Detected(t *testing.T) {
 	frames := make([]model.PlayerTelemetryFrame, 60)
 	for i := 0; i < 60; i++ {
 		ts := float64(i) * 0.067
-		// Oscillate within arena bounds but at impossible speed.
+		// Oscillate on Z axis (long arena axis) at impossible speed.
 		// At 0.067s per frame, moving 5m per frame = ~75 m/s (well over 55 limit).
-		x := 5.0 + float64(i%6)*5.0 // oscillates 5-30m, within arena
-		pos := model.Vec3{x, 1.0, 1.0}
+		z := 5.0 + float64(i%6)*5.0 // oscillates 5-30m on Z
+		pos := model.Vec3{1.0, 1.0, z}
 		frames[i] = model.PlayerTelemetryFrame{
 			PlayerID:          "player1",
 			FrameIndex:        i,

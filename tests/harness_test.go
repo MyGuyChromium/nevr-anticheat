@@ -356,10 +356,20 @@ func PingSpikeSequence(n int, spikePingMs float64) []model.PlayerTelemetryFrame 
 // SpeedHackFrames generates frames where the player moves at impossible speed.
 func SpeedHackFrames(n int, speed float64) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
+	dt := 0.067
 	for i := 0; i < n; i++ {
-		// Oscillate at impossible speed within arena bounds
-		x := oscillateX(i, speed, 5.0, 30.0)
-		pos := model.Vec3{x, 1.6, 3}
+		// Oscillate at impossible speed on Z axis (long arena axis, ±77m)
+		// Triangle wave: go forward then reverse to stay in bounds
+		totalDist := speed * dt * float64(i)
+		period := 140.0 // bounce back every 140m of travel (±70m range)
+		phase := math.Mod(totalDist, period)
+		var z float64
+		if phase < period/2 {
+			z = -70.0 + phase
+		} else {
+			z = 70.0 - (phase - period/2)
+		}
+		pos := model.Vec3{2.0, 1.6, z}
 		f := baseFrame("player1", i, pos)
 		frames[i] = f
 	}
@@ -372,23 +382,24 @@ func TeleportCheat(n int, teleportFrame int, teleportDist float64) []model.Playe
 	if teleportFrame >= len(frames)-1 {
 		teleportFrame = len(frames) / 2
 	}
-	// At teleportFrame, jump position by teleportDist
-	prevX := frames[teleportFrame-1].Position[0]
-	newX := prevX + teleportDist
-	if newX > 35 {
-		newX = 10
+	// At teleportFrame, jump position by teleportDist on Z axis (long arena axis)
+	prevZ := frames[teleportFrame-1].Position[2]
+	newZ := prevZ + teleportDist
+	if newZ > 70 {
+		newZ = 10
 	}
-	frames[teleportFrame].Position = model.Vec3{newX, 1.6, 3}
-	frames[teleportFrame].LeftHandPosition = model.Vec3{newX - 0.3, 1.9, 3.2}
-	frames[teleportFrame].RightHandPosition = model.Vec3{newX + 0.3, 1.9, 2.8}
-	// Continue smoothly from new position
+	baseX := frames[teleportFrame-1].Position[0]
+	frames[teleportFrame].Position = model.Vec3{baseX, 1.6, newZ}
+	frames[teleportFrame].LeftHandPosition = model.Vec3{baseX - 0.3, 1.9, newZ + 0.2}
+	frames[teleportFrame].RightHandPosition = model.Vec3{baseX + 0.3, 1.9, newZ - 0.2}
+	// Continue smoothly from new position on Z axis
 	for i := teleportFrame + 1; i < len(frames); i++ {
 		offset := float64(i-teleportFrame) * 2.0 * dt
-		x := newX + offset
-		if x > 30 {
-			x = 30 - (x - 30)
+		z := newZ + offset
+		if z > 70 {
+			z = 70 - (z - 70)
 		}
-		frames[i] = baseFrame("player1", i, model.Vec3{x, 1.6, 3})
+		frames[i] = baseFrame("player1", i, model.Vec3{baseX, 1.6, z})
 	}
 	return frames
 }

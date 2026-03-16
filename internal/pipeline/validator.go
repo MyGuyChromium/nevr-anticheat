@@ -43,13 +43,15 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 	if frame.DeltaTime > 0 && (frame.DeltaTime < v.minDt*0.5 || frame.DeltaTime > v.maxDt*2.5) {
 		return fmt.Errorf("dt %.4f out of range for player %s", frame.DeltaTime, frame.PlayerID)
 	}
-	// Arena bounds check (generous tolerance)
-	halfLen := matchCtx.Physics.ArenaLength/2 + 5
-	halfW := matchCtx.Physics.ArenaWidth/2 + 5
-	halfH := matchCtx.Physics.ArenaHeight/2 + 5
-	if math.Abs(frame.Position[0]) > halfLen ||
-		math.Abs(frame.Position[1]) > halfH ||
-		math.Abs(frame.Position[2]) > halfW {
+	// Arena bounds check (generous tolerance).
+	// CONFIRMED from real replay: X is narrow (±5m), Y is vertical (±7m), Z is long (±77m).
+	// ArenaLength=154 maps to Z, ArenaWidth=15 maps to X, ArenaHeight=15 maps to Y.
+	halfX := matchCtx.Physics.ArenaWidth/2 + 5   // X axis: narrow
+	halfY := matchCtx.Physics.ArenaHeight/2 + 5  // Y axis: vertical
+	halfZ := matchCtx.Physics.ArenaLength/2 + 5  // Z axis: long
+	if math.Abs(frame.Position[0]) > halfX ||
+		math.Abs(frame.Position[1]) > halfY ||
+		math.Abs(frame.Position[2]) > halfZ {
 		return fmt.Errorf("position out of arena bounds for player %s", frame.PlayerID)
 	}
 	return nil

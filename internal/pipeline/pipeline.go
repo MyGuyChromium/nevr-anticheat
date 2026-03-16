@@ -158,8 +158,24 @@ func (p *Pipeline) ProcessMatch(
 		}
 		result.FramesProcessed++
 
-		// Run detectors
+		// Skip detectors during non-active game phases (round_start, score, pre_match, post_match).
+		// CONFIRMED from real replay: players teleport during round transitions, causing
+		// massive false positives from MOV_002 and other spatial detectors.
+		activePhase := true
+		for _, pf := range pFrames {
+			if pf.GamePhase != "" && !matchCtx.IsActivePhase(pf.GamePhase) {
+				activePhase = false
+				break
+			}
+		}
+
+		// Run detectors (only during active gameplay)
 		var frameEvents []model.DetectionEvent
+		if !activePhase {
+			// Still update feature extractor (above) to maintain state continuity,
+			// but don't run detectors during non-active phases.
+			continue
+		}
 		for _, det := range p.detectors {
 			if fi < det.WarmupFrames() {
 				continue

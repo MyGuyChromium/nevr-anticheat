@@ -118,11 +118,12 @@ func deterministicJitter3(frame int, seed int, amplitude float64) model.Vec3 {
 }
 
 // clampToArena ensures positions stay within arena bounds.
+// CONFIRMED from real replay: X is narrow (±5m), Y is vertical (±7m), Z is long (±77m).
 func clampToArena(pos model.Vec3) model.Vec3 {
 	return model.Vec3{
-		model.Clamp(pos[0], -40, 40),
-		model.Clamp(pos[1], -15, 15),
-		model.Clamp(pos[2], -15, 15),
+		model.Clamp(pos[0], -12, 12),
+		model.Clamp(pos[1], -12, 12),
+		model.Clamp(pos[2], -77, 77),
 	}
 }
 
@@ -191,19 +192,19 @@ func (fb *FrameBuilder) NormalMovingPlayer(nFrames int, avgSpeed float64) []mode
 	dt := fb.dt()
 
 	// Accumulate position incrementally to ensure smooth frame-to-frame deltas
-	posX := fb.startPos[0]
+	posZ := fb.startPos[2]
 
 	for i := 0; i < nFrames; i++ {
 		// Speed varies ±20% with a sinusoidal pattern
 		speedVariation := 1.0 + 0.2*math.Sin(float64(i)*0.3)
 		speed := avgSpeed * speedVariation
 
-		// Incremental position update along X; sinusoidal weave on Y/Z
-		posX += speed * dt
+		// Incremental position update along Z (long arena axis); weave on X/Y
+		posZ += speed * dt
 		pos := model.Vec3{
-			posX,
-			fb.startPos[1] + 0.5*math.Sin(float64(i)*0.1),
-			fb.startPos[2] + 2.0*math.Sin(float64(i)*0.05),
+			fb.startPos[0] + 0.5*math.Sin(float64(i)*0.1),
+			fb.startPos[1] + 0.5*math.Sin(float64(i)*0.07),
+			posZ,
 		}
 		pos = clampToArena(pos)
 
@@ -449,7 +450,7 @@ func (fb *FrameBuilder) NormalBoostSequence(nBoosts int) []model.PlayerTelemetry
 		// Pre-boost gap (normal movement)
 		for j := 0; j < gapFrames; j++ {
 			speed := baseSpeed + 0.5*math.Sin(float64(frameIdx)*0.2)
-			pos = clampToArena(pos.Add(model.Vec3{speed * dt, 0, 0}))
+			pos = clampToArena(pos.Add(model.Vec3{0, 0, speed * dt}))
 			rot := rotationFromVelocity(model.Vec3{speed, 0, 0})
 
 			f := fb.baseFrame(frameIdx, pos, rot)
@@ -463,7 +464,7 @@ func (fb *FrameBuilder) NormalBoostSequence(nBoosts int) []model.PlayerTelemetry
 		// Boost phase
 		for j := 0; j < boostFrames; j++ {
 			speed := baseSpeed + boostMagnitude
-			pos = clampToArena(pos.Add(model.Vec3{speed * dt, 0, 0}))
+			pos = clampToArena(pos.Add(model.Vec3{0, 0, speed * dt}))
 			rot := rotationFromVelocity(model.Vec3{speed, 0, 0})
 
 			f := fb.baseFrame(frameIdx, pos, rot)
@@ -478,7 +479,7 @@ func (fb *FrameBuilder) NormalBoostSequence(nBoosts int) []model.PlayerTelemetry
 		for j := 0; j < decayFrames; j++ {
 			progress := float64(j) / float64(decayFrames)
 			speed := baseSpeed + boostMagnitude*(1.0-progress)
-			pos = clampToArena(pos.Add(model.Vec3{speed * dt, 0, 0}))
+			pos = clampToArena(pos.Add(model.Vec3{0, 0, speed * dt}))
 			rot := rotationFromVelocity(model.Vec3{speed, 0, 0})
 
 			f := fb.baseFrame(frameIdx, pos, rot)
@@ -924,7 +925,7 @@ func (fb *FrameBuilder) RegrabStackingBurst(nFrames int) []model.PlayerTelemetry
 			speed = 5.0 + 2.0*math.Sin(float64(i)*0.3)
 		}
 
-		pos = clampToArena(pos.Add(model.Vec3{speed * dt, 0, 0}))
+		pos = clampToArena(pos.Add(model.Vec3{0, 0, speed * dt}))
 		rot := rotationFromVelocity(model.Vec3{speed, 0, 0})
 
 		f := fb.baseFrame(i, pos, rot)
@@ -1031,8 +1032,9 @@ func (fb *FrameBuilder) SpeedHackFrames(nFrames int, hackSpeed float64) []model.
 	pos := fb.startPos
 
 	for i := 0; i < nFrames; i++ {
-		pos = clampToArena(pos.Add(model.Vec3{hackSpeed * dt, 0, 0}))
-		rot := rotationFromVelocity(model.Vec3{hackSpeed, 0, 0})
+		// Move on Z axis (the long arena axis, confirmed ±77m range)
+		pos = clampToArena(pos.Add(model.Vec3{0, 0, hackSpeed * dt}))
+		rot := rotationFromVelocity(model.Vec3{0, 0, hackSpeed})
 
 		f := fb.baseFrame(i, pos, rot)
 		f.LeftHandPosition = pos.Add(model.Vec3{-0.3, 0.3, 0.2}).Add(deterministicJitter3(i, 700, 0.003))
@@ -1050,7 +1052,7 @@ func (fb *FrameBuilder) TeleportCheat(nFrames int, teleportAtFrame int, distance
 
 	if teleportAtFrame > 0 && teleportAtFrame < nFrames {
 		// Instant position jump
-		jumpVec := model.Vec3{distance, 0, 0}
+		jumpVec := model.Vec3{0, 0, distance} // Z axis (long arena axis)
 		for i := teleportAtFrame; i < nFrames; i++ {
 			frames[i].Position = clampToArena(frames[i].Position.Add(jumpVec))
 			frames[i].LeftHandPosition = frames[i].Position.Add(model.Vec3{-0.3, 0.3, 0.2}).Add(deterministicJitter3(i, 720, 0.003))
@@ -1405,7 +1407,7 @@ func (fb *FrameBuilder) InfiniteBoost(nFrames int) []model.PlayerTelemetryFrame 
 		if boostFrameSet[i] {
 			speed = 12.0
 		}
-		pos = clampToArena(pos.Add(model.Vec3{speed * dt, 0, 0}))
+		pos = clampToArena(pos.Add(model.Vec3{0, 0, speed * dt}))
 		rot := rotationFromVelocity(model.Vec3{speed, 0, 0})
 
 		f := fb.baseFrame(i, pos, rot)
