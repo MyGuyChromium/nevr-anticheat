@@ -159,7 +159,7 @@ func TestDetectors(t *testing.T) {
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
-				ps.Position = model.Vec3{15, 1.6, 0} // 15m teleport (cheat range, under 18m game-event guard)
+				ps.Position = model.Vec3{10, 1.6, 0} // 10m teleport (cheat range, under 12m game-event guard)
 				return mc, map[string]*model.PlayerState{"p1": ps}, 50
 			},
 			wantEvents: true,

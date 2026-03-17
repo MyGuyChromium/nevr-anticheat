@@ -31,7 +31,7 @@ func NewState004(params map[string]any) *State004 {
 			IsAutoEnforce:    false,
 		},
 		maxImmuneFrames:  detect.GetInt(params, "max_immune_frames",
-			detect.GetInt(params, "immunity_threshold_frames", 200)),
+			detect.GetInt(params, "immunity_threshold_frames", 225)),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 0.05),
 		immuneFrames:     make(map[string]int),
 		fired:            make(map[string]bool),

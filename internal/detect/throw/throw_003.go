@@ -25,7 +25,7 @@ func NewThrow003(params map[string]any) *Throw003 {
 			DetectorName: "Unnatural Release Angle", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
 		},
-		maxAngleDev:      detect.GetFloat(params, "max_release_angle_deviation", 175.0),
+		maxAngleDev:      detect.GetFloat(params, "max_release_angle_deviation", 177.0),
 		minHandSpeed:     detect.GetFloat(params, "min_hand_speed", 3.0),
 		minThrowSpeed:    detect.GetFloat(params, "min_throw_speed", 5.0),
 		minAngleStdDev:   detect.GetFloat(params, "min_angle_stddev", 1.0),

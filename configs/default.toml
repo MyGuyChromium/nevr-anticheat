@@ -99,7 +99,7 @@ enabled           = true
 enforcement_weight = 0.5
 mode              = "shadow"
 [detector.THROW_003.params]
-max_release_angle_deviation = 175.0  # max angle between hand velocity and disc velocity (degrees)
+max_release_angle_deviation = 177.0  # max angle between hand velocity and disc velocity (degrees)
 min_hand_speed              = 3.0   # minimum hand speed to evaluate (m/s)
 min_throw_speed             = 5.0   # minimum throw speed to evaluate (m/s)
 min_angle_stddev            = 1.0   # minimum standard deviation in release angles
@@ -131,7 +131,7 @@ mode              = "shadow"
 min_trajectory_change        = 8.0    # minimum angle change post-release (degrees)
 post_release_frames          = 15     # frames to track after release
 min_distance_from_thrower    = 2.0    # minimum distance for trajectory analysis (meters)
-max_cumulative_change        = 80.0   # cumulative angle change triggering critical
+max_cumulative_change        = 130.0  # cumulative angle change triggering critical
 
 [detector.THROW_007]
 enabled           = true
@@ -270,7 +270,7 @@ enabled           = true
 enforcement_weight = 0.8
 mode              = "shadow"
 [detector.STATE_004.params]
-max_immune_frames = 200  # frames of immunity before flagging
+max_immune_frames = 225  # frames of immunity before flagging
 
 [detector.STATE_005]
 enabled           = true
@@ -278,7 +278,7 @@ enforcement_weight = 0.6
 mode              = "shadow"
 [detector.STATE_005.params]
 min_cooldown_frames              = 60   # minimum cooldown frames before re-use
-min_violations                   = 15  # minimum violations before flagging
+min_violations                   = 15   # minimum violations before flagging
 
 [detector.STATE_006]
 enabled           = true

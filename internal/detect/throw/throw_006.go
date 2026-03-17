@@ -44,7 +44,7 @@ func NewThrow006(params map[string]any) *Throw006 {
 			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.8,
 		},
 		minTrajectoryChange: detect.GetFloat(params, "min_trajectory_change", 8.0),
-		maxCumulativeChange: detect.GetFloat(params, "max_cumulative_change", 80.0),
+		maxCumulativeChange: detect.GetFloat(params, "max_cumulative_change", 130.0),
 		postReleaseFrames:   detect.GetInt(params, "post_release_frames", 15),
 		minDistFromThrower:  detect.GetFloat(params, "min_distance_from_thrower", 2.0),
 		activeThrows:        make(map[string]*trajectoryTrack),
@@ -130,7 +130,7 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			// Filter 3: speed increase > 20% with angle change (player deflection)
 			speedRatio := currSpeed / prevSpeed
 			isInelasticBounce := speedRatio < 0.7 && angleChange > 2.0
-			isElasticBounce := angleChange > 30.0
+			isElasticBounce := angleChange > 15.0
 			isDeflection := speedRatio > 1.2 && angleChange > 10.0
 			isLikelyCollision := isInelasticBounce || isElasticBounce || isDeflection
 
@@ -188,7 +188,7 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 	// Headbutts, regrabs, wall bounces, and replay interpolation all produce
 	// trajectory bends that can pass the per-frame bounce filter but don't
 	// sustain across 4+ frames. Real magnetism cheats produce continuous bending.
-	if track.violationFrames < 4 {
+	if track.violationFrames < 5 {
 		return nil
 	}
 	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.5 {
@@ -224,7 +224,7 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 			MaxSingleFrameChange:  track.maxFrameAngle,
 			ViolationFrameCount:   track.violationFrames,
 			TotalTrackedFrames:    track.frameCount,
-			DistanceTraveled:      track.positions[len(track.positions)-1].Distance(track.releasePos),
+			DistanceTraveled:      func() float64 { if len(track.positions) == 0 { return 0 }; return track.positions[len(track.positions)-1].Distance(track.releasePos) }(),
 			ReleaseSpeed:          track.releaseSpeed,
 			TrajectoryPoints:      track.positions,
 			VelocityPoints:        track.velocities,

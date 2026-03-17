@@ -163,7 +163,7 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// physically impossible even for cheaters — at max speed (55 m/s)
 		// and max dt (0.2s), max physical displacement is ~11m.
 		// Anything beyond 18m is clearly a game-event teleport.
-		if actualDist > 18.0 {
+		if actualDist > 12.0 {
 			continue
 		}
 

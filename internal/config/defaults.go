@@ -65,7 +65,7 @@ func defaultDetectors() map[string]DetectorConfig {
 			"max_release_acceleration": 500.0, "release_window_frames": 3, "max_accel_ratio": 5.0,
 		}},
 		"THROW_003": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"max_release_angle_deviation": 175.0, "min_hand_speed": 3.0, "min_throw_speed": 5.0,
+			"max_release_angle_deviation": 177.0, "min_hand_speed": 3.0, "min_throw_speed": 5.0,
 			"min_angle_stddev": 1.0, "consistency_min_throws": 5,
 		}},
 		"THROW_004": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
@@ -76,7 +76,7 @@ func defaultDetectors() map[string]DetectorConfig {
 		}},
 		"THROW_006": {Enabled: true, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
 			"min_trajectory_change": 8.0, "post_release_frames": 15, "min_distance_from_thrower": 2.0,
-			"max_cumulative_change": 80.0,
+			"max_cumulative_change": 130.0,
 		}},
 		"THROW_007": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"expected_penalty_speed_loss": 0.5, "penalty_tolerance": 0.1, "min_entry_speed": 5.0,
@@ -122,7 +122,7 @@ func defaultDetectors() map[string]DetectorConfig {
 			"suspicious_frames": 300, "high_frames": 375, "impossible_frames": 600,
 		}},
 		"STATE_004": {Enabled: false, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
-			"max_immune_frames": 200,
+			"max_immune_frames": 225,
 		}},
 		"STATE_005": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"min_cooldown_frames": 60, "min_violations": 15,

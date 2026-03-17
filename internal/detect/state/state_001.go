@@ -110,7 +110,7 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Desync guard: if RAW hand-to-disc distance > 8m, this is clearly
 		// a data timing artifact (disc position lags behind possession change),
 		// not a real extended-reach cheat.
-		if nearestHandDist > 8.0 {
+		if nearestHandDist > 6.0 {
 			continue
 		}
 
