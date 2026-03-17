@@ -27,8 +27,8 @@ func NewThrow004(params map[string]any) *Throw004 {
 			DetectorName: "Repeated Release Signatures", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.6,
 		},
-		minThrows:      detect.GetInt(params, "min_throws", 5),
-		minGenVariance: detect.GetFloat(params, "min_generalized_variance", 0.001),
+		minThrows:      detect.GetInt(params, "min_throws", 12),
+		minGenVariance: detect.GetFloat(params, "min_generalized_variance", 1e-8),
 		signatures:     make(map[string][]signatureVec),
 	}
 }

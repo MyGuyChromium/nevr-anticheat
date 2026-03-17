@@ -16,9 +16,13 @@ type Bio004 struct {
 	minActiveFrames    int
 	sigmoidSteepness   float64
 
-	leftHandRotHistory  map[string][]model.Quat
-	rightHandRotHistory map[string][]model.Quat
-	activeFrames        map[string]int
+	minConsecutiveWindows int
+
+	leftHandRotHistory   map[string][]model.Quat
+	rightHandRotHistory  map[string][]model.Quat
+	activeFrames         map[string]int
+	consecutiveZeroLeft  map[string]int
+	consecutiveZeroRight map[string]int
 }
 
 // NewBio004 creates a new BIO_004 Zero Aim Wobble detector.
@@ -30,17 +34,20 @@ func NewBio004(params map[string]any) *Bio004 {
 			DetectorName:     "Zero Aim Wobble",
 			DetectorCategory: "bio",
 			Inputs:           []string{"hand_tracking", "hand_rotation"},
-			Warmup:           30,
+			Warmup:           90,
 			Weight:           0.7,
 			IsAutoEnforce:    false,
 		},
-		wobbleWindowFrames:  detect.GetInt(params, "wobble_window_frames", 30),
-		maxWobbleVariance:   detect.GetFloat(params, "max_wobble_variance", 0.0001),
-		minActiveFrames:     detect.GetInt(params, "min_active_frames", 20),
+		wobbleWindowFrames:  detect.GetInt(params, "wobble_window_frames", 90),
+		maxWobbleVariance:   detect.GetFloat(params, "max_wobble_variance", 0.00005),
+		minActiveFrames:     detect.GetInt(params, "min_active_frames", 60),
 		sigmoidSteepness:    detect.GetFloat(params, "sigmoid_steepness", 50000.0),
+		minConsecutiveWindows: detect.GetInt(params, "min_consecutive_windows", 2),
 		leftHandRotHistory:  make(map[string][]model.Quat),
 		rightHandRotHistory: make(map[string][]model.Quat),
 		activeFrames:        make(map[string]int),
+		consecutiveZeroLeft:  make(map[string]int),
+		consecutiveZeroRight: make(map[string]int),
 	}
 	return d
 }
@@ -49,6 +56,8 @@ func (d *Bio004) Reset() {
 	d.leftHandRotHistory = make(map[string][]model.Quat)
 	d.rightHandRotHistory = make(map[string][]model.Quat)
 	d.activeFrames = make(map[string]int)
+	d.consecutiveZeroLeft = make(map[string]int)
+	d.consecutiveZeroRight = make(map[string]int)
 }
 
 func (d *Bio004) Configure(params map[string]any) error {
@@ -73,7 +82,9 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		model.PushQuatHistory(&rightHist, ps.RightHandRot, d.wobbleWindowFrames)
 		d.rightHandRotHistory[pid] = rightHist
 
-		if !ps.IsStunned && ps.Speed > 0.5 {
+		// Require meaningful movement — players floating or drifting slowly
+		// naturally have near-zero aim wobble.
+		if !ps.IsStunned && ps.Speed > 1.0 {
 			d.activeFrames[pid]++
 		}
 
@@ -96,41 +107,65 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 			variance := model.ComputeRotationVariance(h.history)
 
+			// Frozen data guard: exactly 0.0 variance means rotation data
+			// is not updating (replay artifact / tracking loss), not bot input.
+			if variance < 1e-10 {
+				continue
+			}
+
+			consecutiveMap := d.consecutiveZeroLeft
+			if h.name == "right" {
+				consecutiveMap = d.consecutiveZeroRight
+			}
+
 			if variance < d.maxWobbleVariance {
-				severity := model.SigmoidConfidence(d.maxWobbleVariance-variance, 0, d.sigmoidSteepness)
-				confidence := model.Clamp01(severity * 0.85)
+				consecutiveMap[pid]++
+			} else {
+				consecutiveMap[pid] = 0
+			}
 
-				stddevDeg := model.RadToDeg(math.Sqrt(variance))
-
-				ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
-					severity, confidence,
-					model.ZeroWobbleEvidence{
-						Hand:             h.name,
-						RotationVariance: variance,
-						WindowFrames:     d.wobbleWindowFrames,
-						Threshold:        d.maxWobbleVariance,
-						PlayerSpeed:      ps.Speed,
-						StdDevDegrees:    stddevDeg,
-					},
-					fmt.Sprintf("aim_wobble_variance: %.8f (%s)", variance, h.name),
-					fmt.Sprintf("aim_wobble_variance: >%.6f", d.maxWobbleVariance),
-					model.CausalKey{
-						PlayerID:    pid,
-						FrameStart:  frameIdx - d.wobbleWindowFrames,
-						FrameEnd:    frameIdx,
-						AnomalyType: "zero_wobble",
-					},
-				)
-				events = append(events, ev)
-
-				// Reset after firing
+			if consecutiveMap[pid] < d.minConsecutiveWindows {
 				if h.name == "left" {
 					d.leftHandRotHistory[pid] = nil
 				} else {
 					d.rightHandRotHistory[pid] = nil
 				}
 				d.activeFrames[pid] = 0
+				continue
 			}
+
+			severity := model.SigmoidConfidence(d.maxWobbleVariance-variance, 0, d.sigmoidSteepness)
+			confidence := model.Clamp01(severity * 0.85)
+			stddevDeg := model.RadToDeg(math.Sqrt(variance))
+
+			ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
+				severity, confidence,
+				model.ZeroWobbleEvidence{
+					Hand:             h.name,
+					RotationVariance: variance,
+					WindowFrames:     d.wobbleWindowFrames,
+					Threshold:        d.maxWobbleVariance,
+					PlayerSpeed:      ps.Speed,
+					StdDevDegrees:    stddevDeg,
+				},
+				fmt.Sprintf("aim_wobble_variance: %.8f (%s)", variance, h.name),
+				fmt.Sprintf("aim_wobble_variance: >%.6f", d.maxWobbleVariance),
+				model.CausalKey{
+					PlayerID:    pid,
+					FrameStart:  frameIdx - d.wobbleWindowFrames*d.minConsecutiveWindows,
+					FrameEnd:    frameIdx,
+					AnomalyType: "zero_wobble",
+				},
+			)
+			events = append(events, ev)
+
+			consecutiveMap[pid] = 0
+			if h.name == "left" {
+				d.leftHandRotHistory[pid] = nil
+			} else {
+				d.rightHandRotHistory[pid] = nil
+			}
+			d.activeFrames[pid] = 0
 		}
 	}
 

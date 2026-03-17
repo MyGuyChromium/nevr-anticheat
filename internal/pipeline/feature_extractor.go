@@ -76,8 +76,14 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	}
 	ps.FrameDt = dt
 
-	// Compute kinematics (only after first frame with valid previous position)
-	if ps.FrameCount > 0 && !prevPos.IsZero() && !largeGap {
+	// Compute kinematics (only after first frame with valid previous position).
+	// Skip kinematic computation when player has post-respawn immunity AND
+	// position jumped significantly — real respawns teleport to spawn points,
+	// producing false velocity/acceleration spikes. Continuous immune movement
+	// (e.g. god mode exploit) should still compute kinematics so STATE_004 can
+	// detect active play during extended immunity.
+	immuneRespawnJump := frame.IsImmune && !prevPos.IsZero() && frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+	if ps.FrameCount > 0 && !prevPos.IsZero() && !largeGap && !immuneRespawnJump {
 		// Body velocity and acceleration
 		ps.Velocity = frame.Position.Sub(prevPos).Scale(1.0 / dt)
 		ps.Speed = ps.Velocity.Magnitude()

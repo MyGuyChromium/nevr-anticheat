@@ -53,11 +53,27 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 		t := ps.LastThrow
+
+		// Data artifact guard: disc speeds > 2x the physics cap (e.g. 37+ m/s
+		// when cap is 18.7) are telemetry timing artifacts where the disc position
+		// jumped between frames. Real speed hacks produce speeds near the cap
+		// (20-35 m/s range), not 2x+ it.
+		if t.ReleaseSpeed > matchCtx.Physics.DiscSpeedCap*2.0 {
+			continue
+		}
+
 		pingTolerance := (ps.EstimatedPingMs / 1000.0) * d.pingToleranceScalar
 		effectiveCap := matchCtx.Physics.DiscSpeedCap + d.baseTolerance + pingTolerance
 		speedExcess := t.ReleaseSpeed - effectiveCap
 		handSpeed := math.Max(t.HandSpeed, 0.01)
 		speedRatio := t.ReleaseSpeed / handSpeed
+
+		// Only evaluate speed ratio when disc speed actually exceeds the cap.
+		// A slow throw (e.g. 5 m/s) with a tiny wrist flick (0.08 m/s hand speed)
+		// produces a huge ratio (68x) that is completely legitimate.
+		if speedExcess <= 0 {
+			speedRatio = 0
+		}
 
 		alreadyFired := false
 		if speedExcess <= 0 && speedRatio <= d.maxSpeedRatio {
@@ -108,10 +124,11 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t.Attribution.Confidence > 0 {
 			confidence *= t.Attribution.Confidence
 		}
-		if ps.FrameDt > 0.15 {
-			confidence *= 0.0
-		} else if ps.FrameDt > 0.1 {
-			confidence *= 0.5
+		// Replay-rate data (15fps = 0.067s dt) produces unreliable disc speed
+		// computations from position deltas. Skip entirely — disc speed detection
+		// is only reliable with live server telemetry at 60fps+.
+		if ps.FrameDt > 0.05 {
+			continue
 		}
 
 		autoEnforce := speedExcess > 5.0 && confidence > 0.95

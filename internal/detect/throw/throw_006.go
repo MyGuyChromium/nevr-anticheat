@@ -43,8 +43,8 @@ func NewThrow006(params map[string]any) *Throw006 {
 			DetectorName: "Trajectory Correction (Mags)", DetectorCategory: "throw",
 			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.8,
 		},
-		minTrajectoryChange: detect.GetFloat(params, "min_trajectory_change", 3.0),
-		maxCumulativeChange: detect.GetFloat(params, "max_cumulative_change", 10.0),
+		minTrajectoryChange: detect.GetFloat(params, "min_trajectory_change", 8.0),
+		maxCumulativeChange: detect.GetFloat(params, "max_cumulative_change", 80.0),
 		postReleaseFrames:   detect.GetInt(params, "post_release_frames", 15),
 		minDistFromThrower:  detect.GetFloat(params, "min_distance_from_thrower", 2.0),
 		activeThrows:        make(map[string]*trajectoryTrack),
@@ -123,11 +123,16 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if prevSpeed > 0.1 && currSpeed > 0.1 {
 			angleChange := model.RadToDeg(track.prevVelocity.AngleBetween(disc.Velocity))
 
-			// Collision filter: if speed dropped >30% at the same time as a direction
-			// change, this is likely a wall/player bounce, not magnetism.
-			// Magnetism maintains or increases speed while bending trajectory.
+			// Collision filter: bounces cause sudden large direction changes.
+			// Magnetism produces gradual, sustained bending (< 15 deg/frame).
+			// Filter 1: speed loss > 30% with any angle change (inelastic bounce)
+			// Filter 2: any single-frame angle > 30 deg (elastic bounce off wall/player)
+			// Filter 3: speed increase > 20% with angle change (player deflection)
 			speedRatio := currSpeed / prevSpeed
-			isLikelyCollision := speedRatio < 0.7 && angleChange > 2.0
+			isInelasticBounce := speedRatio < 0.7 && angleChange > 2.0
+			isElasticBounce := angleChange > 30.0
+			isDeflection := speedRatio > 1.2 && angleChange > 10.0
+			isLikelyCollision := isInelasticBounce || isElasticBounce || isDeflection
 
 			if !math.IsNaN(angleChange) && !isLikelyCollision {
 				track.cumulativeAngle += angleChange
@@ -179,7 +184,14 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 		alignmentImprovement = track.finalAlignment - track.initialAlignment
 	}
 
-	if track.violationFrames == 0 && track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.15 {
+	// Require at least 4 violation frames for any magnetism detection.
+	// Headbutts, regrabs, wall bounces, and replay interpolation all produce
+	// trajectory bends that can pass the per-frame bounce filter but don't
+	// sustain across 4+ frames. Real magnetism cheats produce continuous bending.
+	if track.violationFrames < 4 {
+		return nil
+	}
+	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.5 {
 		return nil
 	}
 
@@ -192,8 +204,8 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 		severity = math.Max(severity, frameSev)
 	}
 	// Alignment improvement: disc got significantly more aligned with goal during flight
-	if alignmentImprovement > 0.15 {
-		alignSev := model.SigmoidConfidence(alignmentImprovement, 0.1, 5.0)
+	if alignmentImprovement > 0.5 {
+		alignSev := model.SigmoidConfidence(alignmentImprovement, 0.4, 5.0)
 		severity = math.Max(severity, alignSev)
 	}
 

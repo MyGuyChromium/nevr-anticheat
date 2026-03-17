@@ -41,12 +41,12 @@ review_threshold = 15.0             # score for moderator review (shadow: logged
 auto_enforce_threshold = 50.0       # score for auto-enforcement (shadow: logged only)
 auto_enforce_min_confidence = 0.95
 min_matches_for_cross_match = 3
-max_single_contribution = 40.0      # cap per event
-max_contrib_per_detector_per_match = 3
+max_single_contribution = 15.0      # cap per event
+max_contrib_per_detector_per_match = 2
 in_match_decay_points_per_min = 2.0
 cross_match_decay_factor = 0.95
 clean_match_reset_count = 100
-correlation_bonus_cap = 30.0
+correlation_bonus_cap = 15.0
 same_category_diminishing = 0.8
 
 [baseline]
@@ -89,10 +89,10 @@ enforcement_weight = 0.8
 auto_enforce = false
 mode = "shadow"
 [detector.THROW_006.params]
-min_trajectory_change = 3.0
+min_trajectory_change = 8.0
 post_release_frames = 15
 min_distance_from_thrower = 2.0
-max_cumulative_change = 10.0
+max_cumulative_change = 80.0
 
 # --- BIOMECHANICS DETECTORS ---
 
@@ -104,7 +104,7 @@ enforcement_weight = 0.6
 auto_enforce = false
 mode = "shadow"
 [detector.BIO_001.params]
-max_wrist_angular_velocity = 30.0
+max_wrist_angular_velocity = 50.0
 min_violation_frames = 2
 
 [detector.BIO_002]
@@ -115,7 +115,7 @@ enforcement_weight = 0.6
 auto_enforce = false
 mode = "shadow"
 [detector.BIO_002.params]
-max_hand_speed = 15.0
+max_hand_speed = 50.0
 min_violation_frames = 2
 
 # --- MOVEMENT DETECTORS ---
@@ -209,8 +209,8 @@ enabled = true
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.THROW_003.params]
-max_release_angle_deviation = 45.0
-min_hand_speed = 1.0
+max_release_angle_deviation = 175.0
+min_hand_speed = 3.0
 min_throw_speed = 5.0
 
 [detector.THROW_005]
@@ -229,7 +229,7 @@ enabled = true
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.THROW_008.params]
-speed_increase_tolerance = 0.5
+speed_increase_tolerance = 5.0
 max_tracking_frames = 30
 
 [detector.BIO_003]
@@ -239,8 +239,8 @@ enforcement_weight = 0.0
 mode = "shadow"
 [detector.BIO_003.params]
 max_jitter_variance = 0.00001
-jitter_window_frames = 30
-min_active_frames = 20
+jitter_window_frames = 90
+min_active_frames = 60
 
 [detector.BIO_004]
 # Zero Aim Wobble — needs real rotation variance baseline
@@ -248,8 +248,8 @@ enabled = true
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.BIO_004.params]
-max_wobble_variance = 0.0001
-wobble_window_frames = 30
+max_wobble_variance = 0.00005
+wobble_window_frames = 90
 active_only = true
 
 [detector.STATE_001]
@@ -258,7 +258,7 @@ enabled = true
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.STATE_001.params]
-grab_distance_threshold = 1.2
+grab_distance_threshold = 3.0
 
 [detector.STATE_007]
 # Punch Range — needs validation of per-frame stun count updates
@@ -266,8 +266,8 @@ enabled = true
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.STATE_007.params]
-punch_range_threshold = 2.0
-min_incidents_to_surface = 2
+punch_range_threshold = 10.0
+min_incidents = 3
 
 [detector.PAT_003]
 # Cross-Match Consistency — needs HistoryProvider wiring

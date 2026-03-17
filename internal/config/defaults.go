@@ -35,12 +35,12 @@ func DefaultConfig() *Config {
 			AutoEnforceThreshold:          50.0,
 			AutoEnforceMinConfidence:      0.95,
 			MinMatchesForCrossMatch:       3,
-			MaxSingleContribution:         40.0,
-			MaxContribPerDetectorPerMatch: 3,
+			MaxSingleContribution:         15.0,
+			MaxContribPerDetectorPerMatch: 2,
 			InMatchDecayPointsPerMin:      2.0,
 			CrossMatchDecayFactor:         0.95,
 			CleanMatchResetCount:          100,
-			CorrelationBonusCap:           30.0,
+			CorrelationBonusCap:           15.0,
 			SameCategoryDiminishing:       0.8,
 		},
 		Baseline: BaselineConfig{
@@ -65,7 +65,7 @@ func defaultDetectors() map[string]DetectorConfig {
 			"max_release_acceleration": 500.0, "release_window_frames": 3, "max_accel_ratio": 5.0,
 		}},
 		"THROW_003": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"max_release_angle_deviation": 45.0, "min_hand_speed": 1.0, "min_throw_speed": 5.0,
+			"max_release_angle_deviation": 175.0, "min_hand_speed": 3.0, "min_throw_speed": 5.0,
 			"min_angle_stddev": 1.0, "consistency_min_throws": 5,
 		}},
 		"THROW_004": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
@@ -75,26 +75,26 @@ func defaultDetectors() map[string]DetectorConfig {
 			"max_mean_deviation": 2.0, "max_stddev_deviation": 1.5, "min_throws_for_pattern": 8,
 		}},
 		"THROW_006": {Enabled: true, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
-			"min_trajectory_change": 3.0, "post_release_frames": 15, "min_distance_from_thrower": 2.0,
-			"max_cumulative_change": 10.0,
+			"min_trajectory_change": 8.0, "post_release_frames": 15, "min_distance_from_thrower": 2.0,
+			"max_cumulative_change": 80.0,
 		}},
 		"THROW_007": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"expected_penalty_speed_loss": 0.5, "penalty_tolerance": 0.1, "min_entry_speed": 5.0,
 		}},
 		"THROW_008": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"speed_increase_tolerance": 0.5, "speed_distance_tolerance": 1.5, "max_tracking_frames": 30,
+			"speed_increase_tolerance": 5.0, "speed_distance_tolerance": 1.5, "max_tracking_frames": 30,
 		}},
 		"BIO_001": {Enabled: true, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
-			"max_wrist_angular_velocity": 30.0, "min_violation_frames": 2,
+			"max_wrist_angular_velocity": 50.0, "min_violation_frames": 2,
 		}},
 		"BIO_002": {Enabled: true, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
-			"max_hand_speed": 15.0, "min_violation_frames": 2,
+			"max_hand_speed": 50.0, "min_violation_frames": 2,
 		}},
 		"BIO_003": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"max_jitter_variance": 0.00001, "jitter_window_frames": 30, "min_active_frames": 20,
+			"max_jitter_variance": 0.00001, "jitter_window_frames": 90, "min_active_frames": 60,
 		}},
 		"BIO_004": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"max_wobble_variance": 0.0001, "wobble_window_frames": 30, "active_only": true,
+			"max_wobble_variance": 0.00005, "wobble_window_frames": 90, "active_only": true,
 		}},
 		"MOV_001": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
 			"max_legitimate_speed": 55.0, "sustained_speed_window": 30,
@@ -113,23 +113,23 @@ func defaultDetectors() map[string]DetectorConfig {
 			"min_sequences_to_surface": 2,
 		}},
 		"STATE_001": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"grab_distance_threshold": 1.2,
+			"grab_distance_threshold": 3.0, "closing_velocity_scale": 0.25,
 		}},
 		"STATE_002": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
 			"min_stun_frames": 20, "min_incidents_to_surface": 2,
 		}},
 		"STATE_003": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
-			"suspicious_frames": 75, "high_frames": 100, "impossible_frames": 150,
+			"suspicious_frames": 300, "high_frames": 375, "impossible_frames": 600,
 		}},
 		"STATE_004": {Enabled: false, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
-			"immunity_threshold_frames": 300,
+			"max_immune_frames": 200,
 		}},
 		"STATE_005": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
-			"cooldown_bypass_threshold_frames": 15, "min_violations_to_surface": 3,
+			"min_cooldown_frames": 60, "min_violations": 15,
 		}},
 		"STATE_006": {Enabled: true, EnforcementWeight: 1.0, AutoEnforce: true, Mode: "shadow", Params: map[string]any{}},
 		"STATE_007": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"punch_range_threshold": 2.0, "min_incidents_to_surface": 2,
+			"punch_range_threshold": 10.0, "min_incidents": 3,
 		}},
 		"PAT_001": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"max_cov": 0.05, "max_stddev_frames": 3.0, "min_throw_count": 12,

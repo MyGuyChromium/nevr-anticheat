@@ -33,9 +33,10 @@ func NewState007(params map[string]any) *State007 {
 			Weight:           0.8,
 			IsAutoEnforce:    false,
 		},
-		punchRangeThreshold: detect.GetFloat(params, "punch_range_threshold", 2.0),
-		velocityAdjustScale: detect.GetFloat(params, "velocity_adjust_scale", 0.05),
-		minIncidents:        detect.GetInt(params, "min_incidents", 2),
+		punchRangeThreshold: detect.GetFloat(params, "punch_range_threshold", 10.0),
+		velocityAdjustScale: detect.GetFloat(params, "velocity_adjust_scale", 0.15),
+		minIncidents:        detect.GetInt(params, "min_incidents",
+			detect.GetInt(params, "min_incidents_to_surface", 3)),
 		sigmoidSteepness:    detect.GetFloat(params, "sigmoid_steepness", 1.0),
 		prevStuns:           make(map[string]int),
 		incidents:           make(map[string]int),
@@ -108,6 +109,11 @@ func (d *State007) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 
 		if adjustedDist <= d.punchRangeThreshold {
+			continue
+		}
+
+		// Sanity cap: distances > 25m are data timing artifacts, not real punches
+		if adjustedDist > 25.0 {
 			continue
 		}
 

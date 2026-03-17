@@ -191,11 +191,15 @@ func (p *Pipeline) ProcessMatch(
 
 		// Feed detection events to PAT_004 (composite multi-cheat)
 		for _, ev := range frameEvents {
-			// Derive category from the detector that produced this event
-			category := p.detectorCategory(ev.DetectorID)
-			for _, det := range p.detectors {
-				if pat, ok := det.(*pattern.Pat004); ok {
-					pat.RecordDetection(ev.PlayerID, category)
+			// Only count high-confidence events toward composite multi-cheat detection.
+			// Low-confidence events (replay artifacts, borderline triggers) should not
+			// cascade into PAT_004 flags.
+			if ev.Confidence >= 0.7 {
+				category := p.detectorCategory(ev.DetectorID)
+				for _, det := range p.detectors {
+					if pat, ok := det.(*pattern.Pat004); ok {
+						pat.RecordDetection(ev.PlayerID, category)
+					}
 				}
 			}
 		}

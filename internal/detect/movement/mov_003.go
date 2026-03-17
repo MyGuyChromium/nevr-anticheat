@@ -15,8 +15,9 @@ type Mov003 struct {
 	stunCooldown     int
 	sigmoidSteepness float64
 
-	prevVelocity    map[string]model.Vec3
-	lastStunFrame   map[string]int
+	prevVelocity         map[string]model.Vec3
+	lastStunFrame        map[string]int
+	consecutiveReversals map[string]int
 }
 
 // NewMov003 creates a new MOV_003 Zero-Inertia Direction Change detector.
@@ -36,8 +37,9 @@ func NewMov003(params map[string]any) *Mov003 {
 		minSpeed:          detect.GetFloat(params, "min_speed", 12.0),
 		stunCooldown:      detect.GetInt(params, "stun_cooldown_frames", 30),
 		sigmoidSteepness:  detect.GetFloat(params, "sigmoid_steepness", 0.5),
-		prevVelocity:      make(map[string]model.Vec3),
-		lastStunFrame:     make(map[string]int),
+		prevVelocity:         make(map[string]model.Vec3),
+		lastStunFrame:        make(map[string]int),
+		consecutiveReversals: make(map[string]int),
 	}
 	return d
 }
@@ -45,6 +47,7 @@ func NewMov003(params map[string]any) *Mov003 {
 func (d *Mov003) Reset() {
 	d.prevVelocity = make(map[string]model.Vec3)
 	d.lastStunFrame = make(map[string]int)
+	d.consecutiveReversals = make(map[string]int)
 }
 
 func (d *Mov003) Configure(params map[string]any) error {
@@ -92,8 +95,18 @@ func (d *Mov003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		angleDeg := prevVel.AngleBetweenDeg(ps.Velocity)
 
 		if angleDeg < d.minAngleDeg {
+			d.consecutiveReversals[pid] = 0
 			continue
 		}
+
+		// Require 2 consecutive frames of reversed velocity to filter
+		// player-to-player collisions (which cause single-frame reversals).
+		// Real zero-inertia hacks persist across multiple frames.
+		d.consecutiveReversals[pid]++
+		if d.consecutiveReversals[pid] < 2 {
+			continue
+		}
+		d.consecutiveReversals[pid] = 0
 
 		avgSpeed := (prevSpeed + currSpeed) / 2.0
 		severity := model.SigmoidConfidence(angleDeg, 178.0, 1.0)

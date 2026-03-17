@@ -31,7 +31,7 @@ func NewBio002(params map[string]any) *Bio002 {
 			Weight:           0.8,
 			IsAutoEnforce:    false,
 		},
-		maxHandSpeed:          detect.GetFloat(params, "max_hand_speed", 15.0),
+		maxHandSpeed:          detect.GetFloat(params, "max_hand_speed", 50.0),
 		minViolationFrames:    detect.GetInt(params, "min_violation_frames", 2),
 		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 0.5),
 		leftViolations:  make(map[string]int),
@@ -60,6 +60,12 @@ func (d *Bio002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			continue
 		}
 		if ps.FrameDt < 0.01 {
+			continue
+		}
+		// Skip players with post-respawn immunity — hand positions jump during respawn
+		if ps.IsImmune {
+			d.leftViolations[ps.PlayerID] = 0
+			d.rightViolations[ps.PlayerID] = 0
 			continue
 		}
 

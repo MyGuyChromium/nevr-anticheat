@@ -9,13 +9,14 @@ import (
 )
 
 type speedTrack struct {
-	throwerID       string
-	releaseFrame    int
-	releaseTimestamp float64
-	prevDiscSpeed   float64
-	violations      int
-	maxIncrease     float64
-	samples         [][2]float64
+	throwerID        string
+	releaseFrame     int
+	releaseTimestamp  float64
+	prevDiscSpeed    float64
+	prevDiscVelocity model.Vec3
+	violations       int
+	maxIncrease      float64
+	samples          [][2]float64
 }
 
 // Throw008 detects discs maintaining or increasing speed during free flight.
@@ -35,7 +36,7 @@ func NewThrow008(params map[string]any) *Throw008 {
 			DetectorName: "Speed-Distance Anomaly", DetectorCategory: "throw",
 			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.5,
 		},
-		speedIncreaseTol: detect.GetFloat(params, "speed_increase_tolerance", 0.5),
+		speedIncreaseTol: detect.GetFloat(params, "speed_increase_tolerance", 5.0),
 		maxTrackFrames:   detect.GetInt(params, "max_tracking_frames", 30),
 		activeTracks:     make(map[string]*speedTrack),
 	}
@@ -89,7 +90,18 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Track disc speed during free flight
 		if !disc.IsHeld && disc.Speed > 0 {
 			speedDelta := disc.Speed - track.prevDiscSpeed
-			if speedDelta > d.speedIncreaseTol {
+
+			// Bounce filter: if disc direction changed > 20 deg this frame,
+			// a collision occurred. Bounces cause speed spikes — ignore them.
+			isBounceFrame := false
+			if track.prevDiscVelocity.Magnitude() > 0.1 && disc.Velocity.Magnitude() > 0.1 {
+				angleChange := model.RadToDeg(track.prevDiscVelocity.AngleBetween(disc.Velocity))
+				if !math.IsNaN(angleChange) && angleChange > 10.0 {
+					isBounceFrame = true
+				}
+			}
+
+			if speedDelta > d.speedIncreaseTol && !isBounceFrame {
 				track.violations++
 				if speedDelta > track.maxIncrease {
 					track.maxIncrease = speedDelta
@@ -99,11 +111,12 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 				track.samples = append(track.samples, [2]float64{disc.DistanceFromThrower, disc.Speed})
 			}
 			track.prevDiscSpeed = disc.Speed
+			track.prevDiscVelocity = disc.Velocity
 		}
 
 		// Finalize on disc caught or max frames
 		if disc.IsHeld || frameIdx-track.releaseFrame > d.maxTrackFrames {
-			if track.violations > 0 {
+			if track.violations >= 4 {
 				severity := math.Min(1.0, float64(track.violations)/5.0)
 				confidence := math.Min(1.0, float64(track.violations)/3.0) * 0.8
 

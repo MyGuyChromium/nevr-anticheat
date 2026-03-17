@@ -60,6 +60,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
+				ps.FrameDt = 0.017 // 60fps — THROW_001 skips replay-rate data
 				te := testutil.MakeThrowEvent("p1", 100, 35.0, 0.0) // way over cap
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
@@ -143,10 +144,12 @@ func TestDetectors(t *testing.T) {
 			name:     "MOV_002/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				d := movement.NewMov002(nil)
+				// Override min_incidents to 1 for unit test — we're testing
+				// detection capability, not FP filtering thresholds.
+				d := movement.NewMov002(map[string]any{"min_incidents": 1})
 				dc := cfg.GetDetectorConfig("MOV_002")
 				_ = d.Configure(dc.Params)
-				// Pre-seed previous position
+				// Pre-seed position
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Position = model.Vec3{0, 1.6, 0}
@@ -156,7 +159,7 @@ func TestDetectors(t *testing.T) {
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
-				ps.Position = model.Vec3{50, 1.6, 50} // 70m teleport
+				ps.Position = model.Vec3{15, 1.6, 0} // 15m teleport (cheat range, under 18m game-event guard)
 				return mc, map[string]*model.PlayerState{"p1": ps}, 50
 			},
 			wantEvents: true,

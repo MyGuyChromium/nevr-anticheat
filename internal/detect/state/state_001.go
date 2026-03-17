@@ -15,7 +15,8 @@ type State001 struct {
 	closingVelocityScale  float64
 	sigmoidSteepness      float64
 
-	prevHasDisc map[string]bool
+	prevHasDisc      map[string]bool
+	lastReleaseFrame map[string]int
 }
 
 // NewState001 creates a new STATE_001 Impossible Grab Distance detector.
@@ -31,16 +32,18 @@ func NewState001(params map[string]any) *State001 {
 			Weight:           0.8,
 			IsAutoEnforce:    false,
 		},
-		grabDistanceThreshold: detect.GetFloat(params, "grab_distance_threshold", 1.5),
-		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0.05),
+		grabDistanceThreshold: detect.GetFloat(params, "grab_distance_threshold", 3.0),
+		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0.25),
 		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 2.0),
 		prevHasDisc:           make(map[string]bool),
+		lastReleaseFrame:      make(map[string]int),
 	}
 	return d
 }
 
 func (d *State001) Reset() {
 	d.prevHasDisc = make(map[string]bool)
+	d.lastReleaseFrame = make(map[string]int)
 }
 
 func (d *State001) Configure(params map[string]any) error {
@@ -60,8 +63,20 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		wasHolding := d.prevHasDisc[pid]
 		d.prevHasDisc[pid] = ps.HasDisc
 
+		// Track release frames for regrab detection
+		if wasHolding && !ps.HasDisc {
+			d.lastReleaseFrame[pid] = frameIdx
+		}
+
 		// Only fire on possession gain
 		if !ps.HasDisc || wasHolding {
+			continue
+		}
+
+		// Regrab filter: if this player released the disc within 5 frames,
+		// the disc position data desyncs from the actual catch moment.
+		// Regrabs are a legitimate advanced technique.
+		if releaseFrame, ok := d.lastReleaseFrame[pid]; ok && frameIdx-releaseFrame <= 5 {
 			continue
 		}
 
@@ -84,17 +99,23 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			adjustedDist = 0
 		}
 
-		grabRange := matchCtx.Physics.GrabRange
-		if grabRange <= 0 {
-			grabRange = d.grabDistanceThreshold
-		}
-
-		if adjustedDist <= grabRange {
+		// Use the configured grab distance threshold which accounts for
+		// network latency, frame-rate interpolation, and regrab timing.
+		// The physics GrabRange (0.8m) is the server-side constant but
+		// doesn't reflect what replay data actually shows.
+		if adjustedDist <= d.grabDistanceThreshold {
 			continue
 		}
 
-		excess := adjustedDist - grabRange
-		severity := model.SigmoidConfidence(adjustedDist, grabRange*1.5, d.sigmoidSteepness)
+		// Desync guard: if RAW hand-to-disc distance > 8m, this is clearly
+		// a data timing artifact (disc position lags behind possession change),
+		// not a real extended-reach cheat.
+		if nearestHandDist > 8.0 {
+			continue
+		}
+
+		excess := adjustedDist - d.grabDistanceThreshold
+		severity := model.SigmoidConfidence(adjustedDist, d.grabDistanceThreshold*1.5, d.sigmoidSteepness)
 		confidence := model.SigmoidConfidence(excess, 0, d.sigmoidSteepness)
 		confidence = model.Clamp01(confidence * 0.85)
 
@@ -105,7 +126,7 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		metrics := map[string]float64{
 			"nearest_hand_distance": nearestHandDist,
 			"adjusted_distance":     adjustedDist,
-			"grab_range":            grabRange,
+			"grab_range":            d.grabDistanceThreshold,
 			"closing_speed":         closingSpeed,
 			"excess":                excess,
 		}
@@ -117,7 +138,7 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 				Metrics:          metrics,
 			},
 			fmt.Sprintf("grab_distance: %.2f m (adjusted: %.2f m)", nearestHandDist, adjustedDist),
-			fmt.Sprintf("grab_distance: 0-%.2f m", grabRange),
+			fmt.Sprintf("grab_distance: 0-%.2f m", d.grabDistanceThreshold),
 			model.CausalKey{
 				PlayerID:    pid,
 				FrameStart:  frameIdx - 2,

@@ -33,7 +33,7 @@ func NewBio001(params map[string]any) *Bio001 {
 			Weight:           0.8,
 			IsAutoEnforce:    false,
 		},
-		maxWristAngularVelocity: detect.GetFloat(params, "max_wrist_angular_velocity", 30.0),
+		maxWristAngularVelocity: detect.GetFloat(params, "max_wrist_angular_velocity", 50.0),
 		minViolationFrames:      detect.GetInt(params, "min_violation_frames", 2),
 		sigmoidSteepness:        detect.GetFloat(params, "sigmoid_steepness", 0.5),
 		leftViolations:  make(map[string]int),
