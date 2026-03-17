@@ -71,6 +71,9 @@ func (d *Pat002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// Use the dominant hand position as release point relative to body
 		relPos := ps.RightHand.Sub(ps.Position)
 		d.releasePositions[pid] = append(d.releasePositions[pid], relPos)
+		if len(d.releasePositions[pid]) > 50 {
+			d.releasePositions[pid] = d.releasePositions[pid][len(d.releasePositions[pid])-50:]
+		}
 
 		positions := d.releasePositions[pid]
 		if len(positions) < d.minThrowCount {

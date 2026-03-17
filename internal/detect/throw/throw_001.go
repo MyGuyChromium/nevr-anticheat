@@ -79,6 +79,9 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if speedExcess <= 0 && speedRatio <= d.maxSpeedRatio {
 			// Cap-riding detection: consistent near-cap speeds across many throws
 			d.throwSpeeds[ps.PlayerID] = append(d.throwSpeeds[ps.PlayerID], t.ReleaseSpeed)
+			if len(d.throwSpeeds[ps.PlayerID]) > 50 {
+				d.throwSpeeds[ps.PlayerID] = d.throwSpeeds[ps.PlayerID][len(d.throwSpeeds[ps.PlayerID])-50:]
+			}
 			speeds := d.throwSpeeds[ps.PlayerID]
 			if len(speeds) >= 8 {
 				mean := model.Mean(speeds)
@@ -110,6 +113,9 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		// Also track speeds for throws that exceed the cap
 		d.throwSpeeds[ps.PlayerID] = append(d.throwSpeeds[ps.PlayerID], t.ReleaseSpeed)
+		if len(d.throwSpeeds[ps.PlayerID]) > 50 {
+			d.throwSpeeds[ps.PlayerID] = d.throwSpeeds[ps.PlayerID][len(d.throwSpeeds[ps.PlayerID])-50:]
+		}
 
 		severity := 0.0
 		if speedExcess > 0 {

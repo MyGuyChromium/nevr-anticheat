@@ -60,8 +60,14 @@ func (d *Throw005) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			d.firstFrame[ps.PlayerID] = frameIdx
 		}
 		d.deviations[ps.PlayerID] = append(d.deviations[ps.PlayerID], t.TargetDeviation)
+		if len(d.deviations[ps.PlayerID]) > 50 {
+			d.deviations[ps.PlayerID] = d.deviations[ps.PlayerID][len(d.deviations[ps.PlayerID])-50:]
+		}
 		d.speedDeviationPairs[ps.PlayerID] = append(d.speedDeviationPairs[ps.PlayerID],
 			[2]float64{t.ReleaseSpeed, t.TargetDeviation})
+		if len(d.speedDeviationPairs[ps.PlayerID]) > 50 {
+			d.speedDeviationPairs[ps.PlayerID] = d.speedDeviationPairs[ps.PlayerID][len(d.speedDeviationPairs[ps.PlayerID])-50:]
+		}
 
 		// Speed-accuracy correlation check
 		// TargetDeviation = angle from goal, higher = less accurate.

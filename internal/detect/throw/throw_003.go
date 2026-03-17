@@ -53,7 +53,10 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 		d.angleHistory[ps.PlayerID] = append(d.angleHistory[ps.PlayerID], t.ReleaseAngle)
-		if t.ReleaseAngle <= d.maxAngleDev {
+		if len(d.angleHistory[ps.PlayerID]) > 50 {
+			d.angleHistory[ps.PlayerID] = d.angleHistory[ps.PlayerID][len(d.angleHistory[ps.PlayerID])-50:]
+		}
+		if math.IsNaN(t.ReleaseAngle) || t.ReleaseAngle <= d.maxAngleDev {
 			continue
 		}
 		severity := model.SigmoidConfidence(t.ReleaseAngle, d.maxAngleDev, 0.1)

@@ -69,6 +69,9 @@ func (d *Pat001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 		// New throw detected
 		d.throwFrames[pid] = append(d.throwFrames[pid], frameIdx)
+		if len(d.throwFrames[pid]) > 50 {
+			d.throwFrames[pid] = d.throwFrames[pid][len(d.throwFrames[pid])-50:]
+		}
 
 		frames := d.throwFrames[pid]
 		if len(frames) < d.minThrowCount {

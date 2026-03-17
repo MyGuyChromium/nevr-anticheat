@@ -63,6 +63,9 @@ func (d *Throw004) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		sig := d.buildSignature(ps.LastThrow)
 		d.signatures[ps.PlayerID] = append(d.signatures[ps.PlayerID], sig)
+		if len(d.signatures[ps.PlayerID]) > 50 {
+			d.signatures[ps.PlayerID] = d.signatures[ps.PlayerID][len(d.signatures[ps.PlayerID])-50:]
+		}
 		sigs := d.signatures[ps.PlayerID]
 		if len(sigs) < d.minThrows {
 			continue
