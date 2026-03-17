@@ -90,6 +90,11 @@ func (mm *MatchManager) HandleFrames(matchID string, frames []model.PlayerTeleme
 	match.FrameCount += result.FramesProcessed
 	match.LastActivity = time.Now()
 
+	// Persist raw telemetry for future reprocessing
+	if _, storeErr := mm.store.StoreTelemetryFrames(ctx, matchID, frames); storeErr != nil {
+		mm.logger.Warn("failed to store telemetry", "match", matchID, "error", storeErr)
+	}
+
 	// Store detection events
 	for _, ev := range result.DetectionEvents {
 		if storeErr := mm.store.StoreDetectionEvent(ctx, ev); storeErr != nil {
@@ -170,6 +175,9 @@ func (mm *MatchManager) EndMatch(matchID string) {
 	defer match.mu.Unlock()
 
 	mm.logger.Info("live match ended", "match", matchID, "frames", match.FrameCount)
+
+	// Persist match context for future reprocessing
+	_ = mm.store.StoreMatchContext(context.Background(), match.MatchCtx, match.FrameCount)
 
 	// Store match summary
 	summary := model.MatchSummary{

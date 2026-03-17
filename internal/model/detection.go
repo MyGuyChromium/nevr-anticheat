@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -33,6 +34,10 @@ type DetectionEvent struct {
 	AutoEnforce       bool             `json:"auto_enforce"`
 	Attribution       *ThrowAttribution `json:"attribution,omitempty"`
 	IsShadow          bool             `json:"is_shadow"`
+
+	// StoredAt is the wall-clock time when this event was persisted to the database.
+	// Populated only when reading events back from storage. Not serialized to JSON.
+	StoredAt time.Time `json:"-"`
 }
 
 // NewEventID generates a unique event ID.

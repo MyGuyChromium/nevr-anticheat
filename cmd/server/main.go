@@ -55,9 +55,12 @@ func main() {
 		logger.Error("migration error", "error", err)
 	}
 
+	// Wire history provider so PAT_003 can query cross-match data
+	historyProvider := sqlite.NewStoreHistoryProvider(store)
+
 	// Detector factory — creates fresh detectors for each match
 	detectorFactory := func() []detect.Detector {
-		return buildDetectors(cfg)
+		return buildDetectors(cfg, historyProvider)
 	}
 
 	// Match manager
@@ -147,7 +150,7 @@ func main() {
 	metricsServer.Shutdown(shutdownCtx)
 }
 
-func buildDetectors(cfg *config.Config) []detect.Detector {
+func buildDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider) []detect.Detector {
 	type entry struct {
 		id      string
 		factory func(map[string]any) detect.Detector
@@ -193,6 +196,10 @@ func buildDetectors(cfg *config.Config) []detect.Detector {
 		params := dc.Params
 		if params == nil {
 			params = make(map[string]any)
+		}
+		// Inject history provider for PAT_003 (cross-match consistency)
+		if e.id == "PAT_003" && historyProvider != nil {
+			params["history_provider"] = historyProvider
 		}
 		detectors = append(detectors, e.factory(params))
 	}

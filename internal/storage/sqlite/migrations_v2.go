@@ -54,6 +54,48 @@ var migrations = []MigrationVersion{
 		);
 		CREATE INDEX IF NOT EXISTS idx_enforce_log_player ON enforcement_log(player_id, executed_at);`,
 	},
+	{
+		Version: 5, Description: "add telemetry_frames table for raw frame persistence",
+		SQL: `CREATE TABLE IF NOT EXISTS telemetry_frames (
+			match_id     TEXT NOT NULL,
+			player_id    TEXT NOT NULL,
+			frame_index  INTEGER NOT NULL,
+			timestamp    REAL NOT NULL,
+			frame_json   TEXT NOT NULL,
+			ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (match_id, player_id, frame_index)
+		);
+		CREATE INDEX IF NOT EXISTS idx_frames_match ON telemetry_frames(match_id);
+		CREATE INDEX IF NOT EXISTS idx_frames_player ON telemetry_frames(player_id, ingested_at);
+		CREATE INDEX IF NOT EXISTS idx_frames_time ON telemetry_frames(ingested_at);`,
+	},
+	{
+		Version: 6, Description: "add match_contexts table for match metadata persistence",
+		SQL: `CREATE TABLE IF NOT EXISTS match_contexts (
+			match_id     TEXT PRIMARY KEY,
+			context_json TEXT NOT NULL,
+			frame_count  INTEGER NOT NULL DEFAULT 0,
+			ingested_at  TEXT NOT NULL DEFAULT (datetime('now'))
+		);`,
+	},
+	{
+		Version: 7, Description: "add cross_match_review_cases table",
+		SQL: `CREATE TABLE IF NOT EXISTS cross_match_review_cases (
+			case_id          TEXT PRIMARY KEY,
+			player_id        TEXT NOT NULL,
+			match_ids        TEXT NOT NULL,
+			match_count      INTEGER NOT NULL,
+			severity         TEXT NOT NULL,
+			cumulative_score REAL NOT NULL,
+			decayed_score    REAL NOT NULL,
+			detectors_json   TEXT,
+			explanation      TEXT,
+			status           TEXT NOT NULL DEFAULT 'pending',
+			created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_xmatch_cases_player ON cross_match_review_cases(player_id);
+		CREATE INDEX IF NOT EXISTS idx_xmatch_cases_status ON cross_match_review_cases(status);`,
+	},
 }
 
 // RunMigrationsV2 applies incremental migrations beyond the initial schema.

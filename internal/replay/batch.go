@@ -136,7 +136,13 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, path string) (*pipelin
 		return nil, err
 	}
 
-	// Store results
+	// Persist raw telemetry and match context for future reprocessing
+	if _, storeErr := ba.store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); storeErr != nil {
+		ba.logger.Warn("failed to store telemetry", "error", storeErr)
+	}
+	_ = ba.store.StoreMatchContext(ctx, matchCtx, len(frames))
+
+	// Store detection results
 	for _, ev := range matchResult.DetectionEvents {
 		if storeErr := ba.store.StoreDetectionEvent(ctx, ev); storeErr != nil {
 			ba.logger.Warn("failed to store event", "error", storeErr)

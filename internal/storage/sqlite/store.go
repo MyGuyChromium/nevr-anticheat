@@ -273,6 +273,35 @@ func (s *Store) StoreMatchSummary(ctx context.Context, summary model.MatchSummar
 	return err
 }
 
+// DeleteMatchEvents removes all detection events for a match.
+// Used before reprocessing to prevent duplicate events.
+func (s *Store) DeleteMatchEvents(ctx context.Context, matchID string) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM detection_events WHERE match_id = ?", matchID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteMatchScores removes suspicion score snapshots that were generated
+// from a specific match. Since suspicion_scores rows don't have a match_id
+// column, this deletes all scores for the players in that match so they can
+// be recomputed. Callers should re-run cross-match aggregation afterward.
+func (s *Store) DeleteMatchScoresByPlayers(ctx context.Context, playerIDs []string) error {
+	if len(playerIDs) == 0 {
+		return nil
+	}
+	for _, pid := range playerIDs {
+		_, err := s.db.ExecContext(ctx,
+			"DELETE FROM suspicion_scores WHERE player_id = ?", pid)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PruneOldEvents removes detection events older than the given duration.
 func (s *Store) PruneOldEvents(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan).Format(time.RFC3339)
