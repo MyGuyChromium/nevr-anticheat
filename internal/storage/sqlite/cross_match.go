@@ -229,6 +229,26 @@ func (s *Store) GetPendingCrossMatchReviewCases(ctx context.Context, limit int) 
 	return cases, rows.Err()
 }
 
+// GetCrossMatchReviewCase retrieves a cross-match review case by ID.
+func (s *Store) GetCrossMatchReviewCase(ctx context.Context, caseID string) (CrossMatchReviewCase, error) {
+	var rc CrossMatchReviewCase
+	var matchIDsJSON, detectorsJSON, createdStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT case_id, player_id, match_ids, match_count, severity,
+		        cumulative_score, decayed_score, detectors_json, explanation, status, created_at
+		 FROM cross_match_review_cases WHERE case_id = ?`, caseID,
+	).Scan(&rc.CaseID, &rc.PlayerID, &matchIDsJSON, &rc.MatchCount,
+		&rc.Severity, &rc.CumulativeScore, &rc.DecayedScore,
+		&detectorsJSON, &rc.Explanation, &rc.Status, &createdStr)
+	if err != nil {
+		return rc, err
+	}
+	json.Unmarshal([]byte(matchIDsJSON), &rc.MatchIDs)
+	json.Unmarshal([]byte(detectorsJSON), &rc.Detectors)
+	rc.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	return rc, nil
+}
+
 // BuildCrossMatchReviewCase creates an aggregate review case from a cross-match summary.
 // Only creates a case if the decayed score exceeds the review threshold.
 func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, reviewThreshold float64) *CrossMatchReviewCase {
@@ -248,8 +268,10 @@ func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, reviewThreshold 
 	}
 
 	now := time.Now()
+	// Case ID is stable per-player: re-running aggregation replaces the existing case
+	// rather than creating a new one per day. INSERT OR REPLACE on case_id handles this.
 	return &CrossMatchReviewCase{
-		CaseID:          fmt.Sprintf("XM-%s-%s", now.Format("20060102"), summary.PlayerID[:minLen(summary.PlayerID, 8)]),
+		CaseID:          fmt.Sprintf("XM-%s", summary.PlayerID),
 		PlayerID:        summary.PlayerID,
 		MatchIDs:        summary.MatchIDs,
 		MatchCount:      summary.DistinctMatches,
@@ -267,9 +289,3 @@ func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, reviewThreshold 
 	}
 }
 
-func minLen(s string, n int) int {
-	if len(s) < n {
-		return len(s)
-	}
-	return n
-}

@@ -18,13 +18,25 @@ import (
 // Files may be raw NDJSON or ZIP-compressed (containing a single NDJSON file).
 type EchoReplayParser struct {
 	mapper *Mapper
+
+	// rawByFrame captures the original session JSON for each frame_index during parsing.
+	// This preserves per-player stats, goal events, and other profiler fields that the
+	// normalized PlayerTelemetryFrame does not carry.
+	rawByFrame map[int]string
 }
 
 // NewEchoReplayParser creates a parser for .echoreplay files.
 func NewEchoReplayParser() *EchoReplayParser {
 	return &EchoReplayParser{
-		mapper: NewMapper(),
+		mapper:     NewMapper(),
+		rawByFrame: make(map[int]string),
 	}
+}
+
+// RawSessionByFrame returns a map of frame_index → raw session JSON captured during parsing.
+// Only populated after ParseFile has been called. Returns nil for non-.echoreplay sources.
+func (p *EchoReplayParser) RawSessionByFrame() map[int]string {
+	return p.rawByFrame
 }
 
 // ParseFile reads an .echoreplay file, auto-detecting ZIP vs raw NDJSON.
@@ -134,6 +146,14 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string) (*model.Mat
 		if matchCtx == nil && result.MatchCtx != nil {
 			matchCtx = result.MatchCtx
 			matchCtx.ReplayFile = filename
+		}
+
+		// Capture raw session JSON keyed by frame_index for profiler-truth persistence.
+		// All player-frames from this session snapshot share the same frame_index.
+		for _, f := range result.Frames {
+			if _, exists := p.rawByFrame[f.FrameIndex]; !exists {
+				p.rawByFrame[f.FrameIndex] = jsonStr
+			}
 		}
 
 		allFrames = append(allFrames, result.Frames...)

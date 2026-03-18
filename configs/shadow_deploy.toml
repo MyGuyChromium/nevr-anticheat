@@ -2,11 +2,19 @@
 #
 # Purpose: Initial shadow-mode deployment on a single community server.
 # All detectors run in shadow mode (log only, no enforcement).
-# Only production-ready detectors are enabled.
+# Only physics-grounded detectors with conservative thresholds are enabled.
 # Adapter diagnostics are active for telemetry validation.
 #
 # IMPORTANT: This config produces NO player-visible enforcement actions.
 # It generates detection events, scores them, and stores results for analysis.
+# Shadow scores are for CALIBRATION, not proof of cheating.
+#
+# DEPLOYMENT CAVEATS:
+# 1. No threshold has been validated against real Echo VR telemetry.
+# 2. BIO_001 has unconfirmed rotation format — validate after first match.
+# 3. PAT_003 is disabled — enable after 3+ matches of DB history exist.
+# 4. STATE_007 is observation-only — validates stun count telemetry granularity.
+# 5. All scores are shadow-only. No review queue. No enforcement actions.
 
 [general]
 mode = "offline"                    # "offline" for replay analysis, "online" for live server
@@ -60,16 +68,17 @@ player_baseline_weight = 0.3
 shadow_detectors = []
 
 # ==============================================================================
-# ENABLED DETECTORS — Production-ready, safe for shadow observation
+# ENABLED DETECTORS — Physics-grounded, safe for shadow observation
 # ==============================================================================
-# These detectors have been validated against synthetic data, are grounded in
-# physics constraints, and have conservative thresholds.
+# These detectors are grounded in game physics constraints and have conservative
+# thresholds. NONE have been validated against real Echo VR telemetry. All
+# thresholds are derived from synthetic test data and game documentation.
 
 # --- THROW DETECTORS ---
 
 [detector.THROW_001]
 # Impossible Release Velocity — hard physics cap detection
-# PRODUCTION_READY: disc speed cap is engine-enforced
+# Physics cap is engine-enforced; tolerance values are UNVERIFIED
 enabled = true
 enforcement_weight = 0.8
 auto_enforce = false                # NEVER auto-enforce in shadow deployment
@@ -83,7 +92,7 @@ sigmoid_steepness = 2.0
 
 [detector.THROW_006]
 # Trajectory Correction (Magnetism) — disc bending in free flight
-# PRODUCTION_READY: straight-line physics is a hard constraint
+# Straight-line physics is a hard constraint; angle thresholds are UNVERIFIED
 enabled = true
 enforcement_weight = 0.8
 auto_enforce = false
@@ -98,9 +107,13 @@ max_cumulative_change = 130.0
 
 [detector.BIO_001]
 # Impossible Wrist Rotation — exceeds human physical limits
-# PRODUCTION_READY: requires hand rotation data (confirmed in replays)
+# UNVERIFIED: depends on hand rotation arriving as quaternions. Echo VR API
+# uses {pos, forward, left, up} direction vectors. .echoreplay format is
+# unconfirmed. If format is wrong, detector receives garbage input.
+# FIRST-MATCH VALIDATION REQUIRED: check BIO_001 event rates after match 1.
+# If it fires on every frame or never fires, rotation format is wrong — disable it.
 enabled = true
-enforcement_weight = 0.6
+enforcement_weight = 0.0             # observation-only until rotation format confirmed
 auto_enforce = false
 mode = "shadow"
 [detector.BIO_001.params]
@@ -109,7 +122,7 @@ min_violation_frames = 2
 
 [detector.BIO_002]
 # Impossible Hand Speed — exceeds human physical limits
-# PRODUCTION_READY: hand positions are confirmed available
+# Hand positions are generally available; threshold (50 m/s = 4x physical limit) is generous
 enabled = true
 enforcement_weight = 0.6
 auto_enforce = false
@@ -122,7 +135,7 @@ min_violation_frames = 2
 
 [detector.MOV_001]
 # Impossible Player Speed — sustained speed above physics cap
-# PRODUCTION_READY: position-derived, median filter resists spikes
+# Position-derived, median filter resists spikes; threshold (55 m/s) is generous
 enabled = true
 enforcement_weight = 0.7
 auto_enforce = false
@@ -133,7 +146,7 @@ sustained_speed_window = 30
 
 [detector.MOV_002]
 # Teleportation — instantaneous position jump
-# PRODUCTION_READY: dual-condition (distance + velocity mismatch)
+# Dual-condition (distance + velocity mismatch); network desync behavior UNVERIFIED
 enabled = true
 enforcement_weight = 0.8
 auto_enforce = false
@@ -147,7 +160,7 @@ max_frame_gap_ms = 200.0
 
 [detector.STATE_002]
 # Stun Recovery Exploit — stun ends too quickly
-# PRODUCTION_READY: frame counting with 2-incident requirement
+# Frame counting with 2-incident requirement; real stun duration UNVERIFIED
 enabled = true
 enforcement_weight = 0.7
 auto_enforce = false
@@ -157,18 +170,20 @@ min_stun_frames = 20
 min_incidents_to_surface = 2
 
 [detector.STATE_006]
-# Score Manipulation — invalid score deltas
-# PRODUCTION_READY: deterministic hard rule, zero false-positive risk
-enabled = true
+# Score Manipulation — SUSPENDED
+# Real profiler data proved delta=1 is legitimate. No score delta has been
+# confirmed impossible across real telemetry. Disabled until a verified
+# invariant is established from production data.
+enabled = false
 enforcement_weight = 1.0
-auto_enforce = false                # OVERRIDE: disabled for shadow even though hard rule
+auto_enforce = false
 mode = "shadow"
 
 # --- PATTERN DETECTORS ---
 
 [detector.PAT_004]
 # Composite Multi-Cheat — 3+ detector categories in one match
-# PRODUCTION_READY: meta-detector, conservative by design
+# Meta-detector, conservative by design; accuracy depends on upstream detectors
 enabled = true
 enforcement_weight = 0.9
 auto_enforce = false
@@ -178,7 +193,7 @@ min_categories = 3
 
 [detector.PAT_005]
 # Playspace Abuse — extended reach beyond physical arm length
-# PRODUCTION_READY: 2m threshold is 2.5x physical arm reach
+# 1.6m threshold is 2x physical arm reach; sustained 30-frame window is conservative
 enabled = true
 enforcement_weight = 0.5
 auto_enforce = false
@@ -194,9 +209,11 @@ playspace_abuse_samples = 45
 # to collect baseline distributions. Their events are stored but never scored.
 
 [detector.THROW_002]
-# Disc Acceleration — needs real pre-release velocity data to validate
-enabled = true
-enforcement_weight = 0.0            # zero weight = observation only
+# BROKEN: pre-release frame data in real .echoreplay files contains identical
+# disc velocities across all snapshots. Detector logic is correct but input
+# data produces wrong results. Disabled until replay parser provides valid data.
+enabled = false
+enforcement_weight = 0.0
 mode = "shadow"
 [detector.THROW_002.params]
 max_release_acceleration = 500.0
@@ -270,8 +287,10 @@ punch_range_threshold = 10.0
 min_incidents = 3
 
 [detector.PAT_003]
-# Cross-Match Consistency — needs HistoryProvider wiring
-enabled = true
+# CROSS_MATCH_DEPENDENT: HistoryProvider IS wired in cmd/server, but produces
+# no events until min_matches (3) worth of prior detection history exists in DB.
+# Disabled for initial deployment; enable once sufficient history is collected.
+enabled = false
 enforcement_weight = 0.0
 mode = "shadow"
 [detector.PAT_003.params]
@@ -305,18 +324,15 @@ enabled = false     # TELEMETRY_DEPENDENT: needs IsBoosting + sequence counter b
 mode = "shadow"
 
 [detector.STATE_003]
-enabled = true      # Safe at weight=0: blocking field confirmed in Echo VR API
-enforcement_weight = 0.0
+enabled = false     # TELEMETRY_DEPENDENT: ShieldActive field UNCONFIRMED in .echoreplay format
 mode = "shadow"
 
 [detector.STATE_004]
-enabled = true      # Safe at weight=0: invulnerable field confirmed in Echo VR API
-enforcement_weight = 0.0
+enabled = false     # TELEMETRY_DEPENDENT: IsImmune field UNCONFIRMED in .echoreplay format
 mode = "shadow"
 
 [detector.STATE_005]
-enabled = true      # Safe at weight=0: blocking field confirmed in Echo VR API
-enforcement_weight = 0.0
+enabled = false     # TELEMETRY_DEPENDENT: ShieldActive field UNCONFIRMED (same as STATE_003)
 mode = "shadow"
 
 [detector.PAT_001]

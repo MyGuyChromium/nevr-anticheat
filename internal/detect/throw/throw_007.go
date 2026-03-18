@@ -7,6 +7,17 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+// Throw007 detects penalty field speed manipulation (THROW_007).
+//
+// STATUS: STUB — Evaluate() returns nil unconditionally.
+//
+// Requires InPenaltyField telemetry field which does not exist in any known
+// Echo VR data source (standard API or .echoreplay format). The detection
+// logic is sketched but not implemented. Disabled by default.
+//
+// To activate: implement penalty field geometry detection, populate
+// InPenaltyField in the feature extractor, implement the detection logic
+// below, and set Enabled=true in config.
 type Throw007 struct {
 	detect.BaseDetector
 	expectedLoss    float64

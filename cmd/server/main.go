@@ -1,4 +1,7 @@
-// Command server runs the NEVR-Anticheat real-time analysis server.
+// Command server runs the NEVR-Anticheat telemetry ingestion server.
+// Accepts telemetry from game server profilers via WebSocket and stores it
+// in the profiler database. Also runs inline detection for immediate feedback,
+// but the canonical analysis path is async reprocessing from stored telemetry.
 package main
 
 import (
@@ -18,7 +21,6 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/state"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/throw"
-	enforcepkg "github.com/nevr-anticheat/nevr-anticheat/internal/enforce"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/ingest"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/logging"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/metrics"
@@ -63,13 +65,10 @@ func main() {
 		return buildDetectors(cfg, historyProvider)
 	}
 
-	// Match manager
+	// Match manager — handles telemetry ingestion and optional inline detection.
+	// Inline detection is a convenience for immediate feedback. The canonical
+	// analysis path is async reprocessing via the CLI (reprocess-match, etc.).
 	matchMgr := ingest.NewMatchManager(cfg, store, detectorFactory, logger)
-
-	// Enforcement engine
-	enforceCfg := enforcepkg.DefaultEngineConfig()
-	enforceEngine := enforcepkg.NewEngine(enforceCfg, store, logger)
-	_ = enforceEngine // Wire into match manager callbacks as needed
 
 	// Telemetry server
 	serverCfg := ingest.DefaultServerConfig()
@@ -98,7 +97,9 @@ func main() {
 			case <-ticker.C:
 				matchMgr.CleanupStaleMatches(30 * time.Minute)
 				telemetryServer.CleanupStaleRateLimiters()
-				// Prune detection events older than 90 days and scores older than 30 days.
+				// Prune DERIVED analysis outputs only. Detection events and scores are
+				// recomputable from stored telemetry via reprocessing.
+				// Telemetry frames (source data) are NEVER pruned automatically.
 				if n, err := store.PruneOldEvents(ctx, 90*24*time.Hour); err != nil {
 					logger.Error("prune events failed", "error", err)
 				} else if n > 0 {
@@ -135,7 +136,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("NEVR-Anticheat server running",
+	logger.Info("NEVR telemetry ingestion server running",
 		"telemetry", *listenAddr,
 		"metrics", *metricsAddr,
 		"mode", cfg.General.Mode,

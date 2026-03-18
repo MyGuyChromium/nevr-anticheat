@@ -1,4 +1,26 @@
-// Package pipeline orchestrates frame-by-frame detection processing.
+// Package pipeline orchestrates frame-by-frame cheat detection processing.
+//
+// # Architecture
+//
+// This is the core of the NEVR async cheat detection engine. The system
+// follows a profiler-database architecture:
+//
+//   - Game servers emit telemetry to a profiler. They run NO detection logic.
+//   - The profiler database stores ALL telemetry as the canonical source of truth.
+//   - This pipeline reads telemetry from the database (or from replay files during
+//     initial ingestion) and runs 29 detectors to produce detection events.
+//   - Detection results are DERIVED DATA, recomputable from stored telemetry at
+//     any time by reprocessing with updated detector logic or thresholds.
+//   - Replay files are an ingestion format, not the primary analysis substrate.
+//     After ingestion, all analysis operates against the database.
+//
+// The pipeline may run:
+//   - During initial ingestion (inline, for immediate feedback)
+//   - As async reprocessing of stored telemetry (canonical analysis path)
+//   - In batch over many matches, with cross-match aggregation afterward
+//
+// The pipeline does NOT make enforcement decisions. It produces scored
+// detection events that feed into moderator review cases.
 package pipeline
 
 import (

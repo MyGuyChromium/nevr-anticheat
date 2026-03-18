@@ -8,6 +8,9 @@ import (
 )
 
 // Pat001 detects frame-perfect throw timing (PAT_001).
+//
+// STATUS: UNSAFE — regrab rhythm in Echo VR produces low coefficient of
+// variation naturally. Skilled players will false-positive. Disabled by default.
 type Pat001 struct {
 	detect.BaseDetector
 	minThrowCount    int

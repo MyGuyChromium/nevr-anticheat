@@ -545,7 +545,8 @@ func ScoreManipulation(n int) []model.PlayerTelemetryFrame {
 		f := baseFrame("player1", i, pos)
 		f.BlueScore = 0
 		f.OrangeScore = 0
-		// At frame 25, score jumps by 1 (invalid - goals are 2 or 3 pts)
+		// At frame 25, score jumps by 1 (previously assumed invalid, but
+		// real profiler data proved delta=1 is legitimate)
 		if i >= 25 {
 			f.BlueScore = 1
 		}
@@ -843,13 +844,15 @@ func TestCheat_GodMode_Detected(t *testing.T) {
 	hr.AssertDetectorFired("STATE_004")
 }
 
-func TestCheat_ScoreManipulation_Detected(t *testing.T) {
+func TestCheat_ScoreManipulation_DeltaOneLegitimate(t *testing.T) {
+	// delta=1 was previously flagged as impossible, but real profiler data
+	// confirmed it occurs legitimately (frame-boundary artifacts).
+	// STATE_006 must NOT fire for a score delta of 1.
 	frames := ScoreManipulation(50)
 	hr := testutil.NewHarness(t).WithDetectors("STATE_006").
 		WithMatchContext(matchContextForPlayer("player1")).
 		Run(t, frames)
-	hr.AssertDetectorFired("STATE_006")
-	hr.AssertMinSeverity("STATE_006", 0.9)
+	hr.AssertDetectorNotFired("STATE_006")
 }
 
 func TestCheat_InfiniteBoost_Detected(t *testing.T) {

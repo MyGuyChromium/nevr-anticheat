@@ -8,6 +8,10 @@ import (
 )
 
 // Mov004 detects boost speed cap violations (MOV_004).
+//
+// STATUS: TELEMETRY_DEPENDENT — requires IsBoosting field, which is absent
+// from the standard Echo VR API and unconfirmed in .echoreplay format.
+// Disabled by default.
 type Mov004 struct {
 	detect.BaseDetector
 	boostCapMargin   float64

@@ -25,8 +25,13 @@
 - [ ] Check DB exists and is non-empty: `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events;"`
 - [ ] Check per-detector event counts: `sqlite3 nevr-ac-shadow.db "SELECT detector_id, COUNT(*) FROM detection_events GROUP BY detector_id;"`
   - No single detector > 50 events
+- [ ] **BIO_001 rotation format check**: `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events WHERE detector_id='BIO_001';"`
+  - If >50: rotation format is wrong — disable BIO_001 and restart
+  - If 0: expected (generous threshold) — re-check after match 3
+  - If 1-10: rotation format is likely correct
 - [ ] Check max severity: `sqlite3 nevr-ac-shadow.db "SELECT detector_id, MAX(severity) FROM detection_events GROUP BY detector_id;"`
   - All severities look reasonable (0.0-1.0, not NaN)
+- [ ] **Shadow-only confirmation**: `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events WHERE auto_enforce=1;"` — must be 0
 - [ ] Check DB size: `ls -lh nevr-ac-shadow.db` — should be < 10MB
 
 ## After Match 5
@@ -34,8 +39,7 @@
 - [ ] Same checks as Match 1
 - [ ] Per-player event distribution: `sqlite3 nevr-ac-shadow.db "SELECT player_id, COUNT(*) FROM detection_events GROUP BY player_id ORDER BY COUNT(*) DESC LIMIT 10;"`
   - No single player > 100 total events across 5 matches
-- [ ] Check for STATE_006 events (should be ZERO on clean matches): `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events WHERE detector_id='STATE_006';"`
-  - If > 0: **STOP — score tracking is broken**
+- [ ] ~~Check for STATE_006 events~~ — **STATE_006 is suspended** (no confirmed impossible score invariant; delta=1 proved legitimate). Skip this check unless STATE_006 has been re-enabled with a verified rule.
 
 ## After Match 10
 
@@ -50,7 +54,7 @@
 - [ ] Server crashes or panics
 - [ ] Frame rejection > 20%
 - [ ] Any single detector > 100 events per match
-- [ ] STATE_006 fires on any match (broken score data)
+- [ ] ~~STATE_006 fires on any match~~ — suspended; skip unless re-enabled with verified invariant
 - [ ] DB > 100MB after 10 matches
 - [ ] Memory > 500MB
 - [ ] All hand rotation data is zero (check compat output)

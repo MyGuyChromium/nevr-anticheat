@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -56,6 +59,7 @@ func NewBatchAnalyzer(
 func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*BatchResult, error) {
 	start := time.Now()
 	result := &BatchResult{}
+	seenMatches := make(map[string]string) // match_id -> first file path
 
 	// Find replay files
 	var files []string
@@ -100,7 +104,7 @@ func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*Bat
 				}
 
 				ba.pipelineMu.Lock()
-			matchResult, err := ba.analyzeFile(ctx, path)
+			matchResult, err := ba.analyzeFile(ctx, path, seenMatches)
 			ba.pipelineMu.Unlock()
 				mu.Lock()
 				if err != nil {
@@ -124,21 +128,64 @@ func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*Bat
 	return result, nil
 }
 
-func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, path string) (*pipeline.MatchResult, error) {
-	reader := NewReplayReader(path, ba.parser())
-	matchCtx, frames, err := reader.ReadMatch()
-	if err != nil {
-		return nil, err
+func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, path string, seenMatches map[string]string) (*pipeline.MatchResult, error) {
+	var matchCtx *model.MatchContext
+	var frames []model.PlayerTelemetryFrame
+	var rawByFrame map[int]string // non-nil only for .echoreplay files
+
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".echoreplay" {
+		// Use the EchoReplayParser which handles NDJSON/ZIP and captures raw profiler JSON.
+		parser := adapter.NewEchoReplayParser()
+		var diag *adapter.DiagnosticReport
+		var err error
+		matchCtx, frames, diag, err = parser.ParseFile(path)
+		if err != nil {
+			return nil, err
+		}
+		rawByFrame = parser.RawSessionByFrame()
+		_ = diag // diagnostics available but not surfaced in batch mode
+	} else {
+		reader := NewReplayReader(path, ba.parser())
+		var err error
+		matchCtx, frames, err = reader.ReadMatch()
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	// Duplicate same-match suppression: if this match_id was already processed
+	// in this batch run, skip pipeline/detection to avoid inflated detector counts.
+	if firstFile, seen := seenMatches[matchCtx.MatchID]; seen {
+		ba.logger.Info("skipping duplicate match in batch",
+			"match_id", matchCtx.MatchID,
+			"skipped_file", path,
+			"first_file", firstFile,
+		)
+		return &pipeline.MatchResult{}, nil
+	}
+	seenMatches[matchCtx.MatchID] = path
 
 	matchResult, err := ba.pipeline.ProcessMatch(ctx, matchCtx, frames)
 	if err != nil {
 		return nil, err
 	}
 
-	// Persist raw telemetry and match context for future reprocessing
-	if _, storeErr := ba.store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); storeErr != nil {
-		ba.logger.Warn("failed to store telemetry", "error", storeErr)
+	// Persist telemetry and match context for future reprocessing.
+	// For .echoreplay sources, raw_json contains the original profiler API payload.
+	// For legacy JSON sources, raw_json is NULL (the format IS the normalized schema).
+	if len(rawByFrame) > 0 {
+		rows := make([]sqlite.TelemetryFrameRow, len(frames))
+		for i, f := range frames {
+			rows[i] = sqlite.TelemetryFrameRow{Frame: f, RawJSON: rawByFrame[f.FrameIndex]}
+		}
+		if _, storeErr := ba.store.StoreTelemetryFrameRows(ctx, matchCtx.MatchID, rows); storeErr != nil {
+			ba.logger.Warn("failed to store telemetry", "error", storeErr)
+		}
+	} else {
+		if _, storeErr := ba.store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); storeErr != nil {
+			ba.logger.Warn("failed to store telemetry", "error", storeErr)
+		}
 	}
 	_ = ba.store.StoreMatchContext(ctx, matchCtx, len(frames))
 

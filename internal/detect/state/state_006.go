@@ -8,7 +8,18 @@ import (
 )
 
 // State006 detects score manipulation - invalid score deltas (STATE_006).
-// Hard rule: severity=1, confidence=1 on invalid deltas.
+//
+// STATUS: SUSPENDED — no confirmed impossible score invariant exists.
+//
+// Previously flagged delta=1 as impossible (goals are 2 or 3 pts), but real
+// Echo VR profiler data proved delta=1 occurs legitimately (frame-boundary
+// artifacts). No score delta has yet been confirmed impossible across real
+// telemetry. Until a confirmed invariant is established from production data,
+// Evaluate unconditionally returns nil.
+//
+// To reactivate: update validScoreDelta with a confirmed rule, set
+// Enabled=true in config, and add a test proving the invariant against
+// real telemetry.
 type State006 struct {
 	detect.BaseDetector
 
@@ -48,19 +59,33 @@ func (d *State006) Configure(params map[string]any) error {
 }
 
 // validScoreDelta returns true if the delta is a valid score change.
-// CONFIRMED from real replay data:
+// CONFIRMED from real replay/profiler data:
 // - Negative deltas are legitimate: scores reset between rounds/matches.
 // - Large positive deltas occur when frames are skipped or rounds transition.
-// - Only delta=1 is truly impossible in Echo Arena (goals are 2 or 3 points).
+// - Delta=1 occurs legitimately in real profiler data (frame-boundary artifacts).
 // - Delta=0 is no change (most common).
+// All non-negative deltas are accepted; only impossible values would be flagged,
+// and no delta value has been confirmed impossible across real telemetry.
 func validScoreDelta(delta int) bool {
-	if delta < 0 {
-		return true // score resets between rounds are legitimate
-	}
-	return delta != 1 // only delta=1 is impossible (no 1-point goals exist)
+	return true
 }
 
 func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
+	// SUSPENDED: validScoreDelta currently accepts all deltas because no score
+	// delta has been confirmed impossible in real profiler telemetry.
+	//
+	// When a confirmed invariant is found: update validScoreDelta with the
+	// rule, uncomment the detection logic below, and set Enabled=true in config.
+	return nil
+}
+
+// evaluateSuspended contains the original detection logic, preserved for
+// reactivation once a confirmed impossible score invariant is established.
+// To reactivate: rename to Evaluate, remove the no-op Evaluate above,
+// update validScoreDelta, and set Enabled=true in config.
+//
+//nolint:unused // intentionally preserved for reactivation
+func (d *State006) evaluateSuspended(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
 	// We need score data from any player frame
@@ -70,8 +95,6 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			d.prevBlueScore = ps.PrevBlueScore
 			d.prevOrangeScore = ps.PrevOrangeScore
 			d.initialized = true
-			// Store current as "previous" for next frame
-			// Use PrevBlueScore/PrevOrangeScore which are tracked per player
 			break
 		}
 		break
@@ -85,21 +108,13 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	for _, ps := range players {
 		pid := ps.PlayerID
 
-		// Track goals delta per player
 		prevGoals := d.prevGoals[pid]
-		d.prevGoals[pid] = ps.PrevGoals // will be current frame goals
+		d.prevGoals[pid] = ps.PrevGoals
 
-		// Check blue score delta
-		// We use the PlayerState's PrevBlueScore/PrevOrangeScore
-		// which represent frame-over-frame deltas tracked by the pipeline
-
-		// Score deltas between frames
-		// The pipeline tracks previous scores on PlayerState
 		blueDelta := ps.PrevBlueScore - d.prevBlueScore
 		orangeDelta := ps.PrevOrangeScore - d.prevOrangeScore
 		goalsDelta := ps.PrevGoals - prevGoals
 
-		// Only check if there was a score change
 		if blueDelta == 0 && orangeDelta == 0 {
 			continue
 		}
@@ -119,14 +134,10 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			invalidReason += fmt.Sprintf("orange_score_delta=%d", orangeDelta)
 		}
 
-		// CONFIRMED from real replay: negative deltas are legitimate (score resets between rounds).
-		// Removed the negative delta check — validScoreDelta now handles this correctly.
-
 		if !scoreChanged {
 			continue
 		}
 
-		// Hard rule: severity=1, confidence=1
 		metrics := map[string]float64{
 			"blue_delta":   float64(blueDelta),
 			"orange_delta": float64(orangeDelta),
@@ -140,7 +151,7 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 				Metrics:          metrics,
 			},
 			fmt.Sprintf("invalid_score_delta: %s", invalidReason),
-			"score_delta: {0, 2, 3}",
+			"UNVERIFIED: valid score delta set — update when confirmed",
 			model.CausalKey{
 				PlayerID:    pid,
 				FrameStart:  frameIdx - 1,
@@ -151,11 +162,9 @@ func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		ev.AutoEnforce = true
 		events = append(events, ev)
 
-		// Only fire once per frame change
 		break
 	}
 
-	// Update stored scores from any player
 	for _, ps := range players {
 		d.prevBlueScore = ps.PrevBlueScore
 		d.prevOrangeScore = ps.PrevOrangeScore

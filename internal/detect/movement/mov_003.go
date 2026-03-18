@@ -8,6 +8,10 @@ import (
 )
 
 // Mov003 detects zero-inertia direction changes (MOV_003).
+//
+// STATUS: UNSAFE — wall bounces and player-to-player collisions produce
+// legitimate 180° reversals. 2-frame consecutive filter is not sufficient.
+// Disabled by default.
 type Mov003 struct {
 	detect.BaseDetector
 	minAngleDeg      float64

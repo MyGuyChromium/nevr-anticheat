@@ -1,4 +1,6 @@
-// Package enforce implements conservative enforcement policies.
+// Policy generates enforcement recommendations based on suspicion scores.
+// Recommendations are stored in the database for moderator review.
+// See engine.go package doc for the full architectural context.
 package enforce
 
 import (

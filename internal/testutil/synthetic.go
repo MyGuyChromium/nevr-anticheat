@@ -1356,8 +1356,9 @@ func (fb *FrameBuilder) GodMode(nFrames int) []model.PlayerTelemetryFrame {
 	return frames
 }
 
-// ScoreManipulation generates frames with an impossible score delta of 7.
-// Clear STATE_006 trigger.
+// ScoreManipulation generates frames with a large score delta of 7.
+// NOTE: STATE_006 is currently SUSPENDED (no confirmed impossible score
+// invariant). This generator is retained for future reactivation testing.
 func (fb *FrameBuilder) ScoreManipulation(nFrames int) []model.PlayerTelemetryFrame {
 	frames := fb.NormalMovingPlayer(nFrames, 5.0)
 

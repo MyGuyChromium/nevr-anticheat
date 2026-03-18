@@ -9,6 +9,9 @@ import (
 )
 
 // Pat002 detects identical release points across throws (PAT_002).
+//
+// STATUS: UNSAFE — consistent throwing form in Echo VR produces tight release
+// spreads naturally. Skilled players will false-positive. Disabled by default.
 type Pat002 struct {
 	detect.BaseDetector
 	minThrowCount    int

@@ -8,6 +8,9 @@ import (
 )
 
 // State005 detects cooldown bypass - shield reactivated too quickly (STATE_005).
+//
+// STATUS: TELEMETRY_DEPENDENT — requires ShieldActive field (same as STATE_003).
+// Disabled by default.
 type State005 struct {
 	detect.BaseDetector
 	minCooldownFrames int

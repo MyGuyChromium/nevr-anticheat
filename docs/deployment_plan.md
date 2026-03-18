@@ -33,17 +33,18 @@
 - **Gate**: Overall FPR < 5%, per-detector FPR < 10%, moderator workflow functional
 - **Rollback trigger**: FPR > 15%, moderator queue backlog > 100 cases
 
-### Stage 4: Restricted Enforcement (Week 13-16)
-- Switch to `review` mode: create review cases, no auto-kick/ban
+### Stage 4: Active Review (Week 13-16)
+- Switch to `review` mode: create review cases, moderators act on recommendations
 - Promote ONLY detectors with FPR < 3% from shadow to review mode
 - Keep remaining detectors in shadow
 - Add automated alerts for score spikes and detection rate changes
 - **Gate**: Promoted detectors FPR < 3% for 4 consecutive weeks
 - **Rollback trigger**: Any promoted detector FPR > 5%, any false enforcement action
 
-### Stage 5: Full Enforcement (Week 17+)
-- Switch to `enforce` mode for auto-kick (score >= 80 + multi-category)
-- Auto-ban remains extremely conservative: requires hard impossibility + 2+ matches + moderator confirmation
+### Stage 5: Full Moderator Workflow (Week 17+)
+- Switch to `enforce` mode: generate strongest recommendations for moderator review
+- Restrict/ban actions require moderator confirmation in all cases
+- Cross-match review cases surface repeat offenders across sessions
 - Monitor continuously
 - **Gate**: Zero false bans in 4 weeks of review mode data
 - **Rollback trigger**: ANY false ban → immediate rollback to review mode
@@ -52,7 +53,7 @@
 
 Any of these triggers immediate rollback to the previous stage:
 
-1. **False ban confirmed** → Roll back to review mode, investigate, disable offending detector
+1. **False enforcement action confirmed** → Roll back to review mode, investigate, disable offending detector
 2. **FPR > 20%** for any detector for 1 week → Disable that detector
 3. **Server crash or OOM** → Roll back, investigate memory leak
 4. **Detection rate spikes 10x** in 1 hour → Likely game update broke assumptions, pause enforcement
@@ -69,14 +70,14 @@ Any of these triggers immediate rollback to the previous stage:
 
 ## Configuration Per Stage
 
-| Stage | Mode | Detectors Active | Auto-Kick | Auto-Ban |
-|-------|------|-----------------|-----------|----------|
-| 0 | offline | all (shadow) | no | no |
-| 1 | shadow | all (shadow) | no | no |
-| 2 | shadow | all (shadow) | no | no |
-| 3 | flag | calibrated only | no | no |
-| 4 | review | promoted only | no | no |
-| 5 | enforce | promoted only | yes (multi-cat) | yes (hard+multi-match) |
+| Stage | Mode | Detectors Active | Moderator Review | Recommendations |
+|-------|------|-----------------|-----------------|-----------------|
+| 0 | offline | all (shadow) | no cases | logging only |
+| 1 | shadow | all (shadow) | no cases | logging only |
+| 2 | shadow | all (shadow) | no cases | logging only |
+| 3 | flag | calibrated only | manual review | flagging only |
+| 4 | review | promoted only | review queue | flag + review cases |
+| 5 | enforce | promoted only | review queue | strongest recommendations |
 
 ---
 
@@ -131,7 +132,7 @@ For each metric:
 For each detector:
 1. Compute FPR from moderator verdicts (Phase 3 of deployment)
 2. If FPR < 3% for 4 weeks → promote to review mode
-3. If FPR < 1% for 4 weeks after review → promote to enforce mode
+3. If FPR < 1% for 4 weeks after review → promote to enforce mode (strongest recommendations)
 4. If FPR > 5% at any time → demote to shadow, re-calibrate
 
 ## Phase 4: Ongoing Tuning

@@ -1,24 +1,37 @@
 # NEVR-Anticheat
 
-Server-side anticheat for Echo VR / Echo Arena community-hosted servers.
+Async cheat detection engine for Echo VR / Echo Arena, backed by a profiler database.
 
-## Overview
+## Architecture
 
-NEVR-Anticheat is a **server-authoritative, telemetry-based** detection and enforcement system. It analyzes replay files and server telemetry to detect impossible, implausible, or suspicious gameplay behavior — without any client-side component.
-
-### Architecture
+NEVR-Anticheat is a **profiler-database-backed, asynchronous** cheat detection system. It does NOT run on game servers. Game servers only expose telemetry to a profiler. The profiler stores all telemetry in a database. This engine runs separately, analyzing stored telemetry to detect impossible, implausible, or suspicious gameplay behavior.
 
 ```
-Replay/.echoreplay → Ingest → Validate → Feature Extract → Detect → Score → Review
+Game Servers → Profiler/Telemetry Collection → Database (canonical source of truth)
+                                                   ↓
+                              Async Detection Engine → Score → Review Cases
+                                                   ↓
+                                          Moderator Review Queue
 ```
 
-The pipeline processes telemetry frame-by-frame through 29 detectors across 5 categories, accumulates suspicion scores, and surfaces flagged players for moderator review.
+### Two-part system
+
+1. **Profiler / Ingestion** — collects telemetry from matches and stores it in the database.
+   Sources: `.echoreplay` files, legacy JSON replays, live WebSocket telemetry.
+   The database retains all telemetry indefinitely as the canonical source of truth.
+
+2. **Async Detection Engine** — reads from the database, runs 29 detectors across 5 categories,
+   accumulates suspicion scores, and surfaces flagged players for moderator review.
+   Can run after matches, in batch, or continuously in the background.
+   Can make multiple passes over the same data. Can correlate behavior across sessions.
 
 ### Design Principles
 
-- **Server-side only** — the client is untrusted
-- **Evidence-based** — every flag backed by measurable evidence
-- **Low false positives** — observe → score → threshold → escalate → review → enforce
+- **Async, not live** — detection runs against stored profiler data, not during matches
+- **Database is truth** — all telemetry is persisted; replay files are an ingestion format, not the primary source
+- **Multi-pass** — the same telemetry can be reprocessed with updated detectors or thresholds
+- **Cross-match** — players are tracked across sessions, not just within a single match
+- **Evidence-based** — every flag is backed by measurable evidence with full provenance
 - **Shadow mode default** — all detectors start in logging-only mode
 - **Explainable** — moderators see exactly why someone was flagged
 
@@ -28,17 +41,25 @@ The pipeline processes telemetry frame-by-frame through 29 detectors across 5 ca
 # Build
 go build -o nevr-ac ./cmd/anticheat
 
-# Analyze a single replay
-./nevr-ac analyze replay.json
+# Ingest and analyze a replay (stores telemetry to DB + runs detection)
+./nevr-ac analyze match.echoreplay
 
-# Batch analyze a directory
+# Batch ingest a directory of replays
 ./nevr-ac batch ./replays/
 
-# List flagged players
-./nevr-ac flagged
+# Re-run detection on stored telemetry (no replay file needed)
+./nevr-ac reprocess-match <match-id>
+./nevr-ac reprocess-player <player-id>
+./nevr-ac reprocess-timerange 2026-01-01T00:00:00Z 2026-03-01T00:00:00Z
 
-# Generate moderator report
-./nevr-ac report RC-20260315-abc12345
+# Cross-match aggregation (decayed scoring across all matches)
+./nevr-ac cross-match
+
+# Moderator workflow
+./nevr-ac flagged                      # list all flagged players
+./nevr-ac report <case-id>             # single-match case detail
+./nevr-ac cross-match-report <case-id> # cross-match case detail
+./nevr-ac player-history <player-id>   # full player history from DB
 ```
 
 ## Configuration
@@ -46,7 +67,7 @@ go build -o nevr-ac ./cmd/anticheat
 Copy `configs/default.toml` and customize. All thresholds are config-driven.
 
 ```bash
-./nevr-ac --config myconfig.toml analyze replay.json
+./nevr-ac --config myconfig.toml analyze replay.echoreplay
 ```
 
 ## Detector Catalog
@@ -85,20 +106,37 @@ Copy `configs/default.toml` and customize. All thresholds are config-driven.
 
 ## Scoring
 
-Detection events accumulate into per-player suspicion scores:
+Detection events accumulate into per-player suspicion scores (time-decayed):
 
-| Score | Level | Action |
-|-------|-------|--------|
-| 0-19 | Clean | Log only |
-| 20-39 | Informational | Dashboard visibility |
-| 40-59 | Suspicious | Shadow flag |
-| 60-79 | High Risk | Moderator review queue |
-| 80-94 | Critical | Auto-restrict + urgent review |
-| 95-100 | Action-Worthy | Auto-ban eligible (with hard evidence) |
+| Score | Level | Meaning |
+|-------|-------|---------|
+| 0-19 | Clean | No action |
+| 20-39 | Informational | Visible in dashboard |
+| 40-59 | Suspicious | Shadow flag for monitoring |
+| 60-79 | High Risk | Enters moderator review queue |
+| 80-94 | Critical | Urgent moderator review |
+| 95-100 | Action-Worthy | Moderator action recommended with hard evidence |
+
+Scores decay over time (configurable half-life, default 168h). A player who was suspicious months ago but clean since will naturally return to clean status.
+
+## Database as Source of Truth
+
+The database stores two categories of data:
+
+**Immutable source data** (never modified after ingestion):
+- `telemetry_frames` — raw and normalized telemetry frames from the profiler
+- `match_contexts` — match metadata for reprocessing
+
+**Derived analysis outputs** (recomputable from source data):
+- `detection_events` — detector outputs, replaced on reprocessing
+- `suspicion_scores` — append-only scoring snapshots
+- `cross_match_review_cases` — aggregated review cases, replaced on re-aggregation
+
+Telemetry is never pruned by default. Detection events and scores may be pruned as maintenance.
 
 ## Shadow Mode
 
-All detectors default to **shadow mode**: they run, generate events, and log results, but do not contribute to enforcement scores. This allows safe validation before enabling enforcement.
+All detectors default to **shadow mode**: they run, generate events, and log results, but do not affect scoring. This allows safe validation before enabling detection for scoring.
 
 ## Testing
 

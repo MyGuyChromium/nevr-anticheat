@@ -9,6 +9,11 @@ import (
 )
 
 // State007 detects impossible punch range (STATE_007).
+//
+// STATUS: TELEMETRY_DEPENDENT — relies on per-frame stun count increments to
+// detect punch events. If stun stats only update at round/match end rather
+// than per-frame, this detector is dead. Disabled by default until stun count
+// granularity is confirmed from real telemetry.
 type State007 struct {
 	detect.BaseDetector
 	punchRangeThreshold float64

@@ -8,6 +8,15 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+// Throw002 detects impossible disc acceleration at release (THROW_002).
+//
+// STATUS: BROKEN — detector logic is correct but input data is wrong.
+//
+// Real .echoreplay pre-release frame data contains identical disc velocities
+// across all snapshots, making acceleration calculations meaningless. The
+// detector will either never fire (all deltas = 0) or fire incorrectly.
+// Disabled by default until the replay parser provides valid per-frame
+// pre-release disc velocity data.
 type Throw002 struct {
 	detect.BaseDetector
 	maxReleaseAccel float64

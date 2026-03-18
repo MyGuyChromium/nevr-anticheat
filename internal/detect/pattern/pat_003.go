@@ -13,6 +13,14 @@ type HistoryProvider interface {
 }
 
 // Pat003 detects cross-match consistency patterns (PAT_003).
+//
+// STATUS: CROSS_MATCH_DEPENDENT — requires accumulated detection history in DB.
+//
+// HistoryProvider is wired in cmd/anticheat and cmd/server via
+// sqlite.NewStoreHistoryProvider. The detector is functional but produces no
+// events until min_matches (default 3) worth of prior detection history exists.
+// Disabled by default for initial deployments; enable once sufficient match
+// history has been collected.
 type Pat003 struct {
 	detect.BaseDetector
 	minMatches         int

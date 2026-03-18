@@ -8,6 +8,9 @@ import (
 )
 
 // Mov005 detects boost spam abuse (MOV_005).
+//
+// STATUS: TELEMETRY_DEPENDENT — requires IsBoosting field (same as MOV_004).
+// Also has a known sequence counter design limitation. Disabled by default.
 type Mov005 struct {
 	detect.BaseDetector
 	windowSeconds       float64

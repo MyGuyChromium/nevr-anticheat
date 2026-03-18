@@ -1,4 +1,14 @@
-// Package enforce implements the configurable enforcement engine.
+// Package enforce implements the configurable enforcement recommendation engine.
+//
+// IMPORTANT: This package generates enforcement RECOMMENDATIONS, not live actions.
+// In the async profiler-database architecture, enforcement decisions are made by
+// moderators reviewing cases, not by automated in-match actions. The Engine
+// evaluates scores and events to produce recommended actions (flag, review, restrict)
+// that are stored in the database for moderator review.
+//
+// Default mode is "shadow" (logging only). The "enforce" mode generates the
+// strongest possible recommendations but still requires moderator confirmation.
+// The canonical workflow is: detect → score → review case → moderator decision.
 package enforce
 
 import (
@@ -21,7 +31,7 @@ const (
 	ModeShadow  Mode = "shadow"  // Log only, no player impact
 	ModeFlag    Mode = "flag"    // Notify moderators via webhook
 	ModeReview  Mode = "review"  // Create review cases with replay clips
-	ModeEnforce Mode = "enforce" // Auto-kick or auto-ban
+	ModeEnforce Mode = "enforce" // Generate strongest recommendations (requires moderator review)
 )
 
 // Engine makes enforcement decisions based on suspicion scores and detection events.
@@ -31,7 +41,8 @@ type Engine struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 
-	// Enforcement callbacks
+	// Recommendation callbacks — notify external systems of recommended actions.
+	// These are recommendations for moderator review, not automatic enforcement.
 	OnKick       func(playerID, matchID, reason string)
 	OnBan        func(playerID string, duration time.Duration, reason string)
 	OnFlag       func(playerID, matchID string, score float64, events []model.DetectionEvent)

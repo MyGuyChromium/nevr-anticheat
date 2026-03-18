@@ -8,6 +8,9 @@ import (
 )
 
 // State003 detects excessive shield duration (STATE_003).
+//
+// STATUS: TELEMETRY_DEPENDENT — requires ShieldActive field, which is not
+// confirmed in standard Echo VR API or .echoreplay format. Disabled by default.
 type State003 struct {
 	detect.BaseDetector
 	suspiciousFrames  int

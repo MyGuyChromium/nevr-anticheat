@@ -96,6 +96,11 @@ var migrations = []MigrationVersion{
 		CREATE INDEX IF NOT EXISTS idx_xmatch_cases_player ON cross_match_review_cases(player_id);
 		CREATE INDEX IF NOT EXISTS idx_xmatch_cases_status ON cross_match_review_cases(status);`,
 	},
+	{
+		Version: 8, Description: "add analysis_source to detection_events, raw_json to telemetry_frames",
+		SQL: `ALTER TABLE detection_events ADD COLUMN analysis_source TEXT NOT NULL DEFAULT 'initial';
+		ALTER TABLE telemetry_frames ADD COLUMN raw_json TEXT;`,
+	},
 }
 
 // RunMigrationsV2 applies incremental migrations beyond the initial schema.

@@ -13,6 +13,10 @@ type signatureVec struct {
 	frameIndex int
 }
 
+// Throw004 detects repeated release signatures (THROW_004).
+//
+// STATUS: UNSAFE — regrab playstyle produces low generalized variance
+// naturally, causing false positives on skilled players. Disabled by default.
 type Throw004 struct {
 	detect.BaseDetector
 	minThrows          int

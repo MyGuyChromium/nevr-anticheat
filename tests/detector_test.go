@@ -193,6 +193,10 @@ func TestDetectors(t *testing.T) {
 		},
 
 		// ---- THROW_002: Release Acceleration ----
+		// NOTE: THROW_002 is BROKEN on real data (pre-release frames have identical
+		// disc velocities). These tests use synthetic data with varying velocities
+		// and verify the detector LOGIC works, not that it produces correct results
+		// on real telemetry.
 		{
 			name:     "THROW_002/clean_pass",
 			category: "clean_pass",

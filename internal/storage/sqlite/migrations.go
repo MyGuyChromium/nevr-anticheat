@@ -1,4 +1,39 @@
-// Package sqlite provides SQLite-backed storage for the anticheat system.
+// Package sqlite provides SQLite-backed storage for the NEVR anticheat system.
+//
+// # Data classification
+//
+// The database stores two categories of data:
+//
+// IMMUTABLE SOURCE DATA — the profiler truth. Never modified after ingestion.
+// These tables are the canonical long-term telemetry source.
+//
+//   - telemetry_frames: Raw and normalized telemetry frames from profiler collection.
+//     frame_json is the normalized PlayerTelemetryFrame. raw_json (when available)
+//     is the original profiler/API session payload with additional fields.
+//     MUST NOT be pruned by default. Pruning telemetry destroys the source of truth.
+//
+//   - match_contexts: Match metadata (players, teams, physics, source).
+//     Needed to reconstruct a pipeline run during reprocessing.
+//     MUST NOT be pruned by default.
+//
+// DERIVED ANALYSIS OUTPUTS — recomputable from source data at any time.
+//
+//   - detection_events: Detector outputs. Replace semantics on reprocessing
+//     (old events deleted, new events inserted with fresh UUIDs).
+//     analysis_source column distinguishes "initial" from "reprocess".
+//     Safe to prune old events as maintenance — they can be regenerated.
+//
+//   - suspicion_scores: Append-only scoring snapshots. NOT canonical truth.
+//     Each row is a point-in-time snapshot. GetPlayerScore reads the latest.
+//     Recomputable from detection_events via cross-match aggregation.
+//     Safe to prune old snapshots as maintenance.
+//
+//   - cross_match_review_cases: Aggregated review cases. Replace semantics
+//     per player (case_id = "XM-{playerID}", INSERT OR REPLACE).
+//     Recomputable from detection_events via cross-match aggregation.
+//
+//   - review_cases: Single-match review cases. Created during analysis.
+//     Recomputable from detection_events.
 package sqlite
 
 import "database/sql"

@@ -8,6 +8,9 @@ import (
 )
 
 // State004 detects damage immunity during active play (STATE_004).
+//
+// STATUS: TELEMETRY_DEPENDENT — requires IsImmune field, which is not
+// confirmed in standard Echo VR API or .echoreplay format. Disabled by default.
 type State004 struct {
 	detect.BaseDetector
 	maxImmuneFrames  int

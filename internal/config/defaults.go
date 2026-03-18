@@ -1,7 +1,9 @@
 package config
 
-// DefaultConfig returns a fully populated Config with production-safe defaults.
-// All detectors default to shadow mode for safety.
+// DefaultConfig returns a fully populated Config with conservative defaults.
+// All detectors default to shadow mode. No detector has been validated against
+// real Echo VR telemetry — thresholds are derived from game physics constants
+// and synthetic test data only.
 func DefaultConfig() *Config {
 	return &Config{
 		General: GeneralConfig{
@@ -57,11 +59,11 @@ func DefaultConfig() *Config {
 
 func defaultDetectors() map[string]DetectorConfig {
 	return map[string]DetectorConfig{
-		"THROW_001": {Enabled: true, EnforcementWeight: 0.8, AutoEnforce: true, Mode: "shadow", Params: map[string]any{
+		"THROW_001": {Enabled: true, EnforcementWeight: 0.8, AutoEnforce: false, Mode: "shadow", Params: map[string]any{ // UNVALIDATED: physics cap is real but tolerance values are unverified with real telemetry
 			"speed_threshold": 20.0, "base_tolerance": 1.3, "ping_tolerance_scalar": 5.0,
 			"max_speed_ratio": 3.0, "sigmoid_steepness": 2.0,
 		}},
-		"THROW_002": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
+		"THROW_002": {Enabled: false, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{ // BROKEN: pre-release frame data has identical disc velocities in real replays
 			"max_release_acceleration": 500.0, "release_window_frames": 3, "max_accel_ratio": 5.0,
 		}},
 		"THROW_003": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
@@ -99,7 +101,7 @@ func defaultDetectors() map[string]DetectorConfig {
 		"MOV_001": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
 			"max_legitimate_speed": 55.0, "sustained_speed_window": 30,
 		}},
-		"MOV_002": {Enabled: true, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
+		"MOV_002": {Enabled: true, EnforcementWeight: 0.8, AutoEnforce: false, Mode: "shadow", Params: map[string]any{ // UNVALIDATED: design is defensive but network desync behavior unverified
 			"teleport_threshold": 8.0, "velocity_mismatch_factor": 3.0, "max_frame_gap_ms": 200.0,
 		}},
 		"MOV_003": {Enabled: false, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
@@ -127,8 +129,8 @@ func defaultDetectors() map[string]DetectorConfig {
 		"STATE_005": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"min_cooldown_frames": 60, "min_violations": 15,
 		}},
-		"STATE_006": {Enabled: true, EnforcementWeight: 1.0, AutoEnforce: true, Mode: "shadow", Params: map[string]any{}},
-		"STATE_007": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
+		"STATE_006": {Enabled: false, EnforcementWeight: 1.0, AutoEnforce: false, Mode: "shadow", Params: map[string]any{}}, // SUSPENDED: no confirmed impossible score invariant; delta=1 proved legitimate
+		"STATE_007": {Enabled: false, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{ // TELEMETRY_DEPENDENT: per-frame stun count granularity unconfirmed
 			"punch_range_threshold": 10.0, "min_incidents": 3,
 		}},
 		"PAT_001": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
@@ -137,7 +139,7 @@ func defaultDetectors() map[string]DetectorConfig {
 		"PAT_002": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"min_release_spread": 0.01, "min_throw_count": 12,
 		}},
-		"PAT_003": {Enabled: true, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
+		"PAT_003": {Enabled: false, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{ // CROSS_MATCH_DEPENDENT: requires accumulated DB history; no value on fresh deployment
 			"min_matches_soft": 3, "min_matches_hard": 2, "min_avg_confidence": 0.6, "match_history_depth": 20,
 		}},
 		"PAT_004": {Enabled: true, EnforcementWeight: 0.9, Mode: "shadow", Params: map[string]any{

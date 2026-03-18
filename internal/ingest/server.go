@@ -1,4 +1,19 @@
-// Package ingest handles real-time telemetry ingestion from game servers.
+// Package ingest handles telemetry ingestion from game server profilers.
+//
+// The ingestion server accepts telemetry via WebSocket and performs two tasks:
+//
+//  1. STORE telemetry frames to the profiler database (primary purpose).
+//     This makes the database the canonical long-term telemetry source.
+//
+//  2. RUN inline detection for immediate feedback (secondary/convenience).
+//     Inline detection results are tagged with analysis_source="initial".
+//     These results can be replaced at any time by async reprocessing
+//     (reprocess-match, reprocess-player, etc.) which is the canonical
+//     analysis path.
+//
+// Game servers only need to emit telemetry to this endpoint. They do not
+// run detection logic, make enforcement decisions, or interact with the
+// anticheat system beyond sending frames.
 package ingest
 
 import (

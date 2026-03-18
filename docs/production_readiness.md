@@ -41,53 +41,67 @@
 
 ## 2. Detector Viability Matrix
 
+**IMPORTANT**: No detector has been validated against real Echo VR telemetry. All
+thresholds are derived from game physics documentation and synthetic test data.
+"PHYSICS_GROUNDED" means the detection logic has a sound physics basis and
+conservative thresholds, NOT that it has been proven correct on real data.
+
 | Detector | Status | Safe for Shadow? | Safe for Enforce? | Primary Risk |
 |----------|--------|-------------------|-------------------|-------------|
-| THROW_001 | **PRODUCTION_READY** | Yes | Yes | None — physics cap is hard limit |
+| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until tolerances validated | Physics cap is real; tolerance/ping values are UNVERIFIED |
 | THROW_002 | **BROKEN** | No (bad data) | No | Pre-release frame bug: all snapshots have same disc velocity |
-| THROW_003 | **NEEDS_TUNING** | Yes | After calibration | Wrist-flick throws exceed 45° legitimately |
+| THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed |
 | THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally |
-| THROW_005 | **NEEDS_TUNING** | Yes | After calibration | Close-range shots have inherently low deviation |
-| THROW_006 | **PRODUCTION_READY** | Yes | Yes | Minimal — straight-line physics is a hard constraint |
-| THROW_007 | **DISABLED** | N/A | N/A | Stub — no telemetry for penalty fields |
-| THROW_008 | **NEEDS_TUNING** | Yes | After calibration | Tight tolerance; arena geometry may cause speed bumps |
-| BIO_001 | **PRODUCTION_READY** | Yes | Yes | Needs hand rotation data (available in replays) |
-| BIO_002 | **PRODUCTION_READY** | Yes | Yes | Conservative 15 m/s threshold |
-| BIO_003 | **NEEDS_TUNING** | Yes | After calibration | Resting controllers trigger zero-jitter |
-| BIO_004 | **NEEDS_TUNING** | Yes | After calibration | Elite steady aim during disc hold |
-| MOV_001 | **PRODUCTION_READY** | Yes | Yes | Median filter + 30-frame window is robust |
-| MOV_002 | **PRODUCTION_READY** | Yes | Yes | Large-gap skip + velocity mismatch is conservative |
+| THROW_005 | **UNVERIFIED** | Yes (observation only) | After calibration | Close-range shots have inherently low deviation; threshold guessed |
+| THROW_006 | **PHYSICS_GROUNDED** | Yes | Not until thresholds validated | Straight-line physics is a hard constraint; angle thresholds UNVERIFIED |
+| THROW_007 | **STUB** | N/A | N/A | Evaluate() returns nil; no telemetry for penalty fields |
+| THROW_008 | **UNVERIFIED** | Yes (observation only) | After calibration | Tight tolerance; arena geometry may cause speed bumps |
+| BIO_001 | **UNVERIFIED** | Yes (if rotation format correct) | No | Hand rotation format UNCONFIRMED — may receive garbage input from live API |
+| BIO_002 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | 50 m/s threshold is 4× human limit; hand positions generally available |
+| BIO_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Controller jitter baseline unknown; resting controllers trigger zero-jitter |
+| BIO_004 | **UNVERIFIED** | Yes (if rotation format correct) | After calibration | Same rotation format risk as BIO_001 + wobble baseline unknown |
+| MOV_001 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | Median filter + 30-frame window is robust; 55 m/s threshold is generous |
+| MOV_002 | **PHYSICS_GROUNDED** | Yes | Not until network desync quantified | Dual-condition + 5-incident minimum is defensive; desync behavior UNVERIFIED |
 | MOV_003 | **UNSAFE** | Log only | No | Wall bounces produce legitimate 180° reversals |
 | MOV_004 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | IsBoosting not in standard API |
-| MOV_005 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | Same + sequence counter bug |
-| STATE_001 | **NEEDS_TUNING** | Yes | After calibration | Network desync inflates grab distance |
-| STATE_002 | **PRODUCTION_READY** | Yes | Yes | 2-incident minimum is conservative |
-| STATE_003 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not in standard API |
-| STATE_004 | **TELEMETRY_DEPENDENT** | Only if IsImmune present | No | IsImmune not in standard API |
-| STATE_005 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not in standard API |
-| STATE_006 | **PRODUCTION_READY** | Yes | Yes | Deterministic hard rule, zero FP risk |
-| STATE_007 | **NEEDS_TUNING** | Yes | After calibration | Per-frame stun count may not exist; network desync |
+| MOV_005 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | Same + sequence counter design limitation |
+| STATE_001 | **UNVERIFIED** | Yes (observation only) | After calibration | Network desync inflates grab distance; grab range unquantified |
+| STATE_002 | **PHYSICS_GROUNDED** | Yes | Not until stun duration validated | 2-incident minimum is conservative; real stun duration UNVERIFIED |
+| STATE_003 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed in .echoreplay format |
+| STATE_004 | **TELEMETRY_DEPENDENT** | Only if IsImmune present | No | IsImmune not confirmed in .echoreplay format |
+| STATE_005 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed (same as STATE_003) |
+| STATE_006 | **SUSPENDED** | No | No | No confirmed impossible score invariant; delta=1 proved legitimate in real profiler data |
+| STATE_007 | **TELEMETRY_DEPENDENT** | Only if per-frame stun count updates | After validation | Per-frame stun count granularity UNCONFIRMED; may be round-end only |
 | PAT_001 | **UNSAFE** | Log only | No | Regrab rhythm produces low CoV naturally |
 | PAT_002 | **UNSAFE** | Log only | No | Consistent throwing form produces <2cm spread |
-| PAT_003 | **TELEMETRY_DEPENDENT** | Only with HistoryProvider | No | Requires cross-match DB query |
-| PAT_004 | **PRODUCTION_READY** | Yes | Yes | Meta-detector, conservative by design |
-| PAT_005 | **PRODUCTION_READY** | Yes | Yes | 2m threshold is 2.5× physical arm reach |
+| PAT_003 | **CROSS_MATCH_DEPENDENT** | After history collected | After validation | Wired in cmd/anticheat + cmd/server; needs min_matches of prior data in DB |
+| PAT_004 | **PHYSICS_GROUNDED** | Yes | Not until upstream detectors validated | Meta-detector; accuracy depends entirely on upstream detector quality |
+| PAT_005 | **PHYSICS_GROUNDED** | Yes | Not until validated | 1.6m threshold is 2× physical arm reach; sustained 30-frame window |
 
-### Summary: 10 production-ready, 7 need tuning, 4 unsafe, 5 telemetry-dependent, 1 disabled, 1 broken, 1 meta
+### Summary: 0 confirmed, 7 physics-grounded (unvalidated), 6 unverified, 4 unsafe, 6 telemetry-dependent, 1 cross-match-dependent, 1 stub, 1 broken, 1 suspended, 1 meta (physics-grounded)
 
 ### Recommended Initial Enable List (Shadow Mode)
 
-**Enable in shadow for data collection:**
-THROW_001, THROW_003, THROW_005, THROW_006, THROW_008, BIO_001, BIO_002, BIO_003, BIO_004, MOV_001, MOV_002, STATE_001, STATE_002, STATE_006, STATE_007, PAT_004, PAT_005
+**Enable in shadow with scoring weight (physics-grounded, conservative thresholds):**
+THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, STATE_002, PAT_004, PAT_005
 
-**Disable until telemetry confirmed:**
-MOV_004, MOV_005, STATE_003, STATE_004, STATE_005, PAT_003
+**Enable in shadow at weight=0 (observation only — collect baseline data):**
+THROW_003, THROW_005, THROW_008, BIO_001, BIO_003, BIO_004, STATE_001
+
+**Disable until telemetry fields confirmed:**
+MOV_004, MOV_005, STATE_003, STATE_004, STATE_005, STATE_007
 
 **Disable until calibrated with real data:**
 THROW_004, MOV_003, PAT_001, PAT_002
 
-**Disable (broken):**
-THROW_002 (pre-release frame bug), THROW_007 (stub)
+**Disable until sufficient match history collected:**
+PAT_003 (wired in cmd/anticheat + cmd/server; needs min_matches of prior DB data)
+
+**Disable (suspended — no confirmed invariant):**
+STATE_006 (delta=1 proved legitimate; no impossible score delta confirmed)
+
+**Disable (broken / stub):**
+THROW_002 (pre-release frame data wrong), THROW_007 (Evaluate returns nil; no penalty field data)
 
 ## 3. Integration Gap Analysis
 
@@ -167,7 +181,7 @@ All 60 tests pass on synthetic telemetry generated by `synthetic.go`. The synthe
 THROW_004 (signature repeat), PAT_001 (throw timing), PAT_002 (release points), and MOV_003 (direction change) all pass their tests — but their tests explicitly avoid triggering them on legitimate data by excluding them or using parameters that don't exercise the risky code paths. **These detectors WILL false-positive on real skilled players.** They must remain in shadow mode indefinitely until calibrated against 5000+ real matches.
 
 ### Moderator Misuse
-The system produces evidence packages and recommended actions. If moderators treat "score >= 80" as proof of cheating without reviewing evidence, innocent players will be banned. The enforcement engine requires multi-category + multi-match confirmation for auto-ban, but moderator manual actions bypass these safeguards. **A moderator who bans based on score alone defeats the entire false-positive prevention architecture.**
+The system produces evidence packages and recommended actions for moderator review. If moderators treat "score >= 80" as proof of cheating without reviewing evidence, innocent players will be punished. The recommendation engine requires multi-category + multi-match confirmation for the strongest recommendations, but moderator manual actions bypass these safeguards. **A moderator who acts on score alone, without reviewing evidence, defeats the entire false-positive prevention architecture.**
 
 ### Single Point of Failure: Feature Extractor
 All 29 detectors depend on the feature extractor computing derived state correctly. A single bug in velocity computation (like the hand velocity bug found and fixed during audit) silently breaks every detector downstream. **There is no cross-validation of derived features against independent computation.**

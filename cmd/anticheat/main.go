@@ -1,4 +1,5 @@
-// NEVR-Anticheat: Server-side anticheat for Echo VR / Echo Arena.
+// NEVR-Anticheat: Async cheat detection engine for Echo VR / Echo Arena.
+// Analyzes profiler telemetry stored in a database. Does not run on game servers.
 package main
 
 import (
@@ -72,6 +73,12 @@ func main() {
 		runPlayerHistory(*configPath, args[1])
 	case "cross-match":
 		runCrossMatchAnalysis(*configPath)
+	case "cross-match-report":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: anticheat cross-match-report <case-id>")
+			os.Exit(1)
+		}
+		runCrossMatchReport(*configPath, args[1])
 	case "reprocess-match":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: anticheat reprocess-match <match-id>")
@@ -98,7 +105,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "NEVR-Anticheat: Server-side anticheat for Echo VR")
+	fmt.Fprintln(os.Stderr, "NEVR-Anticheat: Async cheat detection engine for Echo VR")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] <command> [args]")
 	fmt.Fprintln(os.Stderr, "")
@@ -109,6 +116,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  report <case-id>           Generate human-readable report")
 	fmt.Fprintln(os.Stderr, "  player-history <id>        Show cross-match history for a player (from DB)")
 	fmt.Fprintln(os.Stderr, "  cross-match                Run cross-match aggregation on stored data")
+	fmt.Fprintln(os.Stderr, "  cross-match-report <id>    Inspect a cross-match review case (from DB)")
 	fmt.Fprintln(os.Stderr, "  reprocess-match <id>       Re-run detection on stored telemetry for a match")
 	fmt.Fprintln(os.Stderr, "  reprocess-player <id>      Re-run detection on stored telemetry for a player")
 	fmt.Fprintln(os.Stderr, "  reprocess-timerange <a> <b> Re-run detection on matches in time range (RFC3339)")
@@ -217,6 +225,7 @@ func runAnalyze(configPath, replayPath string) {
 	// Auto-detect format: .echoreplay (NDJSON/ZIP) vs legacy JSON replay
 	var matchCtx *model.MatchContext
 	var frames []model.PlayerTelemetryFrame
+	var rawByFrame map[int]string // frame_index → raw session JSON (echoreplay only)
 
 	if isEchoReplay(replayPath) {
 		parser := adapter.NewEchoReplayParser()
@@ -226,6 +235,7 @@ func runAnalyze(configPath, replayPath string) {
 			fmt.Fprintf(os.Stderr, "Error reading echoreplay: %v\n", err)
 			os.Exit(1)
 		}
+		rawByFrame = parser.RawSessionByFrame()
 		fmt.Printf("Parsed %d player-frames from %s (%d rejected)\n",
 			len(frames), replayPath, diag.FramesRejected)
 	} else {
@@ -243,11 +253,24 @@ func runAnalyze(configPath, replayPath string) {
 	}
 	ctx := context.Background()
 
-	// Persist raw telemetry and match context so reprocessing doesn't need replay files
-	if stored, err := store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", err)
+	// Persist telemetry and match context so reprocessing doesn't need replay files.
+	// For .echoreplay sources, also store the raw profiler JSON (stats, goal events, etc.).
+	if len(rawByFrame) > 0 {
+		rows := make([]sqlite.TelemetryFrameRow, len(frames))
+		for i, f := range frames {
+			rows[i] = sqlite.TelemetryFrameRow{Frame: f, RawJSON: rawByFrame[f.FrameIndex]}
+		}
+		if stored, storeErr := store.StoreTelemetryFrameRows(ctx, matchCtx.MatchID, rows); storeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
+		} else {
+			fmt.Printf("Stored %d telemetry frames to database (with raw profiler JSON)\n", stored)
+		}
 	} else {
-		fmt.Printf("Stored %d telemetry frames to database\n", stored)
+		if stored, storeErr := store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); storeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
+		} else {
+			fmt.Printf("Stored %d telemetry frames to database\n", stored)
+		}
 	}
 	_ = store.StoreMatchContext(ctx, matchCtx, len(frames))
 
@@ -299,17 +322,41 @@ func runFlagged(configPath string) {
 		os.Exit(1)
 	}
 	defer store.Close()
-	cases, err := store.GetPendingReviewCases(context.Background(), 100)
+	ctx := context.Background()
+
+	// Single-match review cases
+	cases, err := store.GetPendingReviewCases(ctx, 100)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	if len(cases) == 0 {
+
+	// Cross-match review cases
+	xmCases, err := store.GetPendingCrossMatchReviewCases(ctx, 100)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading cross-match cases: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(cases) == 0 && len(xmCases) == 0 {
 		fmt.Println("No flagged players.")
 		return
 	}
-	for _, rc := range cases {
-		fmt.Printf("%-30s %-15s score=%.1f %s\n", rc.CaseID, rc.PlayerID, rc.SuspicionScore, rc.Severity)
+
+	if len(xmCases) > 0 {
+		fmt.Printf("CROSS-MATCH CASES (%d)\n", len(xmCases))
+		for _, rc := range xmCases {
+			fmt.Printf("  %-30s %-20s decayed=%.1f raw=%.1f matches=%d %s\n",
+				rc.CaseID, rc.PlayerID, rc.DecayedScore, rc.CumulativeScore, rc.MatchCount, rc.Severity)
+		}
+		fmt.Println()
+	}
+
+	if len(cases) > 0 {
+		fmt.Printf("SINGLE-MATCH CASES (%d)\n", len(cases))
+		for _, rc := range cases {
+			fmt.Printf("  %-30s %-20s score=%.1f %s\n", rc.CaseID, rc.PlayerID, rc.SuspicionScore, rc.Severity)
+		}
 	}
 }
 
@@ -438,6 +485,45 @@ func runCrossMatchAggregation(store *sqlite.Store, decayHalfLifeHours, reviewThr
 	return playerCount, caseCount
 }
 
+func runCrossMatchReport(configPath, caseID string) {
+	_, _, _, store, err := buildPipeline(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	rc, err := store.GetCrossMatchReviewCase(context.Background(), caseID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("================================================================================\n")
+	fmt.Printf("              CROSS-MATCH REVIEW CASE: %s\n", rc.CaseID)
+	fmt.Printf("================================================================================\n\n")
+	fmt.Printf("  Player:           %s\n", rc.PlayerID)
+	fmt.Printf("  Status:           %s\n", rc.Status)
+	fmt.Printf("  Severity:         %s\n", rc.Severity)
+	fmt.Printf("  Matches:          %d\n", rc.MatchCount)
+	fmt.Printf("  Cumulative Score: %.1f (raw)\n", rc.CumulativeScore)
+	fmt.Printf("  Decayed Score:    %.1f\n", rc.DecayedScore)
+	fmt.Printf("  Created:          %s\n\n", rc.CreatedAt.Format(time.RFC3339))
+
+	fmt.Printf("  DETECTORS:\n")
+	for det, count := range rc.Detectors {
+		fmt.Printf("    %-15s %d events\n", det, count)
+	}
+
+	fmt.Printf("\n  MATCHES:\n")
+	for _, mid := range rc.MatchIDs {
+		fmt.Printf("    %s\n", mid)
+	}
+
+	fmt.Printf("\n  EXPLANATION:\n    %s\n", rc.Explanation)
+	fmt.Printf("================================================================================\n")
+}
+
 // reprocessMatchFromDB loads telemetry from the database and re-runs the detection pipeline.
 // It deletes existing detection events for this match first to prevent duplication.
 func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
@@ -454,6 +540,8 @@ func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.
 	}
 
 	// Delete old detection events for this match to prevent duplication on reprocessing.
+	// Scores are append-only snapshots (GetPlayerScore reads latest by timestamp),
+	// so they don't need deletion — new per-match scores naturally supersede old ones.
 	if deleted, err := store.DeleteMatchEvents(ctx, matchID); err != nil {
 		return nil, fmt.Errorf("clearing old events: %w", err)
 	} else if deleted > 0 {
@@ -465,9 +553,9 @@ func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.
 		return nil, err
 	}
 
-	// Store fresh detection results
+	// Store fresh detection results with reprocessing provenance
 	for _, ev := range result.DetectionEvents {
-		_ = store.StoreDetectionEvent(ctx, ev)
+		_ = store.StoreDetectionEventWithSource(ctx, ev, "reprocess")
 	}
 	for _, score := range result.PlayerScores {
 		_ = store.StoreSuspicionScore(ctx, score)

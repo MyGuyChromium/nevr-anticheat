@@ -10,9 +10,52 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// StoreTelemetryFrames persists raw telemetry frames for a match in bulk.
+// TelemetryFrameRow pairs a normalized frame with optional raw profiler JSON.
+//
+// Storage contract for telemetry_frames:
+//
+//   frame_json: Always populated. Contains the normalized PlayerTelemetryFrame
+//               as JSON. This is what the detection pipeline consumes during
+//               reprocessing. All fields needed for current detectors are here.
+//
+//   raw_json:   The original, unmodified profiler/API session payload.
+//               Populated when the source provides richer data than the normalized
+//               frame captures (e.g., per-player stats, goal events, disc bounce
+//               count, player level). Specifically:
+//
+//               - .echoreplay ingestion: populated with EchoVRSessionResponse JSON.
+//                 Contains assists, saves, steals, passes, catches, blocks,
+//                 interceptions, possession_time, shots_taken, last_score details,
+//                 player level/name, and any future API fields.
+//
+//               - Legacy JSON ingestion: NULL. The legacy format IS the normalized
+//                 schema (RawFrame). No additional profiler fields exist to preserve.
+//
+//               - Live WebSocket ingestion: NULL. The FrameBatch protocol sends
+//                 PlayerTelemetryFrame directly. No extra profiler fields in transit.
+//
+//               NULL means "not available from this source", never "bug / not wired."
+//               Future ingestion paths that have raw profiler payloads should populate
+//               this column to preserve the profiler truth.
+type TelemetryFrameRow struct {
+	Frame   model.PlayerTelemetryFrame
+	RawJSON string // original profiler/API JSON, empty if unavailable
+}
+
+// StoreTelemetryFrames persists normalized telemetry frames for a match in bulk.
 // Uses a transaction with prepared statement for efficiency.
 func (s *Store) StoreTelemetryFrames(ctx context.Context, matchID string, frames []model.PlayerTelemetryFrame) (int, error) {
+	rows := make([]TelemetryFrameRow, len(frames))
+	for i, f := range frames {
+		rows[i] = TelemetryFrameRow{Frame: f}
+	}
+	return s.StoreTelemetryFrameRows(ctx, matchID, rows)
+}
+
+// StoreTelemetryFrameRows persists telemetry frame rows that may include raw profiler JSON.
+// The raw_json column preserves the original API/profiler payload (stats, goal events, etc.)
+// that the normalized frame_json does not capture.
+func (s *Store) StoreTelemetryFrameRows(ctx context.Context, matchID string, rows []TelemetryFrameRow) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
@@ -20,20 +63,25 @@ func (s *Store) StoreTelemetryFrames(ctx context.Context, matchID string, frames
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO telemetry_frames (match_id, player_id, frame_index, timestamp, frame_json)
-		 VALUES (?, ?, ?, ?, ?)`)
+		`INSERT OR IGNORE INTO telemetry_frames (match_id, player_id, frame_index, timestamp, frame_json, raw_json)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare: %w", err)
 	}
 	defer stmt.Close()
 
 	stored := 0
-	for _, f := range frames {
-		frameJSON, err := json.Marshal(f)
+	for _, row := range rows {
+		frameJSON, err := json.Marshal(row.Frame)
 		if err != nil {
 			continue
 		}
-		_, err = stmt.ExecContext(ctx, matchID, f.PlayerID, f.FrameIndex, f.Timestamp, string(frameJSON))
+		var rawPtr *string
+		if row.RawJSON != "" {
+			rawPtr = &row.RawJSON
+		}
+		_, err = stmt.ExecContext(ctx, matchID, row.Frame.PlayerID, row.Frame.FrameIndex,
+			row.Frame.Timestamp, string(frameJSON), rawPtr)
 		if err != nil {
 			continue
 		}
@@ -198,6 +246,12 @@ func (s *Store) GetStoredMatchCount(ctx context.Context) (int, error) {
 }
 
 // PruneOldTelemetry removes telemetry frames older than the given duration.
+//
+// WARNING: Telemetry frames are IMMUTABLE SOURCE DATA — the profiler truth.
+// Pruning telemetry permanently destroys the ability to reprocess those matches.
+// This method exists for explicit manual maintenance only (e.g., disk space emergency).
+// It MUST NOT be called automatically or on a timer. The default retention policy
+// is indefinite: "all telemetry ever collected."
 func (s *Store) PruneOldTelemetry(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan).Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx,
