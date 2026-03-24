@@ -72,37 +72,39 @@ Copy `configs/default.toml` and customize. All thresholds are config-driven.
 
 ## Detector Catalog
 
-| ID | Name | Category | Weight |
-|----|------|----------|--------|
-| THROW_001 | Impossible Release Velocity | throw | 0.8 |
-| THROW_002 | Impossible Disc Acceleration | throw | 0.7 |
-| THROW_003 | Unnatural Release Angle | throw | 0.5 |
-| THROW_004 | Repeated Release Signatures | throw | 0.6 |
-| THROW_005 | Superhuman Target Precision | throw | 0.7 |
-| THROW_006 | Trajectory Correction (Mags) | throw | 0.8 |
-| THROW_007 | Penalty Field Tampering | throw | 0.6 |
-| THROW_008 | Speed-Distance Anomaly | throw | 0.5 |
-| BIO_001 | Impossible Wrist Rotation | bio | 0.6 |
-| BIO_002 | Impossible Hand Speed | bio | 0.6 |
-| BIO_003 | Zero Hand Jitter | bio | 0.5 |
-| BIO_004 | Zero Aim Wobble | bio | 0.5 |
-| MOV_001 | Impossible Player Speed | movement | 0.7 |
-| MOV_002 | Teleportation | movement | 0.8 |
-| MOV_003 | Zero-Inertia Direction Change | movement | 0.5 |
-| MOV_004 | Boost Speed Cap Violation | movement | 0.5 |
-| MOV_005 | Boost Spam (Infinite Battery) | movement | 0.6 |
-| STATE_001 | Impossible Grab Distance | state | 0.5 |
-| STATE_002 | Stun Recovery Exploit | state | 0.7 |
-| STATE_003 | Shield Duration Exploit | state | 0.6 |
-| STATE_004 | Damage Immunity Exploit | state | 0.8 |
-| STATE_005 | Cooldown Bypass | state | 0.6 |
-| STATE_006 | Score Manipulation | state | 1.0 |
-| STATE_007 | Punch Range Exploit | state | 0.5 |
-| PAT_001 | Frame-Perfect Throw Timing | pattern | 0.6 |
-| PAT_002 | Identical Release Points | pattern | 0.6 |
-| PAT_003 | Cross-Match Consistency | pattern | 0.8 |
-| PAT_004 | Composite Multi-Cheat | pattern | 0.9 |
-| PAT_005 | Playspace Abuse | pattern | 0.5 |
+| ID | Name | Category | Weight | Status |
+|----|------|----------|--------|--------|
+| THROW_001 | Impossible Release Velocity | throw | 0.8 | Physics-grounded |
+| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | **BROKEN** — pre-release frame data invalid |
+| THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data |
+| THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
+| THROW_005 | Superhuman Target Precision | throw | 0.7 | Unverified — needs accuracy data |
+| THROW_006 | Trajectory Correction (Mags) | throw | 0.8 | Physics-grounded |
+| THROW_007 | Penalty Field Tampering | throw | 0.6 | **STUB** — no penalty field telemetry |
+| THROW_008 | Speed-Distance Anomaly | throw | 0.5 | Unverified — needs arena physics data |
+| BIO_001 | Impossible Wrist Rotation | bio | 0.6 | Unverified — needs rotation format validation |
+| BIO_002 | Impossible Hand Speed | bio | 0.6 | Physics-grounded (50 m/s = 4x human limit) |
+| BIO_003 | Zero Hand Jitter | bio | 0.5 | Unverified — controller jitter baseline unknown |
+| BIO_004 | Zero Aim Wobble | bio | 0.5 | Unverified — rotation variance baseline unknown |
+| MOV_001 | Impossible Player Speed | movement | 0.7 | Physics-grounded |
+| MOV_002 | Teleportation | movement | 0.8 | Physics-grounded |
+| MOV_003 | Zero-Inertia Direction Change | movement | 0.5 | **UNSAFE** — FPs on wall bounces |
+| MOV_004 | Boost Speed Cap Violation | movement | 0.5 | Disabled — needs IsBoosting field |
+| MOV_005 | Boost Spam (Infinite Battery) | movement | 0.6 | Disabled — needs IsBoosting field |
+| STATE_001 | Impossible Grab Distance | state | 0.5 | Unverified — needs grab range data |
+| STATE_002 | Stun Recovery Exploit | state | 0.7 | Physics-grounded |
+| STATE_003 | Shield Duration Exploit | state | 0.6 | Disabled — needs ShieldActive field |
+| STATE_004 | Damage Immunity Exploit | state | 0.8 | Disabled — needs IsImmune validation |
+| STATE_005 | Cooldown Bypass | state | 0.6 | Disabled — needs ShieldActive field |
+| STATE_006 | Score Manipulation | state | 1.0 | **SUSPENDED** — no confirmed invariant |
+| STATE_007 | Punch Range Exploit | state | 0.5 | Disabled — needs per-frame stun data |
+| PAT_001 | Frame-Perfect Throw Timing | pattern | 0.6 | **UNSAFE** — FPs on skilled players |
+| PAT_002 | Identical Release Points | pattern | 0.6 | **UNSAFE** — FPs on consistent form |
+| PAT_003 | Cross-Match Consistency | pattern | 0.8 | Needs 3+ matches of DB history |
+| PAT_004 | Composite Multi-Cheat | pattern | 0.9 | Meta-detector (depends on upstream) |
+| PAT_005 | Playspace Abuse | pattern | 0.5 | Physics-grounded |
+
+**Status key**: Physics-grounded = based on game physics constraints (thresholds unvalidated). Unverified = needs real data calibration. BROKEN/STUB = non-functional. UNSAFE = known FPs on legitimate play. SUSPENDED = disabled, no confirmed detection rule.
 
 ## Scoring
 

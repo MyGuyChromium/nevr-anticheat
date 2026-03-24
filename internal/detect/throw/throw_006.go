@@ -125,13 +125,13 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 
 			// Collision filter: bounces cause sudden large direction changes.
 			// Magnetism produces gradual, sustained bending (< 15 deg/frame).
-			// Filter 1: speed loss > 30% with any angle change (inelastic bounce)
-			// Filter 2: any single-frame angle > 30 deg (elastic bounce off wall/player)
-			// Filter 3: speed increase > 20% with angle change (player deflection)
+			// Filter 1: speed loss > 25% with any angle change (inelastic bounce)
+			// Filter 2: any single-frame angle > 15 deg (elastic bounce off wall/player)
+			// Filter 3: speed increase > 15% with angle change > 8 deg (player deflection)
 			speedRatio := currSpeed / prevSpeed
-			isInelasticBounce := speedRatio < 0.7 && angleChange > 2.0
+			isInelasticBounce := speedRatio < 0.75 && angleChange > 2.0
 			isElasticBounce := angleChange > 15.0
-			isDeflection := speedRatio > 1.2 && angleChange > 10.0
+			isDeflection := speedRatio > 1.15 && angleChange > 8.0
 			isLikelyCollision := isInelasticBounce || isElasticBounce || isDeflection
 
 			if !math.IsNaN(angleChange) && !isLikelyCollision {
@@ -184,14 +184,26 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 		alignmentImprovement = track.finalAlignment - track.initialAlignment
 	}
 
-	// Require at least 4 violation frames for any magnetism detection.
+	// Require at least 5 violation frames for any magnetism detection.
 	// Headbutts, regrabs, wall bounces, and replay interpolation all produce
 	// trajectory bends that can pass the per-frame bounce filter but don't
-	// sustain across 4+ frames. Real magnetism cheats produce continuous bending.
+	// sustain across 5+ frames. Real magnetism cheats produce continuous bending.
 	if track.violationFrames < 5 {
 		return nil
 	}
-	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.5 {
+
+	// Require minimum 5 tracked frames (short throws don't have enough data).
+	if track.frameCount < 5 {
+		return nil
+	}
+
+	// Fire if cumulative angle exceeds threshold, OR if the disc significantly
+	// improved its alignment with the goal during flight (strong magnetism
+	// signal). Alignment threshold of 0.7 is high: a disc that wasn't heading
+	// toward the goal and ends up nearly aimed at it. Previous threshold of
+	// 0.5 was too permissive — normal throws that happened to curve slightly
+	// toward goal would fire.
+	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.7 {
 		return nil
 	}
 

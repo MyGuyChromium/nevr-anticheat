@@ -1,8 +1,6 @@
 package throw
 
 import (
-	"fmt"
-
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
@@ -12,21 +10,16 @@ import (
 // STATUS: STUB — Evaluate() returns nil unconditionally.
 //
 // Requires InPenaltyField telemetry field which does not exist in any known
-// Echo VR data source (standard API or .echoreplay format). The detection
-// logic is sketched but not implemented. Disabled by default.
+// Echo VR data source (standard API or .echoreplay format). Disabled by default.
 //
 // To activate: implement penalty field geometry detection, populate
-// InPenaltyField in the feature extractor, implement the detection logic
-// below, and set Enabled=true in config.
+// InPenaltyField in the feature extractor, implement the detection logic,
+// and set Enabled=true in config.
 type Throw007 struct {
 	detect.BaseDetector
-	expectedLoss    float64
-	tolerance       float64
-	minEntrySpeed   float64
-	wasInPenalty    bool
-	entrySpeed      float64
-	entryFrame      int
-	entryTimestamp  float64
+	expectedLoss  float64
+	tolerance     float64
+	minEntrySpeed float64
 }
 
 func NewThrow007(params map[string]any) *Throw007 {
@@ -42,7 +35,7 @@ func NewThrow007(params map[string]any) *Throw007 {
 	}
 }
 
-func (d *Throw007) Reset() { d.wasInPenalty = false; d.entrySpeed = 0 }
+func (d *Throw007) Reset() {}
 func (d *Throw007) Configure(params map[string]any) error {
 	d.expectedLoss = detect.GetFloat(params, "expected_penalty_speed_loss", d.expectedLoss)
 	d.tolerance = detect.GetFloat(params, "penalty_tolerance", d.tolerance)
@@ -50,18 +43,6 @@ func (d *Throw007) Configure(params map[string]any) error {
 }
 
 func (d *Throw007) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
-	// This detector requires disc penalty field data which may not be available
-	// in all telemetry sources. It monitors disc speed entering/exiting penalty zones.
-	// Disabled-by-default via shadow mode. Requires InPenaltyField to be populated.
-	var events []model.DetectionEvent
-	// Get disc state from first player that has it
-	for _, ps := range players {
-		if ps.LastThrow == nil {
-			continue
-		}
-		// Penalty field detection would go here when disc state with penalty field info is available
-		_ = ps
-	}
-	_ = fmt.Sprintf // suppress unused import
-	return events
+	// STUB: requires InPenaltyField telemetry field (not available).
+	return nil
 }

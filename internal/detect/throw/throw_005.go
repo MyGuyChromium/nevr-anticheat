@@ -85,7 +85,7 @@ func (d *Throw005) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 						StddevDeviation: model.StdDev(d.deviations[ps.PlayerID]),
 					},
 					fmt.Sprintf("speed_accuracy_corr: %.3f over %d throws (expected positive)", corr, len(pairs)),
-					fmt.Sprintf("speed_accuracy_corr: > 0.1 (human variance)"),
+					"speed_accuracy_corr: > 0.1 (human variance)",
 					model.CausalKey{PlayerID: ps.PlayerID, FrameStart: d.firstFrame[ps.PlayerID], FrameEnd: frameIdx, AnomalyType: "speed_accuracy_correlation"},
 				)
 				events = append(events, ev)

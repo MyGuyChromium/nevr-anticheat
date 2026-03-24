@@ -11,7 +11,7 @@ acted on). **None have been validated against real Echo VR telemetry.**
 | Detector | Weight | What It Catches | Physics Basis | UNVERIFIED Aspect |
 |----------|--------|----------------|---------------|-------------------|
 | THROW_001 | 0.8 | Disc speed above physics cap | Engine-enforced 18.7 m/s cap | Tolerance and ping compensation values |
-| THROW_006 | 0.8 | Disc trajectory bending post-release | Zero-G straight-line physics | Angle change thresholds (8°/frame, 130° cumulative) |
+| THROW_006 | 0.8 | Disc trajectory bending post-release | Zero-G straight-line physics | Bounce filters tightened (inelastic 0.75x, deflection 1.15x+8°), alignment threshold raised to 0.7, min 5 tracked frames |
 | BIO_002 | 0.6 | Hand speed above 50 m/s | Physical human limit ~12 m/s | Threshold is 4× limit; generous but unvalidated |
 | MOV_001 | 0.7 | Sustained speed above 55 m/s | Physics speed cap | Median window behavior on real variable-dt data |
 | MOV_002 | 0.8 | Instantaneous position teleport | Position continuity | Network desync false-positive rate |
@@ -31,14 +31,18 @@ These detectors produce events but contribute ZERO to suspicion scores. Used for
 | BIO_003 | Hand position jitter | Controller jitter baseline unknown |
 | STATE_001 | Grab distance at possession | Network desync impact unquantified |
 
-### Enabled for Observation Only — Format-Dependent (2 detectors, weight=0.0)
+### Enabled for Observation Only — Rotation-Dependent (2 detectors, weight=0.0)
 
-These detectors depend on hand rotation arriving as quaternions. If the replay format provides direction vectors instead, these detectors receive garbage input and their output is meaningless.
+These detectors depend on hand rotation quality. The mapper converts direction vectors to
+quaternions via `directionVectorsToQuat()`, which handles the format conversion correctly.
+However, the detectors still need validation that real hand direction vectors are non-zero,
+properly oriented, and update at sufficient frequency. Zero vectors (tracking loss) fall
+back to identity quaternion with a logged warning.
 
-| Detector | What It Observes | Format Risk |
-|----------|-----------------|-------------|
-| BIO_001 | Wrist rotation rate | UNCONFIRMED: .echoreplay may use direction vectors, not quaternions |
-| BIO_004 | Hand rotation wobble | Same rotation format dependency as BIO_001 |
+| Detector | What It Observes | Remaining Risk |
+|----------|-----------------|----------------|
+| BIO_001 | Wrist rotation rate | If hand direction vectors are always zero (tracking not available), detector is dead. If vectors are noisy/incorrect, detector produces garbage. |
+| BIO_004 | Hand rotation wobble | Same dependency. Validate after first match: if >50 events, rotation data is noisy. If 0 events, check if hand vectors are non-zero. |
 
 ### Enabled for Observation Only — Telemetry-Dependent (1 detector, weight=0.0)
 

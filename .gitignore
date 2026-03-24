@@ -1,11 +1,28 @@
-*.db
-*.prof
-*.exe
+# Binaries
 nevr-ac
 nevr-server
 nevr-compat
 /bridge
 /nevr-bridge
-/tmp/
+*.exe
+
+# Data
+*.db
 *.jsonl
 tests/replays/
+
+# Profiling
+*.prof
+
+# Temp
+/tmp/
+
+# Environment / secrets
+.env
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~

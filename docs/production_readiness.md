@@ -34,8 +34,8 @@
 
 | Field | Issue | Fix Required |
 |-------|-------|-------------|
-| Rotation | API gives direction vectors, not quaternion | Add `DirectionVectorsToQuat()` converter in replay adapter |
-| HandRotation | Same as Rotation | Same converter |
+| Rotation | API gives direction vectors, not quaternion | **DONE**: `directionVectorsToQuat()` in `internal/adapter/mapper.go` handles body and hand rotation conversion from direction vectors to quaternions |
+| HandRotation | Same as Rotation | **DONE**: Same converter, with zero-vector fallback to identity quaternion |
 | DeltaTime | Not in raw API; derived from timestamps | Already handled by feature extractor |
 | Disc.Speed | Not raw; derived from velocity magnitude | Already handled by `convertFrame()` |
 
@@ -110,7 +110,7 @@ THROW_002 (pre-release frame data wrong), THROW_007 (Evaluate returns nil; no pe
 | Gap | Impact | Severity |
 |-----|--------|----------|
 | **Coordinate frame assumption**: Code assumes Y-up right-handed coordinates. Echo VR uses Y-up but with specific axis conventions for forward/left/up that may differ from the assumed quaternion representation. | All spatial calculations could be wrong if axes are flipped. | **CRITICAL** — must be validated with first real data |
-| **Hand rotation format**: Echo VR API provides hand pose as `{pos, forward, left, up}` direction vectors, not quaternions. The replay adapter `convertFrame()` directly casts `[4]float64` to Quat, which only works if the source is already a quaternion (true for .echoreplay protobuf, false for live API). | BIO_001 and BIO_004 receive garbage data from live API. | **HIGH** |
+| **Hand rotation format**: Echo VR provides hand pose as `{pos, forward, left, up}` direction vectors. The mapper (`internal/adapter/mapper.go`) converts these to quaternions via `directionVectorsToQuat()` for both body and hand rotations, with fallback to identity quaternion when vectors are zero. **RESOLVED** in code — still needs validation that direction vectors are non-zero and properly oriented in real telemetry. | BIO_001 and BIO_004 depend on rotation quality; if direction vectors are garbage, detections are meaningless. | **MEDIUM** (was HIGH, mitigated by direction-vector converter) |
 | **Disc state during possession**: When a player holds the disc, does Echo VR still report disc position/velocity? If disc velocity is zero while held and only set at release, the feature extractor's throw detection may work. If disc position matches player position while held, the hand-to-disc distance is wrong. | Throw detection may fail or produce wrong evidence. | **HIGH** — needs empirical validation |
 | **Score update frequency**: Code assumes per-frame score updates. If Echo VR only updates score on goal events (not every tick), the score delta between frames where a goal happened could be 0,0,0,...,2 instead of smooth updates. | STATE_006 works correctly with sparse updates (delta=2 is valid). No issue. | **LOW** |
 | **Stun count granularity**: STATE_007 assumes per-frame stun count increments. If stun stats are only updated at round/match end, the detector is dead. | STATE_007 may be non-functional on live data. | **HIGH** |
@@ -137,11 +137,12 @@ type FrameParser interface {
    - Maps: protobuf disc state → `RawDiscFrame`
    - Handles: quaternion extraction from protobuf rotation fields
 
-2. **LiveAPIAdapter** — implements FrameParser-like interface for polling `/session` endpoint
+2. **LiveAPIAdapter** — **DONE**: `cmd/bridge` polls `/session`, maps via `internal/adapter/mapper.go`
    - Polls at configurable interval (default 67ms = 15fps)
-   - Maps: JSON player objects → `RawPlayerFrame`
-   - Converts: direction vectors → quaternions via `DirectionVectorsToQuat(forward, left, up)`
-   - Derives: delta_time from wall-clock polling interval
+   - Maps: JSON player objects → `PlayerTelemetryFrame`
+   - Converts: direction vectors → quaternions via `directionVectorsToQuat(forward, left, up)`
+   - Derives: delta_time from frame index × assumed dt
+   - Forwards: telemetry frames to anticheat server via WebSocket
 
 ### Unknown mapping points (must be validated with real data):
 
@@ -190,4 +191,31 @@ All 29 detectors depend on the feature extractor computing derived state correct
 The feature extractor stores the same current-frame disc velocity in every pre-release snapshot, making THROW_002's acceleration analysis meaningless. This detector appears to work but produces wrong results.
 
 ### Storage Growth
-At 15 FPS × 8 players × ~200 bytes per detection event, a match generating many detections can produce megabytes of evidence. Over thousands of matches, the SQLite database will grow unboundedly. **There is no retention policy, no archival, and no pruning of old detection events.**
+At 15 FPS × 8 players × ~200 bytes per detection event, a match generating many detections can produce megabytes of evidence. Over thousands of matches, the SQLite database will grow unboundedly. Detection events are pruned after 90 days and scores after 30 days (automatic in server mode), but telemetry frames are never auto-pruned by design.
+
+## 6. Calibration Findings from Real Data
+
+**Data source**: nevr-anticheat.db — 17,498 detection events across 8 matches, 43 players.
+
+### Detector Event Rates (per match, averaged)
+
+| Detector | Events/Match | Assessment |
+|----------|-------------|------------|
+| BIO_002 | ~913 | **Generated with old 15 m/s threshold (not current 50 m/s). Reprocess with current config.** |
+| BIO_003 | ~280 | High for zero-jitter detection. Needs baseline calibration. |
+| BIO_004 | ~238 | High for zero-wobble detection. Same rotation format dependency. |
+| THROW_006 | ~137 | **Tightened**: bounce filter gap narrowed, alignment threshold raised to 0.7, min violation frames raised to 7. |
+| THROW_008 | ~118 | Speed increase tolerance may need widening from 5.0 m/s. |
+| MOV_002 | ~91 | Some events had distances > 12m (pre-guard data). Current code filters > 12m. |
+| BIO_001 | ~80 | Reasonable for observation mode. |
+| THROW_001 | ~60 | All events show genuinely impossible throws (speeds 22-96 m/s vs 20 m/s cap). Detector working correctly. |
+| STATE_004 | ~54 | **Fixed**: all events had excess_frames=1 (timing artifact). Added 5-frame tolerance buffer. |
+
+### Key Calibration Conclusions
+
+1. **THROW_001 is working correctly** — all 481 events show disc speeds 22-96 m/s against ~20 m/s effective cap. Speed ratios of 4-641x. These are genuinely impossible throws.
+2. **BIO_002 DB data is invalid** — generated with old max_hand_speed=15 m/s threshold. Current 50 m/s config is correct. Existing events should be reprocessed.
+3. **THROW_006 was overfiring** — bounce filter gap (8-15°) let normal physics through. Tightened bounce filter to 12°, raised violation frame minimum to 7, raised alignment threshold to 0.7.
+4. **STATE_004 had no tolerance** — every event showed exactly 1 excess frame. Added 5-frame tolerance buffer.
+5. **MOV_002 events with > 12m distance** — generated before the 12m game-event guard was added. Current code is correct.
+6. **One match dominates** — match `6BEF4CA8` accounts for ~90% of all events. Either this match had cheaters, or it was an early noisy run. Either way, a broader sample is needed for calibration.

@@ -73,7 +73,11 @@ func (d *State004) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 
 		total := d.immuneFrames[pid]
-		if total <= d.maxImmuneFrames {
+		// Require at least 5 excess frames before firing. Single-frame
+		// excesses are timing artifacts from variable frame rates and
+		// interpolation boundaries, not cheating.
+		const toleranceFrames = 5
+		if total <= d.maxImmuneFrames+toleranceFrames {
 			continue
 		}
 
