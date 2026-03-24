@@ -46,9 +46,9 @@ func validateConfig(cfg *BridgeConfig, mode string) error {
 		return fmt.Errorf("--match-id has leading/trailing whitespace (got %q)", cfg.MatchIDFilter)
 	}
 
-	// Server key check
-	if cfg.NakamaServerKey == "" {
-		return fmt.Errorf("--nakama-server-key is required")
+	// Auth check: need either a bearer token or a server key
+	if cfg.NakamaBearerToken == "" && cfg.NakamaServerKey == "" {
+		return fmt.Errorf("--nakama-server-key or --nakama-bearer-token is required")
 	}
 
 	// Dump dir validation

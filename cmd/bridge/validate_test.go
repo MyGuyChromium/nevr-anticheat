@@ -33,7 +33,7 @@ func TestValidateConfig(t *testing.T) {
 		{"negative poll interval", func(c *BridgeConfig) { c.PollInterval = -1 }},
 		{"zero discovery interval", func(c *BridgeConfig) { c.DiscoveryInterval = 0 }},
 		{"match-id whitespace", func(c *BridgeConfig) { c.MatchIDFilter = " abc " }},
-		{"empty server key", func(c *BridgeConfig) { c.NakamaServerKey = "" }},
+		{"empty server key and no bearer", func(c *BridgeConfig) { c.NakamaServerKey = ""; c.NakamaBearerToken = "" }},
 	}
 
 	for _, tt := range tests {

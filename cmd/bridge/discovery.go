@@ -28,10 +28,15 @@ func discoverMatches(ctx context.Context, cfg *BridgeConfig, logger *slog.Logger
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	// Nakama server-key auth: Basic base64(serverkey:)
-	// The colon with empty password is required by Nakama's auth scheme.
-	auth := base64.StdEncoding.EncodeToString([]byte(cfg.NakamaServerKey + ":"))
-	req.Header.Set("Authorization", "Basic "+auth)
+	// Auth: bearer token takes precedence over basic server-key auth.
+	if cfg.NakamaBearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.NakamaBearerToken)
+	} else {
+		// Nakama server-key auth: Basic base64(serverkey:)
+		// The colon with empty password is required by Nakama's auth scheme.
+		auth := base64.StdEncoding.EncodeToString([]byte(cfg.NakamaServerKey + ":"))
+		req.Header.Set("Authorization", "Basic "+auth)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

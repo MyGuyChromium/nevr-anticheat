@@ -43,6 +43,7 @@ import (
 func main() {
 	nakamaURL := flag.String("nakama-url", "http://127.0.0.1:7350", "Nakama HTTP API base URL")
 	nakamaServerKey := flag.String("nakama-server-key", "defaultkey", "Nakama server key for authenticated API access")
+	nakamaBearerToken := flag.String("nakama-bearer-token", "", "Nakama bearer/session token for discovery auth (overrides server-key auth when set)")
 	anticheatURL := flag.String("anticheat-url", "", "NEVR-Anticheat WebSocket ingestion URL (e.g. ws://127.0.0.1:8080/telemetry)")
 	anticheatToken := flag.String("anticheat-token", "", "Bearer token for anticheat auth (empty = no auth)")
 	apiPort := flag.Int("api-port", 6721, "Echo VR session API port on broadcasters")
@@ -71,6 +72,7 @@ func main() {
 	cfg := &BridgeConfig{
 		NakamaURL:         *nakamaURL,
 		NakamaServerKey:   *nakamaServerKey,
+		NakamaBearerToken: *nakamaBearerToken,
 		AnticheatURL:      *anticheatURL,
 		AnticheatToken:    *anticheatToken,
 		APIPort:           *apiPort,
@@ -98,17 +100,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Determine and log Nakama auth mode
+	nakamaAuthMode := "basic_server_key"
+	if cfg.NakamaBearerToken != "" {
+		nakamaAuthMode = "bearer"
+	}
+
 	// Startup banner
 	logger.Info("nevr-bridge starting",
 		"mode", mode,
 		"nakama_url", cfg.NakamaURL,
+		"nakama_auth_mode", nakamaAuthMode,
 		"anticheat_url", anticheatURLDisplay(cfg.AnticheatURL),
 		"api_port", cfg.APIPort,
 		"poll_interval", cfg.PollInterval,
 		"discovery_interval", cfg.DiscoveryInterval,
 		"match_filter", matchFilterDisplay(cfg.MatchIDFilter),
 		"identity_format", "echovr:<userid>",
-		"discovery_method", "Nakama standard API (GET /v2/match) with server-key auth",
+		"discovery_method", "Nakama standard API (GET /v2/match)",
 	)
 
 	if cfg.APIPort == 6721 {
@@ -166,6 +175,7 @@ func matchFilterDisplay(id string) string {
 type BridgeConfig struct {
 	NakamaURL         string
 	NakamaServerKey   string
+	NakamaBearerToken string // if non-empty, use Bearer auth instead of Basic server-key
 	AnticheatURL      string
 	AnticheatToken    string
 	APIPort           int

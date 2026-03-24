@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -239,5 +245,93 @@ func TestParseNakamaResponse(t *testing.T) {
 	}
 	if label2.Broadcaster != nil {
 		t.Error("match 2 should NOT have broadcaster")
+	}
+}
+
+// startAuthCapturingNakama returns a fake Nakama that records the Authorization header.
+func startAuthCapturingNakama(t *testing.T, responseBody string, gotAuth *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*gotAuth = r.Header.Get("Authorization")
+		if !strings.HasPrefix(r.URL.Path, "/v2/match") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, responseBody)
+	}))
+}
+
+func TestDiscoverMatches_BearerAuth(t *testing.T) {
+	var gotAuth string
+	body := `{"matches":[]}`
+	srv := startAuthCapturingNakama(t, body, &gotAuth)
+	defer srv.Close()
+
+	cfg := &BridgeConfig{
+		NakamaURL:         srv.URL,
+		NakamaBearerToken: "my-session-token-xyz",
+		NakamaServerKey:   "defaultkey",
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	_, err := discoverMatches(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "Bearer my-session-token-xyz"
+	if gotAuth != want {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, want)
+	}
+}
+
+func TestDiscoverMatches_BasicServerKeyAuth(t *testing.T) {
+	var gotAuth string
+	body := `{"matches":[]}`
+	srv := startAuthCapturingNakama(t, body, &gotAuth)
+	defer srv.Close()
+
+	cfg := &BridgeConfig{
+		NakamaURL:       srv.URL,
+		NakamaServerKey: "testkey123",
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	_, err := discoverMatches(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantEncoded := base64.StdEncoding.EncodeToString([]byte("testkey123:"))
+	want := "Basic " + wantEncoded
+	if gotAuth != want {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, want)
+	}
+}
+
+func TestDiscoverMatches_401Response(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(401)
+		fmt.Fprint(w, `{"code":16,"message":"Auth token invalid"}`)
+	}))
+	defer srv.Close()
+
+	cfg := &BridgeConfig{
+		NakamaURL:         srv.URL,
+		NakamaBearerToken: "bad-token",
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	_, err := discoverMatches(context.Background(), cfg, logger)
+	if err == nil {
+		t.Fatal("expected error for 401 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should mention 401, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Auth token invalid") {
+		t.Errorf("error should include response body, got: %v", err)
 	}
 }

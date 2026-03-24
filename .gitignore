@@ -4,4 +4,8 @@
 nevr-ac
 nevr-server
 nevr-compat
+/bridge
+/nevr-bridge
 /tmp/
+*.jsonl
+tests/replays/
