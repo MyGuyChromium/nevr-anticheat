@@ -75,7 +75,7 @@ Copy `configs/default.toml` and customize. All thresholds are config-driven.
 | ID | Name | Category | Weight | Status |
 |----|------|----------|--------|--------|
 | THROW_001 | Impossible Release Velocity | throw | 0.8 | Physics-grounded |
-| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | **BROKEN** — pre-release frame data invalid |
+| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — single-delta approach, needs real-data calibration |
 | THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
 | THROW_005 | Superhuman Target Precision | throw | 0.7 | Unverified — needs accuracy data |

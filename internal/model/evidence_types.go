@@ -16,12 +16,10 @@ func (ThrowEvidence) EvidenceType() string { return "throw" }
 
 // DiscAccelerationEvidence for THROW_002.
 type DiscAccelerationEvidence struct {
-	ReleaseAcceleration    float64              `json:"release_acceleration"`
-	AveragePreAcceleration float64              `json:"average_pre_acceleration"`
-	AccelerationRatio      float64              `json:"acceleration_ratio"`
-	ReleaseSpeed           float64              `json:"release_speed"`
-	PreReleaseSpeed        float64              `json:"pre_release_speed"`
-	PreReleaseFrames       []ThrowFrameSnapshot `json:"pre_release_frames,omitempty"`
+	SpeedDelta       float64              `json:"speed_delta"`
+	ReleaseSpeed     float64              `json:"release_speed"`
+	PreReleaseSpeed  float64              `json:"pre_release_speed"`
+	PreReleaseFrames []ThrowFrameSnapshot `json:"pre_release_frames,omitempty"`
 }
 
 func (DiscAccelerationEvidence) EvidenceType() string { return "disc_acceleration" }
@@ -95,10 +93,10 @@ func (PenaltyFieldEvidence) EvidenceType() string { return "penalty_field" }
 
 // SpeedDistanceEvidence for THROW_008.
 type SpeedDistanceEvidence struct {
-	SpeedIncreaseCount  int          `json:"speed_increase_count"`
-	CurveViolationCount int          `json:"curve_violation_count"`
-	MaxSpeedIncrease    float64      `json:"max_speed_increase"`
-	MaxCurveExcess      float64      `json:"max_curve_excess"`
+	SpeedIncreaseCount   int          `json:"speed_increase_count"`
+	CurveViolationCount  int          `json:"curve_violation_count"`
+	MaxSpeedIncrease     float64      `json:"max_speed_increase"`
+	MaxCurveExcess       float64      `json:"max_curve_excess"`
 	SpeedDistanceSamples [][2]float64 `json:"speed_distance_samples,omitempty"`
 }
 

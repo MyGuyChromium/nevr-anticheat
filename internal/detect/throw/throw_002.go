@@ -2,45 +2,42 @@ package throw
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// Throw002 detects impossible disc acceleration at release (THROW_002).
+// Throw002 detects an impossible disc speed jump at release (THROW_002).
 //
-// STATUS: BROKEN — detector logic is correct but input data is wrong.
+// Approach: compare the disc speed in the last pre-release snapshot against
+// the release speed. A legitimate wrist flick can impart at most ~18.7 m/s
+// (the engine-enforced cap). A sudden jump larger than maxSpeedDelta is
+// physically impossible regardless of player motion.
 //
-// Real .echoreplay pre-release frame data contains identical disc velocities
-// across all snapshots, making acceleration calculations meaningless. The
-// detector will either never fire (all deltas = 0) or fire incorrectly.
-// Disabled by default until the replay parser provides valid per-frame
-// pre-release disc velocity data.
+// This replaces the original multi-frame acceleration analysis. That approach
+// was broken because .echoreplay pre-release snapshots contain identical disc
+// velocities across all frames, making per-frame deltas always zero.
 type Throw002 struct {
 	detect.BaseDetector
-	maxReleaseAccel float64
-	maxAccelRatio   float64
-	releaseWindow   int
+	maxSpeedDelta float64
 }
 
 func NewThrow002(params map[string]any) *Throw002 {
 	return &Throw002{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_002", DetectorVersion: "1.0.0",
+			DetectorID: "THROW_002", DetectorVersion: "2.0.0",
 			DetectorName: "Impossible Disc Acceleration", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.7,
 		},
-		maxReleaseAccel: detect.GetFloat(params, "max_release_acceleration", 500.0),
-		maxAccelRatio:   detect.GetFloat(params, "max_accel_ratio", 5.0),
-		releaseWindow:   detect.GetInt(params, "release_window_frames", 3),
+		// 22.0 m/s: above the 18.7 m/s physics cap with tolerance, well below
+		// any cheat-injected value. Calibrate against real match data.
+		maxSpeedDelta: detect.GetFloat(params, "max_speed_delta", 22.0),
 	}
 }
 
-func (d *Throw002) Reset()                          {}
+func (d *Throw002) Reset() {}
 func (d *Throw002) Configure(params map[string]any) error {
-	d.maxReleaseAccel = detect.GetFloat(params, "max_release_acceleration", d.maxReleaseAccel)
-	d.maxAccelRatio = detect.GetFloat(params, "max_accel_ratio", d.maxAccelRatio)
+	d.maxSpeedDelta = detect.GetFloat(params, "max_speed_delta", d.maxSpeedDelta)
 	return nil
 }
 
@@ -51,61 +48,34 @@ func (d *Throw002) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 		t := ps.LastThrow
-		if len(t.PreReleaseFrames) < 3 {
+		if len(t.PreReleaseFrames) < 1 {
 			continue
 		}
-		preAccels := make([]float64, 0, len(t.PreReleaseFrames)-1)
-		for i := 1; i < len(t.PreReleaseFrames); i++ {
-			prev := t.PreReleaseFrames[i-1]
-			curr := t.PreReleaseFrames[i]
-			dt := curr.Timestamp - prev.Timestamp
-			if dt < 0.005 {
-				continue
-			}
-			prevSpd := prev.DiscVelocity.Magnitude()
-			currSpd := curr.DiscVelocity.Magnitude()
-			preAccels = append(preAccels, math.Abs(currSpd-prevSpd)/dt)
-		}
-		if len(preAccels) == 0 {
-			continue
-		}
-		avgPreAccel := model.Mean(preAccels)
-		lastPre := t.PreReleaseFrames[len(t.PreReleaseFrames)-1]
-		relDt := t.Timestamp - lastPre.Timestamp
-		if relDt < 0.005 {
-			continue
-		}
-		lastPreSpd := lastPre.DiscVelocity.Magnitude()
-		releaseAccel := math.Abs(t.ReleaseSpeed-lastPreSpd) / relDt
-		accelRatio := releaseAccel / math.Max(avgPreAccel, 1.0)
 
-		if releaseAccel <= d.maxReleaseAccel && accelRatio <= d.maxAccelRatio {
+		lastPre := t.PreReleaseFrames[len(t.PreReleaseFrames)-1]
+		lastPreSpd := lastPre.DiscVelocity.Magnitude()
+		delta := t.ReleaseSpeed - lastPreSpd
+
+		if delta <= d.maxSpeedDelta {
 			continue
 		}
-		severity := 0.0
-		if releaseAccel > d.maxReleaseAccel {
-			severity = model.SigmoidConfidence(releaseAccel, d.maxReleaseAccel, 0.01)
-		}
-		if accelRatio > d.maxAccelRatio {
-			severity = math.Max(severity, model.SigmoidConfidence(accelRatio, d.maxAccelRatio, 0.5))
-		}
+
+		severity := model.SigmoidConfidence(delta, d.maxSpeedDelta, 0.05)
 		confidence := severity
 		if t.Attribution.Confidence > 0 {
 			confidence *= t.Attribution.Confidence
 		}
-		if relDt < 0.02 {
-			confidence *= 0.5
-		}
 
 		ev := d.MakeEvent(matchCtx, ps.PlayerID, frameIdx, t.Timestamp, severity, confidence,
 			model.DiscAccelerationEvidence{
-				ReleaseAcceleration: releaseAccel, AveragePreAcceleration: avgPreAccel,
-				AccelerationRatio: accelRatio, ReleaseSpeed: t.ReleaseSpeed,
-				PreReleaseSpeed: lastPreSpd, PreReleaseFrames: t.PreReleaseFrames,
+				SpeedDelta:       delta,
+				ReleaseSpeed:     t.ReleaseSpeed,
+				PreReleaseSpeed:  lastPreSpd,
+				PreReleaseFrames: t.PreReleaseFrames,
 			},
-			fmt.Sprintf("release_accel: %.0f m/s^2 (ratio: %.1fx)", releaseAccel, accelRatio),
-			fmt.Sprintf("release_accel: < %.0f m/s^2 (ratio < %.1f)", d.maxReleaseAccel, d.maxAccelRatio),
-			model.CausalKey{PlayerID: ps.PlayerID, FrameStart: t.PreReleaseFrames[0].FrameIndex, FrameEnd: frameIdx + 2, AnomalyType: "disc_acceleration"},
+			fmt.Sprintf("speed_delta: %.2f m/s (pre: %.2f → release: %.2f)", delta, lastPreSpd, t.ReleaseSpeed),
+			fmt.Sprintf("speed_delta: < %.2f m/s", d.maxSpeedDelta),
+			model.CausalKey{PlayerID: ps.PlayerID, FrameStart: lastPre.FrameIndex, FrameEnd: frameIdx + 2, AnomalyType: "disc_acceleration"},
 		)
 		ev.Attribution = &t.Attribution
 		events = append(events, ev)
