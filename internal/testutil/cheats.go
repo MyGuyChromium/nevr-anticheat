@@ -298,9 +298,8 @@ func (fb *FrameBuilder) ExtendedReach(nFrames int) []model.PlayerTelemetryFrame 
 // (state, STATE_001) and aimbot releases (throw, THROW_001). Each fires
 // with confidence >= 0.7, so PAT_004 (min_categories 3) fires as well.
 func (fb *FrameBuilder) CompositeCheater() []model.PlayerTelemetryFrame {
-	return Concat(
-		fb.SpeedHackFrames(90, 75),
-		fb.ImpossibleGrabs(3),
-		fb.AimbotThrows(3),
-	)
+	speed := fb.SpeedHackFrames(90, 75)
+	grabs := fb.After(speed).ImpossibleGrabs(3)
+	aimbot := fb.After(grabs).AimbotThrows(3)
+	return Concat(speed, grabs, aimbot)
 }

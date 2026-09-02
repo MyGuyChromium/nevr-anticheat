@@ -94,6 +94,17 @@ func (fb *FrameBuilder) WithTeam(team string) *FrameBuilder {
 	return fb
 }
 
+// After returns a copy of the builder whose start position is where the
+// given frames ended, so a segment built from it continues the previous
+// one without a jump (see Concat).
+func (fb *FrameBuilder) After(prev []model.PlayerTelemetryFrame) *FrameBuilder {
+	c := *fb
+	if len(prev) > 0 {
+		c.startPos = prev[len(prev)-1].Position
+	}
+	return &c
+}
+
 // PlayerID returns the builder's player id.
 func (fb *FrameBuilder) PlayerID() string { return fb.playerID }
 
@@ -413,7 +424,8 @@ func (fb *FrameBuilder) PacketLossFrames(nFrames int, dropRate float64) []model.
 	var frames []model.PlayerTelemetryFrame
 	lastTS := 0.0
 	for i := 0; i < len(base); i++ {
-		dropVal := math.Abs(math.Sin(float64(i)*7.3 + 2.9))
+		// Deterministic pseudo-uniform hash in [0, 1): drops ~dropRate of the frames.
+		dropVal := frac(math.Sin(float64(i)*12.9898+78.233) * 43758.5453)
 		if i > 0 && dropVal < dropRate {
 			continue
 		}

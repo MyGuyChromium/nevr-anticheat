@@ -26,7 +26,7 @@ func TestReviewCases_AnalyzeVerdictCalibration(t *testing.T) {
 	p, scorer := newTestPipeline([]detect.Detector{movement.NewMov001(nil)})
 	mc := matchContextForPlayer("player1")
 	mc.MatchID = "match-e2e"
-	frames := SpeedHackFrames(120, 75)
+	frames := player1().SpeedHackFrames(120, 75)
 	result, err := p.ProcessMatch(ctx, mc, frames)
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,145 @@
+package main
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+)
+
+// captureStdout runs fn and returns what it printed to stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = old
+	return <-done
+}
+
+func TestParseWindow(t *testing.T) {
+	cases := map[string]time.Duration{"7d": 7 * 24 * time.Hour, "36h": 36 * time.Hour, "2h30m": 2*time.Hour + 30*time.Minute}
+	for in, want := range cases {
+		got, err := parseWindow(in)
+		if err != nil || got != want {
+			t.Errorf("parseWindow(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "x", "3w"} {
+		if _, err := parseWindow(bad); err == nil {
+			t.Errorf("parseWindow(%q) accepted", bad)
+		}
+	}
+}
+
+func TestIsEchoReplay(t *testing.T) {
+	if !isEchoReplay("rec.echoreplay") || !isEchoReplay("REC.ECHOREPLAY") || isEchoReplay("match.json") {
+		t.Error("extension detection")
+	}
+}
+
+func TestSortedHelpers(t *testing.T) {
+	scores := map[string]model.SuspicionScore{"b": {PlayerID: "b", TotalScore: 5, EventCount: 1}, "a": {PlayerID: "a"}, "c": {PlayerID: "c", TotalScore: 70, EventCount: 3}}
+	if got := sortedPlayerIDs(scores); strings.Join(got, ",") != "a,b,c" {
+		t.Errorf("sortedPlayerIDs = %v", got)
+	}
+	if got := sortedKeys(map[string]int{"z": 1, "m": 2}); strings.Join(got, ",") != "m,z" {
+		t.Errorf("sortedKeys = %v", got)
+	}
+	out := captureStdout(t, func() { printPlayerScores(scores) })
+	if strings.Contains(out, "Player a") || !strings.Contains(out, "Player b: score=5.0") || !strings.Contains(out, "Player c: score=70.0 level=high_risk") {
+		t.Errorf("printPlayerScores output:\n%s", out)
+	}
+}
+
+func TestMultiFlag(t *testing.T) {
+	var m multiFlag
+	_ = m.Set("MOV_001:yes")
+	_ = m.Set("THROW_001:no")
+	if m.String() != "MOV_001:yes,THROW_001:no" {
+		t.Errorf("multiFlag = %q", m.String())
+	}
+}
+
+// TestOpenApp_DefaultsAndConfigFile: the app opens with the built-in
+// defaults (empty path) and with a config file; the scorer, physics and
+// level table come from the config.
+func TestOpenApp_DefaultsAndConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.toml")
+	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\n[scoring]\nreview_threshold = 45\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := openApp(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.store.Close()
+	if a.levels().HighRisk != 45 || a.scorerConfig().Levels.HighRisk != 45 {
+		t.Errorf("review threshold did not reach the level table: %+v", a.levels())
+	}
+	if a.physics().GoalZ != model.DefaultPhysics().GoalZ {
+		t.Errorf("physics = %+v", a.physics())
+	}
+	if a.crossMatchConfig().Levels.HighRisk != 45 || a.analysisOptions().Levels.HighRisk != 45 {
+		t.Error("cross-match / analysis options do not share the level table")
+	}
+	if p := a.newPipeline(); p == nil {
+		t.Error("newPipeline returned nil")
+	}
+	if _, err := openApp(filepath.Join(dir, "missing.toml")); err == nil {
+		t.Error("missing config accepted")
+	}
+}
+
+// TestRunAnalyze_SyntheticReplay runs the analyze command end to end on
+// the committed synthetic .echoreplay: parse, detect, store telemetry and
+// raw ticks, then refuse a re-run without --force.
+func TestRunAnalyze_SyntheticReplay(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.toml")
+	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replayPath := filepath.Join("..", "..", "tests", "fixtures", "synthetic_session.echoreplay")
+	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	for _, want := range []string{"Match: SYN-FIXTURE-001", "Frames: 120 processed, 0 invalid", "Stored 480 telemetry frames", "120 raw ticks"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("analyze output lacks %q:\n%s", want, out)
+		}
+	}
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	if !strings.Contains(out, "already stored") {
+		t.Errorf("second analyze should refuse without --force:\n%s", out)
+	}
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
+	if !strings.Contains(out, "Cleared previous analysis") || !strings.Contains(out, "480 already present") {
+		t.Errorf("forced analyze output:\n%s", out)
+	}
+	out = captureStdout(t, func() { runReprocessMatch(cfgPath, "SYN-FIXTURE-001") })
+	if !strings.Contains(out, "SYN-FIXTURE-001") {
+		t.Errorf("reprocess output:\n%s", out)
+	}
+	out = captureStdout(t, func() { runFlagged(cfgPath) })
+	if out == "" {
+		t.Error("flagged printed nothing")
+	}
+}

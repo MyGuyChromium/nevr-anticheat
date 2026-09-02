@@ -46,7 +46,8 @@ type ThrowSpec struct {
 const (
 	windupFrames    = 5    // hold frames over which the hand pulls back
 	discInHand      = 0.10 // m, disc offset from the hand while held
-	discReleaseLead = 0.20 // m, disc offset from the hand on the release frame
+	discReleaseLead = 0.10 // m, disc offset from the hand on the release frame
+	offHandTuck     = 0.35 // m, the off hand drops back during the throw so the throwing hand is unambiguous
 	handRecover     = 5    // flight frames over which the hand returns to rest
 	minFlightSpeed  = 0.5  // m/s, floor for decelerating discs
 )
@@ -114,6 +115,8 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 	// lastDisc is the resting disc between throws (idle until the first hold).
 	lastDisc := model.DiscState{Position: model.Vec3{0, 2, 0}}
 
+	// tuck is the off-hand pull-back during a throw (set per throw).
+	tuck := model.Vec3{}
 	emit := func(right model.Vec3, scripted bool, disc model.DiscState, has bool) {
 		f := fb.baseFrame(fi, body, facing)
 		f.HasPossession = has
@@ -123,7 +126,7 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 		} else {
 			f.RightHandRotation = model.QuatIdentity()
 		}
-		f.LeftHandPosition = restL.Add(deterministicJitter3(fi, 11, humanHandJitter))
+		f.LeftHandPosition = restL.Add(tuck).Add(deterministicJitter3(fi, 11, humanHandJitter))
 		d := disc
 		f.Disc = &d
 		frames = append(frames, f)
@@ -168,12 +171,16 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 		}
 		handDir = deviate(dir, s.HandDeviationDeg, s.DeviationSeed+1.0)
 
-		// Hold: hand at rest, pulling back over the last windupFrames.
+		// Hold: hand at rest, pulling back over the last windupFrames while
+		// the off hand drops back (so the throwing hand is the one nearest
+		// the release point on the frame before release).
 		var hand model.Vec3
+		tuck = model.Vec3{}
 		for j := 0; j < hold; j++ {
 			pull := 0.0
 			if j >= hold-windupFrames {
 				pull = back * float64(j-(hold-windupFrames)+1) / windupFrames
+				tuck = dir.Scale(-offHandTuck)
 			}
 			hand = rest.Sub(dir.Scale(pull))
 			disc := model.DiscState{
@@ -216,6 +223,7 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 			emit(h, s.ScriptedHand, model.DiscState{Position: pos, Velocity: vel, Speed: vel.Magnitude(), FramesSinceRelease: k}, false)
 		}
 		lastDisc = model.DiscState{Position: pos}
+		tuck = model.Vec3{}
 		for g := 0; g < s.GapFrames; g++ {
 			emit(restR, s.ScriptedHand, lastDisc, false)
 		}

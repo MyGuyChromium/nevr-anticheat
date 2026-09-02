@@ -10,7 +10,7 @@ import (
 // THROW_001 must fire on replay-rate (15 fps, dt=0.067) data: release speed
 // comes from the game-reported disc velocity, so there is no dt gate.
 func TestDetThrow_Throw001FiresAtReplayRate(t *testing.T) {
-	frames := AimbotThrows(8) // 35 m/s releases at dt=0.067
+	frames := player1().AimbotThrows(8) // 35 m/s releases at dt=0.067
 	hr := testutil.NewHarness(t).
 		WithDetectors("THROW_001").
 		WithMatchContext(matchContextForPlayer("player1")).
@@ -30,7 +30,7 @@ func TestDetThrow_Throw001FiresAtReplayRate(t *testing.T) {
 // built by the feature extractor; with a held disc at rest and a 35 m/s
 // release the delta is 35 m/s and the detector fires end to end.
 func TestDetThrow_Throw002FiresOnExtractorSnapshots(t *testing.T) {
-	frames := AimbotThrows(4)
+	frames := player1().AimbotThrows(4)
 	hr := testutil.NewHarness(t).
 		WithDetectors("THROW_002").
 		WithMatchContext(matchContextForPlayer("player1")).
@@ -53,13 +53,7 @@ func TestDetThrow_Throw002FiresOnExtractorSnapshots(t *testing.T) {
 
 // Releases > 2x the physics cap are observations, not silent drops.
 func TestDetThrow_ArtifactReleasesAreObserved(t *testing.T) {
-	frames := AimbotThrows(3)
-	for i := range frames {
-		if frames[i].Disc != nil && frames[i].Disc.Speed > 30 {
-			frames[i].Disc.Velocity = frames[i].Disc.Velocity.Normalized().Scale(60)
-			frames[i].Disc.Speed = 60
-		}
-	}
+	frames := player1().ArtifactThrows(3)
 	hr := testutil.NewHarness(t).
 		WithDetectors("THROW_001").
 		WithMatchContext(matchContextForPlayer("player1")).
@@ -80,6 +74,6 @@ func TestDetThrow_NormalThrowsStayClean(t *testing.T) {
 	hr := testutil.NewHarness(t).
 		WithDetectors("THROW_001", "THROW_002", "THROW_003", "THROW_005", "THROW_006", "THROW_008").
 		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, NormalThrowSequence(6))
+		Run(t, player1().NormalThrowSequence(6))
 	hr.AssertNoDetections()
 }

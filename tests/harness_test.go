@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"math"
 	"testing"
 	"time"
 
@@ -9,610 +8,11 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
 
-// ============================================================================
-// Synthetic Frame Generators
-// ============================================================================
-
-const dt = 0.067 // ~15 fps, default tick rate
-
-// humanHandRotation returns a slightly wobbling quaternion for frame i.
-// This prevents BIO_004 (zero wobble) from firing on legitimate players.
-func humanHandRotation(i int, seed float64) model.Quat {
-	// Small angular perturbations around identity
-	ax := 0.02 * math.Sin(float64(i)*0.73+seed)
-	ay := 0.015 * math.Cos(float64(i)*0.51+seed*2)
-	az := 0.01 * math.Sin(float64(i)*1.1+seed*3)
-	// Approximate quaternion from small angles: (ax/2, ay/2, az/2, 1) normalized
-	halfX, halfY, halfZ := ax/2, ay/2, az/2
-	w := math.Sqrt(1.0 - halfX*halfX - halfY*halfY - halfZ*halfZ)
-	return model.Quat{halfX, halfY, halfZ, w}
-}
-
-// humanJitter returns deterministic hand jitter for a given frame index and seed.
-func humanJitter(i int, seed float64) model.Vec3 {
-	return model.Vec3{
-		0.01 * math.Sin(float64(i)*0.73+seed),
-		0.008 * math.Cos(float64(i)*0.51+seed*2),
-		0.006 * math.Sin(float64(i)*1.13+seed*3),
-	}
-}
-
-// baseFrame returns a valid frame template at the given index and position.
-// It includes natural hand jitter and rotation wobble.
-func baseFrame(playerID string, i int, pos model.Vec3) model.PlayerTelemetryFrame {
-	lj := humanJitter(i, 1.0)
-	rj := humanJitter(i, 7.0)
-	return model.PlayerTelemetryFrame{
-		PlayerID:          playerID,
-		FrameIndex:        i,
-		Timestamp:         float64(i) * dt,
-		DeltaTime:         dt,
-		Position:          pos,
-		Rotation:          model.QuatIdentity(),
-		LeftHandPosition:  pos.Add(model.Vec3{-0.3, 0.3, 0.2}).Add(lj),
-		RightHandPosition: pos.Add(model.Vec3{0.3, 0.3, -0.2}).Add(rj),
-		LeftHandRotation:  humanHandRotation(i, 1.0),
-		RightHandRotation: humanHandRotation(i, 5.0),
-		GamePhase:         "playing",
-		Disc: &model.DiscState{
-			Position: model.Vec3{0, 2, 0},
-			Velocity: model.Vec3{0, 0, 0},
-		},
-	}
-}
-
-// oscillateX returns a position that oscillates smoothly within [lo, hi].
-func oscillateX(i int, speed float64, lo, hi float64) float64 {
-	span := hi - lo
-	dist := float64(i) * speed * dt
-	// Triangle wave: oscillate back and forth
-	phase := math.Mod(dist, span*2)
-	if phase > span {
-		return hi - (phase - span)
-	}
-	return lo + phase
-}
-
-// NormalIdlePlayer generates frames for a player standing still at a fixed position.
-func NormalIdlePlayer(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	pos := model.Vec3{5, 1.6, 3}
-	for i := 0; i < n; i++ {
-		frames[i] = baseFrame("player1", i, pos)
-	}
-	return frames
-}
-
-// NormalMovingPlayer generates frames of a player moving at the given speed (m/s).
-func NormalMovingPlayer(n int, speed float64) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, speed, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		frames[i] = baseFrame("player1", i, pos)
-	}
-	return frames
-}
-
-// NormalThrowSequence generates n throws with normal speeds and angles.
-func NormalThrowSequence(n int) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	fi := 0
-	pos := model.Vec3{5, 1.6, 0}
-	for t := 0; t < n; t++ {
-		// Pre-throw: hold disc for ~15 frames
-		for j := 0; j < 15; j++ {
-			f := baseFrame("player1", fi, pos)
-			f.HasPossession = true
-			f.Disc = &model.DiscState{
-				Position:    pos.Add(model.Vec3{0.4, 0.2, 0}),
-				Velocity:    model.Vec3{0, 0, 0},
-				Speed:       0,
-				PossessorID: "player1",
-				IsHeld:      true,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-		// Release frame: moderate speed with varied angle
-		releaseSpeed := 6.0 + float64(t)*1.5 // 6.0-12.0 m/s varied range
-		angleVar := float64(t) * 5.0         // vary angle per throw
-		vx := releaseSpeed * math.Cos(angleVar*math.Pi/180)
-		vy := 0.5 + float64(t)*0.2
-		vz := releaseSpeed * math.Sin(angleVar*math.Pi/180) * 0.3
-		f := baseFrame("player1", fi, pos)
-		f.HasPossession = false
-		// Move hand significantly to produce realistic hand speed
-		f.RightHandPosition = pos.Add(model.Vec3{0.8 + float64(t)*0.1, 0.5, -0.1 + float64(t)*0.05})
-		f.Disc = &model.DiscState{
-			Position: pos.Add(model.Vec3{1, 0.2, 0}),
-			Velocity: model.Vec3{vx, vy, vz},
-			Speed:    releaseSpeed,
-		}
-		frames = append(frames, f)
-		fi++
-		// Post-throw glide: disc in flight
-		for j := 0; j < 20; j++ {
-			f := baseFrame("player1", fi, pos)
-			f.HasPossession = false
-			dist := float64(j+1) * releaseSpeed * dt
-			f.Disc = &model.DiscState{
-				Position: pos.Add(model.Vec3{1 + dist*math.Cos(angleVar*math.Pi/180), 0.2 + float64(j)*0.01, dist * math.Sin(angleVar*math.Pi/180) * 0.3}),
-				Velocity: model.Vec3{vx * 0.95, vy * 0.9, vz * 0.95},
-				Speed:    releaseSpeed * 0.95,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-	}
-	return frames
-}
-
-// EliteThrowSequence generates throws from a high-skill player (high speed but within limits).
-func EliteThrowSequence(n int) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	fi := 0
-	pos := model.Vec3{5, 1.6, 0}
-	for t := 0; t < n; t++ {
-		// Pre-throw: wind up hand position progressively
-		for j := 0; j < 10; j++ {
-			f := baseFrame("player1", fi, pos)
-			f.HasPossession = true
-			f.Disc = &model.DiscState{
-				Position:    pos.Add(model.Vec3{0.4, 0.2, 0}),
-				Velocity:    model.Vec3{0, 0, 0},
-				PossessorID: "player1",
-				IsHeld:      true,
-			}
-			// Wind up: hand moves back gradually
-			windUp := float64(j) * 0.05
-			f.RightHandPosition = pos.Add(model.Vec3{0.3 - windUp, 0.3 + windUp*0.3, -0.2})
-			frames = append(frames, f)
-			fi++
-		}
-		// Elite throw: under cap, hand has moved significantly
-		releaseSpeed := 14.0 + float64(t%4)*0.8 // 14-16.4 m/s, under 18.7 cap
-		angleVar := float64(t) * 7.0
-		// Human-realistic: faster throws have larger perpendicular (off-goal) component
-		speedBias := (releaseSpeed - 14.0) * 0.4
-		vx := releaseSpeed * math.Cos(angleVar*math.Pi/180)
-		vy := 0.3 + speedBias
-		vz := releaseSpeed*math.Sin(angleVar*math.Pi/180)*0.2 + speedBias*0.8
-		f := baseFrame("player1", fi, pos)
-		f.HasPossession = false
-		// Hand snaps forward significantly (high hand speed -> realistic ratio)
-		f.RightHandPosition = pos.Add(model.Vec3{0.9, 0.6, -0.1})
-		f.Disc = &model.DiscState{
-			Position: pos.Add(model.Vec3{0.8, 0.2, 0}),
-			Velocity: model.Vec3{vx, vy, vz},
-			Speed:    releaseSpeed,
-		}
-		frames = append(frames, f)
-		fi++
-		// Post-throw: disc in flight
-		for j := 0; j < 20; j++ {
-			f := baseFrame("player1", fi, pos)
-			dist := float64(j+1) * releaseSpeed * dt
-			f.Disc = &model.DiscState{
-				Position: pos.Add(model.Vec3{0.8 + dist*math.Cos(angleVar*math.Pi/180), 0.2, dist * math.Sin(angleVar*math.Pi/180) * 0.2}),
-				Velocity: model.Vec3{vx * 0.95, vy * 0.9, vz * 0.95},
-				Speed:    releaseSpeed * 0.95,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-	}
-	return frames
-}
-
-// RegrabStackingBurst generates a burst of fast legitimate regrab stacking.
-func RegrabStackingBurst(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 0}
-		frames[i] = baseFrame("player1", i, pos)
-	}
-	return frames
-}
-
-// FastWristFlick generates frames with fast but human-possible wrist flicks.
-func FastWristFlick(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	pos := model.Vec3{5, 1.6, 3}
-	for i := 0; i < n; i++ {
-		f := baseFrame("player1", i, pos)
-		// Moderate rotation: ~0.3 rad change per frame at 0.067s = ~4.5 rad/s
-		// This is well under the 30 rad/s BIO_001 threshold
-		angle := float64(i) * 0.3
-		sinA := math.Sin(angle / 2)
-		cosA := math.Cos(angle / 2)
-		f.RightHandRotation = model.Quat{0, sinA, 0, cosA}
-		f.LeftHandRotation = model.Quat{sinA * 0.5, 0, 0, math.Sqrt(1 - sinA*sinA*0.25)}
-		frames[i] = f
-	}
-	return frames
-}
-
-// SteadyHandPlayer generates frames with natural hand variance (not zero).
-func SteadyHandPlayer(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		frames[i] = baseFrame("player1", i, pos)
-	}
-	return frames
-}
-
-// NormalBoostSequence generates n normal boosts with proper cooldown gaps.
-func NormalBoostSequence(n int) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	fi := 0
-	for b := 0; b < n; b++ {
-		// Boost for 3 frames
-		for j := 0; j < 3; j++ {
-			x := oscillateX(fi, 3.0, 5.0, 25.0)
-			pos := model.Vec3{x, 1.6, 3}
-			f := baseFrame("player1", fi, pos)
-			f.IsBoosting = true
-			frames = append(frames, f)
-			fi++
-		}
-		// Cooldown: 60 frames not boosting
-		for j := 0; j < 60; j++ {
-			x := oscillateX(fi, 1.5, 5.0, 25.0)
-			pos := model.Vec3{x, 1.6, 3}
-			f := baseFrame("player1", fi, pos)
-			frames = append(frames, f)
-			fi++
-		}
-	}
-	return frames
-}
-
-// JitteryTelemetry adds uniform noise of the given amplitude to normal frames.
-func JitteryTelemetry(n int, amplitude float64) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 3.0)
-	for i := range frames {
-		nx := amplitude * math.Sin(float64(i)*2.3)
-		ny := amplitude * math.Cos(float64(i)*3.7)
-		nz := amplitude * math.Sin(float64(i)*5.1)
-		frames[i].Position = frames[i].Position.Add(model.Vec3{nx, ny, nz})
-		frames[i].LeftHandPosition = frames[i].LeftHandPosition.Add(model.Vec3{nx, ny, nz})
-		frames[i].RightHandPosition = frames[i].RightHandPosition.Add(model.Vec3{-nx, ny, -nz})
-	}
-	return frames
-}
-
-// PacketLossFrames generates frames with some frames dropped (gaps in frame indices).
-func PacketLossFrames(n int, dropRate float64) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	for i := 0; i < n; i++ {
-		// Deterministic drop pattern
-		hash := math.Sin(float64(i)*12345.6789)*0.5 + 0.5
-		if hash < dropRate {
-			continue
-		}
-		x := oscillateX(i, 1.2, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		frames = append(frames, baseFrame("player1", i, pos))
-	}
-	return frames
-}
-
-// LargeFrameGap inserts a large time gap at a given frame to simulate reconnect.
-func LargeFrameGap(n int, gapFrame int, gapSeconds float64) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 2.0)
-	if gapFrame >= len(frames) {
-		return frames
-	}
-	// Shift timestamps after gapFrame
-	for i := gapFrame; i < len(frames); i++ {
-		frames[i].Timestamp += gapSeconds
-		frames[i].DeltaTime = dt
-	}
-	frames[gapFrame].DeltaTime = gapSeconds
-	return frames
-}
-
-// InterpolationArtifact generates a single interpolation glitch in otherwise clean data.
-func InterpolationArtifact(n int) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 3.0)
-	mid := n / 2
-	if mid > 0 && mid < len(frames) {
-		// Large dt signals a frame gap - the validator/pipeline should handle this
-		frames[mid].DeltaTime = 0.4
-		frames[mid].Timestamp = frames[mid-1].Timestamp + 0.4
-		for i := mid + 1; i < len(frames); i++ {
-			frames[i].Timestamp = frames[i-1].Timestamp + dt
-		}
-	}
-	return frames
-}
-
-// HighPingPlayer generates clean frames with high estimated ping.
-func HighPingPlayer(n int, pingMs float64) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 3.0)
-	for i := range frames {
-		frames[i].EstimatedPingMs = pingMs
-	}
-	return frames
-}
-
-// PingSpikeSequence generates frames with occasional ping spikes.
-func PingSpikeSequence(n int, spikePingMs float64) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 3.0)
-	for i := range frames {
-		if i%50 < 5 {
-			frames[i].EstimatedPingMs = spikePingMs
-		} else {
-			frames[i].EstimatedPingMs = 30
-		}
-	}
-	return frames
-}
-
-// SpeedHackFrames generates frames where the player moves at impossible speed.
-func SpeedHackFrames(n int, speed float64) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	dt := 0.067
-	for i := 0; i < n; i++ {
-		// Oscillate at impossible speed on Z axis (long arena axis, ±77m)
-		// Triangle wave: go forward then reverse to stay in bounds
-		totalDist := speed * dt * float64(i)
-		period := 140.0 // bounce back every 140m of travel (±70m range)
-		phase := math.Mod(totalDist, period)
-		var z float64
-		if phase < period/2 {
-			z = -70.0 + phase
-		} else {
-			z = 70.0 - (phase - period/2)
-		}
-		pos := model.Vec3{2.0, 1.6, z}
-		f := baseFrame("player1", i, pos)
-		frames[i] = f
-	}
-	return frames
-}
-
-// TeleportCheat inserts a teleport at the given frame.
-func TeleportCheat(n int, teleportFrame int, teleportDist float64) []model.PlayerTelemetryFrame {
-	frames := NormalMovingPlayer(n, 2.0)
-	if teleportFrame >= len(frames)-1 {
-		teleportFrame = len(frames) / 2
-	}
-	// At teleportFrame, jump position by teleportDist on Z axis (long arena axis)
-	prevZ := frames[teleportFrame-1].Position[2]
-	newZ := prevZ + teleportDist
-	if newZ > 70 {
-		newZ = 10
-	}
-	baseX := frames[teleportFrame-1].Position[0]
-	frames[teleportFrame].Position = model.Vec3{baseX, 1.6, newZ}
-	frames[teleportFrame].LeftHandPosition = model.Vec3{baseX - 0.3, 1.9, newZ + 0.2}
-	frames[teleportFrame].RightHandPosition = model.Vec3{baseX + 0.3, 1.9, newZ - 0.2}
-	// Continue smoothly from new position on Z axis
-	for i := teleportFrame + 1; i < len(frames); i++ {
-		offset := float64(i-teleportFrame) * 2.0 * dt
-		z := newZ + offset
-		if z > 70 {
-			z = 70 - (z - 70)
-		}
-		frames[i] = baseFrame("player1", i, model.Vec3{baseX, 1.6, z})
-	}
-	return frames
-}
-
-// AimbotThrows generates throws with impossible speed and angle characteristics.
-func AimbotThrows(n int) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	fi := 0
-	pos := model.Vec3{10, 1.6, 0}
-	goalPos := model.Vec3{-40, 0, 0}
-	for t := 0; t < n; t++ {
-		// Hold disc
-		for j := 0; j < 10; j++ {
-			f := baseFrame("player1", fi, pos)
-			f.HasPossession = true
-			f.Disc = &model.DiscState{
-				Position:    pos.Add(model.Vec3{0.4, 0.2, 0}),
-				Velocity:    model.Vec3{0, 0, 0},
-				PossessorID: "player1",
-				IsHeld:      true,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-		// Release at impossible speed aimed at goal
-		toGoal := goalPos.Sub(pos).Normalized()
-		releaseSpeed := 35.0
-		releaseVel := toGoal.Scale(releaseSpeed)
-		f := baseFrame("player1", fi, pos)
-		f.HasPossession = false
-		// Hand barely moved (aimbot: high speed ratio)
-		f.RightHandPosition = pos.Add(model.Vec3{0.35, 0.3, -0.2})
-		f.Disc = &model.DiscState{
-			Position: pos.Add(model.Vec3{0.8, 0.2, 0}),
-			Velocity: releaseVel,
-			Speed:    releaseSpeed,
-		}
-		frames = append(frames, f)
-		fi++
-		// Post-throw: disc flying
-		for j := 0; j < 15; j++ {
-			f := baseFrame("player1", fi, pos)
-			dist := float64(j+1) * releaseSpeed * dt
-			f.Disc = &model.DiscState{
-				Position: pos.Add(model.Vec3{0.8, 0.2, 0}).Add(toGoal.Scale(dist)),
-				Velocity: releaseVel,
-				Speed:    releaseSpeed * 0.98,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-	}
-	return frames
-}
-
-// MagnetismCheat generates throws where the disc bends in flight.
-func MagnetismCheat(n int) []model.PlayerTelemetryFrame {
-	var frames []model.PlayerTelemetryFrame
-	fi := 0
-	pos := model.Vec3{10, 1.6, 0}
-	for t := 0; t < n; t++ {
-		// Hold disc
-		for j := 0; j < 10; j++ {
-			f := baseFrame("player1", fi, pos)
-			f.HasPossession = true
-			f.Disc = &model.DiscState{
-				Position:    pos.Add(model.Vec3{0.4, 0.2, 0}),
-				PossessorID: "player1",
-				IsHeld:      true,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-		// Release at moderate speed
-		releaseSpeed := 12.0
-		f := baseFrame("player1", fi, pos)
-		f.HasPossession = false
-		f.RightHandPosition = pos.Add(model.Vec3{0.8, 0.5, -0.1})
-		f.Disc = &model.DiscState{
-			Position: pos.Add(model.Vec3{1, 0.2, 0}),
-			Velocity: model.Vec3{releaseSpeed, 0, 3.0},
-			Speed:    math.Sqrt(releaseSpeed*releaseSpeed + 9.0),
-		}
-		frames = append(frames, f)
-		fi++
-		// Post-release: disc bends drastically
-		for j := 0; j < 15; j++ {
-			dist := float64(j+1) * releaseSpeed * dt
-			bendAngle := float64(j+1) * 8.0 * math.Pi / 180.0
-			vx := releaseSpeed * math.Cos(bendAngle)
-			vz := releaseSpeed * math.Sin(bendAngle) * 0.5
-			f := baseFrame("player1", fi, pos)
-			discPos := pos.Add(model.Vec3{1 + dist*0.5, 0.2, float64(j) * 0.3})
-			spd := math.Sqrt(vx*vx + vz*vz)
-			f.Disc = &model.DiscState{
-				Position:           discPos,
-				Velocity:           model.Vec3{-vx, 0, vz},
-				Speed:              spd,
-				FramesSinceRelease: j + 1,
-			}
-			frames = append(frames, f)
-			fi++
-		}
-	}
-	return frames
-}
-
-// StunBypass generates frames where the player recovers from stun too quickly, multiple times.
-func StunBypass(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		// Stun for only 5 frames every 40 frames (way under min 30 frames required)
-		cyclePos := i % 40
-		if cyclePos >= 10 && cyclePos < 15 {
-			f.IsStunned = true
-		}
-		frames[i] = f
-	}
-	return frames
-}
-
-// GodMode generates frames where the player has immunity for an extended period during active play.
-func GodMode(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		f.IsImmune = true
-		frames[i] = f
-	}
-	return frames
-}
-
-// ScoreManipulation generates frames where the score changes by an invalid delta.
-func ScoreManipulation(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		pos := model.Vec3{5, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		f.BlueScore = 0
-		f.OrangeScore = 0
-		// At frame 25, score jumps by 1 (previously assumed invalid, but
-		// real profiler data proved delta=1 is legitimate)
-		if i >= 25 {
-			f.BlueScore = 1
-		}
-		frames[i] = f
-	}
-	return frames
-}
-
-// InfiniteBoost generates frames with repeated burst-boost sequences that exceed MOV_005 limits.
-// MOV_005 counts boost ACTIVATIONS (IsBoosting rising edges): it requires more than
-// maxConsecutive (5) activations with gaps <= rechargePauseFrames (10) in one sequence,
-// at least minSequences (2) such sequences closed by a pause > 10 frames, and either the
-// per-window frequency or the consecutive limit exceeded when it fires.
-func InfiniteBoost(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	// Pattern per 60-frame cycle: eight 2-frame boost taps 3 frames apart
-	// (8 activations, gaps of 3 <= 10 => one consecutive sequence of 8 > 5),
-	// then a 20-frame pause (> 10) that closes the sequence as a violation.
-	const cycleLen = 60
-	for i := 0; i < n; i++ {
-		// Stay inside the validator's X bound (arena_width/2 + 5 = 12.5 m);
-		// rejected frames would leave the player state stale and unevaluated.
-		x := oscillateX(i, 2.0, -6.0, 6.0)
-		pos := model.Vec3{x, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		cyclePos := i % cycleLen
-		f.IsBoosting = cyclePos < 40 && cyclePos%5 < 2
-		frames[i] = f
-	}
-	return frames
-}
-
-// BotBehavior generates frames with zero hand jitter relative to body (bot-like).
-func BotBehavior(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		// Override: hands nearly fixed relative to body - near-zero jitter.
-		// Add small oscillation so variance is > 0 but < threshold (0.00001),
-		// and hand speed > 0.5 in world space (passes activity filter).
-		// Oscillation amplitude 0.001m at body-relative level, 0.05m in world.
-		wobble := math.Sin(float64(i)*0.3) * 0.001
-		f.LeftHandPosition = pos.Add(model.Vec3{-0.3 + wobble, 0.3, 0.2})
-		f.RightHandPosition = pos.Add(model.Vec3{0.3 + wobble, 0.3, -0.2})
-		// Keep rotation wobble to avoid BIO_004 (we only want BIO_003 to fire)
-		frames[i] = f
-	}
-	return frames
-}
-
-// ExtendedReach generates frames where hands are impossibly far from body.
-func ExtendedReach(n int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, n)
-	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, -10.0, 10.0)
-		pos := model.Vec3{x, 1.6, 3}
-		f := baseFrame("player1", i, pos)
-		// Hands 3m away from body (over PAT_005 threshold)
-		f.LeftHandPosition = pos.Add(model.Vec3{-3.0, 0.3, 0.2})
-		f.RightHandPosition = pos.Add(model.Vec3{3.0, 0.3, -0.2})
-		frames[i] = f
-	}
-	return frames
-}
+// The synthetic generators live in internal/testutil (one suite, validated
+// against the production FrameValidator in generators_test.go). The tests
+// here run them through the production pipeline with the production
+// detector set (DefaultConfig's enabled detectors, enforce mode) unless a
+// detector is named explicitly.
 
 // matchContextForPlayer returns a match context for a single-player test.
 func matchContextForPlayer(playerID string) *model.MatchContext {
@@ -633,77 +33,89 @@ func matchContextForPlayer(playerID string) *model.MatchContext {
 	}
 }
 
+// player1 returns a FrameBuilder for the harness player at a mid-arena
+// start position.
+func player1() *testutil.FrameBuilder {
+	return testutil.NewFrameBuilder("player1").WithStartPos(model.Vec3{2, 1.6, 0})
+}
+
+// runEnabled runs frames through the production-enabled detector set.
+func runEnabled(t *testing.T, frames []model.PlayerTelemetryFrame) *testutil.HarnessResult {
+	t.Helper()
+	hr := testutil.NewHarness(t).WithEnabledDetectors().
+		WithMatchContext(matchContextForPlayer("player1")).
+		Run(t, frames)
+	hr.AssertAllFramesValid(len(frames))
+	return hr
+}
+
+// runOnly runs frames through exactly the named detectors.
+func runOnly(t *testing.T, frames []model.PlayerTelemetryFrame, ids ...string) *testutil.HarnessResult {
+	t.Helper()
+	hr := testutil.NewHarness(t).WithDetectors(ids...).
+		WithMatchContext(matchContextForPlayer("player1")).
+		Run(t, frames)
+	hr.AssertAllFramesValid(len(frames))
+	return hr
+}
+
 // ============================================================================
-// Legitimate Gameplay -- Must NOT Fire
+// Legitimate Gameplay -- Must NOT Fire (production-enabled detectors)
 // ============================================================================
 
 func TestLegit_IdlePlayer_NoDetections(t *testing.T) {
-	frames := NormalIdlePlayer(200)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().NormalIdlePlayer(300)).AssertNoDetections()
 }
 
 func TestLegit_MovingPlayer_NoDetections(t *testing.T) {
-	frames := NormalMovingPlayer(200, 5.0)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().NormalMovingPlayer(600, 5.0)).AssertNoDetections()
+}
+
+func TestLegit_FastMovingPlayer_NoDetections(t *testing.T) {
+	// 30 m/s (+-20 %) is fast but under every movement threshold.
+	runEnabled(t, player1().NormalMovingPlayer(600, 30.0)).AssertNoDetections()
 }
 
 func TestLegit_NormalThrows_NoDetections(t *testing.T) {
-	frames := NormalThrowSequence(5)
-	// THROW_004 (signature repetition) excluded: synthetic throws from a fixed position
-	// inherently produce low generalized variance; real gameplay has spatial variation.
-	hr := testutil.NewHarness(t).
-		WithDetectors("THROW_001", "THROW_002", "THROW_003", "THROW_005", "THROW_006", "THROW_007", "THROW_008").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().NormalThrowSequence(8)).AssertNoDetections()
 }
 
 func TestLegit_EliteThrows_NoDetections(t *testing.T) {
-	frames := EliteThrowSequence(10)
-	// THROW_004 excluded for the same reason as above.
-	hr := testutil.NewHarness(t).
-		WithDetectors("THROW_001", "THROW_002", "THROW_003", "THROW_005", "THROW_006", "THROW_007", "THROW_008").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().EliteThrowSequence(12)).AssertNoDetections()
 }
 
 func TestLegit_RegrabStacking_NoSpeedDetection(t *testing.T) {
-	frames := RegrabStackingBurst(100)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_001").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("MOV_001")
+	hr := runOnly(t, player1().RegrabStackingBurst(150), "MOV_001", "MOV_002", "BIO_002", "MOV_004")
+	hr.AssertNoDetections()
 }
 
 func TestLegit_FastWristFlick_NoBioDetection(t *testing.T) {
-	frames := FastWristFlick(100)
-	hr := testutil.NewHarness(t).WithDetectors("BIO_001").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("BIO_001")
+	runOnly(t, player1().FastWristFlick(150), "BIO_001", "BIO_004").AssertNoDetections()
 }
 
 func TestLegit_SteadyHands_NoJitterDetection(t *testing.T) {
-	frames := SteadyHandPlayer(200)
-	hr := testutil.NewHarness(t).WithDetectors("BIO_003").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("BIO_003")
+	runOnly(t, player1().SteadyHandPlayer(300), "BIO_003", "BIO_004").AssertNoDetections()
 }
 
 func TestLegit_NormalBoosts_NoSpamDetection(t *testing.T) {
-	frames := NormalBoostSequence(4)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_005").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("MOV_005")
+	// MOV_004/MOV_005 are disabled by default (telemetry dependent); enabled
+	// explicitly so a legitimate boost rhythm is proven silent on them.
+	runOnly(t, player1().NormalBoostSequence(4), "MOV_004", "MOV_005", "MOV_001").AssertNoDetections()
+}
+
+func TestLegit_NormalStuns_NoRecoveryDetection(t *testing.T) {
+	runOnly(t, player1().NormalStunCycle(450, 45), "STATE_002", "MOV_002").AssertNoDetections()
+}
+
+func TestLegit_NormalShieldUse_NoDetection(t *testing.T) {
+	runOnly(t, player1().NormalShieldCycle(4), "STATE_003", "STATE_005").AssertNoDetections()
+}
+
+func TestLegit_RespawnImmunity_NoDetection(t *testing.T) {
+	// A respawn is a 30 m jump under immunity: MOV_002 skips immune players,
+	// BIO_002 resets on immunity and STATE_004's 225-frame limit is far
+	// above the 22-frame window.
+	runOnly(t, player1().RespawnImmunity(200, 100), "MOV_002", "MOV_001", "BIO_002", "STATE_004").AssertNoDetections()
 }
 
 // ============================================================================
@@ -711,173 +123,158 @@ func TestLegit_NormalBoosts_NoSpamDetection(t *testing.T) {
 // ============================================================================
 
 func TestNoise_JitteryTelemetry_NoDetections(t *testing.T) {
-	frames := JitteryTelemetry(200, 0.05)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().JitteryTelemetry(300, 0.05)).AssertNoDetections()
 }
 
 func TestNoise_PacketLoss_NoDetections(t *testing.T) {
-	frames := PacketLossFrames(200, 0.1)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	frames := player1().PacketLossFrames(300, 0.3)
+	if len(frames) > 225 || len(frames) < 195 { // ~30 % dropped
+		t.Fatalf("packet loss generator kept %d of 300 frames", len(frames))
+	}
+	runEnabled(t, frames).AssertNoDetections()
 }
 
 func TestNoise_LargeFrameGap_NoTeleport(t *testing.T) {
-	frames := LargeFrameGap(200, 100, 1.0)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_002").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("MOV_002")
+	// A 2 s stall at frame 100: the player is 10 m further along (over the
+	// 8 m teleport threshold) and the frame index jumps by 30 (over
+	// max_frame_gap 5). The frame is accepted, no kinematics are derived
+	// across the gap and MOV_002 skips it.
+	frames := player1().LargeFrameGap(200, 100, 2.0)
+	if got := frames[100].FrameIndex - frames[99].FrameIndex; got != 31 {
+		t.Fatalf("gap frame index delta = %d, want 31", got)
+	}
+	if jump := frames[100].Position.Distance(frames[99].Position); jump < 8.0 {
+		t.Fatalf("gap displacement %.2f m is under the teleport threshold; the test could not fail", jump)
+	}
+	hr := runOnly(t, frames, "MOV_002", "MOV_001")
+	hr.AssertNoDetections()
 }
 
 func TestNoise_InterpolationArtifact_NoSpeedHack(t *testing.T) {
-	frames := InterpolationArtifact(200)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_001", "MOV_002").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	// Three single-frame 4 m body glitches: ~60 m/s for two frames each,
+	// visible to MOV_001 but under its 5-frame burst minimum, and under
+	// MOV_002's 8 m threshold.
+	frames := player1().InterpolationArtifact(300)
+	glitches := 0
+	for i := 1; i < len(frames); i++ {
+		if frames[i].Position.Distance(frames[i-1].Position) > 3.0 {
+			glitches++
+		}
+	}
+	if glitches != 6 { // out and back, three times
+		t.Fatalf("expected 6 glitch transitions, got %d", glitches)
+	}
+	runOnly(t, frames, "MOV_001", "MOV_002").AssertNoDetections()
+}
+
+// A body glitch moves the hands with the body, and BIO_002's
+// min_violation_frames (2) is exactly the out-and-back pair a single-frame
+// glitch produces. This pins the production behaviour (reported as a
+// false-positive risk; see the workstream report) so a threshold change
+// is visible.
+func TestNoise_InterpolationArtifact_Bio002FiresOnGlitch(t *testing.T) {
+	hr := runOnly(t, player1().InterpolationArtifact(300), "BIO_002")
+	hr.AssertDetectorFiredN("BIO_002", 3)
+	for _, ev := range hr.DetectorEvents("BIO_002") {
+		if ev.Confidence > 0.5 {
+			t.Errorf("a two-frame glitch should stay at the minimum confidence, got %.2f", ev.Confidence)
+		}
+	}
 }
 
 func TestNoise_HighPing_NoFalsePositives(t *testing.T) {
-	frames := HighPingPlayer(200, 200)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().HighPingPlayer(300, 200)).AssertNoDetections()
 }
 
 func TestNoise_PingSpike_NoFalsePositives(t *testing.T) {
-	frames := PingSpikeSequence(200, 100)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertNoDetections()
+	runEnabled(t, player1().PingSpikeSequence(300, 100, 400)).AssertNoDetections()
 }
 
 // ============================================================================
-// Cheat Scenarios -- MUST Fire Correctly
+// Cheat Scenarios -- MUST Fire at production parameters
 // ============================================================================
 
 func TestCheat_SpeedHack_Detected(t *testing.T) {
-	frames := SpeedHackFrames(100, 80.0)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_001").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("MOV_001")
+	hr := runOnly(t, player1().SpeedHackFrames(150, 80), "MOV_001")
+	hr.AssertDetectorFiredN("MOV_001", 4) // one per full 30-frame window after warmup
+	hr.AssertMinSeverity("MOV_001", 0.85)
+	hr.AssertMinConfidence("MOV_001", 0.99)
 	hr.AssertScoreAbove("player1", 1.0)
 }
 
 func TestCheat_Teleport_Detected(t *testing.T) {
-	// Insert three teleports — MOV_002 requires min_incidents=3 to reduce
-	// false positives from game-event teleports.
-	frames := TeleportCheat(300, 30, 10.0)
-	// Add second teleport at frame 120
-	insertTeleport := func(atFrame int) {
-		prevZ := frames[atFrame-1].Position[2]
-		newZ := prevZ + 10.0
-		if newZ > 70 {
-			newZ = 10
-		}
-		baseX := frames[atFrame-1].Position[0]
-		frames[atFrame].Position = model.Vec3{baseX, 1.6, newZ}
-		frames[atFrame].LeftHandPosition = model.Vec3{baseX - 0.3, 1.9, newZ + 0.2}
-		frames[atFrame].RightHandPosition = model.Vec3{baseX + 0.3, 1.9, newZ - 0.2}
-		for i := atFrame + 1; i < len(frames) && i < atFrame+40; i++ {
-			offset := float64(i-atFrame) * 2.0 * dt
-			z := newZ + offset
-			if z > 70 {
-				z = 70 - (z - 70)
-			}
-			frames[i] = baseFrame("player1", i, model.Vec3{baseX, 1.6, z})
-		}
-	}
-	insertTeleport(120)
-	insertTeleport(220)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_002").
-		WithDetectorParams("MOV_002", map[string]any{"min_incidents": 1}).
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("MOV_002")
+	// Production params (min_incidents 5): a 10 m jump every 30 frames over
+	// 300 frames is 9 jumps, the 5th..9th are reported.
+	hr := runOnly(t, player1().TeleportCheat(300, 30, 10.0), "MOV_002")
+	hr.AssertDetectorFiredN("MOV_002", 5)
+	hr.AssertMinSeverity("MOV_002", 0.4)
+	hr.AssertMinConfidence("MOV_002", 0.99)
+}
+
+func TestCheat_Teleport_SlowCadence_Detected(t *testing.T) {
+	// 11 m every 70 frames over 600 frames: 8 jumps, 4 reported, and an
+	// 11 m jump sits above the severity midpoint of the accepted range.
+	hr := runOnly(t, player1().TeleportCheat(600, 70, 11.0), "MOV_002")
+	hr.AssertDetectorFiredN("MOV_002", 4)
+	hr.AssertMinSeverity("MOV_002", 0.5)
 }
 
 func TestCheat_Aimbot_Detected(t *testing.T) {
-	frames := AimbotThrows(8)
-	hr := testutil.NewHarness(t).
-		WithDetectors("THROW_001", "THROW_003", "THROW_005").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("THROW_001")
+	hr := runOnly(t, player1().AimbotThrows(8), "THROW_001", "THROW_003", "THROW_005")
+	hr.AssertDetectorFiredN("THROW_001", 8)
+	hr.AssertMinSeverity("THROW_001", 0.99)
+	// The releases are aimed 1 degree off the goal: THROW_005 fires on the
+	// 8th goal-directed throw (mean deviation < 2, stddev < 1.5).
+	hr.AssertDetectorFiredN("THROW_005", 1)
+	// The hand moves along the disc's path, so the release angle is small.
+	hr.AssertDetectorNotFired("THROW_003")
 }
 
 func TestCheat_Magnetism_Detected(t *testing.T) {
-	// Generate enough throws with strong magnetism. Override thresholds
-	// to match the test's bend characteristics (the production thresholds
-	// are tuned for real replay data which has more frames per throw).
-	frames := MagnetismCheat(12)
-	hr := testutil.NewHarness(t).WithDetectors("THROW_006").
-		WithDetectorParams("THROW_006", map[string]any{
-			"max_cumulative_change": 30.0,
-		}).
+	// Production thresholds, no overrides. The attacked goal must be known
+	// (production learns it from the first scored goal): with it the disc's
+	// alignment with the goal improves from ~0 to 1 over the tracked flight.
+	hr := testutil.NewHarness(t).WithDetectors("THROW_006").WithBlueGoalSide(1).
 		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("THROW_006")
+		Run(t, player1().MagnetismCheat(4))
+	hr.AssertDetectorFiredN("THROW_006", 4)
+	hr.AssertMinSeverity("THROW_006", 0.9)
+	hr.AssertMinConfidence("THROW_006", 0.9)
 }
 
 func TestCheat_StunBypass_Detected(t *testing.T) {
-	frames := StunBypass(200)
-	hr := testutil.NewHarness(t).WithDetectors("STATE_002").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("STATE_002")
+	hr := runOnly(t, player1().StunBypass(200), "STATE_002")
+	hr.AssertDetectorFiredN("STATE_002", 4) // 5 short stuns, reported from the 2nd
+	hr.AssertMinSeverity("STATE_002", 0.9)
 }
 
 func TestCheat_GodMode_Detected(t *testing.T) {
-	frames := GodMode(900)
-	hr := testutil.NewHarness(t).WithDetectors("STATE_004").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("STATE_004")
+	hr := runOnly(t, player1().GodMode(600), "STATE_004")
+	hr.AssertDetectorFiredN("STATE_004", 4) // 231 frames, then every 112
+	hr.AssertMinSeverity("STATE_004", 0.99)
 }
 
-func TestCheat_ScoreManipulation_DeltaOneLegitimate(t *testing.T) {
-	// delta=1 was previously flagged as impossible, but real profiler data
-	// confirmed it occurs legitimately (frame-boundary artifacts).
-	// STATE_006 must NOT fire for a score delta of 1.
-	frames := ScoreManipulation(50)
-	hr := testutil.NewHarness(t).WithDetectors("STATE_006").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorNotFired("STATE_006")
+func TestCheat_ScoreManipulation_SuspendedDetectorStaysSilent(t *testing.T) {
+	// STATE_006 is SUSPENDED: no confirmed impossible score invariant, so a
+	// +7 jump produces nothing even with the detector enabled.
+	runOnly(t, player1().ScoreJump(50, 7), "STATE_006").AssertDetectorNotFired("STATE_006")
 }
 
 func TestCheat_InfiniteBoost_Detected(t *testing.T) {
-	frames := InfiniteBoost(300)
-	// Production params: min_sequences (2) closed violation sequences are
-	// required before the frequency/consecutive test may surface an event.
-	hr := testutil.NewHarness(t).WithDetectors("MOV_005").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("MOV_005")
+	hr := runOnly(t, player1().InfiniteBoost(300), "MOV_005")
+	hr.AssertDetectorFiredN("MOV_005", 1)
 }
 
 func TestCheat_BotBehavior_Detected(t *testing.T) {
-	frames := BotBehavior(1200)
-	hr := testutil.NewHarness(t).WithDetectors("BIO_003").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("BIO_003")
+	hr := runOnly(t, player1().BotBehavior(600), "BIO_003")
+	hr.AssertDetectorFiredN("BIO_003", 2)
+	hr.AssertMinSeverity("BIO_003", 0.8)
 }
 
 func TestCheat_ExtendedReach_Detected(t *testing.T) {
-	frames := ExtendedReach(100)
-	hr := testutil.NewHarness(t).WithDetectors("PAT_005").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertDetectorFired("PAT_005")
+	hr := runOnly(t, player1().ExtendedReach(100), "PAT_005")
+	hr.AssertDetectorFiredN("PAT_005", 3) // at 30, 60 and 90 sustained frames
+	hr.AssertMinConfidence("PAT_005", 0.79)
 }
 
 // ============================================================================
@@ -885,59 +282,53 @@ func TestCheat_ExtendedReach_Detected(t *testing.T) {
 // ============================================================================
 
 func TestScoring_MultipleCheatTypes_HighScore(t *testing.T) {
-	speedFrames := SpeedHackFrames(60, 80.0)
-	aimbotFrames := AimbotThrows(4)
-	offset := len(speedFrames)
-	for i := range aimbotFrames {
-		aimbotFrames[i].FrameIndex += offset
-		aimbotFrames[i].Timestamp += float64(offset) * dt
-	}
-	frames := append(speedFrames, aimbotFrames...)
-	hr := testutil.NewHarness(t).WithAllDetectors().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertScoreAbove("player1", 5.0)
+	// Movement (MOV_001), state (STATE_001) and throw (THROW_001) evidence
+	// on one player: three categories reach PAT_004 and the review tier.
+	hr := runEnabled(t, player1().CompositeCheater())
+	hr.AssertDetectorFired("MOV_001")
+	hr.AssertDetectorFired("STATE_001")
+	hr.AssertDetectorFired("THROW_001")
+	hr.AssertDetectorFiredN("PAT_004", 1)
+	levels := testutil.NewHarness(t).Config().Scoring.LevelTable()
+	hr.AssertScoreAbove("player1", levels.HighRisk)
 }
 
 func TestScoring_SingleSoftSignal_LowScore(t *testing.T) {
-	frames := TeleportCheat(100, 50, 10.0)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_002").
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	hr.AssertScoreBelow("player1", 40.0)
+	// One 10 m jump is below MOV_002's min_incidents (5): no event, no score.
+	frames := player1().NormalMovingPlayer(120, 4.0)
+	testutil.ShiftFrom(frames, 60, model.Vec3{0, 0, 10})
+	hr := runOnly(t, frames, "MOV_002")
+	hr.AssertNoDetections()
+	if sc, ok := hr.PlayerScores["player1"]; ok && sc.TotalScore != 0 {
+		t.Errorf("a single teleport must not score, got %.2f", sc.TotalScore)
+	}
+	levels := testutil.NewHarness(t).Config().Scoring.LevelTable()
+	hr.AssertScoreBelow("player1", levels.Informational)
 }
 
 // ============================================================================
 // Shadow Mode
 // ============================================================================
 
-func TestShadow_DefaultMode_NoScoring(t *testing.T) {
-	frames := SpeedHackFrames(100, 80.0)
+func TestShadow_DefaultMode_EventsNotScored(t *testing.T) {
 	hr := testutil.NewHarness(t).WithDetectors("MOV_001").
 		WithShadowMode().
 		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	if len(hr.Events) > 0 {
-		hr.AssertAllShadow()
-	}
-	score, ok := hr.PlayerScores["player1"]
-	if ok && score.TotalScore > 0 {
+		Run(t, player1().SpeedHackFrames(150, 80))
+	hr.AssertDetectorFiredN("MOV_001", 4)
+	hr.AssertAllShadow()
+	if score, ok := hr.PlayerScores["player1"]; ok && score.TotalScore > 0 {
 		t.Errorf("expected zero score in shadow mode, got %.2f", score.TotalScore)
 	}
 }
 
-func TestShadow_EventsStillGenerated(t *testing.T) {
-	frames := SpeedHackFrames(100, 80.0)
-	hr := testutil.NewHarness(t).WithDetectors("MOV_001").
-		WithShadowMode().
-		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, frames)
-	if len(hr.Events) == 0 {
-		t.Log("Note: shadow mode generated no events; MOV_001 may not have fired in this scenario")
-	}
+func TestShadow_EnforceMode_EventsScored(t *testing.T) {
+	hr := runOnly(t, player1().SpeedHackFrames(150, 80), "MOV_001")
+	hr.AssertDetectorFiredN("MOV_001", 4)
 	for _, ev := range hr.Events {
-		if !ev.IsShadow {
-			t.Errorf("expected all events to be shadow, but %s at frame %d is not", ev.DetectorID, ev.FrameIndex)
+		if ev.IsShadow {
+			t.Errorf("enforce-mode event %s at frame %d is marked shadow", ev.DetectorID, ev.FrameIndex)
 		}
 	}
+	hr.AssertScoreAbove("player1", 1.0)
 }
