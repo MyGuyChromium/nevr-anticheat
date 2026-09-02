@@ -87,7 +87,7 @@ func NormalIdlePlayer(n int) []model.PlayerTelemetryFrame {
 func NormalMovingPlayer(n int, speed float64) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, speed, 5.0, 30.0)
+		x := oscillateX(i, speed, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		frames[i] = baseFrame("player1", i, pos)
 	}
@@ -209,7 +209,7 @@ func EliteThrowSequence(n int) []model.PlayerTelemetryFrame {
 func RegrabStackingBurst(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, 5.0, 15.0)
+		x := oscillateX(i, 1.5, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 0}
 		frames[i] = baseFrame("player1", i, pos)
 	}
@@ -238,7 +238,7 @@ func FastWristFlick(n int) []model.PlayerTelemetryFrame {
 func SteadyHandPlayer(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, 5.0, 15.0)
+		x := oscillateX(i, 0.75, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		frames[i] = baseFrame("player1", i, pos)
 	}
@@ -294,7 +294,7 @@ func PacketLossFrames(n int, dropRate float64) []model.PlayerTelemetryFrame {
 		if hash < dropRate {
 			continue
 		}
-		x := oscillateX(i, 1.2, 5.0, 20.0)
+		x := oscillateX(i, 1.2, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		frames = append(frames, baseFrame("player1", i, pos))
 	}
@@ -511,7 +511,7 @@ func MagnetismCheat(n int) []model.PlayerTelemetryFrame {
 func StunBypass(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, 5.0, 15.0)
+		x := oscillateX(i, 0.75, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		f := baseFrame("player1", i, pos)
 		// Stun for only 5 frames every 40 frames (way under min 30 frames required)
@@ -528,7 +528,7 @@ func StunBypass(n int) []model.PlayerTelemetryFrame {
 func GodMode(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, 5.0, 25.0)
+		x := oscillateX(i, 1.5, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		f := baseFrame("player1", i, pos)
 		f.IsImmune = true
@@ -583,7 +583,7 @@ func InfiniteBoost(n int) []model.PlayerTelemetryFrame {
 func BotBehavior(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 1.5, 5.0, 25.0)
+		x := oscillateX(i, 1.5, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		f := baseFrame("player1", i, pos)
 		// Override: hands nearly fixed relative to body - near-zero jitter.
@@ -603,7 +603,7 @@ func BotBehavior(n int) []model.PlayerTelemetryFrame {
 func ExtendedReach(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 0.75, 5.0, 15.0)
+		x := oscillateX(i, 0.75, -10.0, 10.0)
 		pos := model.Vec3{x, 1.6, 3}
 		f := baseFrame("player1", i, pos)
 		// Hands 3m away from body (over PAT_005 threshold)
