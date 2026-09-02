@@ -1,344 +1,204 @@
-# NEVR-Anticheat — First Live Shadow Deployment Configuration
+# NEVR-Anticheat -- first live shadow deployment
 #
-# Purpose: Initial shadow-mode deployment on a single community server.
-# All detectors run in shadow mode (log only, no enforcement).
-# Only physics-grounded detectors with conservative thresholds are enabled.
-# Adapter diagnostics are active for telemetry validation.
+# Purpose: initial shadow-mode deployment on a single community server.
+# This file is an OVERLAY on configs/default.toml: every key not written here
+# keeps its default (physics, pipeline, scoring tiers, detector params).
+# Verify the merged result in the effective-config table both binaries log at
+# startup.
 #
-# IMPORTANT: This config produces NO player-visible enforcement actions.
-# It generates detection events, scores them, and stores results for analysis.
-# Shadow scores are for CALIBRATION, not proof of cheating.
+# WHAT THIS CONFIG PRODUCES
+#   Every detector below runs in mode = "shadow". Shadow events are stored in
+#   detection_events with is_shadow = 1 and are NEVER scored: the
+#   suspicion_scores table stays empty, no review case is created, `nevr-ac
+#   flagged` prints "No flagged players." and nothing is logged per event.
+#   The output of a shadow deployment is the detection_events table; read it
+#   with the SQL in docs/shadow_deployment_guide.md.
 #
-# DEPLOYMENT CAVEATS:
-# 1. No threshold has been validated against real Echo VR telemetry.
-# 2. BIO_001 has unconfirmed rotation format — validate after first match.
-# 3. PAT_003 is disabled — enable after 3+ matches of DB history exist.
-# 4. STATE_007 is observation-only — validates stun count telemetry granularity.
-# 5. All scores are shadow-only. No review queue. No enforcement actions.
+# CAVEATS
+#   1. No threshold has been validated against real Echo VR telemetry.
+#   2. BIO_001 cannot fire on 15 Hz bridge data (46.9 rad/s saturation < 50);
+#      it is enabled to confirm the rotation pipeline is alive, not to detect.
+#   3. PAT_003 stays disabled until 3+ matches of history exist.
+#   4. enforcement_weight has no effect while mode = "shadow"; the weights
+#      below are the values that WOULD apply once a detector is promoted.
 
 [general]
-mode = "offline"                    # "offline" for replay analysis, "online" for live server
-log_level = "info"                  # "debug" for first 24h, then "info"
-log_format = "json"                 # JSON for structured log aggregation
-max_workers = 2                     # conservative: 2 concurrent replay analyses
-db_path = "./nevr-ac-shadow.db"     # separate DB for shadow deployment
-
-[physics]
-# Echo VR physics constants — validated from game engine documentation.
-# DO NOT change these without re-validating against live game data.
-disc_speed_cap = 18.7
-boost_speed_cap = 5.0
-max_player_speed = 55.0
-max_throw_speed = 20.0
-stun_duration = 3.0
-shield_cooldown = 5.0
-immunity_window = 1.5
-grab_range = 0.8
+log_level   = "info"                  # "debug" for the first match, then "info"
+log_format  = "json"
+max_workers = 2                       # parallel workers for `nevr-ac batch`
+db_path     = "./nevr-ac-shadow.db"   # separate DB for the shadow deployment
 
 [pipeline]
-history_window = 30                 # 30 frames = ~2 seconds at 15fps
-min_frame_dt = 0.01                 # reject frames faster than 100fps
-max_frame_dt = 0.2                  # clamp gaps larger than 200ms
-max_events_per_player_per_detector = 50   # lower than default for shadow (reduce noise)
-high_ping_threshold_ms = 150        # players above this get relaxed thresholds
-cooldown_frames = 300               # ~20 seconds between same-detector same-player events
+max_events_per_player_per_detector = 50   # lower than default to bound noise from a spamming detector
 
-[scoring]
-decay_half_life_hours = 168.0       # 7-day decay half-life
-review_threshold = 15.0             # score for moderator review (shadow: logged only)
-auto_enforce_threshold = 50.0       # score for auto-enforcement (shadow: logged only)
-auto_enforce_min_confidence = 0.95
-min_matches_for_cross_match = 3
-max_single_contribution = 15.0      # cap per event
-max_contrib_per_detector_per_match = 2
-in_match_decay_points_per_min = 2.0
-cross_match_decay_factor = 0.95
-clean_match_reset_count = 100
-correlation_bonus_cap = 15.0
-same_category_diminishing = 0.8
-
-[baseline]
-min_baseline_matches = 10
-baseline_update_interval = 5
-player_baseline_weight = 0.3
-
-[shadow]
-# All detectors below are in shadow mode regardless of per-detector mode setting.
-# This is a global override for safety during initial deployment.
-shadow_detectors = []
+# [physics] and [scoring] are inherited from the defaults (18.7 m/s disc cap,
+# review at 60 = high_risk). Nothing here is scored, so the scoring keys only
+# matter for the offline `analyze` runs used to check a detector's behaviour.
 
 # ==============================================================================
-# ENABLED DETECTORS — Physics-grounded, safe for shadow observation
+# Enabled, weight as it would apply after promotion (physics-grounded)
 # ==============================================================================
-# These detectors are grounded in game physics constraints and have conservative
-# thresholds. NONE have been validated against real Echo VR telemetry. All
-# thresholds are derived from synthetic test data and game documentation.
-
-# --- THROW DETECTORS ---
 
 [detector.THROW_001]
-# Impossible Release Velocity — hard physics cap detection
-# Physics cap is engine-enforced; tolerance values are UNVERIFIED
-enabled = true
+# Impossible Release Velocity: engine cap 18.7 m/s; tolerances UNVERIFIED.
+enabled            = true
 enforcement_weight = 0.8
-auto_enforce = false                # NEVER auto-enforce in shadow deployment
-mode = "shadow"
-[detector.THROW_001.params]
-speed_threshold = 20.0
-base_tolerance = 1.3
-ping_tolerance_scalar = 5.0
-max_speed_ratio = 3.0
-sigmoid_steepness = 2.0
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.THROW_006]
-# Trajectory Correction (Magnetism) — disc bending in free flight
-# Straight-line physics is a hard constraint; angle thresholds are UNVERIFIED
-enabled = true
+# Trajectory Correction (Mags): straight-line physics; angle thresholds UNVERIFIED.
+enabled            = true
 enforcement_weight = 0.8
-auto_enforce = false
-mode = "shadow"
-[detector.THROW_006.params]
-min_trajectory_change = 8.0
-post_release_frames = 15
-min_distance_from_thrower = 2.0
-max_cumulative_change = 130.0
-
-# --- BIOMECHANICS DETECTORS ---
-
-[detector.BIO_001]
-# Impossible Wrist Rotation — exceeds human physical limits
-# UNVERIFIED: depends on hand rotation arriving as quaternions. Echo VR API
-# uses {pos, forward, left, up} direction vectors. .echoreplay format is
-# unconfirmed. If format is wrong, detector receives garbage input.
-# FIRST-MATCH VALIDATION REQUIRED: check BIO_001 event rates after match 1.
-# If it fires on every frame or never fires, rotation format is wrong — disable it.
-enabled = true
-enforcement_weight = 0.0             # observation-only until rotation format confirmed
-auto_enforce = false
-mode = "shadow"
-[detector.BIO_001.params]
-max_wrist_angular_velocity = 50.0
-min_violation_frames = 2
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.BIO_002]
-# Impossible Hand Speed — exceeds human physical limits
-# Hand positions are generally available; threshold (50 m/s = 4x physical limit) is generous
-enabled = true
+# Impossible Hand Speed: 50 m/s is ~4x the human limit.
+enabled            = true
 enforcement_weight = 0.6
-auto_enforce = false
-mode = "shadow"
-[detector.BIO_002.params]
-max_hand_speed = 50.0
-min_violation_frames = 2
-
-# --- MOVEMENT DETECTORS ---
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.MOV_001]
-# Impossible Player Speed — sustained speed above physics cap
-# Position-derived, median filter resists spikes; threshold (55 m/s) is generous
-enabled = true
+# Impossible Player Speed: median-filtered; 55 m/s is generous.
+enabled            = true
 enforcement_weight = 0.7
-auto_enforce = false
-mode = "shadow"
-[detector.MOV_001.params]
-max_legitimate_speed = 55.0
-sustained_speed_window = 30
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.MOV_002]
-# Teleportation — instantaneous position jump
-# Dual-condition (distance + velocity mismatch); network desync behavior UNVERIFIED
-enabled = true
+# Teleportation: dual condition + 5-incident minimum; desync behaviour UNVERIFIED.
+enabled            = true
 enforcement_weight = 0.8
-auto_enforce = false
-mode = "shadow"
-[detector.MOV_002.params]
-teleport_threshold = 8.0
-velocity_mismatch_factor = 3.0
-max_frame_gap_ms = 200.0
-
-# --- STATE DETECTORS ---
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.STATE_002]
-# Stun Recovery Exploit — stun ends too quickly
-# Frame counting with 2-incident requirement; real stun duration UNVERIFIED
-enabled = true
+# Stun Recovery Exploit: 2-incident minimum; real stun duration UNVERIFIED.
+enabled            = true
 enforcement_weight = 0.7
-auto_enforce = false
-mode = "shadow"
-[detector.STATE_002.params]
-min_stun_frames = 20
-min_incidents_to_surface = 2
-
-[detector.STATE_006]
-# Score Manipulation — SUSPENDED
-# Real profiler data proved delta=1 is legitimate. No score delta has been
-# confirmed impossible across real telemetry. Disabled until a verified
-# invariant is established from production data.
-enabled = false
-enforcement_weight = 1.0
-auto_enforce = false
-mode = "shadow"
-
-# --- PATTERN DETECTORS ---
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.PAT_004]
-# Composite Multi-Cheat — 3+ detector categories in one match
-# Meta-detector, conservative by design; accuracy depends on upstream detectors
-enabled = true
+# Composite Multi-Cheat: meta-detector over non-shadow events. With every
+# upstream detector in shadow it receives nothing and cannot fire.
+enabled            = true
 enforcement_weight = 0.9
-auto_enforce = false
-mode = "shadow"
-[detector.PAT_004.params]
-min_categories = 3
+auto_enforce       = false
+mode               = "shadow"
 
 [detector.PAT_005]
-# Playspace Abuse — extended reach beyond physical arm length
-# 1.6m threshold is 2x physical arm reach; sustained 30-frame window is conservative
-enabled = true
+# Playspace Abuse: 1.6 m hand-to-head sustained for 30 frames.
+enabled            = true
 enforcement_weight = 0.5
-auto_enforce = false
-mode = "shadow"
-[detector.PAT_005.params]
-max_hand_to_head_distance = 1.6
-playspace_abuse_samples = 45
+auto_enforce       = false
+mode               = "shadow"
 
 # ==============================================================================
-# OBSERVATION-ONLY DETECTORS — Enabled for data collection, not enforcement
+# Enabled for observation only (weight 0.0): baseline data collection
 # ==============================================================================
-# These detectors need threshold tuning from real data. They run in shadow mode
-# to collect baseline distributions. Their events are stored but never scored.
-
-[detector.THROW_002]
-# BROKEN: pre-release frame data in real .echoreplay files contains identical
-# disc velocities across all snapshots. Detector logic is correct but input
-# data produces wrong results. Disabled until replay parser provides valid data.
-enabled = false
-enforcement_weight = 0.0
-mode = "shadow"
-[detector.THROW_002.params]
-max_release_acceleration = 500.0
-release_window_frames = 3
-max_accel_ratio = 5.0
 
 [detector.THROW_003]
-# Release Angle — needs real wrist-flick distribution data
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.THROW_003.params]
-max_release_angle_deviation = 177.0
-min_hand_speed = 3.0
-min_throw_speed = 5.0
+mode               = "shadow"
 
 [detector.THROW_005]
-# Target Precision — needs real accuracy distribution data
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.THROW_005.params]
-max_mean_deviation = 2.0
-max_stddev_deviation = 1.5
-min_throws_for_pattern = 8
+mode               = "shadow"
 
 [detector.THROW_008]
-# Speed-Distance Anomaly — needs arena physics validation
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.THROW_008.params]
-speed_increase_tolerance = 5.0
-max_tracking_frames = 30
+mode               = "shadow"
+
+[detector.BIO_001]
+# Rotation-format probe. Cannot exceed 50 rad/s on 15 Hz data; if it fires at
+# all on bridge data the rotation conversion is producing garbage.
+enabled            = true
+enforcement_weight = 0.0
+mode               = "shadow"
 
 [detector.BIO_003]
-# Zero Hand Jitter — needs real VR controller jitter baseline
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.BIO_003.params]
-max_jitter_variance = 0.00001
-jitter_window_frames = 90
-min_active_frames = 60
+mode               = "shadow"
 
 [detector.BIO_004]
-# Zero Aim Wobble — needs real rotation variance baseline
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.BIO_004.params]
-max_wobble_variance = 0.00005
-wobble_window_frames = 90
-active_only = true
+mode               = "shadow"
 
 [detector.STATE_001]
-# Grab Distance — needs real grab range validation
-enabled = true
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.STATE_001.params]
-grab_distance_threshold = 3.0
+mode               = "shadow"
 
 [detector.STATE_007]
-# Punch Range — needs validation of per-frame stun count updates
-enabled = true
+# Validates whether per-frame stun counts update at all.
+enabled            = true
 enforcement_weight = 0.0
-mode = "shadow"
-[detector.STATE_007.params]
-punch_range_threshold = 10.0
-min_incidents = 3
-
-[detector.PAT_003]
-# CROSS_MATCH_DEPENDENT: HistoryProvider IS wired in cmd/server, but produces
-# no events until min_matches (3) worth of prior detection history exists in DB.
-# Disabled for initial deployment; enable once sufficient history is collected.
-enabled = false
-enforcement_weight = 0.0
-mode = "shadow"
-[detector.PAT_003.params]
-min_matches_soft = 3
-min_matches_hard = 2
-min_avg_confidence = 0.6
-match_history_depth = 20
+mode               = "shadow"
 
 # ==============================================================================
-# DISABLED DETECTORS — Unsafe or telemetry-dependent
+# Disabled
 # ==============================================================================
+
+[detector.THROW_002]
+enabled = false     # UNVERIFIED: v2.0.0 single-delta approach needs real-data calibration
+enforcement_weight = 0.0
+mode    = "shadow"
 
 [detector.THROW_004]
 enabled = false     # UNSAFE: regrab playstyle produces false positives
-mode = "shadow"
+mode    = "shadow"
 
 [detector.THROW_007]
-enabled = false     # STUB: no implementation, needs penalty field geometry
-mode = "shadow"
+enabled = false     # STUB: no penalty-field telemetry
+mode    = "shadow"
 
 [detector.MOV_003]
 enabled = false     # UNSAFE: wall bounces produce false positives
-mode = "shadow"
+mode    = "shadow"
 
 [detector.MOV_004]
-enabled = false     # TELEMETRY_DEPENDENT: needs IsBoosting (absent from API)
-mode = "shadow"
+enabled = false     # TELEMETRY_DEPENDENT: needs is_boosting
+mode    = "shadow"
 
 [detector.MOV_005]
-enabled = false     # TELEMETRY_DEPENDENT: needs IsBoosting + sequence counter bug
-mode = "shadow"
+enabled = false     # TELEMETRY_DEPENDENT: needs is_boosting
+mode    = "shadow"
 
 [detector.STATE_003]
-enabled = false     # TELEMETRY_DEPENDENT: ShieldActive field UNCONFIRMED in .echoreplay format
-mode = "shadow"
+enabled = false     # TELEMETRY_DEPENDENT: needs shield_active
+mode    = "shadow"
 
 [detector.STATE_004]
-enabled = false     # TELEMETRY_DEPENDENT: IsImmune field UNCONFIRMED in .echoreplay format
-mode = "shadow"
+enabled = false     # TELEMETRY_DEPENDENT: needs is_immune
+mode    = "shadow"
 
 [detector.STATE_005]
-enabled = false     # TELEMETRY_DEPENDENT: ShieldActive field UNCONFIRMED (same as STATE_003)
-mode = "shadow"
+enabled = false     # TELEMETRY_DEPENDENT: needs shield_active
+mode    = "shadow"
+
+[detector.STATE_006]
+enabled = false     # SUSPENDED: no confirmed impossible score invariant
+enforcement_weight = 1.0
+auto_enforce = false
+mode    = "shadow"
 
 [detector.PAT_001]
 enabled = false     # UNSAFE: rhythmic regrab produces false positives
-mode = "shadow"
+mode    = "shadow"
 
 [detector.PAT_002]
 enabled = false     # UNSAFE: consistent throwing form produces false positives
-mode = "shadow"
+mode    = "shadow"
+
+[detector.PAT_003]
+enabled = false     # CROSS_MATCH_DEPENDENT: enable at weight 0.0 after 3+ matches of history
+enforcement_weight = 0.0
+mode    = "shadow"
