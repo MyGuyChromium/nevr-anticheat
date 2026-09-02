@@ -1,8 +1,45 @@
 // Package scoring implements the suspicion scoring engine.
+//
+// # Score composition
+//
+// A player's TotalScore is min(100, BaseScore + CorrelationBonus).
+//
+//   - BaseScore accumulates event contributions
+//     (severity * confidence * enforcement_weight * 100), each capped at
+//     MaxSingleContribution, at most MaxContribPerDetectorPerMatch events per
+//     detector, subject to a per-detector frame cooldown, and diminished
+//     geometrically for repeated events in the same category.
+//   - CorrelationBonus is (independentCategories - 1) * 5, capped at
+//     CorrelationBonusCap, where independentCategories counts categories with
+//     at least one non-meta detector firing. Meta-detectors (PAT_003,
+//     PAT_004) are derived from other detectors' events and never add a
+//     category. The bonus is RECOMPUTED on every ApplyCorrelationBonus call,
+//     so calling it once per batch on the live path is safe.
+//
+// Shadow events never contribute; they only create the player's entry.
+//
+// # Time
+//
+// Event times default to the wall clock at ingest. Callers that know the
+// match start (offline replays of historical matches) should call
+// SetMatchStart so FirstEventTime/LastEventTime are derived from the match
+// start plus the event's match-relative Timestamp. SetClock exists for tests.
+//
+// # Decay
+//
+// ApplyDecay implements the documented half-life decay on an in-memory
+// scorer, but the single-match pipeline does NOT call it: a scorer lives for
+// one match (offline) or one live match, and the per-match snapshot stored in
+// suspicion_scores is the undecayed end-of-match value. The decay that
+// moderators see is applied by cross-match aggregation
+// (sqlite.ComputePlayerCrossMatchSummary), which recomputes from stored
+// events. ApplyDecay is kept for long-lived scorers (e.g. a future resident
+// per-player scorer) and is covered by tests.
 package scoring
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,26 +52,85 @@ type ScorerConfig struct {
 	MaxSingleContribution         float64
 	MaxContribPerDetectorPerMatch int
 	SameCategoryDiminishing       float64
-	ReviewThreshold               float64
-	AutoEnforceThreshold          float64
-	DecayHalfLifeHours            float64
-	CooldownFrames                int
-	CorrelationBonusCap           float64
+	// ReviewThreshold is mapped onto the HighRisk boundary of the level table
+	// (see model.LevelTable.WithReviewThreshold). ExceedsReview is true when
+	// Level() >= high_risk.
+	ReviewThreshold      float64
+	AutoEnforceThreshold float64
+	DecayHalfLifeHours   float64
+	CooldownFrames       int
+	CorrelationBonusCap  float64
+	// Levels optionally overrides the base tier table. When zero,
+	// model.DefaultLevelTable() is used. ReviewThreshold (if > 0) is applied
+	// on top of it in either case.
+	Levels model.LevelTable
+}
+
+// EffectiveLevels returns the tier table the scorer operates under.
+func (c ScorerConfig) EffectiveLevels() model.LevelTable {
+	t := c.Levels
+	if t.IsZero() {
+		t = model.DefaultLevelTable()
+	}
+	return t.WithReviewThreshold(c.ReviewThreshold)
+}
+
+// metaDetectors are derived from other detectors' events and therefore do not
+// constitute independent evidence categories for the correlation bonus.
+var metaDetectors = map[string]bool{
+	"PAT_003": true,
+	"PAT_004": true,
 }
 
 // SuspicionScorer accumulates suspicion scores for players.
 type SuspicionScorer struct {
-	config  ScorerConfig
-	players map[string]*model.SuspicionScore
-	mu      sync.RWMutex
+	config     ScorerConfig
+	levels     model.LevelTable
+	players    map[string]*model.SuspicionScore
+	mu         sync.RWMutex
+	now        func() time.Time
+	matchStart time.Time
 }
 
 // NewSuspicionScorer creates a new scorer.
 func NewSuspicionScorer(cfg ScorerConfig) *SuspicionScorer {
 	return &SuspicionScorer{
 		config:  cfg,
+		levels:  cfg.EffectiveLevels(),
 		players: make(map[string]*model.SuspicionScore),
+		now:     time.Now,
 	}
+}
+
+// Levels returns the tier table this scorer classifies with.
+func (s *SuspicionScorer) Levels() model.LevelTable {
+	return s.levels
+}
+
+// SetClock overrides the wall clock (tests and deterministic replays).
+func (s *SuspicionScorer) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now == nil {
+		now = time.Now
+	}
+	s.now = now
+}
+
+// SetMatchStart anchors event times on the match start: an event's wall-clock
+// time becomes start + event.Timestamp seconds. Pass the zero time to revert
+// to the wall clock at ingest.
+func (s *SuspicionScorer) SetMatchStart(start time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.matchStart = start
+}
+
+func (s *SuspicionScorer) eventTime(event model.DetectionEvent) time.Time {
+	if !s.matchStart.IsZero() {
+		return s.matchStart.Add(time.Duration(event.Timestamp * float64(time.Second)))
+	}
+	return s.now()
 }
 
 func (s *SuspicionScorer) getOrCreate(playerID string) *model.SuspicionScore {
@@ -42,7 +138,8 @@ func (s *SuspicionScorer) getOrCreate(playerID string) *model.SuspicionScore {
 	if !ok {
 		sc = &model.SuspicionScore{
 			PlayerID:             playerID,
-			ReviewThreshold:      s.config.ReviewThreshold,
+			Levels:               s.levels,
+			ReviewThreshold:      s.levels.HighRisk,
 			AutoEnforceThreshold: s.config.AutoEnforceThreshold,
 			DecayHalfLifeHours:   s.config.DecayHalfLifeHours,
 		}
@@ -52,55 +149,74 @@ func (s *SuspicionScorer) getOrCreate(playerID string) *model.SuspicionScore {
 	return sc
 }
 
+// recompute derives TotalScore and the threshold flags from BaseScore and
+// CorrelationBonus. It is the only place TotalScore is assigned.
+func (s *SuspicionScorer) recompute(sc *model.SuspicionScore) {
+	if sc.BaseScore < 0 {
+		sc.BaseScore = 0
+	}
+	if sc.CorrelationBonus < 0 {
+		sc.CorrelationBonus = 0
+	}
+	total := sc.BaseScore + sc.CorrelationBonus
+	if total > 100.0 {
+		total = 100.0
+	}
+	sc.TotalScore = total
+	sc.ExceedsReview = sc.TotalScore >= s.levels.HighRisk
+	sc.ExceedsAutoEnforce = s.config.AutoEnforceThreshold > 0 && sc.TotalScore >= s.config.AutoEnforceThreshold
+}
+
 // IngestEvent processes a detection event and updates the player's score.
+// The returned value is a deep copy and never aliases scorer state.
 func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.SuspicionScore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if event.IsShadow {
-		sc := s.getOrCreate(event.PlayerID)
-		return *sc
-	}
-
 	sc := s.getOrCreate(event.PlayerID)
+	if event.IsShadow {
+		return sc.Clone()
+	}
 
 	// Cooldown: suppress duplicate events within N frames (jittered to prevent score engineering)
 	cooldownKey := event.DetectorID
-	cooldownJitter := int(hashString(event.PlayerID+event.DetectorID) % 101) - 50 // -50 to +50
+	cooldownJitter := int(hashString(event.PlayerID+event.DetectorID)%101) - 50 // -50 to +50
 	effectiveCooldown := s.config.CooldownFrames + cooldownJitter
 	if effectiveCooldown < 100 {
 		effectiveCooldown = 100
 	}
 	if lastFrame, ok := sc.LastEventFrames[cooldownKey]; ok {
 		if event.FrameIndex-lastFrame < effectiveCooldown {
-			return *sc
+			return sc.Clone()
 		}
+	}
+
+	// Per-detector cap (checked before recording the frame so a capped
+	// detector does not keep resetting its own cooldown window).
+	if s.config.MaxContribPerDetectorPerMatch > 0 &&
+		sc.DetectorCounts[event.DetectorID] >= s.config.MaxContribPerDetectorPerMatch {
+		return sc.Clone()
 	}
 	sc.LastEventFrames[cooldownKey] = event.FrameIndex
 
-	// Per-detector cap
-	if sc.DetectorCounts[event.DetectorID] >= s.config.MaxContribPerDetectorPerMatch {
-		return *sc
-	}
-
 	// Compute contribution
 	contribution := event.Severity * event.Confidence * event.EnforcementWeight * 100.0
-	if contribution > s.config.MaxSingleContribution {
+	if contribution < 0 || math.IsNaN(contribution) {
+		contribution = 0
+	}
+	if s.config.MaxSingleContribution > 0 && contribution > s.config.MaxSingleContribution {
 		contribution = s.config.MaxSingleContribution
 	}
 
 	// Same-category diminishing returns
 	category := detectorCategory(event.DetectorID)
 	catCount := sc.CategoryCounts[category]
-	if catCount > 0 {
+	if catCount > 0 && s.config.SameCategoryDiminishing > 0 {
 		contribution *= math.Pow(s.config.SameCategoryDiminishing, float64(catCount))
 	}
 
 	// Update score
-	sc.TotalScore += contribution
-	if sc.TotalScore > 100.0 {
-		sc.TotalScore = 100.0
-	}
+	sc.BaseScore += contribution
 	sc.ScoreByDetector[event.DetectorID] += contribution
 	sc.ScoreByCategory[category] += contribution
 	sc.DetectorCounts[event.DetectorID]++
@@ -114,43 +230,56 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 		}
 	}
 
-	now := time.Now()
-	if sc.FirstEventTime.IsZero() {
-		sc.FirstEventTime = now
+	at := s.eventTime(event)
+	if sc.FirstEventTime.IsZero() || at.Before(sc.FirstEventTime) {
+		sc.FirstEventTime = at
 	}
-	sc.LastEventTime = now
+	if at.After(sc.LastEventTime) {
+		sc.LastEventTime = at
+	}
 
 	if contribution > sc.HighestSingleEvent {
 		sc.HighestSingleEvent = contribution
 		sc.HighestSingleDetector = event.DetectorID
 	}
 
-	sc.ExceedsReview = sc.TotalScore >= s.config.ReviewThreshold
-	sc.ExceedsAutoEnforce = sc.TotalScore >= s.config.AutoEnforceThreshold
-	sc.SnapshotTime = now
+	s.recompute(sc)
+	sc.SnapshotTime = s.now()
 
-	return *sc
+	return sc.Clone()
 }
 
-// GetScore returns the current score for a player.
+// GetScore returns a deep copy of the current score for a player.
 func (s *SuspicionScorer) GetScore(playerID string) model.SuspicionScore {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if sc, ok := s.players[playerID]; ok {
-		return *sc
+		return sc.Clone()
 	}
-	return model.SuspicionScore{PlayerID: playerID}
+	return model.SuspicionScore{PlayerID: playerID, Levels: s.levels}
 }
 
-// GetAllScores returns all player scores.
+// GetAllScores returns deep copies of all player scores.
 func (s *SuspicionScorer) GetAllScores() map[string]model.SuspicionScore {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]model.SuspicionScore, len(s.players))
 	for id, sc := range s.players {
-		out[id] = *sc
+		out[id] = sc.Clone()
 	}
 	return out
+}
+
+// PlayerIDs returns the tracked player IDs in sorted order.
+func (s *SuspicionScorer) PlayerIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.players))
+	for id := range s.players {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // ExceedsReviewThreshold checks if a player exceeds the review threshold.
@@ -158,7 +287,7 @@ func (s *SuspicionScorer) ExceedsReviewThreshold(playerID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if sc, ok := s.players[playerID]; ok {
-		return sc.TotalScore >= s.config.ReviewThreshold
+		return sc.TotalScore >= s.levels.HighRisk
 	}
 	return false
 }
@@ -168,25 +297,34 @@ func (s *SuspicionScorer) ExceedsAutoEnforceThreshold(playerID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if sc, ok := s.players[playerID]; ok {
-		return sc.TotalScore >= s.config.AutoEnforceThreshold
+		return sc.ExceedsAutoEnforce
 	}
 	return false
 }
 
-// ApplyDecay applies time-based decay to all scores.
+// ApplyDecay applies half-life decay to every score as of `now`. Decay is
+// anchored on LastDecayTime, falling back to LastEventTime; a player with no
+// scored events is left untouched. See the package doc for who calls this.
 func (s *SuspicionScorer) ApplyDecay(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.config.DecayHalfLifeHours <= 0 {
+		return
+	}
 	for _, sc := range s.players {
 		if sc.LastDecayTime.IsZero() {
 			sc.LastDecayTime = sc.LastEventTime
+		}
+		if sc.LastDecayTime.IsZero() || sc.EventCount == 0 {
+			continue
 		}
 		elapsed := now.Sub(sc.LastDecayTime).Hours()
 		if elapsed <= 0 {
 			continue
 		}
 		factor := math.Pow(0.5, elapsed/s.config.DecayHalfLifeHours)
-		sc.TotalScore *= factor
+		sc.BaseScore *= factor
+		sc.CorrelationBonus *= factor
 		for k := range sc.ScoreByDetector {
 			sc.ScoreByDetector[k] *= factor
 		}
@@ -194,30 +332,43 @@ func (s *SuspicionScorer) ApplyDecay(now time.Time) {
 			sc.ScoreByCategory[k] *= factor
 		}
 		sc.LastDecayTime = now
-		sc.ExceedsReview = sc.TotalScore >= s.config.ReviewThreshold
-		sc.ExceedsAutoEnforce = sc.TotalScore >= s.config.AutoEnforceThreshold
+		s.recompute(sc)
 	}
 }
 
-// ApplyCorrelationBonus adds a bonus when a player has detections across multiple categories.
+// ApplyCorrelationBonus recomputes the multi-category bonus for every player.
+// It is idempotent: calling it repeatedly without new events leaves every
+// score unchanged.
 func (s *SuspicionScorer) ApplyCorrelationBonus() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sc := range s.players {
-		distinctCategories := len(sc.CategoryCounts)
-		if distinctCategories >= 2 {
-			bonus := float64(distinctCategories-1) * 5.0
-			if bonus > s.config.CorrelationBonusCap {
+		bonus := 0.0
+		if n := independentCategories(sc); n >= 2 {
+			bonus = float64(n-1) * 5.0
+			if s.config.CorrelationBonusCap >= 0 && bonus > s.config.CorrelationBonusCap {
 				bonus = s.config.CorrelationBonusCap
 			}
-			sc.TotalScore += bonus
-			if sc.TotalScore > 100.0 {
-				sc.TotalScore = 100.0
-			}
-			sc.ExceedsReview = sc.TotalScore >= s.config.ReviewThreshold
-			sc.ExceedsAutoEnforce = sc.TotalScore >= s.config.AutoEnforceThreshold
 		}
+		if bonus == sc.CorrelationBonus {
+			continue
+		}
+		sc.CorrelationBonus = bonus
+		s.recompute(sc)
 	}
+}
+
+// independentCategories counts categories with at least one scored event from
+// a non-meta detector.
+func independentCategories(sc *model.SuspicionScore) int {
+	cats := make(map[string]bool)
+	for det, n := range sc.DetectorCounts {
+		if n <= 0 || metaDetectors[strings.ToUpper(det)] {
+			continue
+		}
+		cats[detectorCategory(det)] = true
+	}
+	return len(cats)
 }
 
 // Reset clears all scoring state.
