@@ -8,22 +8,48 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+const (
+	// minViolationFrames: sustained bending required before any magnetism
+	// detection. Headbutts, regrabs, wall bounces and replay interpolation
+	// produce bends that pass the per-frame bounce filter but do not sustain.
+	minViolationFrames = 5
+	// minTrackedFrames: short throws do not carry enough data.
+	minTrackedFrames = 5
+	// alignmentImprovementGate: a disc that was not heading toward the goal
+	// and ends up nearly aimed at it. Kept high (0.7): 0.5 fired on normal
+	// throws that happened to curve slightly toward the goal.
+	alignmentImprovementGate = 0.7
+	// fullConfidenceViolationFrames: violation frames for full confidence.
+	fullConfidenceViolationFrames = 8
+
+	// Collision filters (per frame).
+	inelasticSpeedRatio = 0.75 // speed loss > 25% with any angle change
+	inelasticMinAngle   = 2.0
+	elasticBounceAngle  = 15.0 // single-frame angle above this is a bounce
+	deflectionRatio     = 1.15 // speed gain > 15% with angle change > 8 deg
+	deflectionMinAngle  = 8.0
+)
+
 type trajectoryTrack struct {
-	throwerID        string
-	releaseFrame     int
-	releaseTimestamp float64
-	releaseSpeed     float64
-	releasePos       model.Vec3
-	positions        []model.Vec3
-	velocities       []model.Vec3
-	cumulativeAngle  float64
-	maxFrameAngle    float64
-	violationFrames  int
-	frameCount       int
-	prevVelocity     model.Vec3
-	initialAlignment float64 // cosine similarity at first tracked frame
-	finalAlignment   float64 // cosine similarity at last tracked frame
-	alignmentSet     bool    // whether initialAlignment has been set
+	throwerID         string
+	releaseFrame      int
+	releaseTimestamp  float64
+	releaseSpeed      float64
+	releasePos        model.Vec3
+	positions         []model.Vec3
+	velocities        []model.Vec3
+	cumulativeAngle   float64
+	maxFrameAngle     float64
+	violationAngleSum float64
+	violationFrames   int
+	frameCount        int
+	prevVelocity      model.Vec3
+	goalPos           model.Vec3 // goal fixed at release (never flips mid-flight)
+	goalKnown         bool
+	goalLabel         string
+	initialAlignment  float64 // cosine similarity at first tracked frame
+	finalAlignment    float64 // cosine similarity at last tracked frame
+	alignmentSet      bool    // whether initialAlignment has been set
 }
 
 // Throw006 detects disc trajectory bending after release (magnetism cheat).
@@ -39,7 +65,7 @@ type Throw006 struct {
 func NewThrow006(params map[string]any) *Throw006 {
 	return &Throw006{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_006", DetectorVersion: "1.1.0",
+			DetectorID: "THROW_006", DetectorVersion: "1.2.0",
 			DetectorName: "Trajectory Correction (Mags)", DetectorCategory: "throw",
 			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.8,
 		},
@@ -63,31 +89,35 @@ func (d *Throw006) Configure(params map[string]any) error {
 func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	// Get disc state from any player (disc is global)
-	var disc *model.DiscState
-	for _, ps := range players {
-		if ps.CurrentDisc != nil {
-			disc = ps.CurrentDisc
-			break
-		}
-	}
+	disc := currentDisc(players, frameIdx)
 
-	// Start tracking new throws
-	for _, ps := range players {
-		if ps.LastThrow != nil && ps.LastThrow.FrameIndex == frameIdx {
-			t := ps.LastThrow
-			track := &trajectoryTrack{
-				throwerID:        ps.PlayerID,
-				releaseFrame:     frameIdx,
-				releaseTimestamp: t.Timestamp,
-				releaseSpeed:     t.ReleaseSpeed,
-				releasePos:       t.ReleasePosition,
-			}
-			if disc != nil {
-				track.prevVelocity = disc.Velocity
-			}
-			d.activeThrows[ps.PlayerID] = track
+	// Start tracking new throws. A re-throw while a track is still open
+	// (regrab within the tracking window) finalizes the earlier track first.
+	for _, pid := range sortedPlayerIDs(players) {
+		t := throwAt(players[pid], frameIdx)
+		if t == nil {
+			continue
 		}
+		if old, ok := d.activeThrows[pid]; ok {
+			if ev := d.finalizeTrack(matchCtx, old, frameIdx); ev != nil {
+				events = append(events, *ev)
+			}
+		}
+		track := &trajectoryTrack{
+			throwerID:        pid,
+			releaseFrame:     frameIdx,
+			releaseTimestamp: t.Timestamp,
+			releaseSpeed:     t.ReleaseSpeed,
+			releasePos:       t.ReleasePosition,
+			prevVelocity:     t.ReleaseVelocity,
+			goalPos:          t.GoalPosition,
+			goalKnown:        !t.GoalPosition.IsZero(),
+			goalLabel:        t.GoalSelection,
+		}
+		if disc != nil && !disc.Velocity.IsZero() {
+			track.prevVelocity = disc.Velocity
+		}
+		d.activeThrows[pid] = track
 	}
 
 	if disc == nil {
@@ -95,7 +125,8 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	}
 
 	// Update active tracks with current disc state
-	for throwerID, track := range d.activeThrows {
+	for _, throwerID := range sortedKeys(d.activeThrows) {
+		track := d.activeThrows[throwerID]
 		// Check if disc was caught or max frames reached
 		if disc.IsHeld || frameIdx-track.releaseFrame > d.postReleaseFrames {
 			ev := d.finalizeTrack(matchCtx, track, frameIdx)
@@ -125,13 +156,10 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 
 			// Collision filter: bounces cause sudden large direction changes.
 			// Magnetism produces gradual, sustained bending (< 15 deg/frame).
-			// Filter 1: speed loss > 25% with any angle change (inelastic bounce)
-			// Filter 2: any single-frame angle > 15 deg (elastic bounce off wall/player)
-			// Filter 3: speed increase > 15% with angle change > 8 deg (player deflection)
 			speedRatio := currSpeed / prevSpeed
-			isInelasticBounce := speedRatio < 0.75 && angleChange > 2.0
-			isElasticBounce := angleChange > 15.0
-			isDeflection := speedRatio > 1.15 && angleChange > 8.0
+			isInelasticBounce := speedRatio < inelasticSpeedRatio && angleChange > inelasticMinAngle
+			isElasticBounce := angleChange > elasticBounceAngle
+			isDeflection := speedRatio > deflectionRatio && angleChange > deflectionMinAngle
 			isLikelyCollision := isInelasticBounce || isElasticBounce || isDeflection
 
 			if !math.IsNaN(angleChange) && !isLikelyCollision {
@@ -141,33 +169,26 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 				}
 				if angleChange > d.minTrajectoryChange {
 					track.violationFrames++
+					track.violationAngleSum += angleChange
 				}
 			}
 		}
 
-		// Track alignment with nearest goal for net-alignment-improvement detection
-		if disc.Velocity.Magnitude() > 0.1 && matchCtx.Physics.ArenaLength > 0 {
-			halfLen := matchCtx.Physics.ArenaLength / 2.0
-			// CONFIRMED from real replay: goals are on the Z axis, not X.
-			goalPosA := model.Vec3{0, 0, halfLen}
-			goalPosB := model.Vec3{0, 0, -halfLen}
-			toGoalA := goalPosA.Sub(disc.Position)
-			toGoalB := goalPosB.Sub(disc.Position)
-			// Pick nearer goal
-			toGoal := toGoalA
-			if toGoalB.Magnitude() < toGoalA.Magnitude() {
-				toGoal = toGoalB
-			}
-			// Cosine similarity between velocity and direction-to-goal
-			velNorm := disc.Velocity.Normalized()
-			goalNorm := toGoal.Normalized()
-			alignment := velNorm.Dot(goalNorm)
-			if !math.IsNaN(alignment) {
-				if !track.alignmentSet {
-					track.initialAlignment = alignment
-					track.alignmentSet = true
+		// Alignment with the goal chosen at release (the goal the thrower
+		// attacks when known, else the one the release pointed at). The goal
+		// never changes during the flight, so crossing mid-court cannot
+		// fabricate an alignment improvement.
+		if track.goalKnown && currSpeed > 0.1 {
+			toGoal := track.goalPos.Sub(disc.Position)
+			if toGoal.Magnitude() > 0.1 {
+				alignment := disc.Velocity.Normalized().Dot(toGoal.Normalized())
+				if !math.IsNaN(alignment) {
+					if !track.alignmentSet {
+						track.initialAlignment = alignment
+						track.alignmentSet = true
+					}
+					track.finalAlignment = alignment
 				}
-				track.finalAlignment = alignment
 			}
 		}
 
@@ -184,69 +205,75 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 		alignmentImprovement = track.finalAlignment - track.initialAlignment
 	}
 
-	// Require at least 5 violation frames for any magnetism detection.
-	// Headbutts, regrabs, wall bounces, and replay interpolation all produce
-	// trajectory bends that can pass the per-frame bounce filter but don't
-	// sustain across 5+ frames. Real magnetism cheats produce continuous bending.
-	if track.violationFrames < 5 {
-		return nil
-	}
-
-	// Require minimum 5 tracked frames (short throws don't have enough data).
-	if track.frameCount < 5 {
+	if track.violationFrames < minViolationFrames || track.frameCount < minTrackedFrames {
 		return nil
 	}
 
 	// Fire if cumulative angle exceeds threshold, OR if the disc significantly
 	// improved its alignment with the goal during flight (strong magnetism
-	// signal). Alignment threshold of 0.7 is high: a disc that wasn't heading
-	// toward the goal and ends up nearly aimed at it. Previous threshold of
-	// 0.5 was too permissive — normal throws that happened to curve slightly
-	// toward goal would fire.
-	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= 0.7 {
+	// signal).
+	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= alignmentImprovementGate {
 		return nil
 	}
 
+	// Severity reflects sustained bending: the cumulative bend against the
+	// threshold and the mean per-frame bend over the violating frames. A
+	// single large (sub-15 degree) frame no longer dominates.
 	severity := 0.0
 	if track.cumulativeAngle > d.maxCumulativeChange {
 		severity = model.SigmoidConfidence(track.cumulativeAngle, d.maxCumulativeChange, 0.2)
 	}
-	if track.maxFrameAngle > d.minTrajectoryChange {
-		frameSev := model.SigmoidConfidence(track.maxFrameAngle, d.minTrajectoryChange, 0.3)
-		severity = math.Max(severity, frameSev)
+	meanViolationAngle := track.violationAngleSum / float64(track.violationFrames)
+	if meanViolationAngle > d.minTrajectoryChange {
+		sustainedSev := model.SigmoidConfidence(meanViolationAngle, d.minTrajectoryChange, 0.3)
+		// Only shapes severity once a gate has passed; weighted by how much
+		// of the tracked flight was bending.
+		sustainedSev *= math.Min(1.0, float64(track.violationFrames)/float64(track.frameCount))
+		severity = math.Max(severity, sustainedSev)
 	}
 	// Alignment improvement: disc got significantly more aligned with goal during flight
-	if alignmentImprovement > 0.5 {
+	if alignmentImprovement > alignmentImprovementGate {
 		alignSev := model.SigmoidConfidence(alignmentImprovement, 0.4, 5.0)
 		severity = math.Max(severity, alignSev)
 	}
 
-	// Confidence scales with number of violation frames (need at least 3 for full confidence)
-	frameFactor := math.Min(1.0, float64(track.violationFrames)/3.0)
-	confidence := severity * math.Max(0.5, frameFactor)
+	// Confidence scales with the number of violation frames.
+	frameFactor := math.Min(1.0, float64(track.violationFrames)/fullConfidenceViolationFrames)
+	confidence := severity * frameFactor
 
-	ev := model.DetectionEvent{
-		EventID: model.NewEventID(), DetectorID: "THROW_006", DetectorVersion: "1.1.0",
-		MatchID: matchCtx.MatchID, PlayerID: track.throwerID,
-		FrameIndex: track.releaseFrame, FrameRangeStart: track.releaseFrame, FrameRangeEnd: frameIdx,
-		Timestamp: track.releaseTimestamp,
-		Severity: model.Clamp01(severity), Confidence: model.Clamp01(confidence),
-		Evidence: model.TrajectoryEvidence{
+	distanceTraveled := 0.0
+	finalSpeed := 0.0
+	if n := len(track.positions); n > 0 {
+		distanceTraveled = track.positions[n-1].Distance(track.releasePos)
+		finalSpeed = track.velocities[n-1].Magnitude()
+	}
+	correctionTarget := ""
+	if track.goalKnown {
+		correctionTarget = fmt.Sprintf("goal z=%+.1f (%s)", track.goalPos.Z(), track.goalLabel)
+	}
+
+	ev := d.MakeEvent(matchCtx, track.throwerID, track.releaseFrame, track.releaseTimestamp, severity, confidence,
+		model.TrajectoryEvidence{
 			CumulativeAngleChange: track.cumulativeAngle,
 			MaxSingleFrameChange:  track.maxFrameAngle,
 			ViolationFrameCount:   track.violationFrames,
 			TotalTrackedFrames:    track.frameCount,
-			DistanceTraveled:      func() float64 { if len(track.positions) == 0 { return 0 }; return track.positions[len(track.positions)-1].Distance(track.releasePos) }(),
+			DistanceTraveled:      distanceTraveled,
 			ReleaseSpeed:          track.releaseSpeed,
+			FinalSpeed:            finalSpeed,
+			CorrectionTarget:      correctionTarget,
+			InitialAlignment:      track.initialAlignment,
+			FinalAlignment:        track.finalAlignment,
+			AlignmentImprovement:  alignmentImprovement,
+			CorrectionConfidence:  model.Clamp01(alignmentImprovement),
 			TrajectoryPoints:      track.positions,
 			VelocityPoints:        track.velocities,
 		},
-		ObservedValue: fmt.Sprintf("trajectory_bend: %.1f deg cumulative (%d violation frames, max %.1f deg/frame)",
-			track.cumulativeAngle, track.violationFrames, track.maxFrameAngle),
-		ExpectedRange: fmt.Sprintf("trajectory_bend: < %.1f deg cumulative, < %.1f deg/frame",
+		fmt.Sprintf("trajectory_bend: %.1f deg cumulative (%d violation frames, mean %.1f deg/frame, max %.1f deg/frame)",
+			track.cumulativeAngle, track.violationFrames, meanViolationAngle, track.maxFrameAngle),
+		fmt.Sprintf("trajectory_bend: < %.1f deg cumulative, < %.1f deg/frame",
 			d.maxCumulativeChange, d.minTrajectoryChange),
-		CausalKey:         model.CausalKey{PlayerID: track.throwerID, FrameStart: track.releaseFrame, FrameEnd: frameIdx, AnomalyType: "trajectory_bend"},
-		EnforcementWeight: 0.8,
-	}
+		model.CausalKey{PlayerID: track.throwerID, FrameStart: track.releaseFrame, FrameEnd: frameIdx, AnomalyType: "trajectory_bend"},
+	)
 	return &ev
 }
