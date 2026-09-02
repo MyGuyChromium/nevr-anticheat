@@ -441,8 +441,10 @@ func (s *wsSender) monitorTick(ctx context.Context) {
 	if n, age := s.inflightAge(now); n > 0 && age > s.ackTimeout {
 		s.logger.Warn("no ack from ingest server; treating link as dead",
 			"frames_unacked", n, "waited", age.Round(time.Second), "ack_timeout", s.ackTimeout)
-		s.stats.AckTimeouts.Add(1)
+		// Drop first so the in-flight frames are counted as lost before the
+		// timeout counter becomes visible to observers (stats readers, tests).
 		s.dropConn(gen, "ack timeout")
+		s.stats.AckTimeouts.Add(1)
 		return
 	}
 	if now.Sub(time.Unix(0, s.lastSendNanos.Load())) >= s.keepalive {
