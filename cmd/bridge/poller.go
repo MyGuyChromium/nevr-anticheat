@@ -99,9 +99,18 @@ type matchPoller struct {
 	mismatchLogged bool
 	mapper         *adapter.Mapper
 	sendErrors     int
+
+	// once-per-match mapping facts (see logMappingOnce)
+	spectatorsLogged bool
+	basisLogged      bool
 }
 
 func newMatchPoller(m DiscoveredMatch, cfg *BridgeConfig, sender *wsSender, stats *bridgeStats, epoch *frameEpoch, cancel context.CancelFunc, logger *slog.Logger) *matchPoller {
+	// Live path: skip snapshots whose game state did not change since the
+	// previous poll (the broadcaster updates slower than we sample), so no
+	// zero-velocity frame followed by a double-distance frame reaches ingest.
+	mapper := adapter.NewMapper()
+	mapper.SetDedupeIdentical(true)
 	return &matchPoller{
 		match:  m,
 		cfg:    cfg,
@@ -111,7 +120,29 @@ func newMatchPoller(m DiscoveredMatch, cfg *BridgeConfig, sender *wsSender, stat
 		stats:  stats,
 		epoch:  epoch,
 		client: &http.Client{Timeout: 2 * time.Second},
-		mapper: adapter.NewMapper(),
+		mapper: mapper,
+	}
+}
+
+// logMappingOnce reports, once per match, the mapping facts an operator
+// needs from the first real session: how many spectator/moderator entries
+// the mapper excluded, and whether Echo VR's direction vectors form a
+// reflected basis (the adapter handles both conventions; the log line
+// settles which one the game uses).
+func (p *matchPoller) logMappingOnce(result *adapter.MappingResult) {
+	if result.SpectatorsDropped > 0 && !p.spectatorsLogged {
+		p.spectatorsLogged = true
+		p.logger.Info("spectator entries excluded from telemetry by the mapper",
+			"spectators", result.SpectatorsDropped)
+	}
+	if !p.basisLogged {
+		for _, w := range result.Warnings {
+			if w.Field == "basis_reflected" {
+				p.basisLogged = true
+				p.logger.Info("mapping: direction vectors form a reflected basis", "message", w.Message)
+				break
+			}
+		}
 	}
 }
 
@@ -384,8 +415,18 @@ func (p *matchPoller) poll(ctx context.Context) (bool, stopReason) {
 	}
 	p.lastBodyHash = sum
 
-	result := p.mapper.MapSession(&session)
+	// Map at the real HTTP sample time (contract 1). The mapper's change
+	// detection reports a snapshot whose game state equals the previous one
+	// (broadcaster ticking slower than the poll) as SkippedDuplicate: that is
+	// "no new state", not a zero-frame mapping failure.
+	result := p.mapper.MapSessionAt(&session, sampleAt)
+	if result.SkippedDuplicate {
+		p.stats.PollsDuplicateState.Add(1)
+		return true, ""
+	}
+	p.logMappingOnce(result)
 	frames, droppedSpectators := filterFrames(result.Frames, roster)
+	droppedSpectators += result.SpectatorsDropped
 	if droppedSpectators > 0 {
 		p.stats.FramesDroppedSpectator.Add(int64(droppedSpectators))
 	}

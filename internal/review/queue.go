@@ -2,10 +2,13 @@
 // review cases from pipeline results, assigning them, and recording
 // moderator decisions so per-detector precision can be measured.
 //
-// Wiring: CreateCasesFromResult is intended to be called right after
-// pipeline.ProcessMatch (offline analyze/reprocess/batch and live EndMatch).
+// CreateCasesFromResult is the ONE mechanism that turns a match result into
+// single-match review cases. replay.StoreMatchAnalysis (analyze, batch,
+// reprocess-*) and ingest.MatchManager (live match end) both call it, with
+// the scorer's level table, so every path creates the same cases under the
+// same ids (CaseID: "RC-<match>-<player>", refreshed on reprocess).
 // The lifecycle methods (Assign, Start, Decide) require a store implementing
-// LifecycleStore; until the sqlite store provides those methods they return
+// LifecycleStore (*sqlite.Store does); a store without them returns
 // ErrLifecycleUnsupported rather than silently doing nothing.
 package review
 
@@ -98,7 +101,17 @@ func (q *Queue) SetClock(now func() time.Time) {
 // before storing them.
 func (q *Queue) Builder() *evidence.Builder { return q.builder }
 
+// CaseID is the deterministic id of the single-match review case for
+// (match, player): "RC-<match>-<player>". Re-analysis of the same match
+// refreshes the existing case through the store's upsert instead of creating
+// a second one, and the CLI `report`/`verdict` commands address cases by it.
+func CaseID(matchID, playerID string) string {
+	return fmt.Sprintf("RC-%s-%s", matchID, playerID)
+}
+
 // Enqueue creates and stores a review case for a flagged player and returns it.
+// With a match context the case gets the deterministic CaseID for the
+// (match, player) pair; without one the builder's random id is kept.
 func (q *Queue) Enqueue(
 	ctx context.Context,
 	playerID string,
@@ -107,6 +120,9 @@ func (q *Queue) Enqueue(
 	events []model.DetectionEvent,
 ) (model.ReviewCase, error) {
 	rc := q.builder.Build(playerID, matchCtx, score, events)
+	if matchCtx != nil && matchCtx.MatchID != "" {
+		rc.CaseID = CaseID(matchCtx.MatchID, playerID)
+	}
 	if err := q.store.StoreReviewCase(ctx, rc); err != nil {
 		return rc, err
 	}

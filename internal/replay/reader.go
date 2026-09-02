@@ -140,13 +140,22 @@ func (rd *RawDiscFrame) UnmarshalJSON(data []byte) error {
 
 // ReplayReader reads replay files and produces normalized telemetry frames.
 type ReplayReader struct {
-	path   string
-	parser FrameParser
+	path    string
+	parser  FrameParser
+	physics model.PhysicsConstants
 }
 
 // NewReplayReader creates a new reader with the given parser.
 func NewReplayReader(path string, parser FrameParser) *ReplayReader {
-	return &ReplayReader{path: path, parser: parser}
+	return &ReplayReader{path: path, parser: parser, physics: model.DefaultPhysics()}
+}
+
+// SetPhysics sets the physics constants copied into the MatchContext this
+// reader produces (from the [physics] config block). Default: model.DefaultPhysics.
+func (r *ReplayReader) SetPhysics(phys model.PhysicsConstants) {
+	if phys != (model.PhysicsConstants{}) {
+		r.physics = phys
+	}
 }
 
 // ReadMatch reads an entire match, returning context and frames.
@@ -162,6 +171,7 @@ func (r *ReplayReader) ReadMatch() (*model.MatchContext, []model.PlayerTelemetry
 	}
 
 	matchCtx := convertHeader(header, r.path)
+	matchCtx.Physics = r.physics
 
 	var allFrames []model.PlayerTelemetryFrame
 	prevTimestamp := 0.0

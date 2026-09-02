@@ -50,9 +50,17 @@ func TestDetectionEvent_EvidenceRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	hs, ok := back.Evidence.(*HandSpeedEvidence)
+	// Decoded evidence has the VALUE type detectors emit, so a type switch
+	// written for live events works on decoded ones too.
+	hs, ok := back.Evidence.(HandSpeedEvidence)
 	if !ok || hs.Speed != 12.5 || hs.Hand != "left" {
-		t.Errorf("typed evidence not restored: %#v", back.Evidence)
+		t.Errorf("typed evidence not restored as a value: %#v", back.Evidence)
+	}
+	if len(EvidenceTypes()) != 15 || EvidenceTypes()[0] != "disc_acceleration" {
+		t.Errorf("EvidenceTypes() = %v", EvidenceTypes())
+	}
+	if ev, err := DecodeEvidenceAs("state", []byte(`{"state_type":"x"}`)); err != nil || ev == nil {
+		t.Errorf("DecodeEvidenceAs without an embedded type: %v %v", ev, err)
 	}
 	if back.MergedCount != 3 || back.CausalKey != ev.CausalKey || back.Severity != 0.5 {
 		t.Errorf("fields lost in round trip: %+v", back)

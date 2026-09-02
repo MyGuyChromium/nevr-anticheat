@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/metrics"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/review"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
@@ -264,5 +266,77 @@ func TestMatchManager_PhysicsFromConfig(t *testing.T) {
 	ph := physicsFromConfig(cfg)
 	if ph.MaxPlayerSpeed != 42 || ph.DiscSpeedCap != model.DefaultPhysics().DiscSpeedCap || ph.ArenaLength != model.DefaultPhysics().ArenaLength {
 		t.Errorf("physics=%+v", ph)
+	}
+}
+
+// TestMatchManager_AckAccountingInvariant covers contract 3 on the handler
+// side: every frame of a batch is counted exactly once, so the ack the server
+// derives from FrameResult (accepted+rejected+ignored) equals the frames it
+// received. A duplicate row is ignored, never also accepted.
+func TestMatchManager_AckAccountingInvariant(t *testing.T) {
+	mm, _, m := newTestManager(t)
+	batch := []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P1", 0), goodFrame("P1", 1), goodFrame("P2", 1)}
+	res := mm.HandleFrames("M1", batch)
+	if res.Accepted+res.Rejected+res.Ignored != len(batch) {
+		t.Fatalf("counts do not cover the batch: %+v for %d frames", res, len(batch))
+	}
+	if res.Accepted != 3 || res.Ignored != 1 || res.Rejected != 0 {
+		t.Errorf("want accepted=3 ignored=1 rejected=0, got %+v", res)
+	}
+	if m.FramesIgnored.Get() != 1 {
+		t.Errorf("FramesIgnored metric=%d", m.FramesIgnored.Get())
+	}
+	// Player cap rejections are counted too, and only once.
+	mm.SetLimits(10, 2)
+	res = mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 2), goodFrame("P3", 2)})
+	if res.Accepted != 1 || res.Rejected != 1 || res.Ignored != 0 {
+		t.Errorf("cap batch: %+v", res)
+	}
+}
+
+// TestMatchManager_ReviewCaseAtMatchEnd: the live path creates single-match
+// review cases through the same mechanism as the offline paths
+// (review.CreateCasesFromResult with the scorer's table) when the match ends,
+// under the deterministic RC-<match>-<player> id, and reports them through
+// OnReviewCase and the summary's flagged list.
+func TestMatchManager_ReviewCaseAtMatchEnd(t *testing.T) {
+	mm, store, _ := newTestManager(t)
+	ctx := context.Background()
+	var reported []model.ReviewCase
+	mm.OnReviewCase = func(rc model.ReviewCase) { reported = append(reported, rc) }
+
+	for i := 0; i < 120; i++ {
+		mm.HandleFrames("M1", []model.PlayerTelemetryFrame{speedHack("P1", i), goodFrame("P2", i)})
+	}
+	live := mm.matches["M1"]
+	score := live.Scorer.GetScore("P1")
+	levels := live.Scorer.Levels()
+	if !levels.LevelFor(score.TotalScore).AtLeast(model.LevelHighRisk) {
+		t.Fatalf("setup: P1 should reach the review tier, score=%.1f table=%+v", score.TotalScore, levels)
+	}
+	mm.EndMatch("M1")
+
+	rc, err := store.GetReviewCase(ctx, review.CaseID("M1", "P1"))
+	if err != nil {
+		t.Fatalf("review case not created at match end: %v", err)
+	}
+	if rc.PlayerID != "P1" || rc.MatchID != "M1" || rc.Status != model.CaseStatusPending || len(rc.DetectorsTriggered) == 0 {
+		t.Errorf("case = %+v", rc)
+	}
+	if rc.DetectorsTriggered[0].DetectorName == "" || rc.DetectorsTriggered[0].DetectorName == "MOV_001" {
+		t.Errorf("detector name not supplied to the case: %+v", rc.DetectorsTriggered[0])
+	}
+	if _, err := store.GetReviewCase(ctx, review.CaseID("M1", "P2")); err == nil {
+		t.Error("clean player must not get a case")
+	}
+	if len(reported) != 1 || reported[0].CaseID != rc.CaseID {
+		t.Errorf("OnReviewCase reported %+v", reported)
+	}
+	var flagged string
+	if err := store.DB().QueryRow(`SELECT flagged_players FROM match_summaries WHERE match_id = ?`, "M1").Scan(&flagged); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(flagged, "P1") {
+		t.Errorf("summary flagged_players=%q", flagged)
 	}
 }

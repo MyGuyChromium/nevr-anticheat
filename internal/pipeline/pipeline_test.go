@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
@@ -141,6 +142,7 @@ func TestLiveContinuity_OneFramePerBatch(t *testing.T) {
 	}
 
 	pLive, scorer := newPipeline(cfg, []detect.Detector{movement.NewMov001(cfg.GetDetectorConfig("MOV_001").Params)})
+	pLive.SetSkipReset(true) // live contract: set before the first slice
 	mc := matchCtx("P1")
 	var liveEvents []model.DetectionEvent
 	for i := range frames {
@@ -148,7 +150,6 @@ func TestLiveContinuity_OneFramePerBatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pLive.SetSkipReset(true)
 		liveEvents = append(liveEvents, res.DetectionEvents...)
 	}
 	fin := pLive.Finalize(mc)
@@ -351,28 +352,40 @@ func errorsAs(err error, target **ValidationError) bool {
 
 // recorder is a fake detector that records which players it saw per frame
 // and optionally emits events.
+// recorder is a fake detector following the detector contract: it receives
+// the full warmed-up player map (offered[fi]) and evaluates only the players
+// with a fresh frame at fi via detect.ActivePlayers (seen[fi]).
 type recorder struct {
 	detect.BaseDetector
-	seen  map[int][]string
-	emit  func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent
-	calls int
+	seen    map[int][]string // players evaluated at fi (active only)
+	offered map[int][]string // every player present in the map at fi
+	emit    func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent
+	flush   func(mc *model.MatchContext, fi int) []model.DetectionEvent
+	calls   int
 }
 
 func newRecorder(id, category string, warmup int) *recorder {
 	return &recorder{
 		BaseDetector: detect.BaseDetector{DetectorID: id, DetectorVersion: "t", DetectorName: id,
 			DetectorCategory: category, Warmup: warmup, Weight: 0.9},
-		seen: map[int][]string{},
+		seen:    map[int][]string{},
+		offered: map[int][]string{},
 	}
 }
 
-func (r *recorder) Reset()                         { r.seen = map[int][]string{} }
+func (r *recorder) Reset() {
+	r.seen = map[int][]string{}
+	r.offered = map[int][]string{}
+}
 func (r *recorder) Configure(map[string]any) error { return nil }
 func (r *recorder) Evaluate(mc *model.MatchContext, players map[string]*model.PlayerState, fi int) []model.DetectionEvent {
 	r.calls++
+	for pid := range players {
+		r.offered[fi] = append(r.offered[fi], pid)
+	}
 	var evs []model.DetectionEvent
-	for pid, ps := range players {
-		r.seen[fi] = append(r.seen[fi], pid)
+	for _, ps := range detect.ActivePlayers(players, fi) {
+		r.seen[fi] = append(r.seen[fi], ps.PlayerID)
 		if r.emit != nil {
 			if ev := r.emit(mc, ps, fi); ev != nil {
 				evs = append(evs, *ev)
@@ -380,6 +393,14 @@ func (r *recorder) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 		}
 	}
 	return evs
+}
+
+// FlushTracks makes the recorder a TrackFlusher when flush is set.
+func (r *recorder) FlushTracks(mc *model.MatchContext, fi int) []model.DetectionEvent {
+	if r.flush == nil {
+		return nil
+	}
+	return r.flush(mc, fi)
 }
 
 func (r *recorder) event(mc *model.MatchContext, pid string, fi int, sev, conf float64, anomaly string) *model.DetectionEvent {
@@ -433,6 +454,216 @@ func TestWarmupIsPerPlayer_AndStalePlayersAreNotEvaluated(t *testing.T) {
 	}
 	if !has(39, "C") {
 		t.Error("C should be evaluated at frame 39 once warmed up")
+	}
+	// Cross-player lookups: once warmed up, C is still OFFERED to the
+	// detector on even frames (STATE_007 victims, MOV_003 collision
+	// partners), it is just stale there and must not be scored.
+	offered := func(fi int, pid string) bool {
+		for _, s := range rec.offered[fi] {
+			if s == pid {
+				return true
+			}
+		}
+		return false
+	}
+	if !offered(30, "C") || !offered(30, "A") || !offered(30, "B") {
+		t.Errorf("full player map not passed at frame 30: %v", rec.offered[30])
+	}
+	if offered(10, "B") {
+		t.Error("B has no frames before 20 and must not be in the map at frame 10")
+	}
+	if ps := p.Players()["C"]; ps == nil || !detect.IsStale(ps, 30) || detect.IsStale(ps, 39) {
+		t.Errorf("C staleness wrong: %+v", ps)
+	}
+}
+
+// TestFullMap_StalePlayerIsNotRescoredByRealDetector proves the contract end
+// to end with MOV_001: a speed hacker who leaves the match at frame 40 must
+// produce no incident after its last frame even though its PlayerState (with
+// a 75 m/s velocity) stays in the map for the rest of the match.
+func TestFullMap_StalePlayerIsNotRescoredByRealDetector(t *testing.T) {
+	cfg := testConfig("enforce")
+	p, _ := newPipeline(cfg, []detect.Detector{movement.NewMov001(cfg.GetDetectorConfig("MOV_001").Params)})
+	var frames []model.PlayerTelemetryFrame
+	hack := speedHackFrames("H", 40)
+	for i := 0; i < 200; i++ {
+		frames = append(frames, cleanFrame("A", i))
+		if i < 40 {
+			frames = append(frames, hack[i])
+		}
+	}
+	res, err := p.ProcessMatch(context.Background(), matchCtx("A", "H"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hackEvents := 0
+	for _, ev := range res.DetectionEvents {
+		if ev.PlayerID != "H" {
+			t.Errorf("clean player scored: %+v", ev)
+			continue
+		}
+		hackEvents++
+		if ev.FrameRangeStart > 39 || ev.FrameIndex > 39 {
+			t.Errorf("stale player re-scored after leaving: frames %d-%d (index %d)", ev.FrameRangeStart, ev.FrameRangeEnd, ev.FrameIndex)
+		}
+	}
+	if hackEvents == 0 {
+		t.Fatal("expected MOV_001 to fire for H while it was present")
+	}
+	if ps := p.Players()["H"]; ps == nil || ps.LastFrameIdx != 39 || ps.Speed == 0 {
+		t.Fatalf("H's state should remain in the map with its last kinematics: %+v", ps)
+	}
+}
+
+// TestSkipResetPreservesSeededState is the root-cause regression for the
+// live path: with SetSkipReset the first ProcessMatch must only create the
+// roster, never wipe a scorer (or detector/dedup state) that already holds
+// data, and no batch may close incidents early.
+func TestSkipResetPreservesSeededState(t *testing.T) {
+	cfg := testConfig("enforce")
+	rec := newRecorder("FAKE_003", "movement", 0)
+	p, scorer := newPipeline(cfg, []detect.Detector{rec})
+	p.SetSkipReset(true)
+
+	mc := matchCtx("P1")
+	seed := rec.event(mc, "P1", 100, 0.9, 0.9, "seeded")
+	seed.EnforcementWeight = 0.8
+	scorer.IngestEvent(*seed)
+	before := scorer.GetScore("P1")
+	if before.EventCount != 1 || before.TotalScore <= 0 {
+		t.Fatalf("seed not scored: %+v", before)
+	}
+
+	res, err := p.ProcessMatch(context.Background(), mc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.PlayerScores["P1"]; got.EventCount != 1 || got.TotalScore != before.TotalScore {
+		t.Fatalf("first live slice reset the seeded scorer: %+v", got)
+	}
+	if p.Players() == nil || p.Players()["P1"] == nil {
+		t.Fatal("roster not created on the first live slice")
+	}
+
+	// A sliding-window emission on every frame of the first slice must stay
+	// ONE open incident across the slice boundary (no offline flush).
+	rec.emit = func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent {
+		return rec.event(mc, ps.PlayerID, fi, 0.5, 0.9, "slide")
+	}
+	var frames []model.PlayerTelemetryFrame
+	for i := 0; i < 10; i++ {
+		frames = append(frames, cleanFrame("P1", i))
+	}
+	res, err = p.ProcessMatch(context.Background(), mc, frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.DetectionEvents) != 0 || p.dedup.PendingCount() != 1 {
+		t.Fatalf("live slice closed incidents early: emitted=%d pending=%d", len(res.DetectionEvents), p.dedup.PendingCount())
+	}
+	fin := p.Finalize(mc)
+	if len(fin.DetectionEvents) != 1 || fin.DetectionEvents[0].FrameRangeStart != 0 || fin.DetectionEvents[0].FrameRangeEnd != 9 {
+		t.Fatalf("Finalize should close the one open incident spanning 0-9: %+v", fin.DetectionEvents)
+	}
+}
+
+// TestFlushTracksAtMatchEnd: a TrackFlusher's match-end emissions go through
+// the same validate/dedup/rate-limit/scoring path as frame events, both at
+// the end of an offline ProcessMatch and from Finalize on the live path.
+func TestFlushTracksAtMatchEnd(t *testing.T) {
+	cfg := testConfig("enforce")
+	build := func() (*Pipeline, *recorder, *scoring.SuspicionScorer) {
+		rec := newRecorder("FAKE_FLUSH", "throw", 0)
+		rec.flush = func(mc *model.MatchContext, fi int) []model.DetectionEvent {
+			good := rec.event(mc, "P1", fi, 0.7, 0.9, "in_flight")
+			bad := rec.event(mc, "P1", fi, 0.7, 0.9, "broken")
+			bad.ObservedValue = "" // fails Validate: must be dropped and counted
+			return []model.DetectionEvent{*good, *bad}
+		}
+		p, scorer := newPipeline(cfg, []detect.Detector{rec})
+		return p, rec, scorer
+	}
+	var frames []model.PlayerTelemetryFrame
+	for i := 0; i < 12; i++ {
+		frames = append(frames, cleanFrame("P1", i))
+	}
+
+	p, _, scorer := build()
+	res, err := p.ProcessMatch(context.Background(), matchCtx("P1"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.DetectionEvents) != 1 || res.DetectionEvents[0].CausalKey.AnomalyType != "in_flight" || res.DetectionEvents[0].FrameIndex != 11 {
+		t.Fatalf("offline flush events not routed: %+v", res.DetectionEvents)
+	}
+	if res.EventsInvalid != 1 {
+		t.Errorf("invalid flush emission not counted: %d", res.EventsInvalid)
+	}
+	if scorer.GetScore("P1").EventCount != 1 {
+		t.Error("flushed event not scored")
+	}
+
+	pLive, _, scorerLive := build()
+	pLive.SetSkipReset(true)
+	mc := matchCtx("P1")
+	res, err = pLive.ProcessMatch(context.Background(), mc, frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.DetectionEvents) != 0 {
+		t.Fatalf("live slice must not flush tracks: %+v", res.DetectionEvents)
+	}
+	fin := pLive.Finalize(mc)
+	if len(fin.DetectionEvents) != 1 || fin.DetectionEvents[0].CausalKey.AnomalyType != "in_flight" {
+		t.Fatalf("Finalize did not flush tracks: %+v", fin.DetectionEvents)
+	}
+	if scorerLive.GetScore("P1").EventCount != 1 {
+		t.Error("live flushed event not scored")
+	}
+	// Nothing to flush before any frame was processed.
+	pEmpty, _, _ := build()
+	if r, _ := pEmpty.ProcessMatch(context.Background(), matchCtx("P1"), nil); len(r.DetectionEvents) != 0 {
+		t.Errorf("flush without frames emitted %+v", r.DetectionEvents)
+	}
+}
+
+// TestMatchStartAnchorsEventTimes: offline and live, event times are match
+// start + event timestamp, never the ingest wall clock.
+func TestMatchStartAnchorsEventTimes(t *testing.T) {
+	cfg := testConfig("enforce")
+	rec := newRecorder("FAKE_TIME", "bio", 0)
+	rec.emit = func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent {
+		if fi != 3 {
+			return nil
+		}
+		return rec.event(mc, ps.PlayerID, fi, 0.5, 0.9, "t")
+	}
+	p, scorer := newPipeline(cfg, []detect.Detector{rec})
+	mc := matchCtx("P1")
+	mc.StartTime = time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)
+	var frames []model.PlayerTelemetryFrame
+	for i := 0; i < 5; i++ {
+		frames = append(frames, cleanFrame("P1", i))
+	}
+	if _, err := p.ProcessMatch(context.Background(), mc, frames); err != nil {
+		t.Fatal(err)
+	}
+	want := mc.StartTime.Add(time.Duration(3 * 0.067 * float64(time.Second)))
+	if got := scorer.GetScore("P1").FirstEventTime; got.Sub(want).Abs() > time.Millisecond {
+		t.Errorf("FirstEventTime=%v want %v (match start + 0.201s)", got, want)
+	}
+}
+
+func TestPhysicsFromConfig(t *testing.T) {
+	if got, want := PhysicsFromConfig(nil), model.DefaultPhysics(); got != want {
+		t.Errorf("nil config: %+v", got)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Physics.DiscSpeedCap = 21.5
+	cfg.Physics.GrabRange = 0 // unset -> default
+	ph := PhysicsFromConfig(cfg)
+	if ph.DiscSpeedCap != 21.5 || ph.GrabRange != model.DefaultPhysics().GrabRange || ph.GoalZ != model.DefaultPhysics().GoalZ {
+		t.Errorf("physics from config: %+v", ph)
 	}
 }
 
@@ -613,5 +844,67 @@ func TestSuddenDeathIsActive(t *testing.T) {
 	}
 	if mc.IsActivePhase("pre_sudden_death") || mc.IsActivePhase("post_sudden_death") {
 		t.Error("pre/post sudden death transitions must stay inactive")
+	}
+}
+
+// TestStallFrameIsAcceptedAsGap (contract 1 at the validator): with real
+// timestamps a 600 ms broadcaster stall is a valid sample. The frame is
+// accepted (raw state updated), the extractor derives no kinematics for it,
+// and the next frame has normal kinematics again. Only a spacing that cannot
+// be a sample interval is rejected.
+func TestStallFrameIsAcceptedAsGap(t *testing.T) {
+	cfg := testConfig("enforce")
+	rec := newRecorder("FAKE_GAP", "movement", 0)
+	speeds := map[int]float64{}
+	rec.emit = func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent {
+		speeds[fi] = ps.Speed
+		return nil
+	}
+	p, _ := newPipeline(cfg, []detect.Detector{rec})
+
+	var frames []model.PlayerTelemetryFrame
+	ts := 0.0
+	for i := 0; i < 20; i++ {
+		f := cleanFrame("P1", i)
+		dt := 0.067
+		if i == 10 {
+			dt = 0.6 // stall
+		}
+		if i > 0 {
+			ts += dt
+		}
+		f.Timestamp, f.DeltaTime = ts, dt
+		if i == 0 {
+			f.DeltaTime = 0
+		}
+		frames = append(frames, f)
+	}
+	res, err := p.ProcessMatch(context.Background(), matchCtx("P1"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InvalidFrames != 0 || res.FramesProcessed != 20 {
+		t.Fatalf("stall frame rejected: invalid=%d processed=%d reasons=%v", res.InvalidFrames, res.FramesProcessed, res.InvalidFrameReasons)
+	}
+	if speeds[10] != 0 {
+		t.Errorf("gap frame must carry no kinematics, got speed %.3f", speeds[10])
+	}
+	if speeds[11] < 1.0 || speeds[9] < 1.0 {
+		t.Errorf("frames around the gap should have normal kinematics: before=%.3f after=%.3f", speeds[9], speeds[11])
+	}
+	if ps := p.Players()["P1"]; ps == nil || ps.FrameCount != 20 || ps.LastFrameIdx != 19 {
+		t.Errorf("player state after gap: %+v", ps)
+	}
+
+	// A spacing that cannot be a sample interval is still rejected.
+	bad := cleanFrame("P1", 0)
+	bad.DeltaTime = MaxProducerDt + 1
+	if _, err := NewFrameValidator(cfg).Validate(&bad, matchCtx("P1")); err == nil {
+		t.Error("clock-jump dt accepted")
+	}
+	dup := cleanFrame("P1", 0)
+	dup.DeltaTime = cfg.Pipeline.MinFrameDt * 0.1
+	if _, err := NewFrameValidator(cfg).Validate(&dup, matchCtx("P1")); err == nil {
+		t.Error("duplicated-tick dt accepted")
 	}
 }

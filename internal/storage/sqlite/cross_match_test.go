@@ -133,17 +133,25 @@ func TestCrossMatch_ReviewCaseTiersAndThreshold(t *testing.T) {
 	}{
 		{15, "low"}, {39.9, "low"}, {40, "medium"}, {60, "high"}, {80, "critical"}, {95, "critical"},
 	} {
-		if got := SeverityForScore(tc.score); got != tc.severity {
+		if got := SeverityForScore(tc.score, model.DefaultLevelTable()); got != tc.severity {
 			t.Errorf("SeverityForScore(%.1f) = %s, want %s", tc.score, got, tc.severity)
 		}
 	}
 	sum := PlayerCrossMatchSummary{PlayerID: "P1", DecayedScore: 59, CumulativeScore: 200, DistinctMatches: 3, MatchIDs: []string{"a", "b", "c"}}
-	if BuildCrossMatchReviewCase(sum, 60) != nil {
-		t.Error("case created below threshold")
+	if BuildCrossMatchReviewCase(sum, model.DefaultLevelTable()) != nil {
+		t.Error("case created below the default high_risk boundary")
 	}
-	rc := BuildCrossMatchReviewCase(sum, 40)
-	if rc == nil || rc.Severity != "medium" || rc.CaseID != "XM-P1" || rc.Status != CaseStatusPending {
+	// A configured review threshold moves the high_risk boundary (contract 7):
+	// a score at or above it is a high_risk case, labelled "high".
+	rc := BuildCrossMatchReviewCase(sum, model.DefaultLevelTable().WithReviewThreshold(40))
+	if rc == nil || rc.Severity != "high" || rc.CaseID != "XM-P1" || rc.Status != CaseStatusPending {
 		t.Errorf("case = %+v", rc)
+	}
+	// The summary Level follows the same table.
+	s := ComputePlayerCrossMatchSummary([]model.DetectionEvent{mkEvent("THROW_001", "P1", "M1", 1, 1, 1)}, nil,
+		CrossMatchConfig{MaxSingleContribution: 15, Levels: model.DefaultLevelTable().WithReviewThreshold(10)})
+	if s.Level != model.LevelHighRisk {
+		t.Errorf("summary level with threshold 10 = %s, want high_risk", s.Level)
 	}
 }
 

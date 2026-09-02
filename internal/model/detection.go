@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,8 +156,23 @@ func MarshalEvidence(ev Evidence) ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// DecodeEvidence decodes evidence JSON produced by MarshalEvidence. Unknown or
-// missing types return nil evidence and no error so old rows remain readable.
+// EvidenceTypes returns every evidence type name the registry can decode,
+// sorted. Storage uses it to prove its evidence_type column and this registry
+// cannot drift.
+func EvidenceTypes() []string {
+	out := make([]string, 0, len(evidenceRegistry))
+	for k := range evidenceRegistry {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DecodeEvidence decodes evidence JSON produced by MarshalEvidence into the
+// concrete evidence VALUE type (ThrowEvidence, not *ThrowEvidence), i.e. the
+// same shape detectors emit, so a type switch works identically on live and
+// stored events. Unknown or missing types return nil evidence and no error
+// so old rows remain readable.
 func DecodeEvidence(raw []byte) (Evidence, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -166,13 +183,29 @@ func DecodeEvidence(raw []byte) (Evidence, error) {
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("decode evidence envelope: %w", err)
 	}
-	ctor, ok := evidenceRegistry[probe.Type]
+	return DecodeEvidenceAs(probe.Type, raw)
+}
+
+// DecodeEvidenceAs decodes raw as the named evidence type regardless of any
+// "type" key inside it (rows written before the typed envelope existed carry
+// the type in a separate column). An unregistered type yields nil, nil.
+func DecodeEvidenceAs(evidenceType string, raw []byte) (Evidence, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	ctor, ok := evidenceRegistry[evidenceType]
 	if !ok {
 		return nil, nil
 	}
-	ev := ctor()
-	if err := json.Unmarshal(raw, ev); err != nil {
-		return nil, fmt.Errorf("decode %s evidence: %w", probe.Type, err)
+	ptr := ctor()
+	if err := json.Unmarshal(raw, ptr); err != nil {
+		return nil, fmt.Errorf("decode %s evidence: %w", evidenceType, err)
+	}
+	// Registry constructors return pointers so json can fill them; hand back
+	// the value, which is what every evidence type implements Evidence on.
+	ev, ok := reflect.ValueOf(ptr).Elem().Interface().(Evidence)
+	if !ok {
+		return ptr, nil
 	}
 	return ev, nil
 }

@@ -152,6 +152,10 @@ type fakeBroadcaster struct {
 	status   atomic.Int32
 	requests atomic.Int64
 	static   bool // do not vary the body between requests
+	// bytesOnly varies a field the mapper's fingerprint ignores
+	// (client_name) so every body differs byte-wise while the game state
+	// stays identical.
+	bytesOnly bool
 }
 
 func startFakeBroadcaster(t *testing.T, responseBody string, statusCode int) *httptest.Server {
@@ -173,7 +177,10 @@ func newFakeBroadcaster(t *testing.T, responseBody string, statusCode int) *fake
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(int(fb.status.Load()))
 		body := fb.body.Load().(string)
-		if !fb.static {
+		switch {
+		case fb.bytesOnly:
+			body = strings.Replace(body, `"client_name":"test"`, fmt.Sprintf(`"client_name":"test-%d"`, n), 1)
+		case !fb.static:
 			body = varySession(body, n)
 		}
 		fmt.Fprint(w, body)
@@ -1704,5 +1711,44 @@ func TestOnce_ZeroFrames_WritesManifestAndFrames(t *testing.T) {
 	framesData, err := os.ReadFile(dumpDir + "/" + dumpFilename("zero-once", "mapped_frames.json"))
 	if err != nil || len(framesData) == 0 {
 		t.Errorf("mapped frames file should exist and be non-empty: %v", err)
+	}
+}
+
+// A snapshot whose bytes differ but whose game state is unchanged (the
+// broadcaster ticks slower than the poll) is "no new state" per the mapper's
+// change detection: not forwarded, not counted as a zero-frame failure, and
+// visible as polls_duplicate_state.
+func TestContinuousMode_DedupsUnchangedGameState(t *testing.T) {
+	fb := newFakeBroadcaster(t, fakeSessionJSON("sess-state", "playing", 2), 200)
+	fb.bytesOnly = true
+	nakama := startFakeNakama(t, matchesFor(fb.port(t), "dupstate"))
+	fa := startFakeAnticheat(t)
+
+	cfg := testConfig(nakama.URL, fb.port(t))
+	cfg.AnticheatURL = fa.wsURL()
+	cfg.PollInterval = 5 * time.Millisecond
+	stats := &bridgeStats{startTime: time.Now(), mode: "continuous"}
+
+	cancel, _ := runBridgeAsync(cfg, stats, 5*time.Second)
+	waitFor(2*time.Second, func() bool { return stats.PollsDuplicateState.Load() >= 10 })
+	cancel()
+
+	if fa.batchCount() != 1 {
+		t.Errorf("batches = %d, want exactly 1 (game state never changed)", fa.batchCount())
+	}
+	if stats.PollsDuplicateState.Load() < 10 {
+		t.Errorf("duplicate-state polls = %d", stats.PollsDuplicateState.Load())
+	}
+	if stats.PollsDuplicate.Load() != 0 {
+		t.Errorf("bodies differed byte-wise; byte dedup should not have fired: %d", stats.PollsDuplicate.Load())
+	}
+	// The mapped frames carry the mapper's spectator exclusion count only
+	// through stats; spectators never reach the batch.
+	for _, b := range fa.allBatches() {
+		for _, f := range b.Frames {
+			if f.Team != "blue" && f.Team != "orange" {
+				t.Errorf("frame for non-team player forwarded: %+v", f.PlayerID)
+			}
+		}
 	}
 }

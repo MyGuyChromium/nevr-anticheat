@@ -3,8 +3,6 @@ package tests
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -22,9 +20,10 @@ import (
 // Compile-time proof that the sqlite store satisfies the narrow interfaces
 // the scoring/review/enforce packages depend on.
 var (
-	_ review.CaseStore     = (*sqlite.Store)(nil)
-	_ evidence.ExportStore = (*sqlite.Store)(nil)
-	_ enforce.ActionStore  = (*sqlite.Store)(nil)
+	_ review.CaseStore      = (*sqlite.Store)(nil)
+	_ review.LifecycleStore = (*sqlite.Store)(nil)
+	_ evidence.ExportStore  = (*sqlite.Store)(nil)
+	_ enforce.ActionStore   = (*sqlite.Store)(nil)
 )
 
 func mkScoringEvent(det, player string, frame int) model.DetectionEvent {
@@ -78,9 +77,6 @@ func TestScoringReview_LiveBatchesDoNotInflateScore(t *testing.T) {
 // `flagged`/`report` data -> replay bundle export.
 func TestScoringReview_CasesReachStore(t *testing.T) {
 	store := newTestStore(t)
-	if err := sqlite.RunMigrationsV2(store.DB(), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
 	p, scorer := newTestPipeline([]detect.Detector{})
 	p.SetSkipReset(true) // live-path semantics: keep the seeded scorer

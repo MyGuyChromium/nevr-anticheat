@@ -17,12 +17,7 @@ import (
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/bio"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/state"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/throw"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/catalog"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/logging"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -178,65 +173,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  version                    Print version")
 }
 
-// registerAllDetectors constructs and configures all 29 detectors from config.
-// historyProvider may be nil if no database is available (PAT_003 will be inert).
-func registerAllDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider) []detect.Detector {
-	type entry struct {
-		id      string
-		factory func(map[string]any) detect.Detector
-	}
-	catalog := []entry{
-		{"THROW_001", func(p map[string]any) detect.Detector { return throw.NewThrow001(p) }},
-		{"THROW_002", func(p map[string]any) detect.Detector { return throw.NewThrow002(p) }},
-		{"THROW_003", func(p map[string]any) detect.Detector { return throw.NewThrow003(p) }},
-		{"THROW_004", func(p map[string]any) detect.Detector { return throw.NewThrow004(p) }},
-		{"THROW_005", func(p map[string]any) detect.Detector { return throw.NewThrow005(p) }},
-		{"THROW_006", func(p map[string]any) detect.Detector { return throw.NewThrow006(p) }},
-		{"THROW_007", func(p map[string]any) detect.Detector { return throw.NewThrow007(p) }},
-		{"THROW_008", func(p map[string]any) detect.Detector { return throw.NewThrow008(p) }},
-		{"BIO_001", func(p map[string]any) detect.Detector { return bio.NewBio001(p) }},
-		{"BIO_002", func(p map[string]any) detect.Detector { return bio.NewBio002(p) }},
-		{"BIO_003", func(p map[string]any) detect.Detector { return bio.NewBio003(p) }},
-		{"BIO_004", func(p map[string]any) detect.Detector { return bio.NewBio004(p) }},
-		{"MOV_001", func(p map[string]any) detect.Detector { return movement.NewMov001(p) }},
-		{"MOV_002", func(p map[string]any) detect.Detector { return movement.NewMov002(p) }},
-		{"MOV_003", func(p map[string]any) detect.Detector { return movement.NewMov003(p) }},
-		{"MOV_004", func(p map[string]any) detect.Detector { return movement.NewMov004(p) }},
-		{"MOV_005", func(p map[string]any) detect.Detector { return movement.NewMov005(p) }},
-		{"STATE_001", func(p map[string]any) detect.Detector { return state.NewState001(p) }},
-		{"STATE_002", func(p map[string]any) detect.Detector { return state.NewState002(p) }},
-		{"STATE_003", func(p map[string]any) detect.Detector { return state.NewState003(p) }},
-		{"STATE_004", func(p map[string]any) detect.Detector { return state.NewState004(p) }},
-		{"STATE_005", func(p map[string]any) detect.Detector { return state.NewState005(p) }},
-		{"STATE_006", func(p map[string]any) detect.Detector { return state.NewState006(p) }},
-		{"STATE_007", func(p map[string]any) detect.Detector { return state.NewState007(p) }},
-		{"PAT_001", func(p map[string]any) detect.Detector { return pattern.NewPat001(p) }},
-		{"PAT_002", func(p map[string]any) detect.Detector { return pattern.NewPat002(p) }},
-		{"PAT_003", func(p map[string]any) detect.Detector { return pattern.NewPat003(p) }},
-		{"PAT_004", func(p map[string]any) detect.Detector { return pattern.NewPat004(p) }},
-		{"PAT_005", func(p map[string]any) detect.Detector { return pattern.NewPat005(p) }},
-	}
-
-	var detectors []detect.Detector
-	for _, e := range catalog {
-		dc := cfg.GetDetectorConfig(e.id)
-		if !dc.Enabled {
-			continue
-		}
-		// Copy params so injecting the history provider never mutates shared config.
-		params := make(map[string]any, len(dc.Params)+1)
-		for k, v := range dc.Params {
-			params[k] = v
-		}
-		// Inject history provider for PAT_003 (cross-match consistency)
-		if e.id == "PAT_003" && historyProvider != nil {
-			params["history_provider"] = historyProvider
-		}
-		detectors = append(detectors, e.factory(params))
-	}
-	return detectors
-}
-
 // app bundles what every command needs.
 type app struct {
 	cfg   *config.Config
@@ -260,12 +196,11 @@ func openApp(configPath string) (*app, error) {
 	return &app{cfg: cfg, store: store, hp: sqlite.NewStoreHistoryProvider(store), log: logger}, nil
 }
 
-// newPipeline builds a fresh pipeline (own detectors, own scorer). Pipelines
-// are not goroutine-safe; build one per worker.
-func (a *app) newPipeline() *pipeline.Pipeline {
+// scorerConfig is the single place the [scoring] block is turned into scorer
+// parameters; levels() derives the tier table every command classifies with.
+func (a *app) scorerConfig() scoring.ScorerConfig {
 	cfg := a.cfg
-	detectors := registerAllDetectors(cfg, a.hp)
-	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
+	return scoring.ScorerConfig{
 		MaxSingleContribution:         cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: cfg.Scoring.MaxContribPerDetectorPerMatch,
 		SameCategoryDiminishing:       cfg.Scoring.SameCategoryDiminishing,
@@ -274,7 +209,37 @@ func (a *app) newPipeline() *pipeline.Pipeline {
 		DecayHalfLifeHours:            cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           cfg.Scoring.CorrelationBonusCap,
-	})
+	}
+}
+
+// levels is the tier table shared by the in-match scorer, single-match review
+// cases, cross-match aggregation and CLI output (contract 7: one source of
+// truth, review_threshold mapped onto high_risk).
+func (a *app) levels() model.LevelTable {
+	return a.scorerConfig().EffectiveLevels()
+}
+
+// physics is the match physics built from the [physics] block.
+func (a *app) physics() model.PhysicsConstants {
+	return pipeline.PhysicsFromConfig(a.cfg)
+}
+
+// analysisOptions is what StoreMatchAnalysis needs to write cases the way
+// the scorer scored them.
+func (a *app) analysisOptions() replay.AnalysisOptions {
+	return replay.AnalysisOptions{
+		Levels:        a.levels(),
+		DetectorNames: catalog.Names(),
+		Logger:        logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat),
+	}
+}
+
+// newPipeline builds a fresh pipeline (own detectors, own scorer). Pipelines
+// are not goroutine-safe; build one per worker.
+func (a *app) newPipeline() *pipeline.Pipeline {
+	cfg := a.cfg
+	detectors := catalog.Build(cfg, a.hp)
+	scorer := scoring.NewSuspicionScorer(a.scorerConfig())
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
 	return pipeline.NewPipeline(cfg, detectors, scorer, logger)
 }
@@ -284,6 +249,7 @@ func (a *app) crossMatchConfig() sqlite.CrossMatchConfig {
 		DecayHalfLifeHours:            a.cfg.Scoring.DecayHalfLifeHours,
 		MaxSingleContribution:         a.cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: a.cfg.Scoring.MaxContribPerDetectorPerMatch,
+		Levels:                        a.levels(),
 	}
 }
 
@@ -314,6 +280,14 @@ func printPlayerScores(scores map[string]model.SuspicionScore) {
 	}
 }
 
+// errMatchAlreadyStored aborts a streaming parse when the match is already in
+// the store and --force was not given.
+var errMatchAlreadyStored = errors.New("match already stored")
+
+// rawTickFlushEvery bounds how many raw session payloads analyze keeps in
+// memory before writing them to match_ticks.
+const rawTickFlushEvery = 500
+
 func runAnalyze(configPath, replayPath string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
@@ -322,47 +296,117 @@ func runAnalyze(configPath, replayPath string, force bool) {
 	// Auto-detect format: .echoreplay (NDJSON/ZIP) vs legacy JSON replay
 	var matchCtx *model.MatchContext
 	var frames []model.PlayerTelemetryFrame
-	var rawByFrame map[int]string // frame_index → raw session JSON (echoreplay only)
 	var err error
+	source := "initial"
+	var tel sqlite.TelemetryStoreResult // accumulated telemetry writes
+	rawStored := false
+
+	// prepareMatch runs once the match id is known (first tick for a
+	// streamed .echoreplay, after reading for a legacy replay): skip a stored
+	// match unless --force, in which case the previous analysis is cleared.
+	prepareMatch := func(matchID string) error {
+		exists, err := a.store.HasMatch(ctx, matchID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		if !force {
+			return errMatchAlreadyStored
+		}
+		source = "reprocess"
+		ev, sc, err := a.store.DeleteMatchAnalysis(ctx, matchID)
+		if err != nil {
+			return fmt.Errorf("clearing previous analysis: %w", err)
+		}
+		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n", matchID, ev, sc)
+		return nil
+	}
 
 	if isEchoReplay(replayPath) {
+		// Stream the replay so the raw profiler payloads are written to
+		// match_ticks (once per frame index) in bounded chunks instead of
+		// being held for the whole file. Frames are still accumulated once:
+		// ProcessMatch needs the complete match.
 		parser := adapter.NewEchoReplayParser()
-		var diag *adapter.DiagnosticReport
-		matchCtx, frames, diag, err = parser.ParseFile(replayPath)
+		parser.SetPhysics(a.physics())
+		matchID := ""
+		var lastSample time.Time
+		pending := make(map[int]string)
+		flush := func() error {
+			if len(pending) == 0 {
+				return nil
+			}
+			res, err := a.store.StoreTelemetryFramesWithRaw(ctx, matchID, nil, pending)
+			if err != nil {
+				return err
+			}
+			tel.TicksInserted += res.TicksInserted
+			tel.TicksIgnored += res.TicksIgnored
+			rawStored = true
+			pending = make(map[int]string)
+			return nil
+		}
+		mc, diag, err := parser.ParseFileStream(replayPath, func(tick *adapter.ParsedTick) error {
+			if matchID == "" {
+				matchID = tick.MatchID
+				if matchID == "" {
+					return errors.New("replay has no match id")
+				}
+				if err := prepareMatch(matchID); err != nil {
+					return err
+				}
+			}
+			if _, seen := pending[tick.FrameIndex]; !seen {
+				pending[tick.FrameIndex] = tick.RawJSON
+			}
+			frames = append(frames, tick.Frames...)
+			lastSample = tick.SampleTime
+			if len(pending) >= rawTickFlushEvery {
+				return flush()
+			}
+			return nil
+		})
+		if errors.Is(err, errMatchAlreadyStored) {
+			fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", matchID)
+			fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+			return
+		}
 		if err != nil {
 			fatal("Error reading echoreplay: %v", err)
 		}
-		rawByFrame = parser.RawSessionByFrame()
-		fmt.Printf("Parsed %d player-frames from %s (%d rejected)\n",
+		if err := flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store raw ticks: %v\n", err)
+		}
+		matchCtx = mc
+		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
+			// Match duration is the real span of the recording (first to last sample).
+			matchCtx.Duration = lastSample.Sub(matchCtx.StartTime)
+		}
+		fmt.Printf("Parsed %d player-frames from %s (%d lines rejected)\n",
 			len(frames), replayPath, diag.FramesRejected)
+		fmt.Print(diag.FormatReport())
 	} else {
 		reader := replay.NewReplayReader(replayPath, replay.NewJSONFrameParser())
+		reader.SetPhysics(a.physics())
 		matchCtx, frames, err = reader.ReadMatch()
 		if err != nil {
 			fatal("Error reading replay: %v", err)
 		}
-	}
-	if matchCtx.MatchID == "" {
-		fatal("Error: replay has no match id")
-	}
-
-	exists, err := a.store.HasMatch(ctx, matchCtx.MatchID)
-	if err != nil {
-		fatal("Error: %v", err)
-	}
-	source := "initial"
-	if exists {
-		if !force {
+		if matchCtx.MatchID == "" {
+			fatal("Error: replay has no match id")
+		}
+		if err := prepareMatch(matchCtx.MatchID); errors.Is(err, errMatchAlreadyStored) {
 			fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", matchCtx.MatchID)
 			fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
 			return
+		} else if err != nil {
+			fatal("Error: %v", err)
 		}
-		source = "reprocess"
-		ev, sc, err := a.store.DeleteMatchAnalysis(ctx, matchCtx.MatchID)
-		if err != nil {
-			fatal("Error clearing previous analysis: %v", err)
-		}
-		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n", matchCtx.MatchID, ev, sc)
+	}
+	if matchCtx == nil || matchCtx.MatchID == "" {
+		fatal("Error: replay has no match id")
 	}
 
 	p := a.newPipeline()
@@ -371,14 +415,16 @@ func runAnalyze(configPath, replayPath string, force bool) {
 		fatal("Error: %v", err)
 	}
 
-	// Persist telemetry and match context so reprocessing doesn't need replay files.
-	// For .echoreplay sources the raw profiler JSON is stored once per tick.
-	tel, storeErr := a.store.StoreTelemetryFramesWithRaw(ctx, matchCtx.MatchID, frames, rawByFrame)
+	// Persist telemetry and match context so reprocessing doesn't need replay
+	// files (the raw profiler JSON of an .echoreplay was streamed to
+	// match_ticks during parsing).
+	fr, storeErr := a.store.StoreTelemetryFramesWithRaw(ctx, matchCtx.MatchID, frames, nil)
 	if storeErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
 	} else {
+		tel.Inserted, tel.Ignored = fr.Inserted, fr.Ignored
 		fmt.Printf("Stored %d telemetry frames (%d already present)", tel.Inserted, tel.Ignored)
-		if len(rawByFrame) > 0 {
+		if rawStored {
 			fmt.Printf(", %d raw ticks (%d already present)", tel.TicksInserted, tel.TicksIgnored)
 		}
 		fmt.Println()
@@ -386,7 +432,7 @@ func runAnalyze(configPath, replayPath string, force bool) {
 	if err := a.store.StoreMatchContext(ctx, matchCtx, len(frames)); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to store match context: %v\n", err)
 	}
-	stored, err := replay.StoreMatchAnalysis(ctx, a.store, matchCtx, result, source)
+	stored, err := replay.StoreMatchAnalysis(ctx, a.store, matchCtx, result, source, a.analysisOptions())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	}
@@ -406,6 +452,8 @@ func runBatch(configPath, dir string, force bool) {
 		a.cfg.General.MaxWorkers, logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat))
 	analyzer.SetPipelineFactory(a.newPipeline)
 	analyzer.SetForce(force)
+	analyzer.SetAnalysisOptions(a.analysisOptions())
+	analyzer.SetPhysics(a.physics())
 	result, err := analyzer.AnalyzeDirectory(context.Background(), dir)
 	if err != nil {
 		fatal("Error: %v", err)
@@ -633,7 +681,8 @@ func runCrossMatchAnalysis(configPath string) {
 // scoring.min_matches_for_cross_match (floor 2) matches are aggregated.
 func runCrossMatchAggregation(a *app) (int, int) {
 	ctx := context.Background()
-	reviewThreshold := a.cfg.Scoring.ReviewThreshold
+	levels := a.levels()
+	reviewThreshold := levels.HighRisk // scoring.review_threshold mapped onto high_risk
 	minMatches := a.cfg.Scoring.MinMatchesForCrossMatch
 	if minMatches < 2 {
 		minMatches = 2
@@ -677,7 +726,7 @@ func runCrossMatchAggregation(a *app) (int, int) {
 				summary.Level, pid, summary.DecayedScore, summary.CumulativeScore,
 				summary.DistinctMatches, summary.TotalEvents)
 		}
-		if rc := sqlite.BuildCrossMatchReviewCase(summary, reviewThreshold); rc != nil {
+		if rc := sqlite.BuildCrossMatchReviewCase(summary, levels); rc != nil {
 			if err := a.store.StoreCrossMatchReviewCase(ctx, *rc); err != nil {
 				fmt.Fprintf(os.Stderr, "Error storing cross-match case for %s: %v\n", pid, err)
 			} else {
@@ -822,11 +871,18 @@ func runCalibrationReport(configPath, sinceSpec string) {
 
 // reprocessMatchFromDB loads telemetry from the database and re-runs the detection pipeline.
 // It deletes existing detection events and per-match score snapshots for this
-// match first so reprocessing is idempotent.
-func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
+// match first so reprocessing is idempotent (review cases are upserted under
+// their deterministic ids and keep any moderator status).
+func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
+	store := a.store
 	matchCtx, err := store.GetMatchContext(ctx, matchID)
 	if err != nil {
 		return nil, fmt.Errorf("loading match context: %w", err)
+	}
+	if matchCtx.Physics == (model.PhysicsConstants{}) {
+		// Context stored without physics (older rows, synthesized contexts):
+		// analyze under the configured constants, as the original run did.
+		matchCtx.Physics = a.physics()
 	}
 	frames, err := store.GetMatchFrames(ctx, matchID)
 	if err != nil {
@@ -848,7 +904,7 @@ func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.
 	if err != nil {
 		return nil, err
 	}
-	if _, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess"); err != nil {
+	if _, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions()); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -858,7 +914,7 @@ func runReprocessMatch(configPath, matchID string) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
 
-	result, err := reprocessMatchFromDB(context.Background(), a.store, a.newPipeline(), matchID)
+	result, err := reprocessMatchFromDB(context.Background(), a, a.newPipeline(), matchID)
 	if err != nil {
 		fatal("Error: %v", err)
 	}
@@ -871,7 +927,7 @@ func runReprocessMatch(configPath, matchID string) {
 func reprocessMany(ctx context.Context, a *app, matchIDs []string, verbose bool) (totalDetections int, failed []string) {
 	p := a.newPipeline()
 	for _, matchID := range matchIDs {
-		result, err := reprocessMatchFromDB(ctx, a.store, p, matchID)
+		result, err := reprocessMatchFromDB(ctx, a, p, matchID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Match %s: error: %v\n", matchID, err)
 			failed = append(failed, matchID)

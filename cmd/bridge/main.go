@@ -274,7 +274,8 @@ type bridgeStats struct {
 	MatchesSkippedMismatch atomic.Int64
 	TotalPolls             atomic.Int64
 	TotalPollFailures      atomic.Int64
-	PollsDuplicate         atomic.Int64
+	PollsDuplicate         atomic.Int64 // byte-identical /session bodies
+	PollsDuplicateState    atomic.Int64 // same game state per the mapper's fingerprint (no new telemetry)
 	TotalFramesMapped      atomic.Int64
 	FramesDroppedSpectator atomic.Int64
 
@@ -315,6 +316,7 @@ func (s *bridgeStats) logSummary(logger *slog.Logger) {
 		"total_polls", s.TotalPolls.Load(),
 		"total_poll_failures", s.TotalPollFailures.Load(),
 		"polls_duplicate_snapshot", s.PollsDuplicate.Load(),
+		"polls_duplicate_state", s.PollsDuplicateState.Load(),
 		"frames_mapped", s.TotalFramesMapped.Load(),
 		"frames_dropped_spectator", s.FramesDroppedSpectator.Load(),
 		"total_batches_sent", s.TotalBatchesSent.Load(),
@@ -389,11 +391,18 @@ func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*ad
 
 	roster := buildRoster(&session)
 	mapper := adapter.NewMapper()
-	result := mapper.MapSession(&session)
+	mapper.SetDedupeIdentical(true)
+	result := mapper.MapSessionAt(&session, sampleAt)
 	var dropped int
 	result.Frames, dropped = filterFrames(result.Frames, roster)
+	dropped += result.SpectatorsDropped
 	if dropped > 0 {
 		logger.Info("dropped spectator/moderator entries from frames", "dropped", dropped, "spectators", roster.Spectators)
+	}
+	for _, w := range result.Warnings {
+		if w.Field == "basis_reflected" {
+			logger.Info("mapping: direction vectors form a reflected basis", "message", w.Message)
+		}
 	}
 	epoch := &frameEpoch{}
 	epoch.stamp(sampleAt, result.Frames)

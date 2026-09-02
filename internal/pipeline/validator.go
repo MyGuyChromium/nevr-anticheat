@@ -42,6 +42,10 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("%s for player %s", e.Reason, e.PlayerID)
 }
 
+// MaxProducerDt is the longest producer-reported DeltaTime (seconds) accepted
+// as a real sample interval. Anything longer is a clock jump, not a stall.
+const MaxProducerDt = 60.0
+
 // FrameValidator checks telemetry frames for validity.
 type FrameValidator struct {
 	minDt float64
@@ -80,7 +84,14 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 		return nil, &ValidationError{Reason: ReasonDtOutOfRange, PlayerID: frame.PlayerID, Detail: "non-finite time"}
 	}
 	// Check DeltaTime. dt <= 0 means "unknown" (first frame, restarted clock).
-	if frame.DeltaTime > 0 && (frame.DeltaTime < v.minDt*0.5 || frame.DeltaTime > v.maxDt*2.5) {
+	// Producers report REAL sample spacing (contract 1), so a long gap (a
+	// broadcaster stall, a reconnect) is a legitimate sample, not a corrupt
+	// frame: it is accepted and the feature extractor treats it as a gap
+	// (raw state updated, no kinematics derived, see MaxFrameDt). Only a
+	// spacing that cannot be a sample interval is rejected: shorter than half
+	// the configured minimum (a duplicated tick) or longer than
+	// MaxProducerDt (a clock jump).
+	if frame.DeltaTime > 0 && (frame.DeltaTime < v.minDt*0.5 || frame.DeltaTime > MaxProducerDt) {
 		return nil, &ValidationError{Reason: ReasonDtOutOfRange, PlayerID: frame.PlayerID,
 			Detail: fmt.Sprintf("dt %.4f", frame.DeltaTime)}
 	}

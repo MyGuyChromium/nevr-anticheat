@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/review"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
@@ -49,7 +49,21 @@ type BatchAnalyzer struct {
 	workers         int
 	logger          *slog.Logger
 	force           bool
+	opts            AnalysisOptions
+	physics         model.PhysicsConstants
 	pipelineMu      sync.Mutex
+}
+
+// SetAnalysisOptions sets the level table and detector names used when the
+// derived outputs (score snapshots, review cases) are stored.
+func (ba *BatchAnalyzer) SetAnalysisOptions(opts AnalysisOptions) {
+	ba.opts = opts
+}
+
+// SetPhysics sets the physics constants stamped on every parsed match
+// context (from the [physics] config block). Zero means model.DefaultPhysics.
+func (ba *BatchAnalyzer) SetPhysics(phys model.PhysicsConstants) {
+	ba.physics = phys
 }
 
 // NewBatchAnalyzer creates a new batch analyzer using one shared pipeline.
@@ -226,22 +240,43 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".echoreplay" {
+		// Stream the replay: frames are accumulated once (ProcessMatch needs
+		// the whole match) and the raw payload is kept once per tick, keyed
+		// by frame index, so no second copy of the raw strings exists.
 		parser := adapter.NewEchoReplayParser()
-		matchCtx, frames, _, err := parser.ParseFile(path)
+		if ba.physics != (model.PhysicsConstants{}) {
+			parser.SetPhysics(ba.physics)
+		}
+		pm.rawByFrame = make(map[int]string)
+		var lastSample time.Time
+		matchCtx, _, err := parser.ParseFileStream(path, func(tick *adapter.ParsedTick) error {
+			if _, seen := pm.rawByFrame[tick.FrameIndex]; !seen {
+				pm.rawByFrame[tick.FrameIndex] = tick.RawJSON
+			}
+			pm.frames = append(pm.frames, tick.Frames...)
+			lastSample = tick.SampleTime
+			return nil
+		})
 		if err != nil {
 			return pm, false, err
 		}
-		pm.matchCtx, pm.frames = matchCtx, frames
-		pm.rawByFrame = parser.RawSessionByFrame()
+		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
+			// Match duration is the real span of the recording (first to last sample).
+			matchCtx.Duration = lastSample.Sub(matchCtx.StartTime)
+		}
+		pm.matchCtx = matchCtx
 	} else {
 		reader := NewReplayReader(path, ba.parser())
+		if ba.physics != (model.PhysicsConstants{}) {
+			reader.SetPhysics(ba.physics)
+		}
 		matchCtx, frames, err := reader.ReadMatch()
 		if err != nil {
 			return pm, false, err
 		}
 		pm.matchCtx, pm.frames = matchCtx, frames
 	}
-	if pm.matchCtx.MatchID == "" {
+	if pm.matchCtx == nil || pm.matchCtx.MatchID == "" {
 		return pm, false, fmt.Errorf("replay has no match id")
 	}
 
@@ -305,7 +340,11 @@ func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *Ba
 	if err := ba.store.StoreMatchContext(ctx, pm.matchCtx, len(pm.frames)); err != nil {
 		ba.logger.Warn("failed to store match context", "match_id", matchID, "error", err)
 	}
-	stored, err := StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source)
+	opts := ba.opts
+	if opts.Logger == nil {
+		opts.Logger = ba.logger
+	}
+	stored, err := StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source, opts)
 	if err != nil {
 		ba.logger.Warn("failed to store analysis", "match_id", matchID, "error", err)
 	}
@@ -327,18 +366,31 @@ type StoredAnalysis struct {
 	FlaggedPlayers []string // sorted
 }
 
-// ReviewCaseID is the deterministic single-match case id for (match, player)
-// so re-analysis refreshes the existing case instead of creating a new one.
-func ReviewCaseID(matchID, playerID string) string {
-	return fmt.Sprintf("RC-%s-%s", matchID, playerID)
+// AnalysisOptions carries what StoreMatchAnalysis needs beyond the result.
+type AnalysisOptions struct {
+	// Levels is the tier table review cases are classified with. Pass the
+	// scorer's table (scoring.ScorerConfig.EffectiveLevels()) so a case is
+	// created exactly when the scorer says ExceedsReview; a zero table means
+	// model.DefaultLevelTable().
+	Levels model.LevelTable
+	// DetectorNames maps detector ID -> human-readable name for case evidence.
+	DetectorNames map[string]string
+	// Logger receives case-creation log lines (nil = slog.Default()).
+	Logger *slog.Logger
 }
 
 // StoreMatchAnalysis persists a match's derived outputs: detection events
 // (tagged with source "initial" or "reprocess"), one per-match score snapshot
-// per player, and a single-match review case for every player whose score
-// exceeds the review threshold. Telemetry and context are stored by the caller.
-// Players are processed in sorted order for reproducibility.
-func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string) (StoredAnalysis, error) {
+// per scored player, and the single-match review cases produced by
+// review.CreateCasesFromResult (also written to result.ReviewCases).
+// Telemetry and context are stored by the caller. Players are processed in
+// sorted order for reproducibility.
+//
+// Score snapshots are only written for players that actually scored
+// (TotalScore > 0 with at least one event), matching the live path: a
+// zero row would let GetPlayerScore regress a real score to 0 and shadow-only
+// players leave no trace either way.
+func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string, opts AnalysisOptions) (StoredAnalysis, error) {
 	var out StoredAnalysis
 	stored, err := store.StoreDetectionEvents(ctx, result.DetectionEvents, source)
 	out.EventsStored = stored
@@ -350,23 +402,31 @@ func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *mode
 		pids = append(pids, pid)
 	}
 	sort.Strings(pids)
-	builder := evidence.NewBuilder()
 	for _, pid := range pids {
 		score := result.PlayerScores[pid]
+		if score.TotalScore <= 0 || score.EventCount == 0 {
+			continue
+		}
 		if err := store.StoreMatchSuspicionScore(ctx, matchCtx.MatchID, score); err != nil {
 			return out, fmt.Errorf("storing score for %s: %w", pid, err)
 		}
 		out.ScoresStored++
-		if !score.ExceedsReview {
-			continue
-		}
-		out.FlaggedPlayers = append(out.FlaggedPlayers, pid)
-		rc := builder.Build(pid, matchCtx, score, result.DetectionEvents)
-		rc.CaseID = ReviewCaseID(matchCtx.MatchID, pid)
-		if err := store.StoreReviewCase(ctx, rc); err != nil {
-			return out, fmt.Errorf("storing review case for %s: %w", pid, err)
-		}
-		out.CasesStored++
+	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	cases, caseErr := review.CreateCasesFromResult(ctx, store, matchCtx, result, opts.Levels,
+		review.WithDetectorNames(opts.DetectorNames), review.WithLogger(logger))
+	result.ReviewCases = cases
+	out.CasesStored = len(cases)
+	for _, rc := range cases {
+		out.FlaggedPlayers = append(out.FlaggedPlayers, rc.PlayerID)
+	}
+	sort.Strings(out.FlaggedPlayers)
+	if caseErr != nil {
+		return out, fmt.Errorf("storing review cases: %w", caseErr)
 	}
 	return out, nil
 }

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -216,7 +217,7 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if err := s.StoreReviewCase(ctx, rc); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "C1", CaseStatusInReview, "mod-a", time.Now()); err != nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "C1", CaseStatusInReview, "mod-a"); err != nil {
 		t.Fatal(err)
 	}
 	rc.SuspicionScore = 70
@@ -241,10 +242,10 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if len(pending) != 0 {
 		t.Error("in_review case listed as pending")
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "C1", "bogus", "", time.Now()); err == nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "C1", "bogus", ""); err == nil {
 		t.Error("invalid status accepted")
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "nope", CaseStatusClosed, "", time.Now()); err == nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "nope", CaseStatusClosed, ""); err == nil {
 		t.Error("missing case accepted")
 	}
 
@@ -254,7 +255,7 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if err := s.StoreCrossMatchReviewCase(ctx, xm); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "XM-P1", CaseStatusClosed, "", time.Now()); err != nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "XM-P1", CaseStatusClosed, ""); err != nil {
 		t.Fatal(err)
 	}
 	xm.DecayedScore = 80
@@ -370,5 +371,68 @@ func TestHistoryProvider_ExcludesShadowAndMetaWithMatchAwareLimit(t *testing.T) 
 	}
 	if seen["M1"] || !seen["M2"] || !seen["M3"] {
 		t.Errorf("wrong matches selected: %v (want the two most recent by match start)", seen)
+	}
+}
+
+// TestEvents_TypedEvidenceRoundTrip: evidence is written with
+// model.MarshalEvidence (typed envelope) and read back through the single
+// model registry as the value types detectors emit, for several types.
+func TestEvents_TypedEvidenceRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	samples := []model.Evidence{
+		model.ThrowEvidence{ReleaseSpeed: 21.5, ReleaseVelocity: model.Vec3{1, 2, 3}, EffectiveCap: 19.7, ArtifactSuspected: true},
+		model.WristRotationEvidence{AngularVelocity: 55.2, Hand: "left"},
+		model.PatternEvidence{DetectorSpecific: "composite", Metrics: map[string]float64{"category_count": 3}},
+		model.SpeedDistanceEvidence{SpeedIncreaseCount: 2, SpeedDistanceSamples: [][2]float64{{1, 2}, {3, 4}}},
+	}
+	for i, ev := range samples {
+		e := mkEvent("D_1", "P1", "M1", i, 0.5, 0.5)
+		e.Evidence = ev
+		mustStoreEvent(t, s, e)
+	}
+	got, err := s.GetMatchPlayerEvents(ctx, "M1", "P1")
+	if err != nil || len(got) != len(samples) {
+		t.Fatalf("read back %d events: %v", len(got), err)
+	}
+	for i, want := range samples {
+		if got[i].Evidence == nil || got[i].Evidence.EvidenceType() != want.EvidenceType() {
+			t.Fatalf("event %d evidence %#v, want type %s", i, got[i].Evidence, want.EvidenceType())
+		}
+	}
+	if te, ok := got[0].Evidence.(model.ThrowEvidence); !ok || te.ReleaseSpeed != 21.5 || te.ReleaseVelocity != (model.Vec3{1, 2, 3}) || !te.ArtifactSuspected {
+		t.Errorf("throw evidence = %#v", got[0].Evidence)
+	}
+	if we, ok := got[1].Evidence.(model.WristRotationEvidence); !ok || we.AngularVelocity != 55.2 || we.Hand != "left" {
+		t.Errorf("wrist evidence = %#v", got[1].Evidence)
+	}
+	if pe, ok := got[2].Evidence.(model.PatternEvidence); !ok || pe.Metrics["category_count"] != 3 || pe.DetectorSpecific != "composite" {
+		t.Errorf("pattern evidence = %#v", got[2].Evidence)
+	}
+	if se, ok := got[3].Evidence.(model.SpeedDistanceEvidence); !ok || len(se.SpeedDistanceSamples) != 2 || se.SpeedDistanceSamples[1][1] != 4 {
+		t.Errorf("speed-distance evidence = %#v", got[3].Evidence)
+	}
+
+	// The stored JSON carries the discriminator and the column mirrors it.
+	var evJSON, evType string
+	if err := s.DB().QueryRow(`SELECT evidence_json, evidence_type FROM detection_events WHERE frame_index = 0 AND match_id = 'M1'`).Scan(&evJSON, &evType); err != nil {
+		t.Fatal(err)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(evJSON), &probe); err != nil || probe["type"] != "throw" || evType != "throw" {
+		t.Errorf("stored evidence_json=%s evidence_type=%s", evJSON, evType)
+	}
+
+	// A row written by an older binary without the embedded type still
+	// decodes through the evidence_type column.
+	if _, err := s.DB().Exec(`INSERT INTO detection_events (event_id, detector_id, match_id, player_id, frame_index,
+		severity, confidence, evidence_json, evidence_type, created_at) VALUES ('old','BIO_002','M3','P1',1,0.1,0.1,'{"speed":9.5,"hand":"right"}','hand_speed',?)`,
+		fmtDBTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.GetMatchPlayerEvents(ctx, "M3", "P1")
+	if hs, ok := old[0].Evidence.(model.HandSpeedEvidence); !ok || hs.Speed != 9.5 {
+		t.Errorf("legacy typed row = %#v", old[0].Evidence)
 	}
 }

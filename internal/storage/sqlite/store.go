@@ -157,21 +157,6 @@ func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]m
 	return events, rows.Err()
 }
 
-// encodeEvidence serializes the typed evidence. A value that cannot be
-// serialized (NaN/Inf) is recorded as a visible marker instead of being
-// silently dropped, so the moderator report shows why evidence is missing.
-func encodeEvidence(ev model.Evidence) (evidenceJSON, evidenceType string) {
-	if ev == nil {
-		return "", ""
-	}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		msg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return string(msg), EvidenceTypeMarshalError
-	}
-	return string(b), ev.EvidenceType()
-}
-
 // StoreDetectionEvent persists a detection event with analysis_source "initial".
 func (s *Store) StoreDetectionEvent(ctx context.Context, event model.DetectionEvent) error {
 	return s.StoreDetectionEventWithSource(ctx, event, "initial")
@@ -648,9 +633,17 @@ func (s *Store) queryReviewCases(ctx context.Context, query string, args ...any)
 }
 
 // UpdateReviewCaseStatus changes the status (and optionally the assignee) of a
-// single-match or cross-match review case. assignedTo == "" leaves the current
-// assignment untouched. Returns ErrNotFound when no case has that ID.
-func (s *Store) UpdateReviewCaseStatus(ctx context.Context, caseID, status, assignedTo string, at time.Time) error {
+// single-match or cross-match review case, stamping updated_at with the
+// current UTC time. assignedTo == "" leaves the current assignment untouched.
+// Returns ErrNotFound when no case has that ID. This is the
+// review.LifecycleStore method review.Queue.Assign/Start/Decide call.
+func (s *Store) UpdateReviewCaseStatus(ctx context.Context, caseID, status, assignedTo string) error {
+	return s.UpdateReviewCaseStatusAt(ctx, caseID, status, assignedTo, time.Now())
+}
+
+// UpdateReviewCaseStatusAt is UpdateReviewCaseStatus with an explicit
+// updated_at time (imports, tests).
+func (s *Store) UpdateReviewCaseStatusAt(ctx context.Context, caseID, status, assignedTo string, at time.Time) error {
 	if !validCaseStatuses[status] {
 		return fmt.Errorf("invalid case status %q", status)
 	}

@@ -60,6 +60,11 @@ type CrossMatchConfig struct {
 	MaxContribPerDetectorPerMatch int
 	// Now is the reference time for decay; zero means time.Now().
 	Now time.Time
+	// Levels is the tier table the summary's Level is classified with. Pass
+	// the scorer's table (scoring.ScorerConfig.EffectiveLevels()) so a
+	// cross-match score means the same thing as a match score; a zero table
+	// behaves like model.DefaultLevelTable().
+	Levels model.LevelTable
 }
 
 // PlayerCrossMatchSummary holds aggregated analysis across all matches for a player.
@@ -191,8 +196,7 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 	}
 	sort.Strings(s.MatchIDs)
 
-	sc := model.SuspicionScore{TotalScore: s.DecayedScore}
-	s.Level = sc.Level()
+	s.Level = cfg.Levels.LevelFor(s.DecayedScore)
 	return s
 }
 
@@ -348,29 +352,24 @@ func (s *Store) GetCrossMatchReviewCase(ctx context.Context, caseID string) (Cro
 }
 
 // SeverityForScore maps a (0-100) score onto the moderator-facing severity
-// label using the same tiers as model.SuspicionScore.Level():
-// critical (>= critical tier), high (>= high_risk), medium (>= suspicious), low.
-func SeverityForScore(score float64) string {
-	sc := model.SuspicionScore{TotalScore: math.Min(score, 100)}
-	switch sc.Level() {
-	case model.LevelActionWorthy, model.LevelCritical:
-		return "critical"
-	case model.LevelHighRisk:
-		return "high"
-	case model.LevelSuspicious:
-		return "medium"
-	default:
-		return "low"
-	}
+// label through the given tier table (model.CaseSeverityForLevel):
+// critical (>= critical tier), high (>= high_risk), medium (>= suspicious),
+// low. A zero table behaves like model.DefaultLevelTable().
+func SeverityForScore(score float64, table model.LevelTable) string {
+	return model.CaseSeverityForLevel(table.LevelFor(math.Min(score, 100)))
 }
 
 // BuildCrossMatchReviewCase creates an aggregate review case from a cross-match
-// summary when the (capped, decayed) score reaches reviewThreshold. The
-// threshold is the configured review threshold (scoring.review_threshold),
-// which maps onto the high_risk tier; severity is derived from the same tier
-// table as Level().
-func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, reviewThreshold float64) *CrossMatchReviewCase {
-	if summary.DecayedScore < reviewThreshold {
+// summary when the (capped, decayed) score reaches the table's high_risk
+// boundary, i.e. the configured review threshold once the scorer's table
+// (scoring.ScorerConfig.EffectiveLevels()) is passed. Severity comes from the
+// same table, so a cross-match case and a single-match case at the same
+// score carry the same label.
+func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, table model.LevelTable) *CrossMatchReviewCase {
+	if table.IsZero() {
+		table = model.DefaultLevelTable()
+	}
+	if summary.DecayedScore < table.HighRisk {
 		return nil
 	}
 	now := time.Now()
@@ -381,7 +380,7 @@ func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, reviewThreshold 
 		PlayerID:        summary.PlayerID,
 		MatchIDs:        summary.MatchIDs,
 		MatchCount:      summary.DistinctMatches,
-		Severity:        SeverityForScore(summary.DecayedScore),
+		Severity:        SeverityForScore(summary.DecayedScore, table),
 		CumulativeScore: summary.CumulativeScore,
 		DecayedScore:    summary.DecayedScore,
 		Detectors:       summary.ByDetector,
