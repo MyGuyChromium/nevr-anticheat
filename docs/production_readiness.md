@@ -191,4 +191,4 @@ Collected from the quality-pass fixer reports. Each has a conservative default i
 23. **Anti-evasion window randomizer** is unused/EXPERIMENTAL; production wiring should use `NewWindowRandomizerWithSecret`.
 24. **`sudden_death`** is active; `pre_sudden_death`/`post_sudden_death` are not. Confirm against real status strings.
 25. **`enforce` temp-ban recommendation** (7 days) stays unreachable until auto-enforce and cross-match inputs are supplied — deliberate.
-26. **`tests.test`** (a 12 MB `go test -c` binary) is still tracked; `*.test` is now ignored, `git rm --cached tests.test` is the owner's call.
+26. **`tests.test`** (a 12 MB `go test -c` binary) was removed from the index and `*.test` is now ignored; nothing further to do.
