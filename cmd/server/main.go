@@ -29,28 +29,18 @@ func main() {
 }
 
 func run() int {
-	defaults := ingest.DefaultServerConfig()
-
-	configPath := flag.String("config", "", "Path to config file")
-	listenAddr := flag.String("listen", ":8080", "Telemetry listen address")
-	metricsAddr := flag.String("metrics", ":9090", "Metrics listen address")
-	allowUnauth := flag.Bool("allow-unauthenticated", false,
-		"Run without NEVR_AC_AUTH_TOKEN (INSECURE; also enabled by NEVR_AC_ALLOW_UNAUTH=1)")
-	maxMatches := flag.Int("max-matches", ingest.DefaultMaxMatches, "Maximum concurrently tracked live matches")
-	maxPlayers := flag.Int("max-players", defaults.MaxPlayersPerMatch, "Maximum players per live match")
-	maxConns := flag.Int("max-connections", defaults.MaxConnectionsPerServer, "Maximum concurrent telemetry connections")
-	maxFrameSize := flag.Int("max-message-bytes", defaults.MaxFrameSize, "Maximum bytes per WebSocket message")
-	maxFrameRate := flag.Int("max-frame-rate", defaults.MaxFrameRatePerPlayer, "Maximum frames per second per player")
-	idleTimeout := flag.Duration("idle-timeout", defaults.ReadTimeout, "Disconnect a peer silent for this long")
-	staleAfter := flag.Duration("stale-match-after", 30*time.Minute, "Finalize a live match idle for this long")
-	persistEvery := flag.Duration("persist-interval", ingest.DefaultPersistInterval, "How often live match context is re-persisted")
-	flag.Parse()
+	fs := flag.NewFlagSet("nevr-server", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file")
+	sf := registerServerFlags(fs, config.DefaultConfig().Server)
+	_ = fs.Parse(os.Args[1:]) // ExitOnError
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		return 1
 	}
+	// [server] from the file, then the flags the user explicitly set.
+	sv := resolveServerConfig(cfg.Server, fs, sf)
 
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
 
@@ -85,19 +75,11 @@ func run() int {
 	// analysis path is async reprocessing via the CLI (reprocess-match, etc.).
 	matchMgr := ingest.NewMatchManager(cfg, store, detectorFactory, logger)
 	matchMgr.SetMetrics(m)
-	matchMgr.SetLimits(*maxMatches, *maxPlayers)
-	matchMgr.SetPersistInterval(*persistEvery)
+	matchMgr.SetLimits(sv.MaxMatches, sv.MaxPlayersPerMatch)
+	matchMgr.SetPersistInterval(sv.PersistInterval)
 
-	// Telemetry server
-	serverCfg := defaults
-	serverCfg.ListenAddr = *listenAddr
-	serverCfg.AuthToken = os.Getenv("NEVR_AC_AUTH_TOKEN")
-	serverCfg.AllowUnauthenticated = *allowUnauth || os.Getenv("NEVR_AC_ALLOW_UNAUTH") == "1"
-	serverCfg.MaxConnectionsPerServer = *maxConns
-	serverCfg.MaxFrameSize = *maxFrameSize
-	serverCfg.MaxFrameRatePerPlayer = *maxFrameRate
-	serverCfg.MaxPlayersPerMatch = *maxPlayers
-	serverCfg.ReadTimeout = *idleTimeout
+	// Telemetry server. The bearer token is environment-only.
+	serverCfg := ingestServerConfig(sv, os.Getenv("NEVR_AC_AUTH_TOKEN"), os.Getenv("NEVR_AC_ALLOW_UNAUTH") == "1")
 
 	telemetryServer := ingest.NewServer(serverCfg, matchMgr, logger)
 	telemetryServer.SetMetrics(m)
@@ -116,7 +98,7 @@ func run() int {
 	promExporter := metrics.NewPrometheusExporter(m)
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("/metrics", promExporter.Handler())
-	metricsServer := &http.Server{Addr: *metricsAddr, Handler: metricsMux}
+	metricsServer := &http.Server{Addr: sv.Metrics, Handler: metricsMux}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -128,7 +110,7 @@ func run() int {
 		for {
 			select {
 			case <-ticker.C:
-				matchMgr.CleanupStaleMatches(*staleAfter)
+				matchMgr.CleanupStaleMatches(sv.StaleMatchAfter)
 				telemetryServer.CleanupStaleRateLimiters()
 				// Prune DERIVED analysis outputs only. Detection events and scores are
 				// recomputable from stored telemetry via reprocessing.
@@ -151,7 +133,7 @@ func run() int {
 
 	// Start metrics server
 	go func() {
-		logger.Info("metrics server starting", "addr", *metricsAddr)
+		logger.Info("metrics server starting", "addr", sv.Metrics)
 		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics server error", "error", err)
 		}
@@ -168,9 +150,9 @@ func run() int {
 
 	logger.Info("NEVR telemetry ingestion server running",
 		"telemetry", telemetryServer.Addr().String(),
-		"metrics", *metricsAddr,
+		"metrics", sv.Metrics,
 		"authenticated", serverCfg.AuthToken != "",
-		"max_matches", *maxMatches,
+		"max_matches", sv.MaxMatches,
 	)
 
 	exitCode := 0
