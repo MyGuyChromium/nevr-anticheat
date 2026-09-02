@@ -157,21 +157,6 @@ func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]m
 	return events, rows.Err()
 }
 
-// encodeEvidence serializes the typed evidence. A value that cannot be
-// serialized (NaN/Inf) is recorded as a visible marker instead of being
-// silently dropped, so the moderator report shows why evidence is missing.
-func encodeEvidence(ev model.Evidence) (evidenceJSON, evidenceType string) {
-	if ev == nil {
-		return "", ""
-	}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		msg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return string(msg), EvidenceTypeMarshalError
-	}
-	return string(b), ev.EvidenceType()
-}
-
 // StoreDetectionEvent persists a detection event with analysis_source "initial".
 func (s *Store) StoreDetectionEvent(ctx context.Context, event model.DetectionEvent) error {
 	return s.StoreDetectionEventWithSource(ctx, event, "initial")
