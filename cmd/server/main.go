@@ -69,13 +69,9 @@ func run() int {
 		logger.Warn("database file is large", "size_mb", fi.Size()/1024/1024, "path", cfg.General.DBPath)
 	}
 
-	// Run v2 migrations. A failed migration means telemetry_frames /
-	// match_contexts may not exist, so refusing to start is the only honest
-	// option: accepting telemetry we cannot store would silently lose it.
-	if err := sqlite.RunMigrationsV2(store.DB(), logger); err != nil {
-		logger.Error("migration error; refusing to start", "error", err)
-		return 1
-	}
+	// sqlite.NewStore applied every migration and verified the schema, or
+	// failed above: there is no non-fatal migration path, so accepting
+	// telemetry we cannot store is impossible by construction.
 
 	// Metrics registry shared by the ingest server and match manager.
 	m := metrics.NewMetrics()

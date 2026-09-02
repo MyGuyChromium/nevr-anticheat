@@ -216,7 +216,7 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if err := s.StoreReviewCase(ctx, rc); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "C1", CaseStatusInReview, "mod-a", time.Now()); err != nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "C1", CaseStatusInReview, "mod-a"); err != nil {
 		t.Fatal(err)
 	}
 	rc.SuspicionScore = 70
@@ -241,10 +241,10 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if len(pending) != 0 {
 		t.Error("in_review case listed as pending")
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "C1", "bogus", "", time.Now()); err == nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "C1", "bogus", ""); err == nil {
 		t.Error("invalid status accepted")
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "nope", CaseStatusClosed, "", time.Now()); err == nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "nope", CaseStatusClosed, ""); err == nil {
 		t.Error("missing case accepted")
 	}
 
@@ -254,7 +254,7 @@ func TestReviewCases_UpsertPreservesModeratorStatus(t *testing.T) {
 	if err := s.StoreCrossMatchReviewCase(ctx, xm); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateReviewCaseStatus(ctx, "XM-P1", CaseStatusClosed, "", time.Now()); err != nil {
+	if err := s.UpdateReviewCaseStatus(ctx, "XM-P1", CaseStatusClosed, ""); err != nil {
 		t.Fatal(err)
 	}
 	xm.DecayedScore = 80

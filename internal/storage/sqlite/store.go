@@ -648,9 +648,17 @@ func (s *Store) queryReviewCases(ctx context.Context, query string, args ...any)
 }
 
 // UpdateReviewCaseStatus changes the status (and optionally the assignee) of a
-// single-match or cross-match review case. assignedTo == "" leaves the current
-// assignment untouched. Returns ErrNotFound when no case has that ID.
-func (s *Store) UpdateReviewCaseStatus(ctx context.Context, caseID, status, assignedTo string, at time.Time) error {
+// single-match or cross-match review case, stamping updated_at with the
+// current UTC time. assignedTo == "" leaves the current assignment untouched.
+// Returns ErrNotFound when no case has that ID. This is the
+// review.LifecycleStore method review.Queue.Assign/Start/Decide call.
+func (s *Store) UpdateReviewCaseStatus(ctx context.Context, caseID, status, assignedTo string) error {
+	return s.UpdateReviewCaseStatusAt(ctx, caseID, status, assignedTo, time.Now())
+}
+
+// UpdateReviewCaseStatusAt is UpdateReviewCaseStatus with an explicit
+// updated_at time (imports, tests).
+func (s *Store) UpdateReviewCaseStatusAt(ctx context.Context, caseID, status, assignedTo string, at time.Time) error {
 	if !validCaseStatuses[status] {
 		return fmt.Errorf("invalid case status %q", status)
 	}

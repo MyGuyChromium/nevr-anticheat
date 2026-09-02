@@ -13,6 +13,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/metrics"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/review"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -42,7 +43,8 @@ type LiveMatch struct {
 	totalEvents      int
 	lastLevel        map[string]model.ScoringLevel
 	lastScore        map[string]float64
-	initialized      bool // true after the first batch (pipeline state is then persistent)
+	detectorNames    map[string]string // detector ID -> name, for review case evidence
+	initialized      bool              // true once the pipeline has processed a batch
 	ended            bool
 	mu               sync.Mutex
 }
@@ -232,14 +234,20 @@ func (mm *MatchManager) HandleFrames(matchID string, frames []model.PlayerTeleme
 	}
 
 	// Persist raw telemetry first: it is the source of truth for reprocessing.
+	// Ack accounting (contract 3): every frame of the batch is counted
+	// exactly once. Accepted = rows the store inserted, Ignored = rows it
+	// already had, Rejected = rows it could not write. Inline detection
+	// below is secondary and never changes the counts.
 	stored, storeErr := mm.store.StoreTelemetryFrames(ctx, matchID, frames)
 	if storeErr != nil {
 		mm.logger.Warn("failed to store telemetry", "match", matchID, "error", storeErr)
 		if mm.metrics != nil {
 			mm.metrics.StoreErrors.Inc()
 		}
+		res.Rejected += len(frames)
 	} else {
 		match.RowsStored += stored
+		res.Accepted += stored
 		if ignored := len(frames) - stored; ignored > 0 {
 			res.Ignored += ignored
 			if mm.metrics != nil {
@@ -250,21 +258,17 @@ func (mm *MatchManager) HandleFrames(matchID string, frames []model.PlayerTeleme
 		}
 	}
 
-	// Process frames through the pipeline. The first batch initializes state;
-	// afterwards SetSkipReset keeps detectors, scorer, dedup and per-player
-	// state alive across batches.
-	if match.initialized {
-		match.Pipeline.SetSkipReset(true)
-	}
+	// Process frames through the pipeline. The pipeline was put in live mode
+	// at creation (SetSkipReset), so the first batch only creates the roster
+	// and every later batch continues detector, scorer, dedup and per-player
+	// state.
 	result, err := match.Pipeline.ProcessMatch(ctx, match.MatchCtx, frames)
 	match.initialized = true
-	match.Pipeline.SetSkipReset(true)
 	match.Players = match.Pipeline.Players()
 	if err != nil {
 		mm.logger.Error("live match processing error", "match", matchID, "error", err)
 		return res
 	}
-	res.Accepted += len(frames)
 
 	match.FrameCount += result.FramesProcessed
 	match.InvalidFrames += result.InvalidFrames
@@ -329,6 +333,10 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 	}
 
 	detectors := mm.detectorFn()
+	names := make(map[string]string, len(detectors))
+	for _, d := range detectors {
+		names[d.ID()] = d.Name()
+	}
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
 		MaxSingleContribution:         mm.cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: mm.cfg.Scoring.MaxContribPerDetectorPerMatch,
@@ -340,7 +348,10 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 		CorrelationBonusCap:           mm.cfg.Scoring.CorrelationBonusCap,
 	})
 
+	// Live mode from the start: batches are slices of one match and the
+	// pipeline must never reset between them (nor flush incidents early).
 	pipe := pipeline.NewPipeline(mm.cfg, detectors, scorer, mm.logger)
+	pipe.SetSkipReset(true)
 
 	match := &LiveMatch{
 		MatchCtx:         matchCtx,
@@ -353,6 +364,7 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 		eventsByDetector: make(map[string]int),
 		lastLevel:        make(map[string]model.ScoringLevel),
 		lastScore:        make(map[string]float64),
+		detectorNames:    names,
 	}
 
 	// Seed the monotonic frame counter from rows already stored for this
@@ -385,6 +397,10 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 			sort.Strings(matchCtx.PlayerIDs)
 		}
 	}
+
+	// Event times are match start + event timestamp (the pipeline repeats
+	// this on its first slice; a resumed match keeps the stored start).
+	scorer.SetMatchStart(matchCtx.StartTime)
 
 	mm.persistContext(ctx, match)
 	if mm.metrics != nil {
@@ -541,13 +557,7 @@ func (mm *MatchManager) finalizeLocked(match *LiveMatch) {
 
 	mm.persistContext(ctx, match)
 
-	var flagged []string
-	for pid, sc := range match.Scorer.GetAllScores() {
-		if sc.ExceedsReview {
-			flagged = append(flagged, pid)
-		}
-	}
-	sort.Strings(flagged)
+	flagged := mm.createReviewCases(ctx, match)
 
 	summary := model.MatchSummary{
 		MatchID:              matchID,
@@ -572,6 +582,46 @@ func (mm *MatchManager) finalizeLocked(match *LiveMatch) {
 	if mm.metrics != nil {
 		mm.metrics.MatchesEnded.Inc()
 	}
+}
+
+// createReviewCases builds the match's single-match review cases through the
+// same mechanism as the offline paths (review.CreateCasesFromResult with the
+// scorer's level table). The events were persisted batch by batch, so they
+// are read back from the store; the scores come from the live scorer. It
+// returns the sorted player IDs that got a case (the summary's flagged list)
+// and invokes OnReviewCase for each. Caller holds match.mu.
+func (mm *MatchManager) createReviewCases(ctx context.Context, match *LiveMatch) []string {
+	matchID := match.MatchCtx.MatchID
+	scores := match.Scorer.GetAllScores()
+	if len(scores) == 0 {
+		return nil
+	}
+	events, err := mm.store.GetMatchEvents(ctx, matchID)
+	if err != nil {
+		mm.logger.Error("failed to load events for review cases", "match", matchID, "error", err)
+		if mm.metrics != nil {
+			mm.metrics.StoreErrors.Inc()
+		}
+		return nil
+	}
+	result := &pipeline.MatchResult{MatchID: matchID, PlayerScores: scores, DetectionEvents: events}
+	cases, err := review.CreateCasesFromResult(ctx, mm.store, match.MatchCtx, result, match.Scorer.Levels(),
+		review.WithDetectorNames(match.detectorNames), review.WithLogger(mm.logger))
+	if err != nil {
+		mm.logger.Error("failed to store review cases", "match", matchID, "error", err)
+		if mm.metrics != nil {
+			mm.metrics.StoreErrors.Inc()
+		}
+	}
+	flagged := make([]string, 0, len(cases))
+	for _, rc := range cases {
+		flagged = append(flagged, rc.PlayerID)
+		if mm.OnReviewCase != nil {
+			mm.OnReviewCase(rc)
+		}
+	}
+	sort.Strings(flagged)
+	return flagged
 }
 
 // CleanupStaleMatches finalizes (and persists) matches with no activity for
@@ -673,39 +723,10 @@ func (mm *MatchManager) warnThrottled(key, msg string, args ...any) {
 	}
 }
 
-// physicsFromConfig builds the match physics from the loaded [physics] block,
-// falling back to DefaultPhysics for any field the config leaves at zero.
+// physicsFromConfig builds the match physics from the loaded [physics] block;
+// the live and offline paths share pipeline.PhysicsFromConfig.
 func physicsFromConfig(cfg *config.Config) model.PhysicsConstants {
-	ph := model.DefaultPhysics()
-	if cfg == nil {
-		return ph
-	}
-	c := cfg.Physics
-	if c.DiscSpeedCap > 0 {
-		ph.DiscSpeedCap = c.DiscSpeedCap
-	}
-	if c.BoostSpeedCap > 0 {
-		ph.BoostSpeedCap = c.BoostSpeedCap
-	}
-	if c.MaxPlayerSpeed > 0 {
-		ph.MaxPlayerSpeed = c.MaxPlayerSpeed
-	}
-	if c.MaxThrowSpeed > 0 {
-		ph.MaxThrowSpeed = c.MaxThrowSpeed
-	}
-	if c.StunDuration > 0 {
-		ph.StunDuration = c.StunDuration
-	}
-	if c.ShieldCooldown > 0 {
-		ph.ShieldCooldown = c.ShieldCooldown
-	}
-	if c.ImmunityWindow > 0 {
-		ph.ImmunityWindow = c.ImmunityWindow
-	}
-	if c.GrabRange > 0 {
-		ph.GrabRange = c.GrabRange
-	}
-	return ph
+	return pipeline.PhysicsFromConfig(cfg)
 }
 
 // normalizeTeam maps a producer team label to "blue"/"orange" or "".

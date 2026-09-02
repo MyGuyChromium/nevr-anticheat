@@ -48,6 +48,10 @@ func ParseReplayLineTime(prefix string) (time.Time, error) {
 
 // ParsedTick is one mapped replay snapshot delivered by ParseFileStream.
 type ParsedTick struct {
+	// MatchID is the session id of the snapshot (the match every frame of
+	// this tick belongs to), available from the first tick so streaming
+	// callers can decide about the match before the file is fully read.
+	MatchID string
 	// FrameIndex is the mapper's index for this tick (shared by all Frames).
 	FrameIndex int
 	// SampleTime is the wall-clock time parsed from the line prefix.
@@ -325,6 +329,7 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		}
 
 		tick := &ParsedTick{
+			MatchID:    matchCtx.MatchID,
 			FrameIndex: result.Frames[0].FrameIndex,
 			SampleTime: sampleTime,
 			Frames:     result.Frames,

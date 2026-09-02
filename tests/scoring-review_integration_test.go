@@ -20,9 +20,10 @@ import (
 // Compile-time proof that the sqlite store satisfies the narrow interfaces
 // the scoring/review/enforce packages depend on.
 var (
-	_ review.CaseStore     = (*sqlite.Store)(nil)
-	_ evidence.ExportStore = (*sqlite.Store)(nil)
-	_ enforce.ActionStore  = (*sqlite.Store)(nil)
+	_ review.CaseStore      = (*sqlite.Store)(nil)
+	_ review.LifecycleStore = (*sqlite.Store)(nil)
+	_ evidence.ExportStore  = (*sqlite.Store)(nil)
+	_ enforce.ActionStore   = (*sqlite.Store)(nil)
 )
 
 func mkScoringEvent(det, player string, frame int) model.DetectionEvent {
