@@ -11,7 +11,8 @@ import (
 // Used during first live integration testing to surface all mapping issues immediately.
 type StrictMapper struct {
 	*Mapper
-	errors []StrictError
+	physics model.PhysicsConstants
+	errors  []StrictError
 }
 
 // StrictError is a hard failure from strict mode validation.
@@ -25,8 +26,16 @@ type StrictError struct {
 // NewStrictMapper creates a mapper that rejects any frame with uncertain data.
 func NewStrictMapper() *StrictMapper {
 	return &StrictMapper{
-		Mapper: NewMapper(),
+		Mapper:  NewMapper(),
+		physics: model.DefaultPhysics(),
 	}
+}
+
+// SetPhysics sets the physics constants used for strict bounds and copied
+// into produced match contexts.
+func (sm *StrictMapper) SetPhysics(p model.PhysicsConstants) {
+	sm.physics = p
+	sm.Mapper.SetPhysics(p)
 }
 
 // Errors returns all strict-mode errors accumulated so far.
@@ -60,15 +69,10 @@ func (sm *StrictMapper) MapSessionStrict(raw *EchoVRSessionResponse) *MappingRes
 func (sm *StrictMapper) strictValidate(raw *EchoVRSessionResponse, frame *model.PlayerTelemetryFrame) []StrictError {
 	var errs []StrictError
 
-	// Check rotation quality. Identity quaternion is valid IF the raw direction
-	// vectors were non-zero (forward=[0,0,1], left=[-1,0,0], up=[0,1,0] produces identity).
-	// Only flag if we can detect that direction vectors were actually missing.
-	// We check by looking at the raw player data — if all 3 direction vectors are zero,
-	// the mapper would have produced identity from zero input, which is suspicious.
-	// This check requires access to the raw data, which we don't have here.
-	// Instead, check for the specific pathological case: hand rotation is identity AND
-	// it stays identity for multiple frames (tracked by the pipeline, not here).
-	// For now, skip identity-quat strict checks — identity IS a valid rotation.
+	// Hand rotation quality: lost hand tracking is emitted as the zero
+	// quaternion (IsUnit() == false) and is a legitimate VR state, so strict
+	// mode does not reject it; DiagnosticReport.ZeroHandRotations and
+	// MapperStats.HandTrackingLost count it. Body rotation is checked below.
 
 	// Require non-zero hand positions
 	if frame.LeftHandPosition.IsZero() {
@@ -129,11 +133,16 @@ func (sm *StrictMapper) strictValidate(raw *EchoVRSessionResponse, frame *model.
 		}
 	}
 
-	// Validate position in arena bounds
-	if math.Abs(frame.Position[0]) > 45 || math.Abs(frame.Position[1]) > 20 || math.Abs(frame.Position[2]) > 20 {
+	// Validate position in arena bounds. Bounds derive from the physics
+	// constants (CONFIRMED geometry: X narrow ±5 m, Y vertical, Z long ±77 m)
+	// with the same 5 m tolerance the pipeline validator applies.
+	halfX := sm.physics.ArenaWidth/2 + 5
+	halfY := sm.physics.ArenaHeight/2 + 5
+	halfZ := sm.physics.ArenaLength/2 + 5
+	if math.Abs(frame.Position[0]) > halfX || math.Abs(frame.Position[1]) > halfY || math.Abs(frame.Position[2]) > halfZ {
 		errs = append(errs, StrictError{
 			PlayerName: frame.PlayerID, Field: "position",
-			Issue:    "out of arena bounds",
+			Issue:    fmt.Sprintf("out of arena bounds (|x|<=%.1f, |y|<=%.1f, |z|<=%.1f)", halfX, halfY, halfZ),
 			RawValue: fmt.Sprintf("%v", frame.Position),
 		})
 	}

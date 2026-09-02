@@ -1,0 +1,146 @@
+{
+  "sessionid": "MTX-20260315-190000-EU1",
+  "match_type": "Echo_Arena",
+  "map_name": "mpl_arena_a",
+  "game_status": "playing",
+  "game_clock": 180.25,
+  "game_clock_display": "03:00",
+  "private_match": true,
+  "client_name": "SpectatorCam",
+  "disc": {
+    "position": [0.4, 2.0, 12.0],
+    "velocity": [0.0, 0.0, 0.0],
+    "bounce_count": 0
+  },
+  "possession": [1, 0],
+  "blue_points": 2,
+  "orange_points": 3,
+  "teams": [
+    {
+      "team": "BLUE TEAM",
+      "players": [
+        {
+          "name": "BlueOne",
+          "userid": 1001,
+          "playerid": 0,
+          "level": 40,
+          "body": {
+            "position": [1.2, 1.6, -30.0],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "velocity": [0.5, 0.0, 3.0],
+          "lhand": {
+            "pos": [0.9, 1.9, -29.8],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "rhand": {
+            "pos": [1.5, 1.9, -30.2],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "head": {
+            "position": [1.2, 1.6, -30.0],
+            "forward": [0.0, 0.0, 1.0],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "stunned": false,
+          "invulnerable": false,
+          "possession": false,
+          "blocking": false,
+          "ping": 42,
+          "stats": {"points": 2, "goals": 1, "assists": 0, "saves": 1, "steals": 0, "stuns": 2}
+        }
+      ]
+    },
+    {
+      "team": "ORANGE TEAM",
+      "players": [
+        {
+          "name": "OrangeOne",
+          "userid": 2001,
+          "playerid": 1,
+          "level": 55,
+          "body": {
+            "position": [0.5, 1.7, 11.8],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "velocity": [0.0, 0.0, -1.0],
+          "lhand": {
+            "pos": [0.8, 1.9, 11.6],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "rhand": {
+            "pos": [0.4, 2.0, 12.0],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "head": {
+            "position": [0.5, 1.7, 11.8],
+            "forward": [0.0, 0.0, -1.0],
+            "left": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0]
+          },
+          "stunned": false,
+          "invulnerable": false,
+          "possession": true,
+          "blocking": false,
+          "ping": 61,
+          "stats": {"points": 3, "goals": 1, "assists": 1, "saves": 0, "steals": 1, "stuns": 1}
+        }
+      ]
+    },
+    {
+      "team": "SPECTATORS",
+      "players": [
+        {
+          "name": "SpectatorCam",
+          "userid": 9001,
+          "playerid": 2,
+          "level": 12,
+          "body": {
+            "position": [3.0, 12.0, 60.0],
+            "forward": [0.0, -0.5, -0.866],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 0.866, -0.5]
+          },
+          "velocity": [40.0, 0.0, -40.0],
+          "lhand": {
+            "pos": [2.7, 12.2, 60.1],
+            "forward": [0.0, -0.5, -0.866],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 0.866, -0.5]
+          },
+          "rhand": {
+            "pos": [3.3, 12.2, 59.9],
+            "forward": [0.0, -0.5, -0.866],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 0.866, -0.5]
+          },
+          "head": {
+            "position": [3.0, 12.0, 60.0],
+            "forward": [0.0, -0.5, -0.866],
+            "left": [-1.0, 0.0, 0.0],
+            "up": [0.0, 0.866, -0.5]
+          },
+          "stunned": false,
+          "invulnerable": false,
+          "possession": false,
+          "blocking": false,
+          "ping": 15,
+          "stats": {"points": 0, "goals": 0, "assists": 0, "saves": 0, "steals": 0, "stuns": 0}
+        }
+      ]
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -169,38 +170,50 @@ func TestMapper_EmptyTeams(t *testing.T) {
 	}
 }
 
-// TestMapper_DirectionVectorToQuat verifies quaternion conversion.
+// TestMapper_DirectionVectorToQuat verifies quaternion conversion for a proper
+// (det +1) basis and for the reflected (det -1) basis Echo VR fixtures use.
 func TestMapper_DirectionVectorToQuat(t *testing.T) {
-	// Identity rotation: forward=[0,0,1], left=[-1,0,0], up=[0,1,0]
-	q := model.QuatFromDirectionVectors(
-		model.Vec3{0, 0, 1},  // forward
-		model.Vec3{-1, 0, 0}, // left
-		model.Vec3{0, 1, 0},  // up
+	// Proper identity basis: forward=[0,0,1], left = up x forward = [1,0,0], up=[0,1,0]
+	q, quality := model.QuatFromDirectionVectorsChecked(
+		model.Vec3{0, 0, 1}, // forward
+		model.Vec3{1, 0, 0}, // left (right-handed)
+		model.Vec3{0, 1, 0}, // up
 	)
-	if !q.IsUnit() {
-		t.Errorf("quaternion not unit: magnitude=%f", q.Magnitude())
+	if quality != model.BasisProper {
+		t.Errorf("proper basis flagged as %v", quality)
 	}
-	// For identity-like rotation, w should be close to 1 or -1
-	if math.Abs(math.Abs(q.W())-1.0) > 0.01 {
-		t.Errorf("expected identity-like quaternion, got %v", q)
+	if !q.IsUnit() || math.Abs(math.Abs(q.W())-1.0) > 1e-9 {
+		t.Errorf("expected identity quaternion, got %v", q)
 	}
 
-	// 90-degree rotation around Y axis:
-	// Original: forward=[0,0,1], left=[-1,0,0], up=[0,1,0]
-	// After 90° Y rotation: forward=[1,0,0], left=[0,0,-1], up=[0,1,0]
-	// (right-handed: left = up × forward)
-	q2 := model.QuatFromDirectionVectors(
-		model.Vec3{1, 0, 0},  // forward (was Z, now X)
-		model.Vec3{0, 0, -1}, // left (was -X, now -Z)
-		model.Vec3{0, 1, 0},  // up (unchanged)
+	// Reflected identity basis (left = -(up x forward)): must be flagged and
+	// must still convert to the identity rotation, not to garbage.
+	qr, qualityR := model.QuatFromDirectionVectorsChecked(
+		model.Vec3{0, 0, 1},
+		model.Vec3{-1, 0, 0},
+		model.Vec3{0, 1, 0},
 	)
-	if !q2.IsUnit() {
-		t.Errorf("quaternion not unit: magnitude=%f", q2.Magnitude())
+	if !qualityR.Reflected() {
+		t.Errorf("reflected basis not flagged: %v", qualityR)
 	}
-	// Angular distance from identity should be ~pi/2
-	angleDist := q.AngularDistance(q2)
-	if math.Abs(angleDist-math.Pi/2) > 0.15 {
-		t.Errorf("expected ~pi/2 angular distance, got %f", angleDist)
+	if math.Abs(math.Abs(qr.W())-1.0) > 1e-9 {
+		t.Errorf("reflected identity basis should give identity, got %v", qr)
+	}
+
+	// 90-degree rotation around +Y: forward=[1,0,0], up=[0,1,0].
+	// Proper left = up x forward = [0,0,-1]; reflected left = [0,0,1].
+	for _, left := range []model.Vec3{{0, 0, -1}, {0, 0, 1}} {
+		q2 := model.QuatFromDirectionVectors(model.Vec3{1, 0, 0}, left, model.Vec3{0, 1, 0})
+		if !q2.IsUnit() {
+			t.Errorf("left=%v: quaternion not unit: magnitude=%f", left, q2.Magnitude())
+		}
+		if angleDist := q.AngularDistance(q2); math.Abs(angleDist-math.Pi/2) > 1e-9 {
+			t.Errorf("left=%v: expected pi/2 angular distance, got %f", left, angleDist)
+		}
+		// Applying the rotation to +Z must give the forward vector (handedness).
+		if got := q2.Rotate(model.Vec3{0, 0, 1}); got.Sub(model.Vec3{1, 0, 0}).Magnitude() > 1e-9 {
+			t.Errorf("left=%v: q*Z = %v, want [1 0 0]", left, got)
+		}
 	}
 }
 
@@ -252,10 +265,11 @@ func TestMapper_HandRotationWarning(t *testing.T) {
 		t.Error("expected warning about zero hand rotation vectors")
 	}
 
-	// Hand rotations should be identity quaternion
+	// Lost hand tracking is the ZERO quaternion (IsUnit false), never identity:
+	// identity is a real pose and would defeat the extractor's IsUnit guard.
 	frame := result.Frames[0]
-	if frame.LeftHandRotation != model.QuatIdentity() {
-		t.Errorf("expected identity left hand rotation, got %v", frame.LeftHandRotation)
+	if frame.LeftHandRotation != (model.Quat{}) || frame.LeftHandRotation.IsUnit() {
+		t.Errorf("expected zero left hand rotation for lost tracking, got %v", frame.LeftHandRotation)
 	}
 }
 
@@ -267,7 +281,7 @@ func TestMapper_PossessionDetection(t *testing.T) {
 		GameStatus: "playing",
 		Disc: &adapter.EchoVRDisc{
 			Position: [3]float64{5.1, 1.9, -0.1}, // very close to rhand
-			Velocity: [3]float64{0.1, 0, 0},       // nearly stationary
+			Velocity: [3]float64{0.1, 0, 0},      // nearly stationary
 		},
 		Teams: []adapter.EchoVRTeam{
 			{
@@ -284,8 +298,8 @@ func TestMapper_PossessionDetection(t *testing.T) {
 							Up:       [3]float64{0, 1, 0},
 						},
 						LHand: adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
-						RHand:    adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}}, // matches disc
-						Stats:    adapter.EchoVRPlayerStats{},
+						RHand: adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}}, // matches disc
+						Stats: adapter.EchoVRPlayerStats{},
 					},
 				},
 			},
@@ -316,7 +330,7 @@ func TestMapper_NoPossessionHighSpeed(t *testing.T) {
 		MatchType:  "Echo_Arena",
 		GameStatus: "playing",
 		Disc: &adapter.EchoVRDisc{
-			Position: [3]float64{5.1, 1.9, -0.1}, // close to hand
+			Position: [3]float64{5.1, 1.9, -0.1},  // close to hand
 			Velocity: [3]float64{15.0, 2.0, -1.0}, // but moving fast
 		},
 		Teams: []adapter.EchoVRTeam{
@@ -333,8 +347,8 @@ func TestMapper_NoPossessionHighSpeed(t *testing.T) {
 							Up:       [3]float64{0, 1, 0},
 						},
 						RHand: adapter.EchoVRHand{Position: [3]float64{5.1, 1.9, -0.1}},
-						LHand:    adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
-						Stats:    adapter.EchoVRPlayerStats{},
+						LHand: adapter.EchoVRHand{Position: [3]float64{4.7, 1.9, 0.2}},
+						Stats: adapter.EchoVRPlayerStats{},
 					},
 				},
 			},
@@ -356,9 +370,12 @@ func TestMapper_SequentialFrames(t *testing.T) {
 	session := loadSession(t, "fixtures/echovr_session_normal.json")
 	mapper := adapter.NewMapper()
 
-	r1 := mapper.MapSession(session)
-	r2 := mapper.MapSession(session)
-	r3 := mapper.MapSession(session)
+	// Timestamps come from the producer-supplied sample time, so successive
+	// samples are given explicitly (67 ms apart).
+	t0 := time.Date(2026, 3, 15, 17, 30, 22, 0, time.UTC)
+	r1 := mapper.MapSessionAt(session, t0)
+	r2 := mapper.MapSessionAt(session, t0.Add(67*time.Millisecond))
+	r3 := mapper.MapSessionAt(session, t0.Add(134*time.Millisecond))
 
 	if r1.Frames[0].FrameIndex != 0 {
 		t.Errorf("frame 1 index = %d, want 0", r1.Frames[0].FrameIndex)
