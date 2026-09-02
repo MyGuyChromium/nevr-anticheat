@@ -248,15 +248,21 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 			parser.SetPhysics(ba.physics)
 		}
 		pm.rawByFrame = make(map[int]string)
+		var lastSample time.Time
 		matchCtx, _, err := parser.ParseFileStream(path, func(tick *adapter.ParsedTick) error {
 			if _, seen := pm.rawByFrame[tick.FrameIndex]; !seen {
 				pm.rawByFrame[tick.FrameIndex] = tick.RawJSON
 			}
 			pm.frames = append(pm.frames, tick.Frames...)
+			lastSample = tick.SampleTime
 			return nil
 		})
 		if err != nil {
 			return pm, false, err
+		}
+		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
+			// Match duration is the real span of the recording (first to last sample).
+			matchCtx.Duration = lastSample.Sub(matchCtx.StartTime)
 		}
 		pm.matchCtx = matchCtx
 	} else {

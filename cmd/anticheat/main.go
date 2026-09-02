@@ -332,6 +332,7 @@ func runAnalyze(configPath, replayPath string, force bool) {
 		parser := adapter.NewEchoReplayParser()
 		parser.SetPhysics(a.physics())
 		matchID := ""
+		var lastSample time.Time
 		pending := make(map[int]string)
 		flush := func() error {
 			if len(pending) == 0 {
@@ -361,6 +362,7 @@ func runAnalyze(configPath, replayPath string, force bool) {
 				pending[tick.FrameIndex] = tick.RawJSON
 			}
 			frames = append(frames, tick.Frames...)
+			lastSample = tick.SampleTime
 			if len(pending) >= rawTickFlushEvery {
 				return flush()
 			}
@@ -378,6 +380,10 @@ func runAnalyze(configPath, replayPath string, force bool) {
 			fmt.Fprintf(os.Stderr, "Warning: failed to store raw ticks: %v\n", err)
 		}
 		matchCtx = mc
+		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
+			// Match duration is the real span of the recording (first to last sample).
+			matchCtx.Duration = lastSample.Sub(matchCtx.StartTime)
+		}
 		fmt.Printf("Parsed %d player-frames from %s (%d lines rejected)\n",
 			len(frames), replayPath, diag.FramesRejected)
 		fmt.Print(diag.FormatReport())
