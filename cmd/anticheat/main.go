@@ -314,22 +314,6 @@ func printPlayerScores(scores map[string]model.SuspicionScore) {
 	}
 }
 
-// storeMatchAnalysis persists a match's derived outputs (events with the given
-// provenance and per-match score snapshots). Telemetry/context are stored by
-// the caller because only the ingest paths have raw payloads.
-func storeMatchAnalysis(ctx context.Context, store *sqlite.Store, matchID string, result *pipeline.MatchResult, source string) (int, error) {
-	stored, err := store.StoreDetectionEvents(ctx, result.DetectionEvents, source)
-	if err != nil {
-		return stored, fmt.Errorf("storing events: %w", err)
-	}
-	for _, pid := range sortedPlayerIDs(result.PlayerScores) {
-		if err := store.StoreMatchSuspicionScore(ctx, matchID, result.PlayerScores[pid]); err != nil {
-			return stored, fmt.Errorf("storing score for %s: %w", pid, err)
-		}
-	}
-	return stored, nil
-}
-
 func runAnalyze(configPath, replayPath string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
@@ -402,14 +386,14 @@ func runAnalyze(configPath, replayPath string, force bool) {
 	if err := a.store.StoreMatchContext(ctx, matchCtx, len(frames)); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to store match context: %v\n", err)
 	}
-	stored, err := storeMatchAnalysis(ctx, a.store, matchCtx.MatchID, result, source)
+	stored, err := replay.StoreMatchAnalysis(ctx, a.store, matchCtx, result, source)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	}
 
-	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nDuration: %v\n",
+	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d\nDuration: %v\n",
 		result.MatchID, result.FramesProcessed, result.InvalidFrames,
-		len(result.DetectionEvents), stored, result.Duration)
+		len(result.DetectionEvents), stored.EventsStored, stored.CasesStored, result.Duration)
 	printPlayerScores(result.PlayerScores)
 }
 
@@ -864,7 +848,7 @@ func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.
 	if err != nil {
 		return nil, err
 	}
-	if _, err := storeMatchAnalysis(ctx, store, matchID, result, "reprocess"); err != nil {
+	if _, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess"); err != nil {
 		return nil, err
 	}
 	return result, nil

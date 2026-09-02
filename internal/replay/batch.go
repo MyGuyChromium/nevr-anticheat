@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
@@ -304,32 +305,68 @@ func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *Ba
 	if err := ba.store.StoreMatchContext(ctx, pm.matchCtx, len(pm.frames)); err != nil {
 		ba.logger.Warn("failed to store match context", "match_id", matchID, "error", err)
 	}
-	stored, err := ba.store.StoreDetectionEvents(ctx, pm.result.DetectionEvents, source)
+	stored, err := StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source)
 	if err != nil {
-		ba.logger.Warn("failed to store events", "match_id", matchID, "error", err)
-	}
-
-	pids := make([]string, 0, len(pm.result.PlayerScores))
-	for pid := range pm.result.PlayerScores {
-		pids = append(pids, pid)
-	}
-	sort.Strings(pids)
-	var flagged []string
-	for _, pid := range pids {
-		score := pm.result.PlayerScores[pid]
-		if err := ba.store.StoreMatchSuspicionScore(ctx, matchID, score); err != nil {
-			ba.logger.Warn("failed to store score", "match_id", matchID, "player", pid, "error", err)
-		}
-		if score.ExceedsReview {
-			flagged = append(flagged, pid)
-		}
+		ba.logger.Warn("failed to store analysis", "match_id", matchID, "error", err)
 	}
 
 	mu.Lock()
 	result.Processed++
 	result.FramesInserted += tel.Inserted
 	result.FramesIgnored += tel.Ignored
-	result.EventsStored += stored
-	result.FlaggedPlayers = append(result.FlaggedPlayers, flagged...)
+	result.EventsStored += stored.EventsStored
+	result.FlaggedPlayers = append(result.FlaggedPlayers, stored.FlaggedPlayers...)
 	mu.Unlock()
+}
+
+// StoredAnalysis reports what StoreMatchAnalysis wrote.
+type StoredAnalysis struct {
+	EventsStored   int
+	ScoresStored   int
+	CasesStored    int
+	FlaggedPlayers []string // sorted
+}
+
+// ReviewCaseID is the deterministic single-match case id for (match, player)
+// so re-analysis refreshes the existing case instead of creating a new one.
+func ReviewCaseID(matchID, playerID string) string {
+	return fmt.Sprintf("RC-%s-%s", matchID, playerID)
+}
+
+// StoreMatchAnalysis persists a match's derived outputs: detection events
+// (tagged with source "initial" or "reprocess"), one per-match score snapshot
+// per player, and a single-match review case for every player whose score
+// exceeds the review threshold. Telemetry and context are stored by the caller.
+// Players are processed in sorted order for reproducibility.
+func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string) (StoredAnalysis, error) {
+	var out StoredAnalysis
+	stored, err := store.StoreDetectionEvents(ctx, result.DetectionEvents, source)
+	out.EventsStored = stored
+	if err != nil {
+		return out, fmt.Errorf("storing events: %w", err)
+	}
+	pids := make([]string, 0, len(result.PlayerScores))
+	for pid := range result.PlayerScores {
+		pids = append(pids, pid)
+	}
+	sort.Strings(pids)
+	builder := evidence.NewBuilder()
+	for _, pid := range pids {
+		score := result.PlayerScores[pid]
+		if err := store.StoreMatchSuspicionScore(ctx, matchCtx.MatchID, score); err != nil {
+			return out, fmt.Errorf("storing score for %s: %w", pid, err)
+		}
+		out.ScoresStored++
+		if !score.ExceedsReview {
+			continue
+		}
+		out.FlaggedPlayers = append(out.FlaggedPlayers, pid)
+		rc := builder.Build(pid, matchCtx, score, result.DetectionEvents)
+		rc.CaseID = ReviewCaseID(matchCtx.MatchID, pid)
+		if err := store.StoreReviewCase(ctx, rc); err != nil {
+			return out, fmt.Errorf("storing review case for %s: %w", pid, err)
+		}
+		out.CasesStored++
+	}
+	return out, nil
 }
