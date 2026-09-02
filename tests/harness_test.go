@@ -116,7 +116,7 @@ func NormalThrowSequence(n int) []model.PlayerTelemetryFrame {
 		}
 		// Release frame: moderate speed with varied angle
 		releaseSpeed := 6.0 + float64(t)*1.5 // 6.0-12.0 m/s varied range
-		angleVar := float64(t) * 5.0          // vary angle per throw
+		angleVar := float64(t) * 5.0         // vary angle per throw
 		vx := releaseSpeed * math.Cos(angleVar*math.Pi/180)
 		vy := 0.5 + float64(t)*0.2
 		vz := releaseSpeed * math.Sin(angleVar*math.Pi/180) * 0.3
@@ -806,12 +806,6 @@ func TestCheat_Teleport_Detected(t *testing.T) {
 
 func TestCheat_Aimbot_Detected(t *testing.T) {
 	frames := AimbotThrows(8)
-	// Override timestamps to simulate 60fps live server data.
-	// THROW_001 skips replay-rate data (dt > 0.05) since disc speed
-	// computations are unreliable at 15fps.
-	for i := range frames {
-		frames[i].Timestamp = float64(i) * 0.017 // 60fps
-	}
 	hr := testutil.NewHarness(t).
 		WithDetectors("THROW_001", "THROW_003", "THROW_005").
 		WithMatchContext(matchContextForPlayer("player1")).

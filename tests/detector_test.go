@@ -61,7 +61,6 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				ps.FrameDt = 0.017 // 60fps — THROW_001 skips replay-rate data
 				te := testutil.MakeThrowEvent("p1", 100, 35.0, 0.0) // way over cap
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
@@ -406,7 +405,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.FrameDt = 0.067
-				ps.LeftWristAngularRate = 8.0  // moderate rotation, well under 50 rad/s
+				ps.LeftWristAngularRate = 8.0 // moderate rotation, well under 50 rad/s
 				ps.RightWristAngularRate = 12.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
@@ -858,7 +857,7 @@ func TestDetectors(t *testing.T) {
 				ps.Team = "blue"
 				ps.Position = model.Vec3{5.0, 1.6, 0}
 				ps.LeftHand = model.Vec3{5.5, 1.8, 0}  // hand near body
-				ps.RightHand = model.Vec3{5.8, 1.8, 0}  // hand near victim
+				ps.RightHand = model.Vec3{5.8, 1.8, 0} // hand near victim
 				ps.Speed = 5.0
 				// Victim is close — 1m away
 				ps2 := testutil.NewPlayerState("p2")
