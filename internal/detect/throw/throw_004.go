@@ -13,21 +13,43 @@ type signatureVec struct {
 	frameIndex int
 }
 
+// Signature dimensions, in order.
+var signatureDimensionNames = []string{"speed", "angle", "hand_speed", "wrist_angvel", "poss_dur", "hand_disc_dist"}
+
+const (
+	// degenerateVarianceFloor: a dimension whose variance is below this is
+	// constant for the player (e.g. wrist angular velocity when the source
+	// reports identity hand rotation) and carries no signature information.
+	// It is excluded from the product instead of collapsing it.
+	degenerateVarianceFloor = 1e-9
+	// minInformativeDimensions: fewer informative dimensions than this and
+	// the signature is not evaluated at all.
+	minInformativeDimensions = 3
+	// severityDecades: orders of magnitude below the effective threshold at
+	// which severity saturates to 1.
+	severityDecades = 4.0
+)
+
 // Throw004 detects repeated release signatures (THROW_004).
 //
 // STATUS: UNSAFE — regrab playstyle produces low generalized variance
 // naturally, causing false positives on skilled players. Disabled by default.
+//
+// The generalized variance is the product of per-dimension variances over
+// the informative dimensions only; min_generalized_variance is defined for
+// all six dimensions and is rescaled to the number of informative ones
+// (threshold^(k/6)) so the per-dimension scale is preserved.
 type Throw004 struct {
 	detect.BaseDetector
-	minThrows          int
-	minGenVariance     float64
-	signatures         map[string][]signatureVec
+	minThrows      int
+	minGenVariance float64
+	signatures     map[string][]signatureVec
 }
 
 func NewThrow004(params map[string]any) *Throw004 {
 	return &Throw004{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_004", DetectorVersion: "1.0.0",
+			DetectorID: "THROW_004", DetectorVersion: "1.1.0",
 			DetectorName: "Repeated Release Signatures", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.6,
 		},
@@ -61,22 +83,27 @@ func (d *Throw004) buildSignature(t *model.ThrowEvent) signatureVec {
 
 func (d *Throw004) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
-	for _, ps := range players {
-		if ps.LastThrow == nil || ps.LastThrow.FrameIndex != frameIdx {
+	for _, pid := range sortedPlayerIDs(players) {
+		ps := players[pid]
+		t := throwAt(ps, frameIdx)
+		if t == nil {
 			continue
 		}
-		sig := d.buildSignature(ps.LastThrow)
-		d.signatures[ps.PlayerID] = append(d.signatures[ps.PlayerID], sig)
-		if len(d.signatures[ps.PlayerID]) > 50 {
-			d.signatures[ps.PlayerID] = d.signatures[ps.PlayerID][len(d.signatures[ps.PlayerID])-50:]
+		sig := d.buildSignature(t)
+		d.signatures[pid] = append(d.signatures[pid], sig)
+		if len(d.signatures[pid]) > 50 {
+			d.signatures[pid] = d.signatures[pid][len(d.signatures[pid])-50:]
 		}
-		sigs := d.signatures[ps.PlayerID]
-		if len(sigs) < d.minThrows {
+		sigs := d.signatures[pid]
+		if len(sigs) < d.minThrows || d.minGenVariance <= 0 {
 			continue
 		}
-		// Compute per-dimension variance
+		// Per-dimension variance; degenerate (constant) dimensions are
+		// reported but excluded from the product.
 		dims := len(sigs[0].values)
 		dimVars := make([]float64, dims)
+		var degenerate []string
+		informative := 0
 		genVar := 1.0
 		for dim := 0; dim < dims; dim++ {
 			vals := make([]float64, len(sigs))
@@ -85,31 +112,41 @@ func (d *Throw004) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			}
 			v := model.Variance(vals)
 			dimVars[dim] = v
-			if v < 1e-15 {
-				v = 1e-15
+			if v < degenerateVarianceFloor || math.IsNaN(v) {
+				degenerate = append(degenerate, signatureDimensionNames[dim])
+				continue
 			}
+			informative++
 			genVar *= v
 		}
-		if genVar >= d.minGenVariance {
+		if informative < minInformativeDimensions {
 			continue
 		}
-		severity := 1.0 - model.SigmoidConfidence(genVar, d.minGenVariance, 100.0)
+		effThreshold := math.Pow(d.minGenVariance, float64(informative)/float64(dims))
+		if genVar >= effThreshold {
+			continue
+		}
+		// Severity grows with how many decades below the threshold the
+		// signature variance sits (just below -> ~0, 4 decades -> 1).
+		severity := model.Clamp01(math.Log10(effThreshold/genVar) / severityDecades)
 		throwCountFactor := math.Min(1.0, float64(len(sigs))/float64(d.minThrows*2))
 		confidence := severity * throwCountFactor
 
-		ev := d.MakeEvent(matchCtx, ps.PlayerID, frameIdx, ps.LastThrow.Timestamp, severity, confidence,
+		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence,
 			model.SignatureRepeatEvidence{
 				ThrowCount: len(sigs), GeneralizedVariance: genVar,
-				DimensionVariances: dimVars,
-				DimensionNames: []string{"speed", "angle", "hand_speed", "wrist_angvel", "poss_dur", "hand_disc_dist"},
+				DimensionVariances: dimVars, DimensionNames: signatureDimensionNames,
+				InformativeDimensions: informative, DegenerateDimensions: degenerate,
+				EffectiveThreshold: effThreshold,
 			},
-			fmt.Sprintf("gen_variance: %.6f over %d throws", genVar, len(sigs)),
-			fmt.Sprintf("gen_variance: > %.6f", d.minGenVariance),
-			model.CausalKey{PlayerID: ps.PlayerID, FrameStart: sigs[0].frameIndex, FrameEnd: frameIdx, AnomalyType: "throw_signature"},
+			fmt.Sprintf("gen_variance: %.3g over %d throws (%d informative dims)", genVar, len(sigs), informative),
+			fmt.Sprintf("gen_variance: > %.3g", effThreshold),
+			model.CausalKey{PlayerID: pid, FrameStart: sigs[0].frameIndex, FrameEnd: frameIdx, AnomalyType: "throw_signature"},
 		)
+		ev.Attribution = &t.Attribution
 		events = append(events, ev)
 		// Reset signatures after detection to prevent unbounded growth
-		d.signatures[ps.PlayerID] = nil
+		d.signatures[pid] = nil
 	}
 	return events
 }

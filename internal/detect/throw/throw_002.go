@@ -9,14 +9,13 @@ import (
 
 // Throw002 detects an impossible disc speed jump at release (THROW_002).
 //
-// Approach: compare the disc speed in the last pre-release snapshot against
-// the release speed. A legitimate wrist flick can impart at most ~18.7 m/s
-// (the engine-enforced cap). A sudden jump larger than maxSpeedDelta is
-// physically impossible regardless of player motion.
+// Approach: compare the disc speed in the last pre-release snapshot (the
+// frame immediately BEFORE the release frame, as built by the feature
+// extractor) against the release speed. A legitimate wrist flick can impart
+// at most ~18.7 m/s (the engine-enforced cap). A sudden jump larger than
+// maxSpeedDelta is physically impossible regardless of player motion.
 //
-// This replaces the original multi-frame acceleration analysis. That approach
-// was broken because .echoreplay pre-release snapshots contain identical disc
-// velocities across all frames, making per-frame deltas always zero.
+// Snapshots whose source frame carried no disc state are unusable and skipped.
 type Throw002 struct {
 	detect.BaseDetector
 	maxSpeedDelta float64
@@ -43,16 +42,19 @@ func (d *Throw002) Configure(params map[string]any) error {
 
 func (d *Throw002) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
-	for _, ps := range players {
-		if ps.LastThrow == nil || ps.LastThrow.FrameIndex != frameIdx {
-			continue
-		}
-		t := ps.LastThrow
-		if len(t.PreReleaseFrames) < 1 {
+	for _, pid := range sortedPlayerIDs(players) {
+		ps := players[pid]
+		t := throwAt(ps, frameIdx)
+		if t == nil || len(t.PreReleaseFrames) < 1 {
 			continue
 		}
 
 		lastPre := t.PreReleaseFrames[len(t.PreReleaseFrames)-1]
+		if lastPre.DiscMissing || lastPre.FrameIndex >= t.FrameIndex {
+			// No disc observation before release (or a malformed snapshot
+			// that includes the release frame): nothing to compare against.
+			continue
+		}
 		lastPreSpd := lastPre.DiscVelocity.Magnitude()
 		delta := t.ReleaseSpeed - lastPreSpd
 
@@ -66,7 +68,7 @@ func (d *Throw002) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			confidence *= t.Attribution.Confidence
 		}
 
-		ev := d.MakeEvent(matchCtx, ps.PlayerID, frameIdx, t.Timestamp, severity, confidence,
+		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence,
 			model.DiscAccelerationEvidence{
 				SpeedDelta:       delta,
 				ReleaseSpeed:     t.ReleaseSpeed,
@@ -75,7 +77,7 @@ func (d *Throw002) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			},
 			fmt.Sprintf("speed_delta: %.2f m/s (pre: %.2f → release: %.2f)", delta, lastPreSpd, t.ReleaseSpeed),
 			fmt.Sprintf("speed_delta: < %.2f m/s", d.maxSpeedDelta),
-			model.CausalKey{PlayerID: ps.PlayerID, FrameStart: lastPre.FrameIndex, FrameEnd: frameIdx + 2, AnomalyType: "disc_acceleration"},
+			model.CausalKey{PlayerID: pid, FrameStart: lastPre.FrameIndex, FrameEnd: frameIdx + 2, AnomalyType: "disc_acceleration"},
 		)
 		ev.Attribution = &t.Attribution
 		events = append(events, ev)

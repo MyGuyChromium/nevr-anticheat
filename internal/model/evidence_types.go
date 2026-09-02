@@ -10,6 +10,12 @@ type ThrowEvidence struct {
 	SpeedRatio      float64 `json:"speed_ratio"`
 	EffectiveCap    float64 `json:"effective_cap"`
 	PingMs          float64 `json:"ping_ms"`
+	// ArtifactSuspected marks releases faster than twice the physics cap.
+	// Such values may be telemetry timing artifacts or blatant injection; they
+	// are reported at low severity and kept out of the cap-riding statistic
+	// so calibration can see them. ArtifactCount is the per-player count so far.
+	ArtifactSuspected bool `json:"artifact_suspected,omitempty"`
+	ArtifactCount     int  `json:"artifact_count,omitempty"`
 }
 
 func (ThrowEvidence) EvidenceType() string { return "throw" }
@@ -43,21 +49,30 @@ type SignatureRepeatEvidence struct {
 	GeneralizedVariance float64   `json:"generalized_variance"`
 	DimensionVariances  []float64 `json:"dimension_variances"`
 	DimensionNames      []string  `json:"dimension_names"`
-	BhattacharyyaCoeff  float64   `json:"bhattacharyya_coeff"`
+	// InformativeDimensions is the number of dimensions with non-degenerate
+	// variance that entered the product; DegenerateDimensions lists the ones
+	// excluded (e.g. wrist angular velocity when hand rotation is identity).
+	InformativeDimensions int      `json:"informative_dimensions"`
+	DegenerateDimensions  []string `json:"degenerate_dimensions,omitempty"`
+	// EffectiveThreshold is min_generalized_variance rescaled to the number
+	// of informative dimensions.
+	EffectiveThreshold float64 `json:"effective_threshold"`
 }
 
 func (SignatureRepeatEvidence) EvidenceType() string { return "signature_repeat" }
 
 // PrecisionEvidence for THROW_005.
 type PrecisionEvidence struct {
-	GoalDirectedThrows  int       `json:"goal_directed_throws"`
-	MeanDeviation       float64   `json:"mean_deviation"`
-	StddevDeviation     float64   `json:"stddev_deviation"`
-	MinDeviation        float64   `json:"min_deviation"`
-	MaxDeviation        float64   `json:"max_deviation"`
-	DeviationHistory    []float64 `json:"deviation_history,omitempty"`
-	PopulationMeanDev   float64   `json:"population_mean_dev"`
-	PopulationStddevDev float64   `json:"population_stddev_dev"`
+	GoalDirectedThrows int       `json:"goal_directed_throws"`
+	MeanDeviation      float64   `json:"mean_deviation"`
+	StddevDeviation    float64   `json:"stddev_deviation"`
+	MinDeviation       float64   `json:"min_deviation"`
+	MaxDeviation       float64   `json:"max_deviation"`
+	DeviationHistory   []float64 `json:"deviation_history,omitempty"`
+	// Speed-accuracy correlation fields (only set on correlation events).
+	PairCount                int     `json:"pair_count,omitempty"`
+	SpeedAccuracyCorrelation float64 `json:"speed_accuracy_correlation,omitempty"`
+	CorrelationUpperCI       float64 `json:"correlation_upper_ci,omitempty"`
 }
 
 func (PrecisionEvidence) EvidenceType() string { return "precision" }
@@ -71,10 +86,17 @@ type TrajectoryEvidence struct {
 	DistanceTraveled      float64 `json:"distance_traveled"`
 	ReleaseSpeed          float64 `json:"release_speed"`
 	FinalSpeed            float64 `json:"final_speed"`
-	CorrectionTarget      string  `json:"correction_target"`
-	CorrectionConfidence  float64 `json:"correction_confidence"`
-	TrajectoryPoints      []Vec3  `json:"trajectory_points,omitempty"`
-	VelocityPoints        []Vec3  `json:"velocity_points,omitempty"`
+	// CorrectionTarget names the goal used for the alignment measurement
+	// (empty when no goal geometry was available); InitialAlignment and
+	// FinalAlignment are the cosine similarity between disc velocity and the
+	// direction to that goal at the first and last tracked frame.
+	CorrectionTarget     string  `json:"correction_target,omitempty"`
+	InitialAlignment     float64 `json:"initial_alignment"`
+	FinalAlignment       float64 `json:"final_alignment"`
+	AlignmentImprovement float64 `json:"alignment_improvement"`
+	CorrectionConfidence float64 `json:"correction_confidence"`
+	TrajectoryPoints     []Vec3  `json:"trajectory_points,omitempty"`
+	VelocityPoints       []Vec3  `json:"velocity_points,omitempty"`
 }
 
 func (TrajectoryEvidence) EvidenceType() string { return "trajectory" }
@@ -93,10 +115,11 @@ func (PenaltyFieldEvidence) EvidenceType() string { return "penalty_field" }
 
 // SpeedDistanceEvidence for THROW_008.
 type SpeedDistanceEvidence struct {
-	SpeedIncreaseCount   int          `json:"speed_increase_count"`
-	CurveViolationCount  int          `json:"curve_violation_count"`
-	MaxSpeedIncrease     float64      `json:"max_speed_increase"`
-	MaxCurveExcess       float64      `json:"max_curve_excess"`
+	SpeedIncreaseCount int     `json:"speed_increase_count"`
+	MaxSpeedIncrease   float64 `json:"max_speed_increase"`
+	TrackedFrames      int     `json:"tracked_frames"`
+	// SpeedDistanceSamples are (distance from release point, disc speed)
+	// pairs for every evaluated free-flight frame.
 	SpeedDistanceSamples [][2]float64 `json:"speed_distance_samples,omitempty"`
 }
 
