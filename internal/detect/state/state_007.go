@@ -124,7 +124,9 @@ func (d *State007) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	// 1. Record stun-start transitions and new punches from this frame.
 	for _, ps := range active {
 		pid := ps.PlayerID
-		if ps.IsStunned && !d.wasStunned[pid] {
+		// A stun start is a false -> true transition between two observed
+		// frames; a player first seen already stunned is not "just stunned".
+		if prevStunned, seen := d.wasStunned[pid]; seen && ps.IsStunned && !prevStunned {
 			d.stunStarts[pid] = stunStart{frame: frameIdx, pos: ps.Position}
 		}
 		d.wasStunned[pid] = ps.IsStunned
