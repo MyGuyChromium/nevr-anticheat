@@ -846,3 +846,65 @@ func TestSuddenDeathIsActive(t *testing.T) {
 		t.Error("pre/post sudden death transitions must stay inactive")
 	}
 }
+
+// TestStallFrameIsAcceptedAsGap (contract 1 at the validator): with real
+// timestamps a 600 ms broadcaster stall is a valid sample. The frame is
+// accepted (raw state updated), the extractor derives no kinematics for it,
+// and the next frame has normal kinematics again. Only a spacing that cannot
+// be a sample interval is rejected.
+func TestStallFrameIsAcceptedAsGap(t *testing.T) {
+	cfg := testConfig("enforce")
+	rec := newRecorder("FAKE_GAP", "movement", 0)
+	speeds := map[int]float64{}
+	rec.emit = func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent {
+		speeds[fi] = ps.Speed
+		return nil
+	}
+	p, _ := newPipeline(cfg, []detect.Detector{rec})
+
+	var frames []model.PlayerTelemetryFrame
+	ts := 0.0
+	for i := 0; i < 20; i++ {
+		f := cleanFrame("P1", i)
+		dt := 0.067
+		if i == 10 {
+			dt = 0.6 // stall
+		}
+		if i > 0 {
+			ts += dt
+		}
+		f.Timestamp, f.DeltaTime = ts, dt
+		if i == 0 {
+			f.DeltaTime = 0
+		}
+		frames = append(frames, f)
+	}
+	res, err := p.ProcessMatch(context.Background(), matchCtx("P1"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InvalidFrames != 0 || res.FramesProcessed != 20 {
+		t.Fatalf("stall frame rejected: invalid=%d processed=%d reasons=%v", res.InvalidFrames, res.FramesProcessed, res.InvalidFrameReasons)
+	}
+	if speeds[10] != 0 {
+		t.Errorf("gap frame must carry no kinematics, got speed %.3f", speeds[10])
+	}
+	if speeds[11] < 1.0 || speeds[9] < 1.0 {
+		t.Errorf("frames around the gap should have normal kinematics: before=%.3f after=%.3f", speeds[9], speeds[11])
+	}
+	if ps := p.Players()["P1"]; ps == nil || ps.FrameCount != 20 || ps.LastFrameIdx != 19 {
+		t.Errorf("player state after gap: %+v", ps)
+	}
+
+	// A spacing that cannot be a sample interval is still rejected.
+	bad := cleanFrame("P1", 0)
+	bad.DeltaTime = MaxProducerDt + 1
+	if _, err := NewFrameValidator(cfg).Validate(&bad, matchCtx("P1")); err == nil {
+		t.Error("clock-jump dt accepted")
+	}
+	dup := cleanFrame("P1", 0)
+	dup.DeltaTime = cfg.Pipeline.MinFrameDt * 0.1
+	if _, err := NewFrameValidator(cfg).Validate(&dup, matchCtx("P1")); err == nil {
+		t.Error("duplicated-tick dt accepted")
+	}
+}
