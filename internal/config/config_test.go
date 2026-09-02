@@ -198,6 +198,20 @@ func TestOverlay_DeprecatedTopLevelKeysWarn(t *testing.T) {
 	if !hasWarning(cfg, "general.mode is deprecated") {
 		t.Fatalf("general.mode not warned: %v", cfg.Warnings)
 	}
+	// The key has no struct field any more; it must warn exactly once (via
+	// the undecoded-key path) and never error.
+	modeWarnings := 0
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "general.mode") {
+			modeWarnings++
+		}
+	}
+	if modeWarnings != 1 {
+		t.Fatalf("general.mode warned %d times, want 1: %v", modeWarnings, cfg.Warnings)
+	}
+	if cfg.General.LogLevel != "info" {
+		t.Fatalf("sibling general keys lost: %+v", cfg.General)
+	}
 	if !hasWarning(cfg, "scoring.clean_match_reset_count is deprecated") || !hasWarning(cfg, "scoring.in_match_decay_points_per_min is deprecated") {
 		t.Fatalf("removed scoring keys not warned: %v", cfg.Warnings)
 	}

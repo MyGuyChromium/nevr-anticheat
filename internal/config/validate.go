@@ -40,9 +40,6 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 	if strings.TrimSpace(g.DBPath) == "" {
 		add("general.db_path must not be empty")
 	}
-	if g.Mode != "" {
-		warn("general.mode=%q is deprecated and ignored", g.Mode)
-	}
 
 	// --- physics ---
 	ph := cfg.Physics

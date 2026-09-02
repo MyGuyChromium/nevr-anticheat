@@ -60,12 +60,11 @@ type Config struct {
 	Warnings []string `toml:"-"`
 }
 
-// GeneralConfig holds general system settings.
+// GeneralConfig holds general system settings. The former general.mode key
+// is gone: the binary determines the mode (nevr-ac = offline analysis,
+// nevr-server = live ingestion). A file that still sets it loads with a
+// deprecation warning (deprecatedTopLevelKeys in params.go).
 type GeneralConfig struct {
-	// Mode is DEPRECATED and ignored: the binary determines the mode
-	// (nevr-ac = offline analysis, nevr-server = live ingestion). The field
-	// remains only so older files still decode; the loader warns when it is set.
-	Mode       string `toml:"mode"`
 	LogLevel   string `toml:"log_level"`  // "debug","info","warn","error"
 	LogFormat  string `toml:"log_format"` // "json" or "text"
 	MaxWorkers int    `toml:"max_workers"`
@@ -368,9 +367,6 @@ func applyOverlay(cfg, overlay *Config, md toml.MetaData, errs *[]string) []stri
 	overlayStruct(reflect.ValueOf(&cfg.Shadow).Elem(), reflect.ValueOf(&overlay.Shadow).Elem(), md, "shadow")
 	overlayStruct(reflect.ValueOf(&cfg.Server).Elem(), reflect.ValueOf(&overlay.Server).Elem(), md, "server")
 
-	if md.IsDefined("general", "mode") {
-		warnings = append(warnings, "general.mode is deprecated: "+deprecatedTopLevelKeys["general.mode"])
-	}
 	if md.IsDefined("scoring", "review_threshold") && md.IsDefined("scoring", "high_risk") &&
 		cfg.Scoring.ReviewThreshold != cfg.Scoring.HighRisk {
 		warnings = append(warnings, fmt.Sprintf("scoring.high_risk (%g) is overridden by scoring.review_threshold (%g); they are the same boundary",

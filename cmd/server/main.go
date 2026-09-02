@@ -169,7 +169,6 @@ func run() int {
 	logger.Info("NEVR telemetry ingestion server running",
 		"telemetry", telemetryServer.Addr().String(),
 		"metrics", *metricsAddr,
-		"mode", cfg.General.Mode,
 		"authenticated", serverCfg.AuthToken != "",
 		"max_matches", *maxMatches,
 	)
