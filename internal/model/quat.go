@@ -94,15 +94,143 @@ func (q Quat) Slerp(o Quat, t float64) Quat {
 	}
 }
 
-// QuatFromDirectionVectors constructs a quaternion from forward, left, up direction vectors.
-// This is needed for converting Echo VR's hand pose format (3 direction vectors) to quaternion.
+// Rotate applies the rotation q to v (v' = q v q*). q is assumed to be unit.
+func (q Quat) Rotate(v Vec3) Vec3 {
+	axis := Vec3{q[0], q[1], q[2]}
+	t := axis.Cross(v).Scale(2.0)
+	return v.Add(t.Scale(q[3])).Add(axis.Cross(t))
+}
+
+// BasisQuality reports how well a (forward, left, up) direction-vector triple
+// described a proper rotation. It is a bit set: several flags can be raised at
+// once. BasisProper (0) means the input was an orthonormal right-handed basis.
+type BasisQuality uint8
+
+const (
+	// BasisProper: orthonormal, det(left, up, forward) = +1.
+	BasisProper BasisQuality = 0
+	// BasisReflected: det(left, up, forward) < 0, i.e. the supplied "left" vector
+	// points where a right-handed basis would put "right". The converter uses
+	// -left in that case, so the returned rotation is still exact; the flag lets
+	// producers learn which handedness convention the data source uses.
+	BasisReflected BasisQuality = 1 << iota
+	// BasisNonOrthonormal: vectors were not unit length and/or not mutually
+	// perpendicular (or "left" was missing). The basis was re-orthonormalised
+	// from forward and up (Gram-Schmidt) before conversion.
+	BasisNonOrthonormal
+	// BasisDegenerate: forward or up was zero/NaN, or they were collinear. No
+	// rotation can be derived; the returned quaternion is the ZERO quaternion
+	// (IsUnit() == false), never a silent identity.
+	BasisDegenerate
+)
+
+func (b BasisQuality) Reflected() bool      { return b&BasisReflected != 0 }
+func (b BasisQuality) NonOrthonormal() bool { return b&BasisNonOrthonormal != 0 }
+func (b BasisQuality) Degenerate() bool     { return b&BasisDegenerate != 0 }
+
+func (b BasisQuality) String() string {
+	if b == BasisProper {
+		return "proper"
+	}
+	s := ""
+	add := func(name string) {
+		if s != "" {
+			s += "|"
+		}
+		s += name
+	}
+	if b.Degenerate() {
+		add("degenerate")
+	}
+	if b.Reflected() {
+		add("reflected")
+	}
+	if b.NonOrthonormal() {
+		add("non_orthonormal")
+	}
+	return s
+}
+
+// basisTolerance is the allowed deviation from unit length / perpendicularity
+// before a triple is flagged as non-orthonormal. Echo VR prints direction
+// vectors with ~6 significant digits, so genuine data sits well inside 5e-3.
+const basisTolerance = 5e-3
+
+// QuatFromDirectionVectors constructs a quaternion from forward, left, up
+// direction vectors (Echo VR's hand/body pose format). It is the convenience
+// form of QuatFromDirectionVectorsChecked and discards the quality report.
 func QuatFromDirectionVectors(forward, left, up Vec3) Quat {
-	// Build rotation matrix from direction vectors:
-	// Column 0 = left (X), Column 1 = up (Y), Column 2 = forward (Z)
-	// Then convert rotation matrix to quaternion.
-	m00, m01, m02 := left[0], up[0], forward[0]
-	m10, m11, m12 := left[1], up[1], forward[1]
-	m20, m21, m22 := left[2], up[2], forward[2]
+	q, _ := QuatFromDirectionVectorsChecked(forward, left, up)
+	return q
+}
+
+// QuatFromDirectionVectorsChecked converts a direction-vector triple into a
+// unit quaternion and reports the quality of the input basis.
+//
+// The rotation matrix has columns (left, up, forward): the quaternion maps
+// +X to left, +Y to up and +Z to forward. Only proper rotations (det = +1) can
+// be represented by a quaternion, so:
+//   - forward and up are normalised and up is made perpendicular to forward;
+//   - left is REBUILT as up x forward, which always yields det = +1;
+//   - the supplied left is used only to measure the handedness of the input:
+//     left . (up x forward) < 0 means the source uses left = -(up x forward)
+//     (a reflected basis) and BasisReflected is raised.
+//
+// Degenerate input (zero or collinear forward/up, NaN/Inf) returns the zero
+// quaternion together with BasisDegenerate so callers can tell "no tracking"
+// apart from a real identity pose.
+func QuatFromDirectionVectorsChecked(forward, left, up Vec3) (Quat, BasisQuality) {
+	quality := BasisProper
+
+	if forward.HasNaN() || forward.HasInf() || up.HasNaN() || up.HasInf() || left.HasNaN() || left.HasInf() {
+		return Quat{}, BasisDegenerate
+	}
+
+	fMag := forward.Magnitude()
+	uMag := up.Magnitude()
+	lMag := left.Magnitude()
+	if fMag < 1e-9 || uMag < 1e-9 {
+		return Quat{}, BasisDegenerate
+	}
+
+	f := forward.Scale(1.0 / fMag)
+	uProj := up.Sub(f.Scale(up.Dot(f)))
+	uProjMag := uProj.Magnitude()
+	if uProjMag < 1e-6 {
+		// up is (anti)parallel to forward: no plane, no rotation.
+		return Quat{}, BasisDegenerate
+	}
+	u := uProj.Scale(1.0 / uProjMag)
+	l := u.Cross(f) // proper right-handed left axis for columns (left, up, forward)
+
+	// Orthonormality of the raw input.
+	if math.Abs(fMag-1) > basisTolerance || math.Abs(uMag-1) > basisTolerance ||
+		math.Abs(forward.Dot(up)) > basisTolerance {
+		quality |= BasisNonOrthonormal
+	}
+	if lMag < 1e-9 {
+		// Missing left: orientation is still fully defined by forward/up but the
+		// handedness of the source cannot be measured.
+		quality |= BasisNonOrthonormal
+	} else {
+		det := left.Dot(u.Cross(f)) / lMag
+		if det < 0 {
+			quality |= BasisReflected
+		}
+		if math.Abs(lMag-1) > basisTolerance || math.Abs(math.Abs(det)-1) > basisTolerance {
+			quality |= BasisNonOrthonormal
+		}
+	}
+
+	return quatFromColumns(l, u, f), quality
+}
+
+// quatFromColumns converts a proper rotation matrix with columns (c0, c1, c2)
+// into a unit quaternion (x, y, z, w).
+func quatFromColumns(c0, c1, c2 Vec3) Quat {
+	m00, m01, m02 := c0[0], c1[0], c2[0]
+	m10, m11, m12 := c0[1], c1[1], c2[1]
+	m20, m21, m22 := c0[2], c1[2], c2[2]
 
 	trace := m00 + m11 + m22
 	var q Quat

@@ -1,13 +1,15 @@
 package model
 
+import "encoding/json"
+
 // PlayerTelemetryFrame represents a single frame of telemetry data for one player.
 type PlayerTelemetryFrame struct {
-	PlayerID  string  `json:"player_id"`
+	PlayerID string `json:"player_id"`
 	// Team is "blue" or "orange" when known, empty otherwise. Producers
 	// (adapter.Mapper, cmd/bridge) populate it; ingest uses it to build
 	// MatchContext.TeamAssignments for live matches.
-	Team string `json:"team,omitempty"`
-	FrameIndex int    `json:"frame_index"`
+	Team       string  `json:"team,omitempty"`
+	FrameIndex int     `json:"frame_index"`
 	Timestamp  float64 `json:"timestamp"`
 	DeltaTime  float64 `json:"delta_time"`
 
@@ -41,8 +43,8 @@ type PlayerTelemetryFrame struct {
 
 // DiscState represents the state of the disc at a single frame.
 type DiscState struct {
-	Position Vec3 `json:"position"`
-	Velocity Vec3 `json:"velocity"`
+	Position Vec3    `json:"position"`
+	Velocity Vec3    `json:"velocity"`
 	Speed    float64 `json:"speed"`
 
 	PreviousVelocity      *Vec3   `json:"previous_velocity,omitempty"`
@@ -52,13 +54,44 @@ type DiscState struct {
 	PossessorID string `json:"possessor_id,omitempty"`
 	IsHeld      bool   `json:"is_held"`
 
-	FramesSinceRelease int    `json:"frames_since_release"`
-	ReleasePosition    *Vec3  `json:"release_position,omitempty"`
-	ReleaseVelocity    *Vec3  `json:"release_velocity,omitempty"`
+	FramesSinceRelease int   `json:"frames_since_release"`
+	ReleasePosition    *Vec3 `json:"release_position,omitempty"`
+	ReleaseVelocity    *Vec3 `json:"release_velocity,omitempty"`
 
 	TrajectoryAngleChange float64 `json:"trajectory_angle_change,omitempty"`
 	DistanceFromThrower   float64 `json:"distance_from_thrower,omitempty"`
 	InPenaltyField        bool    `json:"in_penalty_field"`
+}
+
+// discStateJSON is DiscState without methods, used to avoid recursion in UnmarshalJSON.
+type discStateJSON DiscState
+
+// UnmarshalJSON decodes a DiscState from either the internal shape
+// (possessor_id / is_held / speed) or the wire-contract shape documented in
+// docs/telemetry_contract.md, which names the holder "holder_id" and omits
+// "speed". A non-empty holder_id sets PossessorID and IsHeld; when speed is
+// absent or zero it is derived as |velocity| so throw detection sees a real
+// release speed for contract-conformant producers.
+func (d *DiscState) UnmarshalJSON(data []byte) error {
+	var base discStateJSON
+	if err := json.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	var aliases struct {
+		HolderID *string `json:"holder_id"`
+	}
+	if err := json.Unmarshal(data, &aliases); err != nil {
+		return err
+	}
+	if aliases.HolderID != nil && *aliases.HolderID != "" && base.PossessorID == "" {
+		base.PossessorID = *aliases.HolderID
+		base.IsHeld = true
+	}
+	if base.Speed == 0 && !Vec3(base.Velocity).IsZero() {
+		base.Speed = Vec3(base.Velocity).Magnitude()
+	}
+	*d = DiscState(base)
+	return nil
 }
 
 // ControllerState represents derived hand/controller state.
