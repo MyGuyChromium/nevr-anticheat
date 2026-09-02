@@ -2,44 +2,71 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// discoverMatches queries Nakama's standard match list API with server-key auth
-// to get active matches WITH full broadcaster endpoints.
+// discoverer queries Nakama's standard match list API for active matches
+// WITH full broadcaster endpoints and keeps the auth session alive between
+// calls.
 //
 // IMPORTANT: We use the standard Nakama API (GET /v2/match), NOT the custom
 // match/public RPC. The match/public RPC calls PublicView() which deliberately
-// strips broadcaster Endpoint (IP:port) from the response. The standard API
-// with server-key auth returns the full match label including the endpoint.
-func discoverMatches(ctx context.Context, cfg *BridgeConfig, logger *slog.Logger, stats ...*bridgeStats) ([]DiscoveredMatch, error) {
-	// Build request: GET /v2/match?authoritative=true&limit=100&min_size=1
-	url := fmt.Sprintf("%s/v2/match?authoritative=true&limit=100&min_size=1", cfg.NakamaURL)
+// strips broadcaster Endpoint (IP:port) from the response. The standard API,
+// called with a user session token, returns the full match label including
+// the endpoint.
+type discoverer struct {
+	cfg    *BridgeConfig
+	logger *slog.Logger
+	stats  *bridgeStats
+	auth   *nakamaAuth
+	client *http.Client
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	warnedEndpoints sync.Map // match_id -> struct{} (warn once per match)
+}
+
+func newDiscoverer(cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) *discoverer {
+	return &discoverer{
+		cfg:    cfg,
+		logger: logger,
+		stats:  stats,
+		auth:   newNakamaAuth(cfg, logger),
+		client: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// discoverMatches is the one-shot form used by probe/once mode and tests.
+func discoverMatches(ctx context.Context, cfg *BridgeConfig, logger *slog.Logger, stats ...*bridgeStats) ([]DiscoveredMatch, error) {
+	var st *bridgeStats
+	if len(stats) > 0 {
+		st = stats[0]
+	}
+	return newDiscoverer(cfg, st, logger).discover(ctx)
+}
+
+func (d *discoverer) discover(ctx context.Context) ([]DiscoveredMatch, error) {
+	url := fmt.Sprintf("%s/v2/match?authoritative=true&limit=100&min_size=1", nakamaBaseURL(d.cfg))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-
-	// Auth: bearer token takes precedence over basic server-key auth.
-	if cfg.NakamaBearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.NakamaBearerToken)
-	} else {
-		// Nakama server-key auth: Basic base64(serverkey:)
-		// The colon with empty password is required by Nakama's auth scheme.
-		auth := base64.StdEncoding.EncodeToString([]byte(cfg.NakamaServerKey + ":"))
-		req.Header.Set("Authorization", "Basic "+auth)
+	authz, err := d.auth.authorization(ctx)
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("Authorization", authz)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Nakama API request failed: %w", err)
 	}
@@ -50,12 +77,14 @@ func discoverMatches(ctx context.Context, cfg *BridgeConfig, logger *slog.Logger
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Nakama API returned %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		d.auth.invalidate()
+		return nil, &nakamaAuthError{Status: resp.StatusCode, Body: truncate(string(body), 200), Mode: d.auth.mode()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Nakama API returned %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
 
-	// Parse standard Nakama match list response.
-	// The response is: { "matches": [ { "match_id": "...", "label": "{json}", ... } ] }
 	var apiResp nakamaMatchListResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return nil, fmt.Errorf("parsing Nakama response: %w", err)
@@ -69,43 +98,57 @@ func discoverMatches(ctx context.Context, cfg *BridgeConfig, logger *slog.Logger
 
 		var label matchLabel
 		if err := json.Unmarshal([]byte(m.Label), &label); err != nil {
-			logger.Debug("skipping match with unparseable label", "match_id", m.MatchID, "error", err)
+			d.warnOnce(m.MatchID, "skipping match with unparseable label", "error", err.Error())
 			continue
 		}
 
-		// Skip matches without a broadcaster
 		if label.Broadcaster == nil {
-			logger.Debug("skipping match without broadcaster", "match_id", m.MatchID)
+			d.logger.Debug("skipping match without broadcaster", "match_id", m.MatchID)
 			continue
 		}
 
-		// Extract and validate broadcaster IP
-		ip := extractIP(label.Broadcaster.Endpoint)
+		ip, port := parseEndpoint(label.Broadcaster.Endpoint)
 		if err := validateBroadcasterIP(ip); err != nil {
-			logger.Debug("skipping match with invalid broadcaster endpoint",
-				"match_id", m.MatchID,
-				"endpoint_raw", string(label.Broadcaster.Endpoint),
-				"reason", err.Error(),
-			)
-			if len(stats) > 0 && stats[0] != nil {
-				stats[0].MatchesSkippedNoEP.Add(1)
+			d.warnOnce(m.MatchID, "skipping match with invalid broadcaster endpoint",
+				"endpoint_raw", string(label.Broadcaster.Endpoint), "reason", err.Error())
+			if d.stats != nil {
+				d.stats.MatchesSkippedNoEP.Add(1)
 			}
 			continue
 		}
 
-		port := extractPort(label.Broadcaster.Endpoint)
-
 		matches = append(matches, DiscoveredMatch{
 			MatchID:             m.MatchID,
+			LabelID:             label.ID,
 			Mode:                label.Mode,
 			Level:               label.Level,
 			PlayerCount:         m.Size,
 			BroadcasterIP:       ip,
 			BroadcasterGamePort: port,
+			Region:              label.Broadcaster.Region,
+			StartTime:           label.StartTime,
 		})
 	}
 
 	return matches, nil
+}
+
+// warnOnce logs an endpoint problem at Warn the first time it is seen for a
+// match and at Debug afterwards, so a persistent label problem is visible
+// without flooding the log every discovery cycle.
+func (d *discoverer) warnOnce(matchID, msg string, attrs ...any) {
+	attrs = append([]any{"match_id", matchID}, attrs...)
+	if _, seen := d.warnedEndpoints.LoadOrStore(matchID, struct{}{}); seen {
+		d.logger.Debug(msg, attrs...)
+		return
+	}
+	d.logger.Warn(msg, attrs...)
+}
+
+// isNakamaAuthError reports whether err is a credential rejection.
+func isNakamaAuthError(err error) bool {
+	var ae *nakamaAuthError
+	return errors.As(err, &ae)
 }
 
 // nakamaMatchListResponse is the standard Nakama match list API response.
@@ -123,13 +166,13 @@ type nakamaMatch struct {
 // matchLabel is a minimal parse of the EchoTools MatchLabel.
 // We only extract the fields we need for bridge operation.
 type matchLabel struct {
-	ID          string               `json:"id"`
-	Mode        string               `json:"mode"`
-	Level       string               `json:"level"`
-	Broadcaster *matchBroadcaster    `json:"broadcaster"`
-	Players     []matchPlayer        `json:"players"`
-	GameState   *matchGameState      `json:"game_state"`
-	StartTime   time.Time            `json:"start_time"`
+	ID          string            `json:"id"`
+	Mode        string            `json:"mode"`
+	Level       string            `json:"level"`
+	Broadcaster *matchBroadcaster `json:"broadcaster"`
+	Players     []matchPlayer     `json:"players"`
+	GameState   *matchGameState   `json:"game_state"`
+	StartTime   time.Time         `json:"start_time"`
 }
 
 type matchBroadcaster struct {
@@ -149,57 +192,86 @@ type matchGameState struct {
 	MatchOver   bool `json:"match_over"`
 }
 
-// extractIP pulls the ExternalIP from the Endpoint field.
-// Nakama's Endpoint serializes as "internalIP:externalIP:port" via custom MarshalJSON.
-// It may also serialize as a JSON object with fields.
-func extractIP(raw json.RawMessage) string {
+// parseEndpoint extracts the external IP and game port from the label's
+// broadcaster endpoint. Accepted shapes:
+//
+//   - "internalIP:externalIP:port" (EchoVRCE Endpoint.MarshalJSON, IPv4)
+//   - "ip:port" and "[ipv6]:port"
+//   - a bare IP (v4 or v6)
+//   - {"external_ip": "...", "internal_ip": "...", "port": N}
+//
+// Anything else yields ("", 0) and the caller reports the raw value.
+func parseEndpoint(raw json.RawMessage) (string, int) {
 	if len(raw) == 0 {
-		return ""
+		return "", 0
 	}
 
-	// Try string format first: "internalIP:externalIP:port"
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		parts := strings.Split(s, ":")
-		if len(parts) >= 2 {
-			return parts[1] // ExternalIP is the second part
-		}
-		if len(parts) == 1 {
-			return parts[0]
-		}
-		return ""
+		return parseEndpointString(s)
 	}
 
-	// Try object format: {"external_ip": "...", "port": ...}
 	var obj struct {
 		ExternalIP string `json:"external_ip"`
 		InternalIP string `json:"internal_ip"`
-	}
-	if err := json.Unmarshal(raw, &obj); err == nil && obj.ExternalIP != "" {
-		return obj.ExternalIP
-	}
-
-	return ""
-}
-
-// extractPort pulls the Port from the Endpoint field.
-func extractPort(raw json.RawMessage) int {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		parts := strings.Split(s, ":")
-		if len(parts) >= 3 {
-			var port int
-			fmt.Sscanf(parts[2], "%d", &port)
-			return port
-		}
-	}
-
-	var obj struct {
-		Port int `json:"port"`
+		Port       int    `json:"port"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil {
-		return obj.Port
+		ip := obj.ExternalIP
+		if ip == "" {
+			ip = obj.InternalIP
+		}
+		return ip, obj.Port
 	}
+	return "", 0
+}
 
-	return 0
+func parseEndpointString(s string) (string, int) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0
+	}
+	// Bare IP (v4 or v6 literal without port).
+	if ip := net.ParseIP(s); ip != nil {
+		return s, 0
+	}
+	// "[v6]:port" or "host:port" — SplitHostPort handles brackets.
+	if host, portStr, err := net.SplitHostPort(s); err == nil {
+		if net.ParseIP(host) != nil {
+			port, _ := strconv.Atoi(portStr)
+			return host, port
+		}
+	}
+	parts := strings.Split(s, ":")
+	switch {
+	case len(parts) == 3:
+		// internal:external:port — the external IP is the only routable one;
+		// never fall back to the internal address.
+		port, _ := strconv.Atoi(parts[2])
+		return parts[1], port
+	case len(parts) == 2:
+		port, _ := strconv.Atoi(parts[1])
+		return parts[0], port
+	case len(parts) == 1:
+		return parts[0], 0
+	}
+	// Possibly "v6internal:v6external:port" — take the last segment as port
+	// and try to find a parsable IP in what remains.
+	port, _ := strconv.Atoi(parts[len(parts)-1])
+	rest := strings.Join(parts[:len(parts)-1], ":")
+	if ip := net.ParseIP(rest); ip != nil {
+		return rest, port
+	}
+	return "", 0
+}
+
+// extractIP and extractPort are kept for callers/tests that only need one half.
+func extractIP(raw json.RawMessage) string {
+	ip, _ := parseEndpoint(raw)
+	return ip
+}
+
+func extractPort(raw json.RawMessage) int {
+	_, port := parseEndpoint(raw)
+	return port
 }

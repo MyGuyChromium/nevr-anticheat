@@ -17,6 +17,12 @@
 // which is the same format used by all existing anticheat telemetry. This ensures
 // cross-match tracking consistency. Nakama's UUID-based user_id can be derived
 // deterministically from this via EvrId.UUID() when cross-system queries are needed.
+//
+// Trust boundary: everything the bridge forwards was pulled over plaintext HTTP
+// from whatever host Nakama's match label advertises. Every batch and control
+// message therefore carries ServerID = "<broadcaster_ip>:<api_port>" so stored
+// evidence can be traced to its source, and --broadcaster-allowlist restricts
+// polling to known hosts.
 package main
 
 import (
@@ -37,21 +43,31 @@ import (
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
-	"golang.org/x/net/websocket"
 )
 
 func main() {
 	nakamaURL := flag.String("nakama-url", "http://127.0.0.1:7350", "Nakama HTTP API base URL")
-	nakamaServerKey := flag.String("nakama-server-key", "defaultkey", "Nakama server key for authenticated API access")
-	nakamaBearerToken := flag.String("nakama-bearer-token", "", "Nakama bearer/session token for discovery auth (overrides server-key auth when set)")
+	nakamaServerKey := flag.String("nakama-server-key", "defaultkey", "Nakama server key (used to authenticate the bridge account; cannot list matches on its own)")
+	nakamaAuthMode := flag.String("nakama-auth", nakamaAuthDevice, "Nakama auth mode: device (authenticate a bridge account with the server key and refresh the session), bearer (use --nakama-bearer-token), basic (raw server-key Basic auth; only works behind a proxy)")
+	nakamaDeviceID := flag.String("nakama-device-id", "nevr-anticheat-bridge", "Device id for the bridge account (--nakama-auth device)")
+	nakamaUsername := flag.String("nakama-username", "nevr-anticheat-bridge", "Username for the bridge account (--nakama-auth device)")
+	nakamaBearerToken := flag.String("nakama-bearer-token", "", "Nakama session token for discovery auth (--nakama-auth bearer)")
+	nakamaRefreshToken := flag.String("nakama-refresh-token", "", "Nakama refresh token paired with --nakama-bearer-token (enables refresh before expiry)")
 	anticheatURL := flag.String("anticheat-url", "", "NEVR-Anticheat WebSocket ingestion URL (e.g. ws://127.0.0.1:8080/telemetry)")
 	anticheatToken := flag.String("anticheat-token", "", "Bearer token for anticheat auth (empty = no auth)")
 	apiPort := flag.Int("api-port", 6721, "Echo VR session API port on broadcasters")
-	pollInterval := flag.Duration("poll-interval", 67*time.Millisecond, "Polling interval for broadcaster /session API (~15fps)")
+	pollInterval := flag.Duration("poll-interval", 67*time.Millisecond, "Polling interval for broadcaster /session API (~15fps); frames carry the real sample time regardless")
 	discoveryInterval := flag.Duration("discovery-interval", 10*time.Second, "Interval between match discovery scans")
+	idleInterval := flag.Duration("idle-interval", defaultIdleInterval, "Polling interval while a match is in post_match or its broadcaster is failing")
+	idleGiveUp := flag.Duration("idle-give-up", defaultIdleGiveUp, "Stop polling a match after it has been idle (post_match / failing) this long")
+	ackTimeout := flag.Duration("ack-timeout", defaultAckTimeout, "Treat the anticheat link as dead when sent frames are not acked within this time")
+	queueSize := flag.Int("queue-size", defaultQueueSize, "Bounded anticheat send queue (batches); a stalled link drops frames instead of blocking pollers")
+	modes := flag.String("modes", "echo_arena", "Comma-separated match mode prefixes to poll (case-insensitive); empty or * = all modes")
+	allowlist := flag.String("broadcaster-allowlist", "", "Comma-separated IPs/CIDRs; when set, only broadcasters inside the list are polled")
+	sessionCheck := flag.String("session-check", sessionCheckStrict, "Cross-check /session sessionid against the Nakama match id: strict (stop poller on mismatch), warn, off")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	probeOnly := flag.Bool("probe", false, "Probe mode: discover + fetch + map one match, then exit")
-	once := flag.Bool("once", false, "Once mode: full cycle (discover + fetch + map + send) for one match, then exit")
+	once := flag.Bool("once", false, "Once mode: full cycle (discover + fetch + map + send + wait for ack) for one match, then exit")
 	matchID := flag.String("match-id", "", "Only poll this specific match ID (for validation; empty = all matches)")
 	dumpDir := flag.String("dump-dir", "", "Write debug artifacts (raw responses, mapped batches) to this directory (probe/once only)")
 	flag.Parse()
@@ -70,16 +86,27 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	cfg := &BridgeConfig{
-		NakamaURL:         *nakamaURL,
-		NakamaServerKey:   *nakamaServerKey,
-		NakamaBearerToken: *nakamaBearerToken,
-		AnticheatURL:      *anticheatURL,
-		AnticheatToken:    *anticheatToken,
-		APIPort:           *apiPort,
-		PollInterval:      *pollInterval,
-		DiscoveryInterval: *discoveryInterval,
-		MatchIDFilter:     *matchID,
-		DumpDir:           *dumpDir,
+		NakamaURL:            *nakamaURL,
+		NakamaServerKey:      *nakamaServerKey,
+		NakamaAuthMode:       *nakamaAuthMode,
+		NakamaDeviceID:       *nakamaDeviceID,
+		NakamaUsername:       *nakamaUsername,
+		NakamaBearerToken:    *nakamaBearerToken,
+		NakamaRefreshToken:   *nakamaRefreshToken,
+		AnticheatURL:         *anticheatURL,
+		AnticheatToken:       *anticheatToken,
+		APIPort:              *apiPort,
+		PollInterval:         *pollInterval,
+		DiscoveryInterval:    *discoveryInterval,
+		IdleInterval:         *idleInterval,
+		IdleGiveUp:           *idleGiveUp,
+		AckTimeout:           *ackTimeout,
+		QueueSize:            *queueSize,
+		Modes:                *modes,
+		BroadcasterAllowlist: *allowlist,
+		SessionCheck:         *sessionCheck,
+		MatchIDFilter:        *matchID,
+		DumpDir:              *dumpDir,
 	}
 
 	// Determine run mode
@@ -100,21 +127,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine and log Nakama auth mode
-	nakamaAuthMode := "basic_server_key"
-	if cfg.NakamaBearerToken != "" {
-		nakamaAuthMode = "bearer"
-	}
-
 	// Startup banner
 	logger.Info("nevr-bridge starting",
 		"mode", mode,
 		"nakama_url", cfg.NakamaURL,
-		"nakama_auth_mode", nakamaAuthMode,
+		"nakama_auth_mode", cfg.NakamaAuthMode,
 		"anticheat_url", anticheatURLDisplay(cfg.AnticheatURL),
 		"api_port", cfg.APIPort,
 		"poll_interval", cfg.PollInterval,
 		"discovery_interval", cfg.DiscoveryInterval,
+		"modes", cfg.Modes,
+		"broadcaster_allowlist", allowlistDisplay(cfg.BroadcasterAllowlist),
+		"session_check", cfg.SessionCheck,
 		"match_filter", matchFilterDisplay(cfg.MatchIDFilter),
 		"identity_format", "echovr:<userid>",
 		"discovery_method", "Nakama standard API (GET /v2/match)",
@@ -125,6 +149,15 @@ func main() {
 	}
 	if cfg.AnticheatURL == "" && mode != "probe" {
 		logger.Warn("no --anticheat-url provided — telemetry will NOT be forwarded (dry-run behavior)")
+	}
+	if cfg.AnticheatURL != "" && cfg.AnticheatToken == "" {
+		logger.Warn("no --anticheat-token provided — the ingest server will reject the connection unless it runs with --allow-unauthenticated")
+	}
+	if cfg.BroadcasterAllowlist == "" {
+		logger.Warn("no --broadcaster-allowlist: telemetry will be pulled from ANY host a Nakama match label advertises (plaintext HTTP, unauthenticated)")
+	}
+	if cfg.NakamaAuthMode == nakamaAuthBasic {
+		logger.Warn("--nakama-auth basic: Nakama itself rejects server-key Basic auth on /v2/match; expect 401 unless a proxy maps it")
 	}
 	logger.Info("external dependency: broadcaster must expose Echo VR /session HTTP API at <broadcaster_ip>:<api-port>/session")
 	if cfg.DumpDir != "" {
@@ -145,16 +178,26 @@ func main() {
 
 	stats := &bridgeStats{startTime: time.Now(), mode: mode}
 
+	var runErr error
 	switch mode {
 	case "probe":
-		runProbe(ctx, cfg, stats, logger)
+		runErr = doProbe(ctx, cfg, stats, logger)
+		if runErr != nil {
+			logger.Error("probe failed", "error", runErr)
+		}
 	case "once":
-		runOnce(ctx, cfg, stats, logger)
+		runErr = doOnce(ctx, cfg, stats, logger)
+		if runErr != nil {
+			logger.Error("once mode failed", "error", runErr)
+		}
 	default:
 		runBridge(ctx, cfg, stats, logger)
 	}
 
 	stats.logSummary(logger)
+	if runErr != nil {
+		os.Exit(1)
+	}
 }
 
 func anticheatURLDisplay(u string) string {
@@ -171,18 +214,47 @@ func matchFilterDisplay(id string) string {
 	return id
 }
 
+func allowlistDisplay(al string) string {
+	if al == "" {
+		return "(none — any advertised host)"
+	}
+	return al
+}
+
 // BridgeConfig holds all bridge configuration.
 type BridgeConfig struct {
-	NakamaURL         string
-	NakamaServerKey   string
-	NakamaBearerToken string // if non-empty, use Bearer auth instead of Basic server-key
-	AnticheatURL      string
-	AnticheatToken    string
-	APIPort           int
-	PollInterval      time.Duration
-	DiscoveryInterval time.Duration
-	MatchIDFilter     string // empty = all matches
-	DumpDir           string // empty = no dumping
+	NakamaURL          string
+	NakamaServerKey    string
+	NakamaAuthMode     string // device | bearer | basic; "" = bearer if a token is set, else basic (legacy)
+	NakamaDeviceID     string
+	NakamaUsername     string
+	NakamaBearerToken  string
+	NakamaRefreshToken string
+	AnticheatURL       string
+	AnticheatToken     string
+	APIPort            int
+	PollInterval       time.Duration
+	DiscoveryInterval  time.Duration
+	MatchIDFilter      string // empty = all matches
+	DumpDir            string // empty = no dumping
+
+	// Lifecycle / link tuning (zero = default).
+	IdleInterval    time.Duration
+	IdleGiveUp      time.Duration
+	AckTimeout      time.Duration
+	HelloTimeout    time.Duration
+	DialTimeout     time.Duration
+	WriteTimeout    time.Duration
+	Keepalive       time.Duration
+	StatusInterval  time.Duration
+	QueueSize       int
+	ConnectAttempts int
+
+	// Trust boundary.
+	Modes                string        // comma-separated mode prefixes; "" = all
+	BroadcasterAllowlist string        // comma-separated IPs/CIDRs; "" = any
+	SessionCheck         string        // strict | warn | off; "" = strict
+	MismatchCooldown     time.Duration // skip a match this long after a session_mismatch stop (zero = 5m)
 }
 
 // bridgeStats tracks process-level counters.
@@ -190,16 +262,40 @@ type bridgeStats struct {
 	startTime time.Time
 	mode      string
 
-	MatchesDiscovered     atomic.Int64
-	MatchesSkippedFilter  atomic.Int64
-	MatchesSkippedNoEP    atomic.Int64
-	PollersStarted        atomic.Int64
-	PollersStopped        atomic.Int64
-	TotalPolls            atomic.Int64
-	TotalPollFailures     atomic.Int64
-	TotalBatchesSent      atomic.Int64
-	TotalSendFailures     atomic.Int64
-	TotalFramesForwarded  atomic.Int64
+	MatchesDiscovered      atomic.Int64
+	MatchesSkippedFilter   atomic.Int64
+	MatchesSkippedMode     atomic.Int64
+	MatchesSkippedAllow    atomic.Int64
+	MatchesSkippedNoEP     atomic.Int64
+	PollersStarted         atomic.Int64
+	PollersStopped         atomic.Int64
+	PollerIdleTransitions  atomic.Int64
+	SessionMismatches      atomic.Int64
+	MatchesSkippedMismatch atomic.Int64
+	TotalPolls             atomic.Int64
+	TotalPollFailures      atomic.Int64
+	PollsDuplicate         atomic.Int64
+	TotalFramesMapped      atomic.Int64
+	FramesDroppedSpectator atomic.Int64
+
+	// Link counters. TotalFramesForwarded counts frames the ingest server
+	// ACKED as accepted (or, in dry-run, frames that would have been sent).
+	TotalBatchesSent       atomic.Int64
+	TotalBatchesDropped    atomic.Int64
+	TotalFramesSent        atomic.Int64
+	TotalFramesForwarded   atomic.Int64
+	TotalFramesAcked       atomic.Int64
+	TotalFramesRejected    atomic.Int64
+	TotalFramesIgnored     atomic.Int64
+	TotalFramesDropped     atomic.Int64
+	TotalFramesUnackedLost atomic.Int64
+	TotalSendFailures      atomic.Int64
+	AcksReceived           atomic.Int64
+	AckTimeouts            atomic.Int64
+	Reconnects             atomic.Int64
+	AuthFailures           atomic.Int64
+	ControlSent            atomic.Int64
+	ControlDropped         atomic.Int64
 }
 
 func (s *bridgeStats) logSummary(logger *slog.Logger) {
@@ -208,128 +304,178 @@ func (s *bridgeStats) logSummary(logger *slog.Logger) {
 		"uptime", time.Since(s.startTime).Round(time.Second),
 		"matches_discovered", s.MatchesDiscovered.Load(),
 		"matches_skipped_filter", s.MatchesSkippedFilter.Load(),
+		"matches_skipped_mode", s.MatchesSkippedMode.Load(),
+		"matches_skipped_allowlist", s.MatchesSkippedAllow.Load(),
 		"matches_skipped_no_endpoint", s.MatchesSkippedNoEP.Load(),
 		"pollers_started", s.PollersStarted.Load(),
 		"pollers_stopped", s.PollersStopped.Load(),
+		"poller_idle_transitions", s.PollerIdleTransitions.Load(),
+		"session_mismatches", s.SessionMismatches.Load(),
+		"matches_skipped_mismatch_cooldown", s.MatchesSkippedMismatch.Load(),
 		"total_polls", s.TotalPolls.Load(),
 		"total_poll_failures", s.TotalPollFailures.Load(),
+		"polls_duplicate_snapshot", s.PollsDuplicate.Load(),
+		"frames_mapped", s.TotalFramesMapped.Load(),
+		"frames_dropped_spectator", s.FramesDroppedSpectator.Load(),
 		"total_batches_sent", s.TotalBatchesSent.Load(),
+		"total_frames_sent", s.TotalFramesSent.Load(),
+		"total_frames_forwarded_acked", s.TotalFramesForwarded.Load(),
+		"frames_rejected_by_ingest", s.TotalFramesRejected.Load(),
+		"frames_ignored_duplicates", s.TotalFramesIgnored.Load(),
+		"frames_dropped_queue", s.TotalFramesDropped.Load(),
+		"frames_unacked_lost", s.TotalFramesUnackedLost.Load(),
 		"total_send_failures", s.TotalSendFailures.Load(),
-		"total_frames_forwarded", s.TotalFramesForwarded.Load(),
+		"ack_timeouts", s.AckTimeouts.Load(),
+		"connections", s.Reconnects.Load(),
+		"auth_failures", s.AuthFailures.Load(),
+		"control_sent", s.ControlSent.Load(),
+		"control_dropped", s.ControlDropped.Load(),
 	)
 }
 
-// filterMatches applies the --match-id filter and tracks skip counts.
+// filterMatches applies --match-id, --modes and --broadcaster-allowlist and
+// tracks skip counts.
 func filterMatches(matches []DiscoveredMatch, cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) []DiscoveredMatch {
-	if cfg.MatchIDFilter == "" {
-		return matches
-	}
+	al, _ := parseAllowlist(cfg.BroadcasterAllowlist)
 	var filtered []DiscoveredMatch
 	for _, m := range matches {
-		if m.MatchID == cfg.MatchIDFilter {
-			filtered = append(filtered, m)
-		} else {
+		if cfg.MatchIDFilter != "" && m.MatchID != cfg.MatchIDFilter {
 			stats.MatchesSkippedFilter.Add(1)
 			logger.Debug("skipping match (--match-id filter)", "match_id", m.MatchID)
+			continue
 		}
+		if !modeAllowed(cfg.Modes, m.Mode) {
+			stats.MatchesSkippedMode.Add(1)
+			logger.Debug("skipping match (--modes filter)", "match_id", m.MatchID, "mode", m.Mode)
+			continue
+		}
+		if !al.allows(m.BroadcasterIP) {
+			stats.MatchesSkippedAllow.Add(1)
+			logger.Warn("skipping match: broadcaster not in --broadcaster-allowlist", "match_id", m.MatchID, "broadcaster_ip", m.BroadcasterIP)
+			continue
+		}
+		filtered = append(filtered, m)
 	}
 	return filtered
 }
 
 // fetchAndMap does a single /session fetch + mapping for one match. Returns the
-// parsed session, mapping result, and any error. Used by probe and once modes.
+// parsed session, roster, mapping result (frames already spectator-filtered and
+// stamped with the real sample time) and any error. Used by probe and once modes.
 // If cfg.DumpDir is set, saves raw response and mapped batch to disk.
-func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*adapter.EchoVRSessionResponse, *adapter.MappingResult, error) {
+func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*adapter.EchoVRSessionResponse, sessionRoster, *adapter.MappingResult, error) {
 	sessionURL := fmt.Sprintf("http://%s:%d/session", m.BroadcasterIP, cfg.APIPort)
 	logger.Info("fetching broadcaster session", "url", sessionURL)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(sessionURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("/session not reachable at %s: %w", sessionURL, err)
+		return nil, sessionRoster{}, nil, fmt.Errorf("/session not reachable at %s: %w", sessionURL, err)
 	}
 	defer resp.Body.Close()
+	sampleAt := time.Now()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxSessionBody))
 	if resp.StatusCode != 200 {
-		return nil, nil, fmt.Errorf("/session returned HTTP %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+		return nil, sessionRoster{}, nil, fmt.Errorf("/session returned HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
 
 	dumpRaw(cfg.DumpDir, dumpFilename(m.MatchID, "session_raw.json"), body, logger)
 
 	var session adapter.EchoVRSessionResponse
 	if err := json.Unmarshal(body, &session); err != nil {
-		return nil, nil, fmt.Errorf("invalid JSON from /session: %w (preview: %s)", err, string(body[:min(len(body), 200)]))
+		return nil, sessionRoster{}, nil, fmt.Errorf("invalid JSON from /session: %w (preview: %s)", err, truncate(string(body), 200))
 	}
 
+	roster := buildRoster(&session)
 	mapper := adapter.NewMapper()
 	result := mapper.MapSession(&session)
+	var dropped int
+	result.Frames, dropped = filterFrames(result.Frames, roster)
+	if dropped > 0 {
+		logger.Info("dropped spectator/moderator entries from frames", "dropped", dropped, "spectators", roster.Spectators)
+	}
+	epoch := &frameEpoch{}
+	epoch.stamp(sampleAt, result.Frames)
 
 	dumpJSON(cfg.DumpDir, dumpFilename(m.MatchID, "mapped_frames.json"), result.Frames, logger)
 
-	return &session, result, nil
+	return &session, roster, result, nil
 }
 
 // logResultBlock logs a structured result summary for probe/once modes.
-func logResultBlock(m DiscoveredMatch, session *adapter.EchoVRSessionResponse, result *adapter.MappingResult, cfg *BridgeConfig, sendAttempted, sendSucceeded bool, sendSkipReason string, logger *slog.Logger) {
-	playerCount := 0
-	for _, t := range session.Teams {
-		playerCount += len(t.Players)
-	}
-
-	samplePlayerID := ""
-	if len(result.Frames) > 0 {
-		samplePlayerID = result.Frames[0].PlayerID
-	}
-
+func logResultBlock(r cycleResult, cfg *BridgeConfig, result *adapter.MappingResult, logger *slog.Logger) {
 	dryRun := cfg.AnticheatURL == ""
 
 	logger.Info("--- RESULT ---",
-		"selected_match_id", m.MatchID,
-		"broadcaster_ip", m.BroadcasterIP,
+		"selected_match_id", r.match.MatchID,
+		"broadcaster_ip", r.match.BroadcasterIP,
 		"api_port", cfg.APIPort,
-		"session_id", session.SessionID,
-		"game_status", session.GameStatus,
-		"players_seen", playerCount,
-		"mapped_frames", len(result.Frames),
-		"warnings_count", len(result.Warnings),
-		"errors_count", len(result.Errors),
-		"sample_player_id", samplePlayerID,
-		"anticheat_send_attempted", sendAttempted,
-		"anticheat_send_succeeded", sendSucceeded,
+		"server_id", r.match.serverID(cfg),
+		"session_id", r.session.SessionID,
+		"session_matches_match_id", sessionMatchesMatchID(r.session.SessionID, r.match),
+		"game_status", r.session.GameStatus,
+		"game_mode", r.session.MatchType,
+		"players_seen", r.roster.PlayerCount,
+		"spectators_seen", len(r.roster.Spectators),
+		"mapped_frames", r.frames,
+		"warnings_count", r.warnings,
+		"errors_count", r.errors,
+		"sample_player_id", r.samplePlayerID,
+		"anticheat_send_attempted", r.sendAttempted,
+		"anticheat_send_succeeded", r.sendSucceeded,
+		"frames_acked", r.framesAcked,
+		"frames_rejected", r.framesRejected,
 		"dry_run", dryRun,
 	)
 
-	if !sendAttempted && sendSkipReason != "" {
-		logger.Info("send skipped", "reason", sendSkipReason)
+	if !sessionMatchesMatchID(r.session.SessionID, r.match) {
+		logger.Warn("/session sessionid does not match the Nakama match id — verify --api-port points at the instance hosting this match",
+			"session_id", r.session.SessionID, "nakama_match_id", r.match.MatchID, "label_id", r.match.LabelID)
 	}
-	if sendAttempted && !sendSucceeded && sendSkipReason != "" {
-		logger.Error("send failed", "reason", sendSkipReason)
+	if !r.sendAttempted && r.reason != "" {
+		logger.Info("send skipped", "reason", r.reason)
+	}
+	if r.sendAttempted && !r.sendSucceeded && r.reason != "" {
+		logger.Error("send failed", "reason", r.reason)
 	}
 
-	for _, w := range result.Warnings {
-		logger.Info("mapping warning", "field", w.Field, "message", w.Message)
-	}
-	for _, e := range result.Errors {
-		logger.Warn("mapping error", "player", e.PlayerName, "field", e.Field, "message", e.Message)
+	if result != nil {
+		for _, w := range result.Warnings {
+			logger.Info("mapping warning", "field", w.Field, "message", w.Message)
+		}
+		for _, e := range result.Errors {
+			logger.Warn("mapping error", "player", e.PlayerName, "field", e.Field, "message", e.Message)
+		}
 	}
 }
 
-// runProbe discovers matches and tests one broadcaster (fetch + map only, no send).
-func runProbe(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) {
-	if err := doProbe(ctx, cfg, stats, logger); err != nil {
-		logger.Error("probe failed", "error", err)
-		os.Exit(1)
+func newCycleResult(m DiscoveredMatch, session *adapter.EchoVRSessionResponse, roster sessionRoster, result *adapter.MappingResult) cycleResult {
+	r := cycleResult{match: m, session: session, roster: roster}
+	if result != nil {
+		r.frames = len(result.Frames)
+		r.warnings = len(result.Warnings)
+		r.errors = len(result.Errors)
+		if len(result.Frames) > 0 {
+			r.samplePlayerID = result.Frames[0].PlayerID
+		}
 	}
+	return r
 }
 
-// doProbe is the testable core of probe mode. Returns error instead of os.Exit.
+// discoveryError wraps a discovery failure; a nakamaAuthError stays
+// recognisable through errors.As so callers can report it as fatal.
+func discoveryError(err error) error {
+	return fmt.Errorf("discovery failed: %w", err)
+}
+
+// doProbe is the testable core of probe mode: discover + fetch + map, no send.
 func doProbe(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) error {
 	logger.Info("--- PROBE MODE ---")
 
 	matches, err := discoverMatches(ctx, cfg, logger, stats)
 	if err != nil {
-		return fmt.Errorf("discovery failed: %w", err)
+		return discoveryError(err)
 	}
 	stats.MatchesDiscovered.Add(int64(len(matches)))
 	dumpJSON(cfg.DumpDir, "discovery_matches.json", matches, logger) // not match-specific
@@ -345,31 +491,27 @@ func doProbe(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger 
 	m := selectMatch(matches)
 	logger.Info("selected match", "match_id", m.MatchID, "reason", "deterministic (match_id ascending)")
 
-	session, result, err := fetchAndMap(m, cfg, logger)
+	session, roster, result, err := fetchAndMap(m, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("broadcaster fetch/map failed: %w", err)
 	}
 
-	logResultBlock(m, session, result, cfg, false, false, "probe does not send; use --once", logger)
-	dumpManifest(cfg.DumpDir, m, session, result, cfg, "probe", false, false, logger)
+	r := newCycleResult(m, session, roster, result)
+	r.reason = "probe does not send; use --once"
+	logResultBlock(r, cfg, result, logger)
+	dumpManifest(cfg.DumpDir, r, cfg, "probe", logger)
 	return nil
 }
 
-// runOnce does one full cycle: discover → fetch → map → send → exit.
-func runOnce(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) {
-	if err := doOnce(ctx, cfg, stats, logger); err != nil {
-		logger.Error("once mode failed", "error", err)
-		os.Exit(1)
-	}
-}
-
-// doOnce is the testable core of once mode. Returns error instead of os.Exit.
+// doOnce is the testable core of once mode: discover → fetch → map → send →
+// wait for the ingest ack → exit. A send only counts as succeeded when the
+// server acknowledged at least one accepted frame.
 func doOnce(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) error {
 	logger.Info("--- ONCE MODE: single full cycle ---")
 
 	matches, err := discoverMatches(ctx, cfg, logger, stats)
 	if err != nil {
-		return fmt.Errorf("discovery failed: %w", err)
+		return discoveryError(err)
 	}
 	stats.MatchesDiscovered.Add(int64(len(matches)))
 
@@ -382,54 +524,106 @@ func doOnce(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *
 	m := selectMatch(matches)
 	logger.Info("selected match", "match_id", m.MatchID, "reason", "deterministic (match_id ascending)")
 
-	session, result, err := fetchAndMap(m, cfg, logger)
+	session, roster, result, err := fetchAndMap(m, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("fetch/map failed: %w", err)
 	}
 	stats.TotalPolls.Add(1)
+	r := newCycleResult(m, session, roster, result)
 
 	if len(result.Frames) == 0 {
-		logger.Warn("broadcaster returned valid JSON but mapper produced zero frames — check game_status and player count")
-		logResultBlock(m, session, result, cfg, false, false, "no frames mapped", logger)
-		dumpManifest(cfg.DumpDir, m, session, result, cfg, "once", false, false, logger, "zero frames mapped")
+		logger.Warn("broadcaster returned valid JSON but mapper produced zero frames — check game_status, player count and spectators")
+		r.reason = "zero frames mapped"
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
 		return nil
 	}
 
 	if cfg.AnticheatURL == "" {
-		logResultBlock(m, session, result, cfg, false, false, "no --anticheat-url provided", logger)
-		dumpManifest(cfg.DumpDir, m, session, result, cfg, "once", false, false, logger, "dry-run: no anticheat URL")
+		r.reason = "dry-run: no anticheat URL"
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
 		return nil
 	}
 
+	sessionCheck := cfg.SessionCheck
+	if sessionCheck == "" {
+		sessionCheck = sessionCheckStrict
+	}
+	if sessionCheck == sessionCheckStrict && !sessionMatchesMatchID(session.SessionID, m) {
+		stats.SessionMismatches.Add(1)
+		r.reason = fmt.Sprintf("session_mismatch: /session sessionid %q is not the Nakama match %q (use --session-check warn to send anyway)", session.SessionID, m.MatchID)
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
+		return fmt.Errorf("%s", r.reason)
+	}
+
+	serverID := m.serverID(cfg)
 	batch := &FrameBatch{
 		MatchID:   m.MatchID,
-		ServerID:  fmt.Sprintf("bridge:%s:%d", m.BroadcasterIP, cfg.APIPort),
+		ServerID:  serverID,
 		Timestamp: time.Now(),
 		Frames:    result.Frames,
 	}
 
-	sender := newWSSender(cfg, logger)
-	if err := sender.connect(); err != nil {
-		reason := fmt.Sprintf("WebSocket connect failed: %v", err)
-		logResultBlock(m, session, result, cfg, false, false, reason, logger)
-		dumpManifest(cfg.DumpDir, m, session, result, cfg, "once", false, false, logger, reason)
+	sender, err := newWSSender(cfg, stats, logger)
+	if err != nil {
+		r.reason = fmt.Sprintf("WebSocket connect failed: %v", err)
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
+		return err
+	}
+	if err := sender.connect(ctx); err != nil {
+		r.reason = fmt.Sprintf("WebSocket connect failed: %v", err)
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
 		return fmt.Errorf("anticheat WebSocket connect failed: %w", err)
 	}
 	defer sender.close()
+	sender.start(ctx)
 
-	if err := sender.send(batch); err != nil {
-		stats.TotalSendFailures.Add(1)
-		reason := fmt.Sprintf("WebSocket send failed: %v", err)
-		logger.Error("anticheat send failed — verify anticheat server is running and accepting WebSocket connections", "anticheat_url", cfg.AnticheatURL, "error", err)
-		logResultBlock(m, session, result, cfg, true, false, reason, logger)
-		dumpManifest(cfg.DumpDir, m, session, result, cfg, "once", true, false, logger, reason)
+	baseAccepted := stats.TotalFramesAcked.Load()
+	baseRejected := stats.TotalFramesRejected.Load()
+
+	gameMode := session.MatchType
+	if gameMode == "" {
+		gameMode = m.Mode
+	}
+	sender.enqueueControl(&model.ControlMessage{
+		Type: model.ControlMatchStart, MatchID: m.MatchID, ServerID: serverID,
+		GameMode: gameMode, Map: session.MapName, IsPrivate: session.PrivateMatch, Teams: roster.teamsCopy(),
+	})
+	r.sendAttempted = true
+	if !sender.enqueueBatch(batch) {
+		r.reason = "send queue full"
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
+		return fmt.Errorf("anticheat send failed: %s", r.reason)
+	}
+	sender.enqueueControl(&model.ControlMessage{Type: model.ControlMatchEnd, MatchID: m.MatchID, ServerID: serverID, Reason: "once"})
+
+	ackTimeout := orDuration(cfg.AckTimeout, 10*time.Second)
+	accepted, rejected, err := sender.waitForAcks(ctx, baseAccepted, baseRejected, len(result.Frames), ackTimeout)
+	r.framesAcked = accepted
+	r.framesRejected = rejected
+	if err != nil {
+		r.reason = fmt.Sprintf("WebSocket send not acknowledged: %v", err)
+		logger.Error("anticheat did not acknowledge the batch — verify the ingest server is running, the token matches, and the batch is within the server's limits",
+			"anticheat_url", cfg.AnticheatURL, "error", err, "send_failures", stats.TotalSendFailures.Load())
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
 		return fmt.Errorf("anticheat send failed: %w", err)
 	}
+	if accepted == 0 {
+		r.reason = fmt.Sprintf("ingest server rejected all %d frames", rejected)
+		logResultBlock(r, cfg, result, logger)
+		dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
+		return fmt.Errorf("anticheat send failed: %s", r.reason)
+	}
 
-	stats.TotalBatchesSent.Add(1)
-	stats.TotalFramesForwarded.Add(int64(len(result.Frames)))
-	logResultBlock(m, session, result, cfg, true, true, "", logger)
-	dumpManifest(cfg.DumpDir, m, session, result, cfg, "once", true, true, logger)
+	r.sendSucceeded = true
+	logResultBlock(r, cfg, result, logger)
+	dumpManifest(cfg.DumpDir, r, cfg, "once", logger)
 	return nil
 }
 
@@ -440,17 +634,33 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 	}
 
 	var activePollers sync.Map
+	var mismatched sync.Map // match_id -> time.Time until which the match is skipped
 	var wg sync.WaitGroup
+	epochs := newEpochRegistry()
+	disc := newDiscoverer(cfg, stats, logger)
+	mismatchCooldown := orDuration(cfg.MismatchCooldown, 5*time.Minute)
 
-	// WebSocket sender (nil if no anticheat URL)
+	// WebSocket sender (nil if no anticheat URL). The writer goroutine keeps
+	// its own context so match_end messages queued during shutdown still go
+	// out after the pollers have stopped.
 	var sender *wsSender
 	if cfg.AnticheatURL != "" {
-		sender = newWSSender(cfg, logger)
-		if err := sender.connect(); err != nil {
-			logger.Error("initial anticheat connection failed", "error", err)
-			os.Exit(1)
+		var err error
+		sender, err = newWSSender(cfg, stats, logger)
+		if err != nil {
+			logger.Error("invalid anticheat configuration; running without forwarding", "error", err)
+		} else {
+			if err := sender.connect(ctx); err != nil {
+				logger.Error("initial anticheat connection failed — will keep retrying in the background; frames are NOT forwarded until it succeeds", "error", err)
+			}
+			senderCtx, senderCancel := context.WithCancel(context.Background())
+			sender.start(senderCtx)
+			defer func() {
+				sender.drain(2 * time.Second)
+				senderCancel()
+				sender.close()
+			}()
 		}
-		defer sender.close()
 	}
 
 	discoveryTicker := time.NewTicker(cfg.DiscoveryInterval)
@@ -458,17 +668,21 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 	var consecutiveDiscoveryFailures int
 	var consecutiveEmptyDiscoveries int
 	var dryRunReminder int
+	var modeSkipLogged bool
 
 	discover := func() {
-		matches, err := discoverMatches(ctx, cfg, logger, stats)
+		matches, err := disc.discover(ctx)
 		if err != nil {
 			consecutiveDiscoveryFailures++
 			consecutiveEmptyDiscoveries = 0
 			if consecutiveDiscoveryFailures <= 3 || consecutiveDiscoveryFailures%30 == 0 {
-				logger.Warn("match discovery failed — Nakama may be unreachable",
-					"error", err,
-					"consecutive_failures", consecutiveDiscoveryFailures,
-				)
+				if isNakamaAuthError(err) {
+					logger.Error("NAKAMA AUTH FAILED — discovery cannot list matches until the credentials are fixed",
+						"error", err, "consecutive_failures", consecutiveDiscoveryFailures)
+				} else {
+					logger.Warn("match discovery failed — Nakama may be unreachable",
+						"error", err, "consecutive_failures", consecutiveDiscoveryFailures)
+				}
 			}
 			return
 		}
@@ -478,7 +692,12 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 		consecutiveDiscoveryFailures = 0
 
 		stats.MatchesDiscovered.Add(int64(len(matches)))
+		before := stats.MatchesSkippedMode.Load()
 		matches = filterMatches(matches, cfg, stats, logger)
+		if skipped := stats.MatchesSkippedMode.Load() - before; skipped > 0 && !modeSkipLogged {
+			modeSkipLogged = true
+			logger.Info("matches skipped by --modes filter", "skipped", skipped, "modes", cfg.Modes)
+		}
 
 		if len(matches) == 0 {
 			consecutiveEmptyDiscoveries++
@@ -499,14 +718,23 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 			}
 		}
 
+		now := time.Now()
 		activeMatchIDs := make(map[string]bool)
 		var newPollersThisCycle int
 		var skippedEndpointsThisCycle int
 		for _, m := range matches {
 			activeMatchIDs[m.MatchID] = true
+			epochs.touch(m.MatchID, now)
 
 			if _, exists := activePollers.Load(m.MatchID); exists {
 				continue
+			}
+			if until, ok := mismatched.Load(m.MatchID); ok {
+				if now.Before(until.(time.Time)) {
+					stats.MatchesSkippedMismatch.Add(1)
+					continue
+				}
+				mismatched.Delete(m.MatchID)
 			}
 
 			if err := validateBroadcasterIP(m.BroadcasterIP); err != nil {
@@ -522,14 +750,8 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 			}
 
 			pollerCtx, pollerCancel := context.WithCancel(ctx)
-			poller := &matchPoller{
-				match:  m,
-				cfg:    cfg,
-				logger: logger.With("match_id", m.MatchID, "broadcaster", m.BroadcasterIP),
-				sender: sender,
-				cancel: pollerCancel,
-				stats:  stats,
-			}
+			epoch := epochs.get(m.MatchID)
+			poller := newMatchPoller(m, cfg, sender, stats, epoch, pollerCancel, logger)
 			activePollers.Store(m.MatchID, poller)
 			stats.PollersStarted.Add(1)
 			newPollersThisCycle++
@@ -537,17 +759,28 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 			wg.Add(1)
 			go func(p *matchPoller, pCtx context.Context) {
 				defer wg.Done()
-				defer activePollers.Delete(p.match.MatchID)
+				// Only remove our own entry: a replacement poller stored under
+				// the same key must never be deleted by a stale goroutine.
+				defer activePollers.CompareAndDelete(p.match.MatchID, p)
 				defer stats.PollersStopped.Add(1)
 				p.run(pCtx)
+				if p.stopReason() == stopSessionMismatch {
+					// Do not recreate a poller for this match every cycle; the
+					// endpoint is serving another instance's session.
+					mismatched.Store(p.match.MatchID, time.Now().Add(mismatchCooldown))
+					logger.Warn("match parked after session mismatch", "match_id", p.match.MatchID, "cooldown", mismatchCooldown)
+				}
 			}(poller, pollerCtx)
 
+			nextIdx, _ := epoch.snapshot()
 			logger.Info("started polling match",
 				"match_id", m.MatchID,
 				"broadcaster", fmt.Sprintf("%s:%d", m.BroadcasterIP, cfg.APIPort),
 				"mode", m.Mode,
 				"level", m.Level,
 				"players", m.PlayerCount,
+				"region", m.Region,
+				"resume_frame_index", nextIdx,
 			)
 		}
 
@@ -559,6 +792,11 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 			}
 			return true
 		})
+
+		// Forget frame epochs of matches Nakama has not listed for an hour.
+		if removed := epochs.expire(now, time.Hour); removed > 0 {
+			logger.Debug("expired frame epochs", "removed", removed, "remaining", epochs.size())
+		}
 
 		// Operator diagnostic: all matches discovered but all had bad endpoints
 		if len(matches) > 0 && skippedEndpointsThisCycle > 0 && newPollersThisCycle == 0 {
@@ -573,18 +811,29 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 			}
 		}
 
-		var pollerCount int
-		activePollers.Range(func(_, _ any) bool {
+		var pollerCount, idleCount int
+		activePollers.Range(func(_, v any) bool {
 			pollerCount++
+			if v.(*matchPoller).currentState() != stateActive {
+				idleCount++
+			}
 			return true
 		})
-		logger.Info("bridge status",
+		attrs := []any{
 			"active_pollers", pollerCount,
+			"idle_pollers", idleCount,
 			"matches_in_nakama", len(matches),
-			"total_frames_forwarded", stats.TotalFramesForwarded.Load(),
+			"frames_sent", stats.TotalFramesSent.Load(),
+			"frames_acked", stats.TotalFramesForwarded.Load(),
+			"frames_rejected", stats.TotalFramesRejected.Load(),
+			"frames_dropped", stats.TotalFramesDropped.Load(),
 			"total_batches_sent", stats.TotalBatchesSent.Load(),
 			"uptime", time.Since(stats.startTime).Round(time.Second),
-		)
+		}
+		if sender != nil {
+			attrs = append(attrs, "anticheat_connected", sender.connected.Load(), "send_queue", sender.queued())
+		}
+		logger.Info("bridge status", attrs...)
 	}
 
 	discover()
@@ -605,73 +854,6 @@ func runBridge(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logge
 	}
 }
 
-// wsSender manages the WebSocket connection to the anticheat server with reconnection.
-type wsSender struct {
-	cfg    *BridgeConfig
-	logger *slog.Logger
-	mu     sync.Mutex
-	conn   *websocket.Conn
-	config *websocket.Config
-}
-
-func newWSSender(cfg *BridgeConfig, logger *slog.Logger) *wsSender {
-	wsConfig, err := websocket.NewConfig(cfg.AnticheatURL, "http://localhost/")
-	if err != nil {
-		logger.Error("invalid anticheat WebSocket URL", "url", cfg.AnticheatURL, "error", err)
-		os.Exit(1)
-	}
-	if cfg.AnticheatToken != "" {
-		wsConfig.Header.Set("Authorization", "Bearer "+cfg.AnticheatToken)
-	}
-	return &wsSender{cfg: cfg, logger: logger, config: wsConfig}
-}
-
-func (s *wsSender) connect() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.connectLocked()
-}
-
-func (s *wsSender) connectLocked() error {
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-	conn, err := websocket.DialConfig(s.config)
-	if err != nil {
-		return fmt.Errorf("anticheat WebSocket dial: %w", err)
-	}
-	s.conn = conn
-	s.logger.Info("connected to anticheat WebSocket", "url", s.cfg.AnticheatURL)
-	return nil
-}
-
-func (s *wsSender) send(batch *FrameBatch) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.conn == nil {
-		if err := s.connectLocked(); err != nil {
-			return err
-		}
-	}
-	err := websocket.JSON.Send(s.conn, batch)
-	if err != nil {
-		s.conn.Close()
-		s.conn = nil
-		return fmt.Errorf("WebSocket send failed (will reconnect on next send): %w", err)
-	}
-	return nil
-}
-
-func (s *wsSender) close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-}
-
 // FrameBatch mirrors ingest.FrameBatch for serialization to the anticheat server.
 type FrameBatch struct {
 	MatchID   string                       `json:"match_id"`
@@ -683,172 +865,17 @@ type FrameBatch struct {
 // DiscoveredMatch holds info about an active match from Nakama.
 type DiscoveredMatch struct {
 	MatchID             string
+	LabelID             string // label "id" (match UUID without the node suffix)
 	Mode                string
 	Level               string
 	PlayerCount         int
 	BroadcasterIP       string
 	BroadcasterGamePort int // UDP game port from Nakama (NOT the /session API port)
+	Region              string
+	StartTime           time.Time
 }
 
-// matchPoller polls a single broadcaster's /session API and forwards frames.
-type matchPoller struct {
-	match  DiscoveredMatch
-	cfg    *BridgeConfig
-	logger *slog.Logger
-	sender *wsSender // nil = dry-run mode
-	cancel context.CancelFunc
-	stats  *bridgeStats
-
-	framesSent        atomic.Int64
-	consecutiveErrors atomic.Int32
-}
-
-func (p *matchPoller) run(ctx context.Context) {
-	sessionURL := fmt.Sprintf("http://%s:%d/session", p.match.BroadcasterIP, p.cfg.APIPort)
-	client := &http.Client{Timeout: 2 * time.Second}
-	mapper := adapter.NewMapper()
-	ticker := time.NewTicker(p.cfg.PollInterval)
-	defer ticker.Stop()
-
-	statusTicker := time.NewTicker(30 * time.Second)
-	defer statusTicker.Stop()
-
-	var sendErrors int
-	var consecutiveZeroFrames int
-	startTime := time.Now()
-
-	stopWith := func(reason stopReason) {
-		p.logger.Info("poller stopped",
-			"reason", string(reason),
-			"frames_sent", p.framesSent.Load(),
-			"duration", time.Since(startTime).Round(time.Second),
-		)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			stopWith(stopCancelled)
-			return
-
-		case <-statusTicker.C:
-			p.logger.Info("poller status",
-				"frames_sent", p.framesSent.Load(),
-				"consecutive_errors", p.consecutiveErrors.Load(),
-				"send_errors", sendErrors,
-				"uptime", time.Since(startTime).Round(time.Second),
-			)
-
-		case <-ticker.C:
-			// Poll below
-		}
-
-		consErr := int(p.consecutiveErrors.Load())
-		p.stats.TotalPolls.Add(1)
-
-		resp, err := client.Get(sessionURL)
-		if err != nil {
-			p.consecutiveErrors.Add(1)
-			p.stats.TotalPollFailures.Add(1)
-			newConsErr := int(p.consecutiveErrors.Load())
-			if newConsErr == 1 || newConsErr == 5 || newConsErr == 15 || newConsErr == 30 || newConsErr%60 == 0 {
-				p.logger.Warn("session poll failed", "error", err, "consecutive_errors", newConsErr)
-			}
-			if newConsErr >= 30 && consErr < 30 {
-				p.logger.Error("broadcaster unreachable for 30 consecutive polls")
-				stopWith(stopBroadcasterUnreachable)
-				return
-			}
-			continue
-		}
-
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-		resp.Body.Close()
-		if readErr != nil {
-			p.consecutiveErrors.Add(1)
-			p.stats.TotalPollFailures.Add(1)
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			p.consecutiveErrors.Add(1)
-			p.stats.TotalPollFailures.Add(1)
-			newConsErr := int(p.consecutiveErrors.Load())
-			if newConsErr == 1 || newConsErr%10 == 0 {
-				p.logger.Warn("session API non-200", "status", resp.StatusCode, "consecutive_errors", newConsErr)
-			}
-			continue
-		}
-
-		var session adapter.EchoVRSessionResponse
-		if err := json.Unmarshal(body, &session); err != nil {
-			p.consecutiveErrors.Add(1)
-			p.stats.TotalPollFailures.Add(1)
-			p.logger.Warn("session JSON parse error", "error", err)
-			continue
-		}
-
-		if p.consecutiveErrors.Load() > 0 {
-			p.logger.Info("broadcaster recovered", "after_errors", p.consecutiveErrors.Load())
-		}
-		p.consecutiveErrors.Store(0)
-
-		// Validate session has minimum viable data
-		if err := validateSession(&session); err != nil {
-			p.stats.TotalPollFailures.Add(1)
-			p.logger.Warn("session response structurally invalid", "error", err)
-			// Empty session on repeated polls may mean match is over
-			if session.GameStatus == "" && session.SessionID == "" {
-				stopWith(stopInvalidSession)
-				return
-			}
-			continue
-		}
-
-		if session.GameStatus == "post_match" {
-			stopWith(stopPostMatch)
-			return
-		}
-
-		result := mapper.MapSession(&session)
-		if len(result.Frames) == 0 {
-			consecutiveZeroFrames++
-			if consecutiveZeroFrames == 5 || consecutiveZeroFrames == 30 || consecutiveZeroFrames%100 == 0 {
-				p.logger.Warn("mapper produced zero frames from valid session — game may be in non-active phase or players may have zero/invalid positions",
-					"consecutive_zero_frames", consecutiveZeroFrames,
-					"game_status", session.GameStatus,
-					"session_id", session.SessionID,
-				)
-			}
-			continue
-		}
-		consecutiveZeroFrames = 0
-
-		batch := &FrameBatch{
-			MatchID:   p.match.MatchID,
-			ServerID:  fmt.Sprintf("bridge:%s:%d", p.match.BroadcasterIP, p.cfg.APIPort),
-			Timestamp: time.Now(),
-			Frames:    result.Frames,
-		}
-
-		if p.sender == nil {
-			// Dry-run mode: count frames but don't send
-			p.framesSent.Add(int64(len(result.Frames)))
-			p.stats.TotalFramesForwarded.Add(int64(len(result.Frames)))
-			continue
-		}
-
-		if err := p.sender.send(batch); err != nil {
-			sendErrors++
-			p.stats.TotalSendFailures.Add(1)
-			if sendErrors <= 3 || sendErrors%10 == 0 {
-				p.logger.Warn("failed to send batch to anticheat", "error", err, "total_send_errors", sendErrors)
-			}
-			continue
-		}
-
-		p.framesSent.Add(int64(len(result.Frames)))
-		p.stats.TotalBatchesSent.Add(1)
-		p.stats.TotalFramesForwarded.Add(int64(len(result.Frames)))
-	}
+// serverID is the provenance stamp for telemetry from this match's broadcaster.
+func (m DiscoveredMatch) serverID(cfg *BridgeConfig) string {
+	return fmt.Sprintf("%s:%d", m.BroadcasterIP, cfg.APIPort)
 }
