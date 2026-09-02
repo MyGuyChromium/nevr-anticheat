@@ -142,4 +142,23 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 	if out == "" {
 		t.Error("flagged printed nothing")
 	}
+	// Report commands on a store without moderator decisions or events.
+	out = captureStdout(t, func() { runPlayerHistory(cfgPath, "echovr:1001") })
+	if !strings.Contains(out, "echovr:1001") {
+		t.Errorf("player-history output:\n%s", out)
+	}
+	out = captureStdout(t, func() { runCrossMatchAnalysis(cfgPath) })
+	if !strings.Contains(out, "Cross-match aggregation complete") {
+		t.Errorf("cross-match output:\n%s", out)
+	}
+	for _, since := range []string{"", "7d"} {
+		out = captureStdout(t, func() { runCalibrationReport(cfgPath, since) })
+		if !strings.Contains(out, "DETECTOR CALIBRATION") || !strings.Contains(out, "No moderator decisions") {
+			t.Errorf("calibration report (since %q):\n%s", since, out)
+		}
+	}
+	out = captureStdout(t, func() { runReprocessPlayer(cfgPath, "echovr:1001") })
+	if !strings.Contains(out, "SYN-FIXTURE-001") {
+		t.Errorf("reprocess-player output:\n%s", out)
+	}
 }
