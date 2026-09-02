@@ -43,6 +43,7 @@ func run() int {
 	sv := resolveServerConfig(cfg.Server, fs, sf)
 
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
+	config.LogStartup(logger, cfg, os.Stderr)
 
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {
