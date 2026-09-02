@@ -3,6 +3,10 @@ package model
 // PlayerTelemetryFrame represents a single frame of telemetry data for one player.
 type PlayerTelemetryFrame struct {
 	PlayerID  string  `json:"player_id"`
+	// Team is "blue" or "orange" when known, empty otherwise. Producers
+	// (adapter.Mapper, cmd/bridge) populate it; ingest uses it to build
+	// MatchContext.TeamAssignments for live matches.
+	Team string `json:"team,omitempty"`
 	FrameIndex int    `json:"frame_index"`
 	Timestamp  float64 `json:"timestamp"`
 	DeltaTime  float64 `json:"delta_time"`
