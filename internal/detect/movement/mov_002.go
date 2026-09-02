@@ -2,33 +2,50 @@ package movement
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
 // Mov002 detects teleportation - instant position changes (MOV_002).
+//
+// Game-event filters, in order: non-active game phases are skipped by the
+// pipeline; immune (just respawned) and stunned players are skipped; a
+// score change arms goal_cooldown_frames of suppression; and a candidate
+// displacement above max_displacement is discarded as a round/goal reset.
+// That last cap (default 12 m) was chosen from the section-6 replay
+// calibration, where every > 12 m jump was a reset, NOT from physics — a
+// teleport hack is not bounded by player speed, so raising the cap once
+// resets are reliably filtered by the phase/cooldown gates would extend
+// coverage to long-range teleports. Keep it conservative until real data
+// says otherwise.
+//
+// Multi-player suppression counts DISTINCT teleporting players inside
+// cluster_window: a round reset moves everyone, a hack moves one player,
+// so one player teleporting repeatedly never suppresses itself.
 type Mov002 struct {
 	detect.BaseDetector
 	teleportThreshold      float64
 	velocityMismatchFactor float64
 	maxFrameGap            int
-	sigmoidSteepness       float64
-	minSoloTeleporters     int // minimum simultaneous teleporters before suppression
-	clusterWindow          int // frames to look back for multi-player teleport clustering
-	goalCooldownFrames     int // frames to suppress after a score change (goal reset)
+	sigmoidSteepness       float64 // steepness of the confidence sigmoid on the mismatch ratio
+	minSoloTeleporters     int     // distinct simultaneous teleporters before suppression
+	clusterWindow          int     // frames to look back for multi-player teleport clustering
+	goalCooldownFrames     int     // frames to suppress after a score change (goal reset)
+	maxDisplacement        float64 // displacements above this are treated as game-event resets
 
-	minIncidents           int // require multiple teleport incidents before flagging
+	minIncidents int // require multiple teleport incidents before flagging
 
 	prevPosition      map[string]model.Vec3
 	prevVelocity      map[string]model.Vec3
 	prevFrame         map[string]int
 	playerIncidents   map[string]int // per-player teleport incident count
-	recentTeleportFrame int  // last frame where a teleport candidate was seen
-	recentTeleportCount int  // teleport candidates within the cluster window
-	lastScoreBlue       int
-	lastScoreOrange     int
-	goalCooldownUntil   int  // suppress teleport detection until this frame
+	recentTeleporters map[string]int // pid -> last frame it was a teleport candidate
+	scoreSeen         bool
+	lastScoreBlue     int
+	lastScoreOrange   int
+	goalCooldownUntil int // suppress teleport detection until this frame
 }
 
 // NewMov002 creates a new MOV_002 Teleportation detector.
@@ -36,7 +53,7 @@ func NewMov002(params map[string]any) *Mov002 {
 	d := &Mov002{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_002",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Teleportation",
 			DetectorCategory: "movement",
 			Inputs:           []string{"position", "velocity"},
@@ -51,13 +68,21 @@ func NewMov002(params map[string]any) *Mov002 {
 		minSoloTeleporters:     detect.GetInt(params, "min_solo_teleporters", 2),
 		clusterWindow:          detect.GetInt(params, "cluster_window", 60),
 		goalCooldownFrames:     detect.GetInt(params, "goal_cooldown_frames", 150),
+		maxDisplacement:        detect.GetFloat(params, "max_displacement", 12.0),
 		minIncidents:           detect.GetInt(params, "min_incidents", 5),
-		prevPosition:           make(map[string]model.Vec3),
-		prevVelocity:           make(map[string]model.Vec3),
-		prevFrame:              make(map[string]int),
-		playerIncidents:        make(map[string]int),
 	}
+	d.Reset()
+	d.sanitize()
 	return d
+}
+
+func (d *Mov002) sanitize() {
+	if d.maxDisplacement <= d.teleportThreshold {
+		d.maxDisplacement = d.teleportThreshold + 1.0
+	}
+	if d.minIncidents < 1 {
+		d.minIncidents = 1
+	}
 }
 
 func (d *Mov002) Reset() {
@@ -65,8 +90,8 @@ func (d *Mov002) Reset() {
 	d.prevVelocity = make(map[string]model.Vec3)
 	d.prevFrame = make(map[string]int)
 	d.playerIncidents = make(map[string]int)
-	d.recentTeleportFrame = -100
-	d.recentTeleportCount = 0
+	d.recentTeleporters = make(map[string]int)
+	d.scoreSeen = false
 	d.lastScoreBlue = 0
 	d.lastScoreOrange = 0
 	d.goalCooldownUntil = -1
@@ -77,23 +102,51 @@ func (d *Mov002) Configure(params map[string]any) error {
 	d.velocityMismatchFactor = detect.GetFloat(params, "velocity_mismatch_factor", d.velocityMismatchFactor)
 	d.maxFrameGap = detect.GetInt(params, "max_frame_gap", d.maxFrameGap)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.minSoloTeleporters = detect.GetInt(params, "min_solo_teleporters", d.minSoloTeleporters)
+	d.clusterWindow = detect.GetInt(params, "cluster_window", d.clusterWindow)
+	d.goalCooldownFrames = detect.GetInt(params, "goal_cooldown_frames", d.goalCooldownFrames)
+	d.maxDisplacement = detect.GetFloat(params, "max_displacement", d.maxDisplacement)
+	d.minIncidents = detect.GetInt(params, "min_incidents", d.minIncidents)
+	d.sanitize()
 	return nil
 }
 
+// severity spreads [teleport_threshold, max_displacement] over ~[0.1, 0.9]:
+// the midpoint of the accepted range scores 0.5 and the steepness is
+// derived from the range so severity is never structurally pinned near 0.
+func (d *Mov002) severity(dist float64) float64 {
+	mid := (d.teleportThreshold + d.maxDisplacement) / 2
+	halfRange := (d.maxDisplacement - d.teleportThreshold) / 2
+	if halfRange < 0.5 {
+		halfRange = 0.5
+	}
+	k := math.Log(9) / halfRange
+	return model.SigmoidConfidence(dist, mid, k)
+}
+
 func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
+	active := detect.ActivePlayers(players, frameIdx)
+
 	// Detect score changes (goals) — all players teleport to spawn after a goal.
-	// Suppress teleport detection for goalCooldownFrames after any score change.
-	for _, ps := range players {
-		if ps.PrevBlueScore != d.lastScoreBlue || ps.PrevOrangeScore != d.lastScoreOrange {
-			d.lastScoreBlue = ps.PrevBlueScore
-			d.lastScoreOrange = ps.PrevOrangeScore
+	// The score is match-level and identical on every frame of a tick, so
+	// sample it from the first player (by ID) that actually had a frame
+	// this tick; a stale state would report an old score and re-arm the
+	// cooldown on every frame.
+	if len(active) > 0 {
+		sample := active[0]
+		if !d.scoreSeen {
+			d.scoreSeen = true
+			d.lastScoreBlue = sample.PrevBlueScore
+			d.lastScoreOrange = sample.PrevOrangeScore
+		} else if sample.PrevBlueScore != d.lastScoreBlue || sample.PrevOrangeScore != d.lastScoreOrange {
+			d.lastScoreBlue = sample.PrevBlueScore
+			d.lastScoreOrange = sample.PrevOrangeScore
 			d.goalCooldownUntil = frameIdx + d.goalCooldownFrames
 		}
-		break // only need one player's score data
 	}
 	if frameIdx < d.goalCooldownUntil {
 		// Still update positions so we don't get false jumps when cooldown ends.
-		for _, ps := range players {
+		for _, ps := range active {
 			d.prevPosition[ps.PlayerID] = ps.Position
 			d.prevVelocity[ps.PlayerID] = ps.Velocity
 			d.prevFrame[ps.PlayerID] = frameIdx
@@ -116,7 +169,7 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 	}
 	var candidates []candidate
 
-	for _, ps := range players {
+	for _, ps := range active {
 		pid := ps.PlayerID
 
 		prevPos, hasPrev := d.prevPosition[pid]
@@ -159,11 +212,9 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		expectedDelta := prevVel.Scale(dt * float64(frameGap))
 		expectedDist := expectedDelta.Magnitude()
 
-		// Game-event guard: displacements > 18m in a single frame gap are
-		// physically impossible even for cheaters — at max speed (55 m/s)
-		// and max dt (0.2s), max physical displacement is ~11m.
-		// Anything beyond 18m is clearly a game-event teleport.
-		if actualDist > 12.0 {
+		// Game-event guard: see the type comment for why this cap exists
+		// and why it is a calibration choice rather than a physics bound.
+		if actualDist > d.maxDisplacement {
 			continue
 		}
 
@@ -181,22 +232,18 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		})
 	}
 
-	// Track teleport candidates across a short window of frames.
-	// Respawns after goals cause players to teleport on the same or
-	// consecutive frames. If we see multiple teleporters within the
-	// cluster window, suppress all of them.
-	if len(candidates) > 0 {
-		if frameIdx-d.recentTeleportFrame <= d.clusterWindow {
-			d.recentTeleportCount += len(candidates)
-		} else {
-			d.recentTeleportCount = len(candidates)
-		}
-		d.recentTeleportFrame = frameIdx
+	// Track which players teleported within the cluster window. Respawns
+	// after goals move several players on the same or consecutive frames;
+	// a hack moves one player, however often.
+	for _, c := range candidates {
+		d.recentTeleporters[c.pid] = frameIdx
 	}
-
-	// Suppress if multiple players teleported within the cluster window.
-	// A real teleport hack affects one player; a round reset affects many.
-	if d.recentTeleportCount >= d.minSoloTeleporters {
+	for pid, f := range d.recentTeleporters {
+		if frameIdx-f > d.clusterWindow {
+			delete(d.recentTeleporters, pid)
+		}
+	}
+	if len(candidates) > 0 && len(d.recentTeleporters) >= d.minSoloTeleporters {
 		return nil
 	}
 
@@ -209,8 +256,9 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			continue
 		}
 
-		severity := model.SigmoidConfidence(c.actualDist, d.teleportThreshold*2, d.sigmoidSteepness)
-		confidence := model.SigmoidConfidence(c.actualDist/model.MaxF(c.expectedDist, 0.01), d.velocityMismatchFactor, 0.5)
+		mismatch := c.actualDist / model.MaxF(c.expectedDist, 0.01)
+		severity := d.severity(c.actualDist)
+		confidence := model.SigmoidConfidence(mismatch, d.velocityMismatchFactor, d.sigmoidSteepness)
 
 		if c.isHighPing {
 			confidence *= 0.5
@@ -221,7 +269,9 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			"expected_distance": c.expectedDist,
 			"frame_gap":         float64(c.frameGap),
 			"frame_dt":          c.dt,
-			"mismatch_ratio":    c.actualDist / model.MaxF(c.expectedDist, 0.01),
+			"mismatch_ratio":    mismatch,
+			"incident_count":    float64(d.playerIncidents[c.pid]),
+			"max_displacement":  d.maxDisplacement,
 		}
 
 		ev := d.MakeEvent(matchCtx, c.pid, frameIdx, c.lastTS,

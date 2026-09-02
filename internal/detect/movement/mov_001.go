@@ -9,11 +9,24 @@ import (
 )
 
 // Mov001 detects impossible player speed sustained over a window (MOV_001).
+//
+// Two branches share one sliding window of per-frame speed samples:
+//
+//   - sustained: the window MEDIAN exceeds max_legitimate_speed. Robust to
+//     single-frame position glitches because a median needs half the
+//     window to be wrong.
+//   - burst: at least min_burst_frames samples in the window exceed the
+//     game's hard MaxPlayerSpeed (from MatchContext.Physics) while the
+//     median is still legitimate — an oscillating / toggled speed hack.
+//     The threshold is the physics cap, never a fraction of it, and the
+//     window is cleared after a burst event so one burst yields one event
+//     rather than one per frame while it drains out of the window.
 type Mov001 struct {
 	detect.BaseDetector
-	maxLegitimateSpeed    float64
-	sustainedSpeedWindow  int
-	sigmoidSteepness      float64
+	maxLegitimateSpeed   float64
+	sustainedSpeedWindow int
+	sigmoidSteepness     float64
+	minBurstFrames       int
 
 	speedWindow map[string][]float64
 	sortBuf     []float64 // reusable buffer for sorting (avoids per-frame alloc)
@@ -24,7 +37,7 @@ func NewMov001(params map[string]any) *Mov001 {
 	d := &Mov001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_001",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Impossible Player Speed",
 			DetectorCategory: "movement",
 			Inputs:           []string{"position", "velocity", "speed"},
@@ -35,9 +48,23 @@ func NewMov001(params map[string]any) *Mov001 {
 		maxLegitimateSpeed:   detect.GetFloat(params, "max_legitimate_speed", 12.0),
 		sustainedSpeedWindow: detect.GetInt(params, "sustained_speed_window", 10),
 		sigmoidSteepness:     detect.GetFloat(params, "sigmoid_steepness", 0.5),
+		minBurstFrames:       detect.GetInt(params, "min_burst_frames", 5),
 		speedWindow:          make(map[string][]float64),
 	}
+	d.sanitize()
 	return d
+}
+
+func (d *Mov001) sanitize() {
+	if d.sustainedSpeedWindow < 2 {
+		d.sustainedSpeedWindow = 2
+	}
+	if d.minBurstFrames < 1 {
+		d.minBurstFrames = 1
+	}
+	if d.minBurstFrames > d.sustainedSpeedWindow {
+		d.minBurstFrames = d.sustainedSpeedWindow
+	}
 }
 
 func (d *Mov001) Reset() {
@@ -48,13 +75,26 @@ func (d *Mov001) Configure(params map[string]any) error {
 	d.maxLegitimateSpeed = detect.GetFloat(params, "max_legitimate_speed", d.maxLegitimateSpeed)
 	d.sustainedSpeedWindow = detect.GetInt(params, "sustained_speed_window", d.sustainedSpeedWindow)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.minBurstFrames = detect.GetInt(params, "min_burst_frames", d.minBurstFrames)
+	d.sanitize()
 	return nil
+}
+
+// burstThreshold is the hard physics cap: the larger of the configured
+// legitimate speed and MatchContext.Physics.MaxPlayerSpeed.
+func (d *Mov001) burstThreshold(matchCtx *model.MatchContext) float64 {
+	t := d.maxLegitimateSpeed
+	if matchCtx != nil && matchCtx.Physics.MaxPlayerSpeed > t {
+		t = matchCtx.Physics.MaxPlayerSpeed
+	}
+	return t
 }
 
 func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
+	burstThreshold := d.burstThreshold(matchCtx)
 
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 
 		sw := d.speedWindow[pid]
@@ -79,41 +119,55 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			medianSpeed = (sorted[n/2-1] + sorted[n/2]) / 2.0
 		}
 		p90 := sorted[int(float64(n)*0.9)]
-		p90Threshold := d.maxLegitimateSpeed * 0.9
-		if p90 > p90Threshold && medianSpeed <= d.maxLegitimateSpeed {
-			p90Severity := model.SigmoidConfidence(p90, p90Threshold, 0.2)
-			p90Confidence := p90Severity * 0.6
-			if ps.IsHighPing {
-				p90Confidence *= 0.6
+
+		if medianSpeed <= d.maxLegitimateSpeed {
+			// Burst branch: count frames over the hard physics cap.
+			burstFrames := 0
+			for _, s := range window {
+				if s > burstThreshold {
+					burstFrames++
+				}
 			}
-			p90Metrics := map[string]float64{
-				"p90_speed":            p90,
-				"median_speed":         medianSpeed,
-				"max_legitimate_speed": d.maxLegitimateSpeed,
-				"current_speed":        ps.Speed,
-				"window_frames":        float64(d.sustainedSpeedWindow),
-				"max_speed_in_window":  model.MaxFloat(window),
-				"min_speed_in_window":  model.MinFloat(window),
+			if burstFrames < d.minBurstFrames {
+				continue
+			}
+
+			severity := model.SigmoidConfidence(p90/burstThreshold, 1.2, 8.5)
+			confidence := model.SigmoidConfidence(float64(burstFrames), float64(d.minBurstFrames), 1.0) * 0.6
+			if ps.IsHighPing {
+				confidence *= 0.6
+			}
+			metrics := map[string]float64{
+				"p90_speed":              p90,
+				"median_speed":           medianSpeed,
+				"burst_threshold":        burstThreshold,
+				"frames_above_threshold": float64(burstFrames),
+				"min_burst_frames":       float64(d.minBurstFrames),
+				"max_legitimate_speed":   d.maxLegitimateSpeed,
+				"current_speed":          ps.Speed,
+				"window_frames":          float64(d.sustainedSpeedWindow),
+				"max_speed_in_window":    model.MaxFloat(window),
+				"min_speed_in_window":    model.MinFloat(window),
 			}
 			ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
-				p90Severity, p90Confidence,
+				severity, confidence,
 				model.MovementEvidence{
 					DetectorSpecific: "oscillating_speed_hack",
-					Metrics:          p90Metrics,
+					Metrics:          metrics,
 				},
-				fmt.Sprintf("p90_speed: %.1f m/s over %d frames (median: %.1f)", p90, d.sustainedSpeedWindow, medianSpeed),
-				fmt.Sprintf("p90_speed: 0-%.1f m/s", p90Threshold),
+				fmt.Sprintf("burst_speed: %d of %d frames above %.1f m/s (p90 %.1f, median %.1f)",
+					burstFrames, d.sustainedSpeedWindow, burstThreshold, p90, medianSpeed),
+				fmt.Sprintf("speed: 0-%.1f m/s (physics cap)", burstThreshold),
 				model.CausalKey{
 					PlayerID:    pid,
-					FrameStart:  frameIdx - d.sustainedSpeedWindow,
+					FrameStart:  frameIdx - d.sustainedSpeedWindow + 1,
 					FrameEnd:    frameIdx,
 					AnomalyType: "oscillating_speed",
 				},
 			)
 			events = append(events, ev)
-		}
-
-		if medianSpeed <= d.maxLegitimateSpeed {
+			// One burst, one event: start a fresh window.
+			d.speedWindow[pid] = nil
 			continue
 		}
 
@@ -125,12 +179,13 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		}
 
 		metrics := map[string]float64{
-			"median_speed":          medianSpeed,
-			"max_legitimate_speed":  d.maxLegitimateSpeed,
-			"current_speed":         ps.Speed,
-			"window_frames":         float64(d.sustainedSpeedWindow),
-			"max_speed_in_window":   model.MaxFloat(window),
-			"min_speed_in_window":   model.MinFloat(window),
+			"median_speed":         medianSpeed,
+			"p90_speed":            p90,
+			"max_legitimate_speed": d.maxLegitimateSpeed,
+			"current_speed":        ps.Speed,
+			"window_frames":        float64(d.sustainedSpeedWindow),
+			"max_speed_in_window":  model.MaxFloat(window),
+			"min_speed_in_window":  model.MinFloat(window),
 		}
 
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
@@ -143,7 +198,7 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			fmt.Sprintf("median_speed: 0-%.1f m/s", d.maxLegitimateSpeed),
 			model.CausalKey{
 				PlayerID:    pid,
-				FrameStart:  frameIdx - d.sustainedSpeedWindow,
+				FrameStart:  frameIdx - d.sustainedSpeedWindow + 1,
 				FrameEnd:    frameIdx,
 				AnomalyType: "impossible_speed",
 			},

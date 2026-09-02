@@ -556,19 +556,24 @@ func ScoreManipulation(n int) []model.PlayerTelemetryFrame {
 }
 
 // InfiniteBoost generates frames with repeated burst-boost sequences that exceed MOV_005 limits.
-// MOV_005 requires: consecutive boosts > maxConsecutive (5), and at least minSequences (2)
-// completed violation sequences. Each sequence must be separated by a pause > rechargePauseFrames (10).
+// MOV_005 counts boost ACTIVATIONS (IsBoosting rising edges): it requires more than
+// maxConsecutive (5) activations with gaps <= rechargePauseFrames (10) in one sequence,
+// at least minSequences (2) such sequences closed by a pause > 10 frames, and either the
+// per-window frequency or the consecutive limit exceeded when it fires.
 func InfiniteBoost(n int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, n)
-	// Pattern: boost for 20 frames (>>5 consecutive), pause for 15 frames (>10 recharge),
-	// repeat. This creates many violation sequences.
-	cycleLen := 35 // 20 boost + 15 pause
+	// Pattern per 60-frame cycle: eight 2-frame boost taps 3 frames apart
+	// (8 activations, gaps of 3 <= 10 => one consecutive sequence of 8 > 5),
+	// then a 20-frame pause (> 10) that closes the sequence as a violation.
+	const cycleLen = 60
 	for i := 0; i < n; i++ {
-		x := oscillateX(i, 2.0, 5.0, 25.0)
+		// Stay inside the validator's X bound (arena_width/2 + 5 = 12.5 m);
+		// rejected frames would leave the player state stale and unevaluated.
+		x := oscillateX(i, 2.0, -6.0, 6.0)
 		pos := model.Vec3{x, 1.6, 3}
 		f := baseFrame("player1", i, pos)
 		cyclePos := i % cycleLen
-		f.IsBoosting = cyclePos < 20
+		f.IsBoosting = cyclePos < 40 && cyclePos%5 < 2
 		frames[i] = f
 	}
 	return frames
@@ -857,11 +862,9 @@ func TestCheat_ScoreManipulation_DeltaOneLegitimate(t *testing.T) {
 
 func TestCheat_InfiniteBoost_Detected(t *testing.T) {
 	frames := InfiniteBoost(300)
-	// MOV_005's sequence counter has a design limitation where lastBoostEndFrame
-	// continuously advances during pauses, preventing sequence completion.
-	// Override min_sequences to 0 to test the frequency/consecutive detection path.
+	// Production params: min_sequences (2) closed violation sequences are
+	// required before the frequency/consecutive test may surface an event.
 	hr := testutil.NewHarness(t).WithDetectors("MOV_005").
-		WithDetectorParams("MOV_005", map[string]any{"min_sequences": 0}).
 		WithMatchContext(matchContextForPlayer("player1")).
 		Run(t, frames)
 	hr.AssertDetectorFired("MOV_005")
