@@ -17,11 +17,7 @@ import (
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/bio"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/state"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/throw"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/catalog"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/ingest"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/logging"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/metrics"
@@ -81,7 +77,7 @@ func run() int {
 
 	// Detector factory — creates fresh detectors for each match
 	detectorFactory := func() []detect.Detector {
-		return buildDetectors(cfg, historyProvider)
+		return catalog.Build(cfg, historyProvider)
 	}
 
 	// Match manager — handles telemetry ingestion and optional inline detection.
@@ -204,62 +200,4 @@ func run() int {
 	_ = metricsServer.Shutdown(shutdownCtx)
 	logger.Info("shutdown complete")
 	return exitCode
-}
-
-func buildDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider) []detect.Detector {
-	type entry struct {
-		id      string
-		factory func(map[string]any) detect.Detector
-	}
-	catalog := []entry{
-		{"THROW_001", func(p map[string]any) detect.Detector { return throw.NewThrow001(p) }},
-		{"THROW_002", func(p map[string]any) detect.Detector { return throw.NewThrow002(p) }},
-		{"THROW_003", func(p map[string]any) detect.Detector { return throw.NewThrow003(p) }},
-		{"THROW_004", func(p map[string]any) detect.Detector { return throw.NewThrow004(p) }},
-		{"THROW_005", func(p map[string]any) detect.Detector { return throw.NewThrow005(p) }},
-		{"THROW_006", func(p map[string]any) detect.Detector { return throw.NewThrow006(p) }},
-		{"THROW_007", func(p map[string]any) detect.Detector { return throw.NewThrow007(p) }},
-		{"THROW_008", func(p map[string]any) detect.Detector { return throw.NewThrow008(p) }},
-		{"BIO_001", func(p map[string]any) detect.Detector { return bio.NewBio001(p) }},
-		{"BIO_002", func(p map[string]any) detect.Detector { return bio.NewBio002(p) }},
-		{"BIO_003", func(p map[string]any) detect.Detector { return bio.NewBio003(p) }},
-		{"BIO_004", func(p map[string]any) detect.Detector { return bio.NewBio004(p) }},
-		{"MOV_001", func(p map[string]any) detect.Detector { return movement.NewMov001(p) }},
-		{"MOV_002", func(p map[string]any) detect.Detector { return movement.NewMov002(p) }},
-		{"MOV_003", func(p map[string]any) detect.Detector { return movement.NewMov003(p) }},
-		{"MOV_004", func(p map[string]any) detect.Detector { return movement.NewMov004(p) }},
-		{"MOV_005", func(p map[string]any) detect.Detector { return movement.NewMov005(p) }},
-		{"STATE_001", func(p map[string]any) detect.Detector { return state.NewState001(p) }},
-		{"STATE_002", func(p map[string]any) detect.Detector { return state.NewState002(p) }},
-		{"STATE_003", func(p map[string]any) detect.Detector { return state.NewState003(p) }},
-		{"STATE_004", func(p map[string]any) detect.Detector { return state.NewState004(p) }},
-		{"STATE_005", func(p map[string]any) detect.Detector { return state.NewState005(p) }},
-		{"STATE_006", func(p map[string]any) detect.Detector { return state.NewState006(p) }},
-		{"STATE_007", func(p map[string]any) detect.Detector { return state.NewState007(p) }},
-		{"PAT_001", func(p map[string]any) detect.Detector { return pattern.NewPat001(p) }},
-		{"PAT_002", func(p map[string]any) detect.Detector { return pattern.NewPat002(p) }},
-		{"PAT_003", func(p map[string]any) detect.Detector { return pattern.NewPat003(p) }},
-		{"PAT_004", func(p map[string]any) detect.Detector { return pattern.NewPat004(p) }},
-		{"PAT_005", func(p map[string]any) detect.Detector { return pattern.NewPat005(p) }},
-	}
-
-	var detectors []detect.Detector
-	for _, e := range catalog {
-		dc := cfg.GetDetectorConfig(e.id)
-		if !dc.Enabled {
-			continue
-		}
-		// Copy the params map so injecting the history provider does not
-		// mutate the shared config for every match's detector set.
-		params := make(map[string]any, len(dc.Params)+1)
-		for k, v := range dc.Params {
-			params[k] = v
-		}
-		// Inject history provider for PAT_003 (cross-match consistency)
-		if e.id == "PAT_003" && historyProvider != nil {
-			params["history_provider"] = historyProvider
-		}
-		detectors = append(detectors, e.factory(params))
-	}
-	return detectors
 }

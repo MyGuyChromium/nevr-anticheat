@@ -11,11 +11,7 @@ import (
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/bio"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/state"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/throw"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/catalog"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
@@ -114,67 +110,12 @@ func (h *Harness) WithDetectorParams(detectorID string, params map[string]any) *
 	return h
 }
 
-// registerAllDetectors constructs and configures all 29 detectors from config.
-// This mirrors cmd/anticheat/main.go's registerAllDetectors.
-func registerAllDetectors(cfg *config.Config) []detect.Detector {
-	type entry struct {
-		id      string
-		factory func(map[string]any) detect.Detector
-	}
-	catalog := []entry{
-		{"THROW_001", func(p map[string]any) detect.Detector { return throw.NewThrow001(p) }},
-		{"THROW_002", func(p map[string]any) detect.Detector { return throw.NewThrow002(p) }},
-		{"THROW_003", func(p map[string]any) detect.Detector { return throw.NewThrow003(p) }},
-		{"THROW_004", func(p map[string]any) detect.Detector { return throw.NewThrow004(p) }},
-		{"THROW_005", func(p map[string]any) detect.Detector { return throw.NewThrow005(p) }},
-		{"THROW_006", func(p map[string]any) detect.Detector { return throw.NewThrow006(p) }},
-		{"THROW_007", func(p map[string]any) detect.Detector { return throw.NewThrow007(p) }},
-		{"THROW_008", func(p map[string]any) detect.Detector { return throw.NewThrow008(p) }},
-		{"BIO_001", func(p map[string]any) detect.Detector { return bio.NewBio001(p) }},
-		{"BIO_002", func(p map[string]any) detect.Detector { return bio.NewBio002(p) }},
-		{"BIO_003", func(p map[string]any) detect.Detector { return bio.NewBio003(p) }},
-		{"BIO_004", func(p map[string]any) detect.Detector { return bio.NewBio004(p) }},
-		{"MOV_001", func(p map[string]any) detect.Detector { return movement.NewMov001(p) }},
-		{"MOV_002", func(p map[string]any) detect.Detector { return movement.NewMov002(p) }},
-		{"MOV_003", func(p map[string]any) detect.Detector { return movement.NewMov003(p) }},
-		{"MOV_004", func(p map[string]any) detect.Detector { return movement.NewMov004(p) }},
-		{"MOV_005", func(p map[string]any) detect.Detector { return movement.NewMov005(p) }},
-		{"STATE_001", func(p map[string]any) detect.Detector { return state.NewState001(p) }},
-		{"STATE_002", func(p map[string]any) detect.Detector { return state.NewState002(p) }},
-		{"STATE_003", func(p map[string]any) detect.Detector { return state.NewState003(p) }},
-		{"STATE_004", func(p map[string]any) detect.Detector { return state.NewState004(p) }},
-		{"STATE_005", func(p map[string]any) detect.Detector { return state.NewState005(p) }},
-		{"STATE_006", func(p map[string]any) detect.Detector { return state.NewState006(p) }},
-		{"STATE_007", func(p map[string]any) detect.Detector { return state.NewState007(p) }},
-		{"PAT_001", func(p map[string]any) detect.Detector { return pattern.NewPat001(p) }},
-		{"PAT_002", func(p map[string]any) detect.Detector { return pattern.NewPat002(p) }},
-		{"PAT_003", func(p map[string]any) detect.Detector { return pattern.NewPat003(p) }},
-		{"PAT_004", func(p map[string]any) detect.Detector { return pattern.NewPat004(p) }},
-		{"PAT_005", func(p map[string]any) detect.Detector { return pattern.NewPat005(p) }},
-	}
-
-	var detectors []detect.Detector
-	for _, e := range catalog {
-		dc := cfg.GetDetectorConfig(e.id)
-		if !dc.Enabled {
-			continue
-		}
-		params := dc.Params
-		if params == nil {
-			params = make(map[string]any)
-		}
-		d := e.factory(params)
-		detectors = append(detectors, d)
-	}
-	return detectors
-}
-
 // Run processes the given frames through the full pipeline and returns structured results.
 func (h *Harness) Run(t *testing.T, frames []model.PlayerTelemetryFrame) *HarnessResult {
 	t.Helper()
 
 	// Build detectors from config
-	detectors := registerAllDetectors(h.cfg)
+	detectors := catalog.Build(h.cfg, nil)
 
 	// Create scorer
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
@@ -421,7 +362,7 @@ func (hr *HarnessResult) summaryForDetector(detectorID string) string {
 // It returns the raw MatchResult and does not require *testing.T.
 func (h *Harness) RunBench(frames []model.PlayerTelemetryFrame) *pipeline.MatchResult {
 	// Build detectors from config
-	detectors := registerAllDetectors(h.cfg)
+	detectors := catalog.Build(h.cfg, nil)
 
 	// Create scorer
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
@@ -460,5 +401,5 @@ func (h *Harness) RunBench(frames []model.PlayerTelemetryFrame) *pipeline.MatchR
 
 // BuildDetectors constructs all enabled detectors from config. Exported for benchmark use.
 func BuildDetectors(cfg *config.Config) []detect.Detector {
-	return registerAllDetectors(cfg)
+	return catalog.Build(cfg, nil)
 }
