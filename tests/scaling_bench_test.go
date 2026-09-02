@@ -23,7 +23,7 @@ func benchmarkMultiPlayer(b *testing.B, playerCount, frameCount int) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		h.RunBench(allFrames)
+		h.MustRunBench(b, allFrames)
 	}
 }
 

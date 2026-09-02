@@ -565,9 +565,10 @@ func (fb *FrameBuilder) PingSpikeSequence(nFrames int, spikeAtFrame int, spikePi
 // ===================================================================
 
 // RegrabStackingBurst generates a player who reaches 45-48 m/s for four
-// frames via regrab stacking, then decelerates. Below the 55 m/s physics
-// cap on every frame, so neither MOV_001 branch may fire; hands follow the
-// body so BIO_002 (50 m/s) stays silent too.
+// frames via regrab stacking (no boost flag: regrabs are not boosts), then
+// decelerates. Below the 55 m/s physics cap on every frame, so neither
+// MOV_001 branch may fire; hands follow the body so BIO_002 (50 m/s) stays
+// silent too.
 func (fb *FrameBuilder) RegrabStackingBurst(nFrames int) []model.PlayerTelemetryFrame {
 	frames := make([]model.PlayerTelemetryFrame, nFrames)
 	dt := fb.dt()
@@ -589,9 +590,7 @@ func (fb *FrameBuilder) RegrabStackingBurst(nFrames int) []model.PlayerTelemetry
 			z = -moveHalfZ + (z - moveHalfZ)
 		}
 		pos := ClampToArena(model.Vec3{fb.startPos[0], fb.startPos[1], z})
-		f := fb.baseFrame(i, pos, rotationFromVelocity(model.Vec3{0, 0, speed}))
-		f.IsBoosting = i >= burstStart && i < burstEnd
-		frames[i] = f
+		frames[i] = fb.baseFrame(i, pos, rotationFromVelocity(model.Vec3{0, 0, speed}))
 	}
 	return frames
 }

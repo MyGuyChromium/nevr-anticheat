@@ -17,7 +17,7 @@ func BenchmarkPipeline_200Frames(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		h.RunBench(frames)
+		h.MustRunBench(b, frames)
 	}
 }
 
@@ -30,7 +30,7 @@ func BenchmarkPipeline_1000Frames(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		h.RunBench(frames)
+		h.MustRunBench(b, frames)
 	}
 }
 

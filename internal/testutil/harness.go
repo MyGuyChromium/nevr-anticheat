@@ -12,6 +12,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/catalog"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
@@ -31,6 +32,9 @@ type HarnessResult struct {
 type Harness struct {
 	cfg      *config.Config
 	matchCtx *model.MatchContext
+	history  pattern.HistoryProvider
+
+	blueGoalSide int
 }
 
 // NewHarness creates a test harness with all detectors in enforce mode.
@@ -97,6 +101,37 @@ func (h *Harness) WithShadowMode() *Harness {
 	return h
 }
 
+// WithEnabledDetectors runs exactly the detectors DefaultConfig enables
+// (the production set), in enforce mode.
+func (h *Harness) WithEnabledDetectors() *Harness {
+	def := config.DefaultConfig()
+	for id, dc := range h.cfg.Detectors {
+		dc.Enabled = def.Detectors[id].Enabled
+		h.cfg.Detectors[id] = dc
+	}
+	return h
+}
+
+// WithBlueGoalSide tells the feature extractor which goal the blue team
+// attacks (+1: the goal at +GoalZ, -1: at -GoalZ), as production learns it
+// from the first scored goal. Without it goal-directed throws are measured
+// against the goal the release velocity points at.
+func (h *Harness) WithBlueGoalSide(sign int) *Harness {
+	h.blueGoalSide = sign
+	return h
+}
+
+// WithHistoryProvider wires a cross-match history source into PAT_003
+// (catalog.Build injects it the way cmd/anticheat and cmd/server do).
+func (h *Harness) WithHistoryProvider(hp pattern.HistoryProvider) *Harness {
+	h.history = hp
+	return h
+}
+
+// Config exposes the harness configuration (production defaults with every
+// detector in enforce mode) for tests that need the configured thresholds.
+func (h *Harness) Config() *config.Config { return h.cfg }
+
 // WithDetectorParams overrides specific params for a detector.
 func (h *Harness) WithDetectorParams(detectorID string, params map[string]any) *Harness {
 	dc := h.cfg.Detectors[detectorID]
@@ -110,14 +145,12 @@ func (h *Harness) WithDetectorParams(detectorID string, params map[string]any) *
 	return h
 }
 
-// Run processes the given frames through the full pipeline and returns structured results.
-func (h *Harness) Run(t *testing.T, frames []model.PlayerTelemetryFrame) *HarnessResult {
-	t.Helper()
-
-	// Build detectors from config
-	detectors := catalog.Build(h.cfg, nil)
-
-	// Create scorer
+// NewPipeline builds a production-shaped pipeline from the harness config:
+// the catalog's detectors (with the history provider, if any), a scorer
+// configured from the [scoring] block including its level table, and a
+// quiet logger.
+func (h *Harness) NewPipeline() (*pipeline.Pipeline, *scoring.SuspicionScorer) {
+	detectors := catalog.Build(h.cfg, h.history)
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
 		MaxSingleContribution:         h.cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: h.cfg.Scoring.MaxContribPerDetectorPerMatch,
@@ -127,23 +160,36 @@ func (h *Harness) Run(t *testing.T, frames []model.PlayerTelemetryFrame) *Harnes
 		DecayHalfLifeHours:            h.cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                h.cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           h.cfg.Scoring.CorrelationBonusCap,
+		Levels:                        h.cfg.Scoring.LevelTable(),
 	})
-
-	// Create pipeline with quiet logger
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	p := pipeline.NewPipeline(h.cfg, detectors, scorer, logger)
-
-	// Set up match context
-	mc := h.matchCtx
-	if mc == nil {
-		mc = NewMatchContext()
-		// Derive player ID from first frame if available
-		if len(frames) > 0 {
-			pid := frames[0].PlayerID
-			mc.PlayerIDs = []string{pid}
-			mc.TeamAssignments = map[string]string{pid: "blue"}
-		}
+	if h.blueGoalSide != 0 {
+		p.Extractor().SetBlueGoalSide(h.blueGoalSide)
 	}
+	return p, scorer
+}
+
+// MatchContext returns the configured match context, or one derived from
+// the first frame's player when none was set.
+func (h *Harness) MatchContext(frames []model.PlayerTelemetryFrame) *model.MatchContext {
+	if h.matchCtx != nil {
+		return h.matchCtx
+	}
+	mc := NewMatchContext()
+	if len(frames) > 0 {
+		pid := frames[0].PlayerID
+		mc.PlayerIDs = []string{pid}
+		mc.TeamAssignments = map[string]string{pid: "blue"}
+	}
+	return mc
+}
+
+// Run processes the given frames through the full pipeline and returns structured results.
+func (h *Harness) Run(t *testing.T, frames []model.PlayerTelemetryFrame) *HarnessResult {
+	t.Helper()
+	p, _ := h.NewPipeline()
+	mc := h.MatchContext(frames)
 
 	// Run the pipeline
 	result, err := p.ProcessMatch(context.Background(), mc, frames)
@@ -358,45 +404,90 @@ func (hr *HarnessResult) summaryForDetector(detectorID string) string {
 	return sb.String()
 }
 
-// RunBench runs the pipeline without assertions (for benchmarks).
-// It returns the raw MatchResult and does not require *testing.T.
-func (h *Harness) RunBench(frames []model.PlayerTelemetryFrame) *pipeline.MatchResult {
-	// Build detectors from config
-	detectors := catalog.Build(h.cfg, nil)
+// RunBench runs the pipeline without assertions and without *testing.T. A
+// ProcessMatch error is returned, never swallowed: a benchmark timing a
+// failing pipeline must fail (see MustRunBench).
+func (h *Harness) RunBench(frames []model.PlayerTelemetryFrame) (*pipeline.MatchResult, error) {
+	p, _ := h.NewPipeline()
+	return p.ProcessMatch(context.Background(), h.MatchContext(frames), frames)
+}
 
-	// Create scorer
-	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
-		MaxSingleContribution:         h.cfg.Scoring.MaxSingleContribution,
-		MaxContribPerDetectorPerMatch: h.cfg.Scoring.MaxContribPerDetectorPerMatch,
-		SameCategoryDiminishing:       h.cfg.Scoring.SameCategoryDiminishing,
-		ReviewThreshold:               h.cfg.Scoring.ReviewThreshold,
-		AutoEnforceThreshold:          h.cfg.Scoring.AutoEnforceThreshold,
-		DecayHalfLifeHours:            h.cfg.Scoring.DecayHalfLifeHours,
-		CooldownFrames:                h.cfg.Pipeline.CooldownFrames,
-		CorrelationBonusCap:           h.cfg.Scoring.CorrelationBonusCap,
-	})
-
-	// Create pipeline with quiet logger
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	p := pipeline.NewPipeline(h.cfg, detectors, scorer, logger)
-
-	// Set up match context
-	mc := h.matchCtx
-	if mc == nil {
-		mc = NewMatchContext()
-		if len(frames) > 0 {
-			pid := frames[0].PlayerID
-			mc.PlayerIDs = []string{pid}
-			mc.TeamAssignments = map[string]string{pid: "blue"}
-		}
-	}
-
-	result, err := p.ProcessMatch(context.Background(), mc, frames)
+// MustRunBench is RunBench for benchmarks: it fails the benchmark on error
+// or when no frame was processed.
+func (h *Harness) MustRunBench(b *testing.B, frames []model.PlayerTelemetryFrame) *pipeline.MatchResult {
+	b.Helper()
+	result, err := h.RunBench(frames)
 	if err != nil {
-		// In benchmark mode, we cannot call t.Fatal, so just return partial result.
-		return &pipeline.MatchResult{}
+		b.Fatalf("harness: ProcessMatch failed: %v", err)
+	}
+	if len(frames) > 0 && result.FramesProcessed == 0 {
+		b.Fatalf("harness: %d frames given, none processed (%d invalid: %v)", len(frames), result.InvalidFrames, result.InvalidFrameReasons)
 	}
 	return result
+}
+
+// MaxSeverity returns the highest severity among detectorID's events (0
+// when it did not fire).
+func (hr *HarnessResult) MaxSeverity(detectorID string) float64 {
+	m := 0.0
+	for _, ev := range hr.Events {
+		if ev.DetectorID == detectorID && ev.Severity > m {
+			m = ev.Severity
+		}
+	}
+	return m
+}
+
+// MaxConfidence returns the highest confidence among detectorID's events.
+func (hr *HarnessResult) MaxConfidence(detectorID string) float64 {
+	m := 0.0
+	for _, ev := range hr.Events {
+		if ev.DetectorID == detectorID && ev.Confidence > m {
+			m = ev.Confidence
+		}
+	}
+	return m
+}
+
+// AssertMinConfidence fails if no detection from detectorID has confidence >= min.
+func (hr *HarnessResult) AssertMinConfidence(detectorID string, min float64) {
+	hr.T.Helper()
+	if got := hr.MaxConfidence(detectorID); got < min {
+		hr.T.Errorf("expected detector %s to have confidence >= %.2f, max was %.2f", detectorID, min, got)
+	}
+}
+
+// AssertAllFramesValid fails unless every frame was accepted by the
+// validator and processed.
+func (hr *HarnessResult) AssertAllFramesValid(nFrames int) {
+	hr.T.Helper()
+	if hr.Result.InvalidFrames != 0 {
+		hr.T.Errorf("expected no invalid frames, got %d: %v", hr.Result.InvalidFrames, hr.Result.InvalidFrameReasons)
+	}
+	if hr.Result.FramesProcessed != nFrames {
+		hr.T.Errorf("expected %d frames processed, got %d", nFrames, hr.Result.FramesProcessed)
+	}
+}
+
+// AssertNoDetectionsFor fails if any event names playerID.
+func (hr *HarnessResult) AssertNoDetectionsFor(playerID string) {
+	hr.T.Helper()
+	for _, ev := range hr.Events {
+		if ev.PlayerID == playerID {
+			hr.T.Errorf("expected no detections for %s, got %s at frame %d (%s)", playerID, ev.DetectorID, ev.FrameIndex, ev.ObservedValue)
+		}
+	}
+}
+
+// PlayerEvents returns the events naming playerID.
+func (hr *HarnessResult) PlayerEvents(playerID string) []model.DetectionEvent {
+	var out []model.DetectionEvent
+	for _, ev := range hr.Events {
+		if ev.PlayerID == playerID {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // BuildDetectors constructs all enabled detectors from config. Exported for benchmark use.
