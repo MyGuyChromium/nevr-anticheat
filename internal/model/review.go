@@ -144,3 +144,47 @@ type AppealRecord struct {
 	ReviewNotes        string     `json:"review_notes"`
 	Status             string     `json:"status"` // "submitted", "in_review", "resolved"
 }
+
+// RecommendedActionForLevel maps a scoring tier to the moderator-facing
+// recommendation vocabulary used by ReviewCase.RecommendedAction.
+func RecommendedActionForLevel(l ScoringLevel) string {
+	switch {
+	case l.AtLeast(LevelCritical):
+		return "temp_restrict"
+	case l.AtLeast(LevelHighRisk):
+		return "review_only"
+	case l.AtLeast(LevelSuspicious):
+		return "enhanced_monitoring"
+	default:
+		return "none"
+	}
+}
+
+// CaseSeverityForLevel maps a scoring tier to ReviewCase.Severity.
+func CaseSeverityForLevel(l ScoringLevel) string {
+	switch {
+	case l.AtLeast(LevelCritical):
+		return "critical"
+	case l.AtLeast(LevelHighRisk):
+		return "high"
+	case l.AtLeast(LevelSuspicious):
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// EventSeverityLabel maps a DetectionEvent.Severity in [0,1] to the
+// TriggeredDetector.Severity word.
+func EventSeverityLabel(severity float64) string {
+	switch {
+	case severity >= 0.8:
+		return "critical"
+	case severity >= 0.6:
+		return "high"
+	case severity >= 0.3:
+		return "medium"
+	default:
+		return "low"
+	}
+}
