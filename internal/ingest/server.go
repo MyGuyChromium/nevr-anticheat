@@ -219,7 +219,7 @@ func (s *Server) Start(ctx context.Context) error {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"ok","connections":%d,"frames_received":%d,"frames_rejected":%d,"frames_rate_limited":%d,"frames_ignored":%d,"active_matches":%d}`,
 			s.activeConns.Load(), s.FramesReceived.Load(), s.FramesRejected.Load(),
-			s.FramesRateLimited.Load(), s.FramesIgnored.Load(), s.ActiveMatchCount.Load())
+			s.FramesRateLimited.Load(), s.FramesIgnored.Load(), s.activeMatches())
 	})
 
 	// Note: http.Server deadlines do not apply to hijacked WebSocket
@@ -524,6 +524,23 @@ func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult
 	return res
 }
 
+// activeMatchCounter is implemented by handlers that track live matches
+// (MatchManager); /health reports their count.
+type activeMatchCounter interface {
+	ActiveMatchCount() int
+}
+
+// activeMatches returns the live match count from the handler when it can
+// report one, else the ActiveMatchCount counter.
+func (s *Server) activeMatches() int64 {
+	if c, ok := s.handler.(activeMatchCounter); ok {
+		n := int64(c.ActiveMatchCount())
+		s.ActiveMatchCount.Store(n)
+		return n
+	}
+	return s.ActiveMatchCount.Load()
+}
+
 // writeControl sends a control message with a write deadline so a peer that
 // never reads cannot stall the connection goroutine.
 func (s *Server) writeControl(ws *websocket.Conn, msg model.ControlMessage) error {
@@ -637,6 +654,12 @@ func validateIngestFrame(f *model.PlayerTelemetryFrame, maxIDLen int) *IngestErr
 	}
 	if f.FrameIndex < 0 {
 		return &IngestError{Reason: "negative_frame_index"}
+	}
+	// A contract-conformant sender provides disc velocity but no speed; the
+	// throw detectors key off Speed, so derive it here when it is absent.
+	if f.Disc != nil && f.Disc.Speed <= 0 && !f.Disc.Velocity.IsZero() &&
+		!f.Disc.Velocity.HasNaN() && !f.Disc.Velocity.HasInf() {
+		f.Disc.Speed = f.Disc.Velocity.Magnitude()
 	}
 	return nil
 }

@@ -25,9 +25,9 @@ func TestDetectionEvent_EvidenceRoundTrip(t *testing.T) {
 	ev := DetectionEvent{
 		EventID: "e1", DetectorID: "BIO_002", DetectorVersion: "1", MatchID: "M", PlayerID: "P",
 		FrameIndex: 5, FrameRangeStart: 3, FrameRangeEnd: 7, Timestamp: 0.3, Severity: 0.5, Confidence: 0.6,
-		Evidence: HandSpeedEvidence{Speed: 12.5, Hand: "left"},
+		Evidence:      HandSpeedEvidence{Speed: 12.5, Hand: "left"},
 		ObservedValue: "12.5", ExpectedRange: "0-8",
-		CausalKey: CausalKey{PlayerID: "P", AnomalyType: "hand_speed", FrameStart: 3, FrameEnd: 7},
+		CausalKey:         CausalKey{PlayerID: "P", AnomalyType: "hand_speed", FrameStart: 3, FrameEnd: 7},
 		EnforcementWeight: 0.8, MergedCount: 3,
 	}
 	raw, err := json.Marshal(ev)

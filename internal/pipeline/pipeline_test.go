@@ -366,7 +366,7 @@ func newRecorder(id, category string, warmup int) *recorder {
 	}
 }
 
-func (r *recorder) Reset()                        { r.seen = map[int][]string{} }
+func (r *recorder) Reset()                         { r.seen = map[int][]string{} }
 func (r *recorder) Configure(map[string]any) error { return nil }
 func (r *recorder) Evaluate(mc *model.MatchContext, players map[string]*model.PlayerState, fi int) []model.DetectionEvent {
 	r.calls++
