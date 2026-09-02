@@ -56,7 +56,7 @@ func NewPat003(params map[string]any) *Pat003 {
 			Weight:           0.9,
 			IsAutoEnforce:    false,
 		},
-		minMatches:       detect.GetInt(params, "min_matches", 3),
+		minMatches:       detect.GetIntAlias(params, 3, "min_matches", "min_matches_soft"),
 		minAvgConfidence: detect.GetFloat(params, "min_avg_confidence", 0.6),
 		matchLimit:       detect.GetIntAlias(params, 20, "match_limit", "match_history_depth"),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 2.0),
@@ -95,7 +95,7 @@ func (d *Pat003) Reset() {
 }
 
 func (d *Pat003) Configure(params map[string]any) error {
-	d.minMatches = detect.GetInt(params, "min_matches", d.minMatches)
+	d.minMatches = detect.GetIntAlias(params, d.minMatches, "min_matches", "min_matches_soft")
 	d.minAvgConfidence = detect.GetFloat(params, "min_avg_confidence", d.minAvgConfidence)
 	d.matchLimit = detect.GetIntAlias(params, d.matchLimit, "match_limit", "match_history_depth")
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)

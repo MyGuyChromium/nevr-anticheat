@@ -371,3 +371,44 @@ func TestMov005_TapSpamFiresAtProductionDefaults(t *testing.T) {
 		t.Errorf("expected >= 2 closed violation sequences, got %v", m["violation_sequences"])
 	}
 }
+
+func TestMov003_FrameGapDiscardsPendingReversal(t *testing.T) {
+	d := NewMov003(nil)
+	mc := ctx()
+	fwd := model.Vec3{20, 0, 0}
+	back := model.Vec3{-20, 0, 0}
+	seq := []struct {
+		fi int
+		v  model.Vec3
+	}{{0, fwd}, {1, fwd}, {2, back}, {3, back}, {10, back}, {11, back}, {12, back}}
+	for _, s := range seq {
+		ps := active("p1", s.fi)
+		ps.Velocity, ps.Speed = s.v, s.v.Magnitude()
+		if ev := d.Evaluate(mc, players(ps), s.fi); len(ev) != 0 {
+			t.Fatalf("a reversal whose confirmation spans a frame gap must not fire (frame %d)", s.fi)
+		}
+	}
+}
+
+func TestMov002_ScoreSampleSkipsNeverUpdatedPlaceholder(t *testing.T) {
+	d := productionMov002(map[string]any{"min_incidents": 1})
+	mc := ctx()
+	placeholder := &model.PlayerState{PlayerID: "aaa"} // listed in PlayerIDs, never sent a frame
+	z := 0.0
+	var events []model.DetectionEvent
+	for fi := 0; fi < 80; fi++ {
+		p1 := active("p1", fi)
+		p1.PrevBlueScore = 0
+		if fi >= 40 {
+			p1.PrevBlueScore = 2 // goal at frame 40 -> reset teleports must be suppressed
+		}
+		if fi == 45 {
+			z += 10
+		}
+		p1.Position = model.Vec3{2, 1.6, z}
+		events = append(events, d.Evaluate(mc, players(p1, placeholder), fi)...)
+	}
+	if len(events) != 0 {
+		t.Fatalf("goal cooldown must be armed from a player with frames, got %d events", len(events))
+	}
+}

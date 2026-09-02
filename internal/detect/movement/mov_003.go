@@ -38,6 +38,7 @@ type Mov003 struct {
 
 type pendingReversal struct {
 	frame     int
+	lastFrame int // last frame that extended the confirmation run
 	angleDeg  float64
 	prevSpeed float64
 	revSpeed  float64
@@ -148,8 +149,10 @@ func (d *Mov003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 		// Confirmation phase: the player must keep the reversed heading.
 		if p, ok := d.pending[pid]; ok {
-			if currSpeed >= d.minSpeed && p.heading.AngleBetweenDeg(ps.Velocity) <= d.headingToleranceDeg {
+			contiguous := frameIdx == p.lastFrame+1
+			if contiguous && currSpeed >= d.minSpeed && p.heading.AngleBetweenDeg(ps.Velocity) <= d.headingToleranceDeg {
 				p.confirmed++
+				p.lastFrame = frameIdx
 				p.speeds = append(p.speeds, currSpeed)
 				if p.confirmed >= d.confirmFrames {
 					events = append(events, d.makeEvent(matchCtx, ps, p, frameIdx))
@@ -157,7 +160,8 @@ func (d *Mov003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 				}
 				continue
 			}
-			// Heading not held (flip-flop, bounce-back or slowdown): discard.
+			// Heading not held (flip-flop, bounce-back, slowdown or a frame
+			// gap that hides what happened in between): discard.
 			delete(d.pending, pid)
 		}
 
@@ -179,6 +183,7 @@ func (d *Mov003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 		d.pending[pid] = &pendingReversal{
 			frame:     frameIdx,
+			lastFrame: frameIdx,
 			angleDeg:  angleDeg,
 			prevSpeed: prevSpeed,
 			revSpeed:  currSpeed,

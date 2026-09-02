@@ -111,6 +111,21 @@ func (d *Mov002) Configure(params map[string]any) error {
 	return nil
 }
 
+// scoreSample picks the first player (by ID) that has actually received a
+// frame this match; a never-updated placeholder from MatchContext.PlayerIDs
+// would report a zero score forever. Falls back to the first active player.
+func scoreSample(active []*model.PlayerState) *model.PlayerState {
+	for _, ps := range active {
+		if ps.FrameCount > 0 {
+			return ps
+		}
+	}
+	if len(active) > 0 {
+		return active[0]
+	}
+	return nil
+}
+
 // severity spreads [teleport_threshold, max_displacement] over ~[0.1, 0.9]:
 // the midpoint of the accepted range scores 0.5 and the steepness is
 // derived from the range so severity is never structurally pinned near 0.
@@ -132,8 +147,7 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 	// sample it from the first player (by ID) that actually had a frame
 	// this tick; a stale state would report an old score and re-arm the
 	// cooldown on every frame.
-	if len(active) > 0 {
-		sample := active[0]
+	if sample := scoreSample(active); sample != nil {
 		if !d.scoreSeen {
 			d.scoreSeen = true
 			d.lastScoreBlue = sample.PrevBlueScore
