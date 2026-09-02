@@ -2,39 +2,49 @@
 
 ## Overview
 
-This document defines the exact JSON schema that game servers must send to the NEVR-Anticheat system. All field names, units, and valid ranges are normative.
+This document is the normative JSON schema between telemetry producers (cmd/bridge, or any game-server-side profiler) and the NEVR-Anticheat ingestion server (cmd/server, `internal/ingest`). It matches the decoder exactly: the server unmarshals batches into `model.PlayerTelemetryFrame`, control messages into `model.ControlMessage`, and `internal/model/telemetry_test.go` decodes every JSON example in this file to prove it. Where a value is accepted in more than one spelling the alias is stated; anything not listed here is silently ignored by the decoder.
 
 ## Transport
 
-- **Protocol**: WebSocket (ws:// or wss://)
-- **Endpoint**: `/telemetry`
-- **Auth**: `Authorization: Bearer <token>` header on WebSocket upgrade
-- **Message format**: JSON
-- **Batching**: Frames are sent in batches per match tick (typically 1-5 frames per message)
-- **Max message size**: 64KB
-- **Max frame rate**: 30 frames/second per player (server enforced)
+| Property | Value | Behaviour when exceeded |
+|----------|-------|-------------------------|
+| Protocol | WebSocket (`ws://` or `wss://`), endpoint `/telemetry` | — |
+| Auth | `Authorization: Bearer <token>` on the upgrade request; token = `NEVR_AC_AUTH_TOKEN` of the server | server sends `{"type":"error","reason":"unauthorized"}` and closes; counted in `nevr_ac_auth_failures_total` |
+| Message format | one JSON object per WebSocket text message | undecodable JSON: message dropped, `nevr_ac_batches_malformed_total` |
+| Max message size | 65,536 bytes (`[server] max_message_bytes`, `--max-message-bytes`) | the message is **discarded and the connection stays open**; counted as one rejected frame and `nevr_ac_batches_rejected_total{reason="oversized_message"}` |
+| Max frames per batch | 100 | whole batch rejected, `nevr_ac_batches_rejected_total{reason="oversized_batch"}` |
+| Rate limit | 30 frames/s per (match, player) on a wall-clock second window (`max_frame_rate_per_player`) | excess frames are rejected, **not stored**, reported in the next `ack.rejected`, `nevr_ac_frames_ratelimited_total` |
+| Identifier bounds | `match_id`, `player_id` ≤ 128 bytes, no control characters | frame/batch rejected (`invalid_match_id`, `invalid_player_id`) |
+| Idle timeout | 5 min without any message (`idle_timeout`, `--idle-timeout`) | connection closed |
+| Concurrency | 100 connections, 64 live matches, 16 players per match | connection refused with `too_many_connections`; frames for a 65th match / 17th player rejected |
+| Health | `GET /health` on the telemetry port | `{"status":"ok","connections":N,"frames_received":N,"frames_rejected":N,"frames_rate_limited":N,"frames_ignored":N,"active_matches":N}` |
 
-## Message Types
+Timestamps in this document: `FrameBatch.timestamp` is an ISO-8601/RFC3339 wall-clock string; frame `timestamp`/`delta_time` are seconds relative to the match.
 
-### 1. Frame Batch (primary telemetry message)
+## Message types
 
-Sent every server tick (~15 FPS). Contains all player states for one match at one point in time.
+Every message is a JSON object. A message with a non-empty `type` field is a control message; anything else is a frame batch.
+
+### 1. Frame batch (producer → server)
+
+Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch carries the frames of **one match** at one sample time, one frame per player.
 
 ```json
 {
-  "match_id": "string (required, unique match identifier)",
-  "server_id": "string (required, server identifier)",
-  "timestamp": "ISO-8601 datetime",
+  "match_id": "string (required, Nakama match id or replay session id)",
+  "server_id": "string (required; the bridge sends \"<broadcaster_ip>:<api_port>\")",
+  "timestamp": "2026-09-02T17:30:22Z",
   "frames": [
     {
-      "player_id": "string (required, unique player identifier)",
+      "player_id": "echovr:PLR-001",
+      "team": "blue",
       "frame_index": 1234,
       "timestamp": 82.345,
       "delta_time": 0.067,
-      "position": [12.5, 1.6, -3.2],
+      "position": [1.5, 1.6, -3.2],
       "rotation": [0.0, 0.707, 0.0, 0.707],
-      "left_hand_position": [12.2, 1.9, -3.0],
-      "right_hand_position": [12.8, 1.9, -3.4],
+      "left_hand_position": [1.2, 1.9, -3.0],
+      "right_hand_position": [1.8, 1.9, -3.4],
       "left_hand_rotation": [0.0, 0.1, 0.0, 0.995],
       "right_hand_rotation": [0.0, -0.1, 0.0, 0.995],
       "is_stunned": false,
@@ -51,122 +61,195 @@ Sent every server tick (~15 FPS). Contains all player states for one match at on
       "disc": {
         "position": [5.0, 2.1, 0.0],
         "velocity": [12.5, 1.0, -0.5],
-        "holder_id": ""
+        "possessor_id": "",
+        "is_held": false
       }
     }
   ]
 }
 ```
 
-### Field Reference
+#### Batch envelope
 
-#### Player Frame Fields
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `match_id` | string | **yes** | ≤ 128 bytes. All frames in the batch belong to it. |
+| `server_id` | string | desired | Provenance of the data. The bridge sends `"<broadcaster_ip>:<api_port>"` (the host it polled over plaintext HTTP). |
+| `timestamp` | RFC3339 string | desired | Wall-clock time the producer sampled the state. |
+| `frames` | array | **yes** | 1–100 player frames. |
 
-| Field | Type | Unit | Required | Valid Range | Notes |
-|-------|------|------|----------|-------------|-------|
-| `player_id` | string | — | **yes** | non-empty | Stable identifier across sessions |
-| `frame_index` | int | — | **yes** | >= 0 | Monotonically increasing per match |
-| `timestamp` | float64 | seconds | **yes** | >= 0 | Seconds from match start |
-| `delta_time` | float64 | seconds | no | [0.01, 0.5] | Time since previous frame. If absent, derived from timestamps. |
-| `position` | [3]float64 | meters | **yes** | X: [-45, 45], Y: [-20, 20], Z: [-20, 20] | Player body/head center in arena coordinates (right-handed, Y-up) |
-| `rotation` | [4]float64 | quaternion | **yes** | unit quaternion (x,y,z,w) | Player body/head orientation |
-| `left_hand_position` | [3]float64 | meters | **yes** | within 2m of position | Left controller/hand in arena coordinates |
-| `right_hand_position` | [3]float64 | meters | **yes** | within 2m of position | Right controller/hand in arena coordinates |
-| `left_hand_rotation` | [4]float64 | quaternion | desired | unit quaternion | Left hand orientation. If unavailable, send identity [0,0,0,1]. |
-| `right_hand_rotation` | [4]float64 | quaternion | desired | unit quaternion | Right hand orientation. If unavailable, send identity [0,0,0,1]. |
-| `is_stunned` | bool | — | **yes** | — | Player is in stun state |
-| `is_boosting` | bool | — | **yes** | — | Player is actively boosting |
-| `shield_active` | bool | — | desired | — | Player shield/block is active. If unavailable, send false. |
-| `is_immune` | bool | — | desired | — | Player has post-stun immunity or spawn protection. If unavailable, send false. |
-| `has_possession` | bool | — | **yes** | — | Player holds the disc |
-| `estimated_ping_ms` | float64 | milliseconds | desired | [0, 500] | Player's estimated round-trip latency. 0 if unknown. |
-| `game_phase` | string | — | desired | see below | Current game phase. Default "playing" if unknown. |
-| `blue_score` | int | points | desired | >= 0 | Current blue team score |
-| `orange_score` | int | points | desired | >= 0 | Current orange team score |
-| `goals` | int | count | desired | >= 0 | This player's goal count this match |
-| `stuns` | int | count | desired | >= 0 | This player's stun count this match |
+#### Player frame fields
 
-#### Game Phase Values
+| Field | Type | Unit | Required | Valid range / behaviour | Notes |
+|-------|------|------|----------|-------------------------|-------|
+| `player_id` | string | — | **yes** | non-empty, ≤ 128 bytes, no control chars | Stable across sessions. The bridge/adapter emits `echovr:<userid>`. |
+| `team` | string | — | desired | `"blue"` or `"orange"` (case-insensitive); anything else is ignored | Builds `match_contexts.team_assignments` for live matches and `PlayerState.Team` (STATE_007 team filter). |
+| `frame_index` | int | — | **yes** | ≥ 0, monotonic per match | The server re-bases a batch whose lowest index is ≤ the last index it has seen (warning, `nevr_ac_frames_rebased_total`). Duplicate `(match, player, frame_index)` rows are ignored by the store and reported in `ack.ignored`. |
+| `timestamp` | float64 | seconds | **yes** | ≥ 0, finite | Seconds since the producer's first sample of the match (the bridge stamps the real HTTP sample time). Negative or NaN → `invalid_timestamp`. |
+| `delta_time` | float64 | seconds | desired | `0` = unknown (first frame); `0 < dt < 0.005` or `dt > 0.5` → frame rejected (`dt_out_of_range`) | Seconds since **this player's** previous frame. Known values are clamped to [0.005, 0.5] for kinematics. Bounds are `pipeline.min_frame_dt / 2` and `max_frame_dt × 2.5`. |
+| `position` | [3]float64 | metres | **yes** | not the zero vector, finite; `|X| ≤ 12.5`, `|Y| ≤ 12.5`, `|Z| ≤ 82` | Body/head centre, Y-up. Bounds are `DefaultPhysics` arena extents (15 × 15 × 154 m) plus 5 m tolerance; real data spans X ±5, Y −4..+7, Z ±77 with goals at Z ≈ ±36.078. Zero → `zero_position`, out of bounds → `out_of_arena_bounds`. |
+| `rotation` | [4]float64 | quaternion (x,y,z,w) | **yes** | unit; near-unit is normalised (`|q| > 0.1`), NaN/Inf → zeroed | Body/head orientation. |
+| `left_hand_position` | [3]float64 | metres | **yes** | finite | Left controller in arena coordinates. **Tracking loss = the zero vector** (NaN/Inf is replaced by it). |
+| `right_hand_position` | [3]float64 | metres | **yes** | finite | Right controller. Same tracking-loss sentinel. |
+| `left_hand_rotation` | [4]float64 | quaternion | desired | unit, or **`[0,0,0,0]` for tracking loss** | Do **not** send the identity when tracking is lost: identity is a real orientation and would be measured by BIO_001/BIO_004; the zero quaternion is skipped. |
+| `right_hand_rotation` | [4]float64 | quaternion | desired | as above | |
+| `is_stunned` | bool | — | **yes** | — | STATE_002, STATE_007. |
+| `is_boosting` | bool | — | optional | — | No known source supplies it; MOV_004/MOV_005 stay inert when it is always false. |
+| `shield_active` | bool | — | optional | — | STATE_003/STATE_005; unconfirmed in every known source. |
+| `is_immune` | bool | — | optional | — | STATE_004; unconfirmed in every known source. |
+| `has_possession` | bool | — | **yes** | — | A `true → false` transition is a throw (see §4). |
+| `disc` | object | — | desired | see below | Omit only when the disc is unknown; every throw/disc detector needs it. |
+| `estimated_ping_ms` | float64 | ms | desired | `[0, 1000]` in `nevr-compat --strict`; not rejected at ingest | Values above `pipeline.high_ping_threshold_ms` (150) set `IsHighPing`. Absent/0 = strictest tolerance. |
+| `game_phase` | string | — | desired | see §5 | Absent/empty = active play. |
+| `blue_score` | int | points | desired | ≥ 0 | MOV_002 goal cooldown and goal-side learning. |
+| `orange_score` | int | points | desired | ≥ 0 | |
+| `goals` | int | count | desired | ≥ 0 | This player's goals. |
+| `stuns` | int | count | desired | ≥ 0 | This player's stun count; STATE_007 attributes punches from its increments. |
 
-| Value | Meaning |
-|-------|---------|
-| `"playing"` | Active gameplay (default) |
-| `"round_start"` | Round start countdown |
-| `"round_over"` | Round just ended |
-| `"pre_match"` | Pre-match lobby |
-| `"post_match"` | Post-match scoreboard |
-| `"overtime"` | Overtime play |
+#### Disc fields
 
-#### Disc Fields
+| Field | Type | Unit | Required | Notes |
+|-------|------|------|----------|-------|
+| `position` | [3]float64 | metres | **yes** | Disc centre. NaN/Inf in any disc field drops the disc from the frame (frame kept, `invalid_disc`). |
+| `velocity` | [3]float64 | m/s | **yes** | Free-flight velocity. Magnitude < 100 in strict mode. |
+| `speed` | float64 | m/s | optional | Derived as `|velocity|` when absent or 0; an explicit non-zero value wins. |
+| `possessor_id` | string | — | desired | `player_id` of the holder, `""` when free. |
+| `is_held` | bool | — | desired | `true` while a player holds the disc. |
+| `holder_id` | string | — | alias | Accepted instead of `possessor_id`/`is_held`: a non-empty `holder_id` sets `possessor_id` to it and `is_held` to `true`; empty means free. |
 
-| Field | Type | Unit | Required | Valid Range | Notes |
-|-------|------|------|----------|-------------|-------|
-| `position` | [3]float64 | meters | **yes** | arena bounds | Disc center position |
-| `velocity` | [3]float64 | m/s | **yes** | magnitude < 100 | Disc velocity vector |
-| `holder_id` | string | — | **yes** | player_id or "" | Player holding disc, or empty if free |
+Every player's frame in a tick should carry the same disc state (the adapter emits one `DiscState` per tick and copies it onto each frame). The throw detectors pick the possessor's copy, else the first player in sorted `player_id` order.
 
-### 2. Match Start Event (optional)
+### 2. Control messages
 
-Sent once when a match begins. If not sent, the system auto-discovers match context from frame data.
+Any message with a non-empty `type` is decoded as `model.ControlMessage`. Unknown types are logged at debug level and ignored. Field reference (all optional except `type`; each message uses the subset shown):
+
+| Field | Type | Used by |
+|-------|------|---------|
+| `type` | string | all: `hello`, `ack`, `error`, `match_start`, `match_end` |
+| `match_id` | string | `match_start`, `match_end`, `error` |
+| `server_id` | string | `match_start`, `match_end` (producer provenance) |
+| `reason` | string | `match_end` (why the producer stopped), `error` (`unauthorized`, `too_many_connections`) |
+| `auth` | string | `hello` (`"ok"`) |
+| `accepted` | int | `ack`: frames the pipeline processed since the previous ack |
+| `rejected` | int | `ack`: frames refused (validation, rate limit, caps) since the previous ack |
+| `ignored` | int | `ack`: frames the store discarded as duplicates since the previous ack |
+| `game_mode` | string | `match_start` (e.g. `Echo_Arena`) |
+| `map` | string | `match_start` |
+| `is_private` | bool | `match_start` |
+| `teams` | object | `match_start`: `player_id → "blue" | "orange"` |
+
+**Server → producer.** Immediately after a successful upgrade:
+
+```json
+{"type": "hello", "auth": "ok"}
+```
+
+On authentication failure, followed by close:
+
+```json
+{"type": "error", "reason": "unauthorized"}
+```
+
+At most once per second while any counter is non-zero (`accepted + rejected + ignored` equals the frames received since the previous ack):
+
+```json
+{"type": "ack", "accepted": 8, "rejected": 0, "ignored": 0}
+```
+
+A producer **must read** these messages. One that never reads fills its socket buffer and is disconnected when an ack write blocks for 10 s. The bridge treats a missing `hello` within 5 s or no ack within `--ack-timeout` (30 s) as a dead link and reconnects.
+
+**Producer → server.** When a poller starts (or as soon as metadata is known):
 
 ```json
 {
   "type": "match_start",
-  "match_id": "MTX-20260315-173022-EU2",
-  "server_id": "eu-west-2",
-  "map": "mpl_arena_a",
+  "match_id": "6bef4ca8-2f1b-4d7a-9c1e-0a9d5c3b2e11",
+  "server_id": "10.0.0.7:6721",
   "game_mode": "Echo_Arena",
-  "is_ranked": true,
+  "map": "mpl_arena_a",
   "is_private": false,
-  "players": [
-    {"player_id": "PLR-001", "team": "blue", "display_name": "PlayerOne"},
-    {"player_id": "PLR-002", "team": "orange", "display_name": "PlayerTwo"}
-  ],
-  "start_time": "2026-03-15T17:30:22Z"
+  "teams": {"echovr:PLR-001": "blue", "echovr:PLR-002": "orange"}
 }
 ```
 
-### 3. Match End Event (optional)
+The server applies `game_mode`, `map`, `is_private` and `teams` to the live match context (creating the match if needed) and persists it. Team entries for unknown players are added to the roster up to the player cap.
+
+When the poller stops:
 
 ```json
-{
-  "type": "match_end",
-  "match_id": "MTX-20260315-173022-EU2",
-  "final_score": {"blue": 10, "orange": 6},
-  "duration_seconds": 522.5
-}
+{"type": "match_end", "match_id": "6bef4ca8-2f1b-4d7a-9c1e-0a9d5c3b2e11", "reason": "post_match_detected"}
 ```
 
-### 4. Example: Throw Transition
+The server finalizes the match: closes open dedup incidents, persists remaining events and scores, the context and a summary. Bridge reasons: `post_match_detected`, `session_changed` (a new session appeared under the same match id; a fresh `match_start` follows), `broadcaster_unreachable`, `broadcaster_error` (30 consecutive failed polls), `session_mismatch` (`--session-check strict`), `cancelled` (shutdown), `once` (`--once` mode). A match that never receives `match_end` is finalized after `--stale-match-after` (30 min idle) or at server shutdown.
 
-A throw is detected by the pipeline when `has_possession` transitions from `true` to `false` between consecutive frames. The game server does NOT need to send throw events explicitly.
+### 3. Frame identity and ordering
 
-Frame N (holding disc):
+- `frame_index` is match-relative and monotonic. Frames are grouped by index and processed in ascending order; only indices present in a batch are visited.
+- A batch whose lowest `frame_index` is not above the highest index the server has seen for the match is **re-based** (every index shifted up) with a warning; a producer restart therefore never overwrites stored rows.
+- A row with an already stored `(match_id, player_id, frame_index)` is ignored by the store and reported as `ignored`.
+- `timestamp` and `delta_time` are the producer's responsibility. The bridge stamps both from the real HTTP sample time per match (`delta_time` = 0 on a player's first frame; a negative delta is reported as 0).
+
+### 4. Example: throw transition
+
+A throw is detected by the feature extractor when `has_possession` goes `true → false` between a player's consecutive frames during an active phase. The producer never sends throw events.
+
+Frame N (holding the disc):
+
 ```json
-{"player_id": "PLR-001", "has_possession": true, "disc": {"holder_id": "PLR-001", "velocity": [0,0,0]}}
+{"player_id": "PLR-001", "frame_index": 300, "timestamp": 20.0, "position": [1.0, 1.6, 10.0], "has_possession": true, "disc": {"position": [1.2, 1.7, 10.1], "velocity": [0, 0, 0], "possessor_id": "PLR-001", "is_held": true}}
 ```
 
-Frame N+1 (disc released):
+Frame N+1 (released):
+
 ```json
-{"player_id": "PLR-001", "has_possession": false, "disc": {"holder_id": "", "velocity": [15.2, 2.1, -0.8]}}
+{"player_id": "PLR-001", "frame_index": 301, "timestamp": 20.067, "delta_time": 0.067, "position": [1.0, 1.6, 10.0], "has_possession": false, "disc": {"position": [1.8, 1.8, 10.9], "velocity": [15.2, 2.1, -0.8], "possessor_id": "", "is_held": false}}
 ```
 
-### 5. Example: Stun Transition
+The same transition written with the alias:
 
-Frame N: `"is_stunned": false`
-Frame N+1: `"is_stunned": true` (player got stunned)
-Frame N+45 (~3 seconds later): `"is_stunned": false` (stun ended)
+```json
+{"player_id": "PLR-001", "frame_index": 300, "timestamp": 20.0, "position": [1.0, 1.6, 10.0], "has_possession": true, "disc": {"position": [1.2, 1.7, 10.1], "velocity": [0, 0, 0], "holder_id": "PLR-001"}}
+```
 
-### 6. Graceful Degradation
+Possession drops during a non-active phase (round reset, pre/post match) are not throws.
 
-The system is designed to operate with partial telemetry:
+### 5. Game phase values
 
-| Missing Field | Impact | Detectors Affected |
-|--------------|--------|-------------------|
-| hand rotations | BIO_001, BIO_004 disabled | Wrist rotation, aim wobble |
-| ping | Lag tolerance uses 0ms (strictest) | All timing-sensitive |
-| shield_active | STATE_003, STATE_005 disabled | Shield duration, cooldown |
-| is_immune | STATE_004 disabled | God mode detection |
-| blue/orange_score | STATE_006 disabled | Score manipulation |
-| goals/stuns | STATE_002, STATE_007 reduced | Stun recovery, punch range |
-| game_phase | All detectors active always | May fire during non-play phases |
+`game_phase` gates the detectors: the feature extractor always updates player state, but detectors run only during active phases.
+
+| Value | Active? | Source |
+|-------|---------|--------|
+| `"playing"`, `""` (absent) | yes | `/session` `game_status` `playing`; empty defaults to active |
+| `"round"`, `"overtime"`, `"sudden_death"` | yes | overtime is reported as `sudden_death` by Echo VR |
+| `"round_start"`, `"round_over"` | no | players teleport to spawn; `score` from `/session` is mapped to `round_over` |
+| `"pre_match"`, `"post_match"` | no | lobby / scoreboard |
+| `"pre_sudden_death"`, `"post_sudden_death"`, any other string | no | unknown strings pass through and are treated as inactive |
+
+### 6. Example: stun transition
+
+Frame N: `"is_stunned": false`. Frame N+1: `"is_stunned": true` (player stunned). Frame N+45 (~3 s later at 15 Hz): `"is_stunned": false`. STATE_002 measures the stun length in seconds using the match tick rate; STATE_007 attributes the stun to a puncher whose `stuns` counter incremented within `attribution_window_frames`.
+
+### 7. Hand tracking loss
+
+Send the zero vector for a lost hand position and the zero quaternion `[0,0,0,0]` for a lost hand rotation. The adapter does exactly this when a `/session` hand pose has any zero direction vector or a degenerate basis (`MapperStats.HandTrackingLost`). Consumers skip zero hands: BIO_001/BIO_004 break their windows, BIO_003 drops that hand's window, PAT_005 skips the frame, THROW_003 needs a valid throwing hand. NaN/Inf hand data received on the wire is converted to the same sentinels by the pipeline validator (`nan_hand_position`, `invalid_rotation`).
+
+### 8. Graceful degradation
+
+| Missing / constant field | Effect |
+|--------------------------|--------|
+| hand rotations (zero quaternions) | BIO_001, BIO_004 never measure; THROW_004 signature loses the wrist dimension |
+| `estimated_ping_ms` | ping tolerance 0 (strictest); no `IsHighPing` confidence reduction |
+| `shield_active` | STATE_003, STATE_005 inert |
+| `is_immune` | STATE_004 inert |
+| `is_boosting` | MOV_004, MOV_005 inert |
+| `blue_score` / `orange_score` | MOV_002 has no goal cooldown; goal side cannot be learned (throw goal selection falls back to release direction) |
+| `stuns` | STATE_007 inert (it needs per-frame stun count increments) |
+| `game_phase` | detectors run during resets and lobbies; expect MOV_002 false positives |
+| `team` | `team_assignments` empty for live matches; STATE_007 cannot exclude teammates |
+| `disc` | every throw/disc detector inert (THROW_001–THROW_008, STATE_001) |
+
+### 9. Server metrics
+
+Exported in Prometheus text format on the metrics port (`--metrics :9090`, `/metrics`):
+
+`nevr_ac_uptime_seconds`, `nevr_ac_frames_received_total`, `nevr_ac_frames_processed_total`, `nevr_ac_frames_invalid_total`, `nevr_ac_frames_invalid_reason_total{reason}` (reasons: `missing_player_id`, `invalid_player_id`, `zero_position`, `invalid_position`, `invalid_timestamp`, `negative_frame_index`, `dt_out_of_range`, `out_of_arena_bounds`), `nevr_ac_frames_ratelimited_total`, `nevr_ac_frames_ignored_total`, `nevr_ac_frames_rebased_total`, `nevr_ac_batches_received_total`, `nevr_ac_batches_malformed_total`, `nevr_ac_batches_rejected_total{reason}` (`invalid_match_id`, `oversized_batch`, `oversized_message`), `nevr_ac_control_messages_total{type}`, `nevr_ac_auth_failures_total`, `nevr_ac_detection_events_total{detector}` (shadow and non-shadow), `nevr_ac_shadow_events_total{detector}`, `nevr_ac_events_deduplicated_total`, `nevr_ac_events_ratelimited_total`, `nevr_ac_events_invalid_total`, `nevr_ac_store_errors_total`, `nevr_ac_matches_created_total`, `nevr_ac_matches_ended_total`, `nevr_ac_score_snapshots_total`, `nevr_ac_active_connections`, `nevr_ac_active_matches`.
