@@ -82,6 +82,21 @@ func (v Vec3) AngleBetweenDeg(o Vec3) float64 {
 	return RadToDeg(v.AngleBetween(o))
 }
 
+// Rotate applies the rotation q to v (v' = q * v * q^-1). A non-unit q is
+// normalised first; a degenerate (zero) q leaves v unchanged. Use
+// v.Rotate(q.Conjugate()) to express a world-space offset in the local
+// frame of a body whose orientation is q.
+func (v Vec3) Rotate(q Quat) Vec3 {
+	if !q.IsUnit() {
+		q = q.Normalize()
+	}
+	u := Vec3{q[0], q[1], q[2]}
+	w := q[3]
+	// Rodrigues form: v' = v + 2w(u x v) + 2(u x (u x v))
+	t := u.Cross(v).Scale(2.0)
+	return v.Add(t.Scale(w)).Add(u.Cross(t))
+}
+
 // Lerp linearly interpolates between v and o.
 func (v Vec3) Lerp(o Vec3, t float64) Vec3 {
 	return Vec3{

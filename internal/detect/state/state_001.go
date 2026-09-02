@@ -9,10 +9,20 @@ import (
 )
 
 // State001 detects impossible grab distance (STATE_001).
+//
+// Closing-velocity model: possession is reported one frame after the disc
+// was actually reached, so a player moving at v m/s is credited with the
+// distance covered in that one frame of latency, v * FrameDt (about 0.07 m
+// per m/s at 15 Hz). closing_velocity_scale, if set > 0, replaces FrameDt
+// with a fixed latency in seconds. The desync guard that rejects raw
+// hand-to-disc distances as timing artifacts scales with the same credit
+// (threshold + credit + desync_margin), so the detection window never
+// closes for fast-moving players.
 type State001 struct {
 	detect.BaseDetector
 	grabDistanceThreshold float64
-	closingVelocityScale  float64
+	closingVelocityScale  float64 // seconds of latency credited; <= 0 means one frame (FrameDt)
+	desyncMargin          float64
 	sigmoidSteepness      float64
 
 	prevHasDisc      map[string]bool
@@ -24,7 +34,7 @@ func NewState001(params map[string]any) *State001 {
 	d := &State001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "STATE_001",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Impossible Grab Distance",
 			DetectorCategory: "state",
 			Inputs:           []string{"possession", "hand_tracking", "disc_state"},
@@ -33,7 +43,8 @@ func NewState001(params map[string]any) *State001 {
 			IsAutoEnforce:    false,
 		},
 		grabDistanceThreshold: detect.GetFloat(params, "grab_distance_threshold", 3.0),
-		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0.25),
+		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0),
+		desyncMargin:          detect.GetFloat(params, "desync_margin", 3.0),
 		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 2.0),
 		prevHasDisc:           make(map[string]bool),
 		lastReleaseFrame:      make(map[string]int),
@@ -49,16 +60,27 @@ func (d *State001) Reset() {
 func (d *State001) Configure(params map[string]any) error {
 	d.grabDistanceThreshold = detect.GetFloat(params, "grab_distance_threshold", d.grabDistanceThreshold)
 	d.closingVelocityScale = detect.GetFloat(params, "closing_velocity_scale", d.closingVelocityScale)
+	d.desyncMargin = detect.GetFloat(params, "desync_margin", d.desyncMargin)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
 	return nil
+}
+
+// latencySeconds is the possession-report latency credited to closing speed.
+func (d *State001) latencySeconds(ps *model.PlayerState) float64 {
+	if d.closingVelocityScale > 0 {
+		return d.closingVelocityScale
+	}
+	if ps.FrameDt > 0 {
+		return ps.FrameDt
+	}
+	return 0
 }
 
 func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	// Find disc position from any player's context or match data
 	// We check for possession changes (player gains disc)
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 		wasHolding := d.prevHasDisc[pid]
 		d.prevHasDisc[pid] = ps.HasDisc
@@ -88,13 +110,26 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			// Fallback: use player position if disc state unavailable
 			discPos = ps.Position
 		}
-		leftDist := ps.LeftHand.Distance(discPos)
-		rightDist := ps.RightHand.Distance(discPos)
+		// A zero hand vector is tracking loss, not a hand at the origin.
+		leftDist := math.Inf(1)
+		if !ps.LeftHand.IsZero() {
+			leftDist = ps.LeftHand.Distance(discPos)
+		}
+		rightDist := math.Inf(1)
+		if !ps.RightHand.IsZero() {
+			rightDist = ps.RightHand.Distance(discPos)
+		}
 		nearestHandDist := math.Min(leftDist, rightDist)
+		if math.IsInf(nearestHandDist, 1) {
+			continue
+		}
 
-		// Adjust for closing velocity: player moving towards disc
+		// Adjust for closing velocity: distance covered during the one
+		// frame of possession-report latency.
 		closingSpeed := ps.Speed
-		adjustedDist := nearestHandDist - (closingSpeed * d.closingVelocityScale)
+		latency := d.latencySeconds(ps)
+		credit := closingSpeed * latency
+		adjustedDist := nearestHandDist - credit
 		if adjustedDist < 0 {
 			adjustedDist = 0
 		}
@@ -107,10 +142,12 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 
-		// Desync guard: if RAW hand-to-disc distance > 8m, this is clearly
-		// a data timing artifact (disc position lags behind possession change),
-		// not a real extended-reach cheat.
-		if nearestHandDist > 6.0 {
+		// Desync guard: a RAW hand-to-disc distance far beyond what the
+		// threshold, the closing credit and the desync margin allow is a
+		// data timing artifact (disc position lags behind the possession
+		// change), not a real extended-reach cheat.
+		desyncGuard := d.grabDistanceThreshold + credit + d.desyncMargin
+		if nearestHandDist > desyncGuard {
 			continue
 		}
 
@@ -126,8 +163,11 @@ func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		metrics := map[string]float64{
 			"nearest_hand_distance": nearestHandDist,
 			"adjusted_distance":     adjustedDist,
-			"grab_range":            d.grabDistanceThreshold,
+			"threshold":             d.grabDistanceThreshold,
 			"closing_speed":         closingSpeed,
+			"latency_credit_s":      latency,
+			"closing_credit_m":      credit,
+			"desync_guard":          desyncGuard,
 			"excess":                excess,
 		}
 

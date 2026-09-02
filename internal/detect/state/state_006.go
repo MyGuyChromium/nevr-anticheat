@@ -33,13 +33,15 @@ func NewState006(params map[string]any) *State006 {
 			Inputs:           []string{"score_state"},
 			Warmup:           2,
 			Weight:           1.0,
-			IsAutoEnforce:    true,
+			// A suspended detector with no confirmed invariant must never
+			// advertise auto-enforce eligibility (config: auto_enforce = false).
+			IsAutoEnforce: false,
 		},
 	}
 	return d
 }
 
-func (d *State006) Reset()                         {}
+func (d *State006) Reset()                                {}
 func (d *State006) Configure(params map[string]any) error { return nil }
 
 func (d *State006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {

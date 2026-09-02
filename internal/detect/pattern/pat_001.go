@@ -7,10 +7,19 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+// maxThrowFrames bounds the per-player interval buffer.
+const maxThrowFrames = 50
+
 // Pat001 detects frame-perfect throw timing (PAT_001).
 //
 // STATUS: UNSAFE — regrab rhythm in Echo VR produces low coefficient of
 // variation naturally. Skilled players will false-positive. Disabled by default.
+//
+// New throws are detected by comparing ps.ThrowCount with the count seen on
+// the previous frame (per player), never with the length of the interval
+// buffer: the buffer is capped and cleared after a detection while
+// ThrowCount only grows, so using its length would append a phantom
+// "throw" on every subsequent frame.
 type Pat001 struct {
 	detect.BaseDetector
 	minThrowCount    int
@@ -18,7 +27,8 @@ type Pat001 struct {
 	maxStddev        float64
 	sigmoidSteepness float64
 
-	throwFrames map[string][]int
+	throwFrames    map[string][]int
+	prevThrowCount map[string]int
 }
 
 // NewPat001 creates a new PAT_001 Frame-Perfect Timing detector.
@@ -26,7 +36,7 @@ func NewPat001(params map[string]any) *Pat001 {
 	d := &Pat001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "PAT_001",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Frame-Perfect Timing",
 			DetectorCategory: "pattern",
 			Inputs:           []string{"throw_event"},
@@ -36,47 +46,64 @@ func NewPat001(params map[string]any) *Pat001 {
 		},
 		minThrowCount:    detect.GetInt(params, "min_throw_count", 8),
 		maxCoV:           detect.GetFloat(params, "max_cov", 0.05),
-		maxStddev:        detect.GetFloat(params, "max_stddev", 3.0),
+		maxStddev:        detect.GetFloatAlias(params, 3.0, "max_stddev", "max_stddev_frames"),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 20.0),
-		throwFrames:      make(map[string][]int),
 	}
+	d.Reset()
+	d.sanitize()
 	return d
+}
+
+func (d *Pat001) sanitize() {
+	if d.minThrowCount < 3 {
+		d.minThrowCount = 3
+	}
+	if d.minThrowCount > maxThrowFrames {
+		d.minThrowCount = maxThrowFrames
+	}
 }
 
 func (d *Pat001) Reset() {
 	d.throwFrames = make(map[string][]int)
+	d.prevThrowCount = make(map[string]int)
 }
 
 func (d *Pat001) Configure(params map[string]any) error {
 	d.minThrowCount = detect.GetInt(params, "min_throw_count", d.minThrowCount)
 	d.maxCoV = detect.GetFloat(params, "max_cov", d.maxCoV)
-	d.maxStddev = detect.GetFloat(params, "max_stddev", d.maxStddev)
+	d.maxStddev = detect.GetFloatAlias(params, d.maxStddev, "max_stddev", "max_stddev_frames")
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.sanitize()
 	return nil
 }
 
 func (d *Pat001) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 
-		// Detect throw event by checking ThrowCount increment
-		if ps.ThrowCount <= 0 {
+		prev, seen := d.prevThrowCount[pid]
+		d.prevThrowCount[pid] = ps.ThrowCount
+		if !seen && ps.ThrowCount > 1 {
+			// Joined mid-count (live batch boundary / reprocess): baseline only.
 			continue
 		}
-		prevCount := len(d.throwFrames[pid])
-		if ps.ThrowCount <= prevCount {
+		if ps.ThrowCount <= prev {
 			continue
 		}
 
-		// New throw detected
-		d.throwFrames[pid] = append(d.throwFrames[pid], frameIdx)
-		if len(d.throwFrames[pid]) > 50 {
-			d.throwFrames[pid] = d.throwFrames[pid][len(d.throwFrames[pid])-50:]
+		// New throw detected: record the release frame.
+		throwFrame := frameIdx
+		if ps.LastThrow != nil && ps.LastThrow.FrameIndex > 0 && ps.LastThrow.FrameIndex <= frameIdx {
+			throwFrame = ps.LastThrow.FrameIndex
 		}
+		frames := append(d.throwFrames[pid], throwFrame)
+		if len(frames) > maxThrowFrames {
+			frames = frames[len(frames)-maxThrowFrames:]
+		}
+		d.throwFrames[pid] = frames
 
-		frames := d.throwFrames[pid]
 		if len(frames) < d.minThrowCount {
 			continue
 		}
@@ -107,12 +134,12 @@ func (d *Pat001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			model.PatternEvidence{
 				DetectorSpecific: "frame_perfect_timing",
 				Metrics: map[string]float64{
-					"cov":            cov,
-					"stddev":         stddev,
-					"mean_interval":  meanInterval,
-					"throw_count":    float64(len(frames)),
-					"max_cov":        d.maxCoV,
-					"max_stddev":     d.maxStddev,
+					"cov":           cov,
+					"stddev":        stddev,
+					"mean_interval": meanInterval,
+					"throw_count":   float64(len(frames)),
+					"max_cov":       d.maxCoV,
+					"max_stddev":    d.maxStddev,
 				},
 				History: history,
 			},
@@ -127,7 +154,7 @@ func (d *Pat001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		)
 		events = append(events, ev)
 
-		// Reset after detection
+		// Reset the interval buffer after detection; the throw count baseline stays.
 		d.throwFrames[pid] = nil
 	}
 

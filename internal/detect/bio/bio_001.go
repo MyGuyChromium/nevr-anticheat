@@ -8,16 +8,33 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+// minSustainedWristFrames is the floor applied to min_violation_frames.
+// At 15 Hz a 2-frame streak is a single pair of samples, which one
+// interpolation hiccup or a tracking re-acquire can produce; three
+// consecutive frames (~0.2 s) is the shortest run we treat as evidence.
+const minSustainedWristFrames = 3
+
 // Bio001 detects impossible wrist rotation speeds (BIO_001).
+//
+// Sampling-rate caveat: the feature extractor computes the rate as
+// Quat.AngularDistance(prev, cur)/dt and AngularDistance is bounded by pi,
+// so the largest rate any source can express is pi/dt — 46.9 rad/s at the
+// bridge's 15 Hz poll (dt = 0.067 s), 94 rad/s at 30 Hz, 188 rad/s at 60 Hz.
+// The metric SATURATES at that value: a hand flipping 180 degrees every
+// frame and a hand spinning ten times per frame look identical. With the
+// default 50 rad/s threshold the detector is therefore unreachable on 15 Hz
+// telemetry; Reachable(dt) reports this so operators can see it. The
+// threshold is left at the documented physical limit rather than lowered
+// below the saturation point, because choosing a 15 Hz-attainable value
+// is a calibration decision that needs real data.
 type Bio001 struct {
 	detect.BaseDetector
 	maxWristAngularVelocity float64
 	minViolationFrames      int
-	sigmoidSteepness        float64
+	sigmoidSteepness        float64 // slope of the severity sigmoid on the rate/threshold ratio
 
-	// Separate maps per hand — avoids string concatenation in hot path.
-	leftViolations  map[string]int
-	rightViolations map[string]int
+	left  map[string]*streak
+	right map[string]*streak
 }
 
 // NewBio001 creates a new BIO_001 Impossible Wrist Rotation detector.
@@ -25,7 +42,7 @@ func NewBio001(params map[string]any) *Bio001 {
 	d := &Bio001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "BIO_001",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Impossible Wrist Rotation",
 			DetectorCategory: "bio",
 			Inputs:           []string{"hand_tracking", "wrist_angular_rate"},
@@ -34,44 +51,70 @@ func NewBio001(params map[string]any) *Bio001 {
 			IsAutoEnforce:    false,
 		},
 		maxWristAngularVelocity: detect.GetFloat(params, "max_wrist_angular_velocity", 50.0),
-		minViolationFrames:      detect.GetInt(params, "min_violation_frames", 2),
-		sigmoidSteepness:        detect.GetFloat(params, "sigmoid_steepness", 0.5),
-		leftViolations:  make(map[string]int),
-		rightViolations: make(map[string]int),
+		minViolationFrames:      detect.GetInt(params, "min_violation_frames", minSustainedWristFrames),
+		sigmoidSteepness:        detect.GetFloat(params, "sigmoid_steepness", 8.5),
+		left:                    make(map[string]*streak),
+		right:                   make(map[string]*streak),
 	}
+	d.applyFloor()
 	return d
 }
 
+func (d *Bio001) applyFloor() {
+	if d.minViolationFrames < minSustainedWristFrames {
+		d.minViolationFrames = minSustainedWristFrames
+	}
+}
+
 func (d *Bio001) Reset() {
-	d.leftViolations = make(map[string]int)
-	d.rightViolations = make(map[string]int)
+	d.left = make(map[string]*streak)
+	d.right = make(map[string]*streak)
 }
 
 func (d *Bio001) Configure(params map[string]any) error {
 	d.maxWristAngularVelocity = detect.GetFloat(params, "max_wrist_angular_velocity", d.maxWristAngularVelocity)
 	d.minViolationFrames = detect.GetInt(params, "min_violation_frames", d.minViolationFrames)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.applyFloor()
 	return nil
+}
+
+// SaturationRate returns the largest wrist rate expressible at a sampling
+// interval dt (pi/dt), or +Inf for dt <= 0.
+func (d *Bio001) SaturationRate(dt float64) float64 {
+	if dt <= 0 {
+		return math.Inf(1)
+	}
+	return math.Pi / dt
+}
+
+// Reachable reports whether the configured threshold can be exceeded at
+// all on a source with sampling interval dt.
+func (d *Bio001) Reachable(dt float64) bool {
+	return d.SaturationRate(dt) > d.maxWristAngularVelocity
 }
 
 func (d *Bio001) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
+		pid := ps.PlayerID
 		if ps.IsStunned {
 			continue
 		}
 		if ps.FrameDt < 0.01 {
 			continue
 		}
+		// Post-respawn immunity: hand poses jump to the spawn pose, which
+		// looks like an instantaneous rotation. Same guard as BIO_002.
+		if ps.IsImmune {
+			getStreak(d.left, pid).reset()
+			getStreak(d.right, pid).reset()
+			continue
+		}
 
-		// Check both hands using separate maps keyed by playerID only.
-		// No string concatenation in hot path.
-		pid := ps.PlayerID
-		d.checkHand(matchCtx, ps, pid, "left", ps.LeftWristAngularRate,
-			&ps.LeftHandSpeedStats, d.leftViolations, frameIdx, &events)
-		d.checkHand(matchCtx, ps, pid, "right", ps.RightWristAngularRate,
-			&ps.RightHandSpeedStats, d.rightViolations, frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "left", ps.LeftWristAngularRate, getStreak(d.left, pid), frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "right", ps.RightWristAngularRate, getStreak(d.right, pid), frameIdx, &events)
 	}
 
 	return events
@@ -82,30 +125,33 @@ func (d *Bio001) checkHand(
 	ps *model.PlayerState,
 	pid, handName string,
 	rate float64,
-	stats *model.WelfordAccumulator,
-	violations map[string]int,
+	s *streak,
 	frameIdx int,
 	events *[]model.DetectionEvent,
 ) {
+	// Per-hand wrist-rate baseline in rad/s, kept by the detector itself so
+	// the evidence compares like with like (PlayerState only carries
+	// hand-SPEED accumulators in m/s).
+	s.stats.Update(rate)
+	if rate > s.maxObserved {
+		s.maxObserved = rate
+	}
+
 	if rate > d.maxWristAngularVelocity {
-		violations[pid]++
+		s.consecutive++
 	} else {
-		violations[pid] = 0
+		s.reset()
 		return
 	}
 
-	consecutive := violations[pid]
-	if consecutive < d.minViolationFrames {
+	if !s.shouldEmit(d.minViolationFrames) {
 		return
 	}
+	s.lastEmitAt = s.consecutive
+	consecutive := s.consecutive
 
-	severity := model.SigmoidConfidence(rate, d.maxWristAngularVelocity*1.5, d.sigmoidSteepness)
-	confidence := model.SigmoidConfidence(float64(consecutive), float64(d.minViolationFrames), 1.0)
-	confidence = model.Clamp01(confidence * 0.9)
-
-	runningMean := stats.Mean
-	runningStdDev := stats.StdDev()
-	maxObserved := math.Max(rate, runningMean+3*runningStdDev)
+	severity := excessSeverity(rate, d.maxWristAngularVelocity, d.sigmoidSteepness)
+	confidence := sustainedConfidence(consecutive, d.minViolationFrames)
 
 	ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
 		severity, confidence,
@@ -113,9 +159,9 @@ func (d *Bio001) checkHand(
 			Hand:              handName,
 			AngularVelocity:   rate,
 			ConsecutiveFrames: consecutive,
-			RunningMean:       runningMean,
-			RunningStdDev:     runningStdDev,
-			MaxObserved:       maxObserved,
+			RunningMean:       s.stats.Mean,
+			RunningStdDev:     s.stats.StdDev(),
+			MaxObserved:       s.maxObserved,
 			FrameDt:           ps.FrameDt,
 			PhysicalLimit:     d.maxWristAngularVelocity,
 		},
@@ -123,12 +169,10 @@ func (d *Bio001) checkHand(
 		fmt.Sprintf("wrist_angular_rate: 0-%.1f rad/s", d.maxWristAngularVelocity),
 		model.CausalKey{
 			PlayerID:    pid,
-			FrameStart:  frameIdx - consecutive,
+			FrameStart:  frameIdx - consecutive + 1,
 			FrameEnd:    frameIdx,
 			AnomalyType: "wrist_rotation",
 		},
 	)
 	*events = append(*events, ev)
-
-	violations[pid] = 0
 }

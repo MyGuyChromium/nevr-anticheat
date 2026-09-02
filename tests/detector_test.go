@@ -416,17 +416,21 @@ func TestDetectors(t *testing.T) {
 			name:     "BIO_001/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// BIO_001 requires minViolationFrames(2) consecutive frames above threshold.
-				// Pre-seed one frame of violation, then the test frame fires on the second.
+				// BIO_001 requires at least 3 consecutive frames above threshold
+				// (min_violation_frames is floored at 3: at 15 Hz a 2-frame streak
+				// is a single sample pair). Pre-seed two frames of violation, then
+				// the test frame fires on the third.
 				d := bio.NewBio001(nil)
 				dc := cfg.GetDetectorConfig("BIO_001")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				ps := testutil.NewPlayerState("p1")
-				ps.FrameDt = 0.067
-				ps.RightWristAngularRate = 120.0 // way above 50 rad/s threshold
-				ps.LeftWristAngularRate = 5.0
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 99)
+				for fi := 98; fi <= 99; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.FrameDt = 0.067
+					ps.RightWristAngularRate = 120.0 // way above 50 rad/s threshold
+					ps.LeftWristAngularRate = 5.0
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
@@ -597,28 +601,31 @@ func TestDetectors(t *testing.T) {
 			name:     "MOV_003/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// Zero-inertia hack: instant 180-degree reversal at high speed.
-				// MOV_003 requires 2 consecutive frames of reversed velocity.
+				// Zero-inertia hack: instant 180-degree reversal at high speed,
+				// then the player KEEPS the new heading. MOV_003 confirms a
+				// reversal only after confirm_frames (3) frames on the new heading.
 				d := movement.NewMov003(nil)
 				dc := cfg.GetDetectorConfig("MOV_003")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				// Frame 98: moving fast in +X
+				// Frame 97: moving fast in +X
 				ps0 := testutil.NewPlayerState("p1")
 				ps0.Velocity = model.Vec3{20.0, 0, 0}
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 98)
-				// Frame 99: first reversal (instant 180 flip at high speed)
-				ps1 := testutil.NewPlayerState("p1")
-				ps1.Velocity = model.Vec3{-20.0, 0, 0}
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps1}, 99)
+				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 97)
+				// Frames 98-100: instant 180 flip at high speed, heading held
+				for fi := 98; fi <= 100; fi++ {
+					ps1 := testutil.NewPlayerState("p1")
+					ps1.Velocity = model.Vec3{-20.0, 0, 0}
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps1}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
-				// Frame 100: continued reversal — second consecutive > 175 deg at high speed
-				ps.Velocity = model.Vec3{20.0, 0, 0} // flipped back — 180 deg from frame 99
-				return mc, map[string]*model.PlayerState{"p1": ps}, 100
+				// Frame 101: third frame on the reversed heading — confirmed
+				ps.Velocity = model.Vec3{-20.0, 0, 0}
+				return mc, map[string]*model.PlayerState{"p1": ps}, 101
 			},
 			wantEvents: true,
 		},

@@ -34,12 +34,12 @@ type PlayerBehavioralProfile struct {
 
 // ThrowBehavioralProfile captures throwing patterns.
 type ThrowBehavioralProfile struct {
-	ThrowSpeedDistribution        Histogram          `json:"throw_speed_distribution"`
-	ReleaseAngleDistribution      Histogram          `json:"release_angle_distribution"`
+	ThrowSpeedDistribution         Histogram          `json:"throw_speed_distribution"`
+	ReleaseAngleDistribution       Histogram          `json:"release_angle_distribution"`
 	PossessionDurationDistribution Histogram          `json:"possession_duration_distribution"`
-	ThrowsPerMatch                WelfordAccumulator `json:"throws_per_match"`
-	PreferredHand                 string             `json:"preferred_hand"`
-	HandPreferenceRatio           float64            `json:"hand_preference_ratio"`
+	ThrowsPerMatch                 WelfordAccumulator `json:"throws_per_match"`
+	PreferredHand                  string             `json:"preferred_hand"`
+	HandPreferenceRatio            float64            `json:"hand_preference_ratio"`
 }
 
 // MovementBehavioralProfile captures movement patterns.
@@ -89,11 +89,29 @@ func NewHistogram(min, max float64, buckets int) Histogram {
 	}
 }
 
-// Add adds an observation to the histogram.
+// ensureCounts repairs a histogram whose Counts slice does not match
+// BucketCount (zero value with BucketCount set, or JSON-decoded with a
+// truncated array) so indexing can never panic.
+func (h *Histogram) ensureCounts() {
+	if len(h.Counts) == h.BucketCount {
+		return
+	}
+	fixed := make([]int64, h.BucketCount)
+	copy(fixed, h.Counts)
+	h.Counts = fixed
+}
+
+// Add adds an observation to the histogram. NaN and Inf observations are
+// dropped (they carry no distribution information and int(NaN) is
+// MinInt64, which would index Counts negatively).
 func (h *Histogram) Add(value float64) {
 	if h.BucketCount <= 0 || h.BucketMax <= h.BucketMin {
 		return
 	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return
+	}
+	h.ensureCounts()
 	h.TotalCount++
 	if value < h.BucketMin {
 		h.Underflow++
@@ -105,18 +123,35 @@ func (h *Histogram) Add(value float64) {
 	}
 	bucketWidth := (h.BucketMax - h.BucketMin) / float64(h.BucketCount)
 	idx := int((value - h.BucketMin) / bucketWidth)
+	if idx < 0 {
+		idx = 0
+	}
 	if idx >= h.BucketCount {
 		idx = h.BucketCount - 1
 	}
 	h.Counts[idx]++
 }
 
+// Comparable reports whether two histograms share the same bucket layout
+// (count and range); bucket-wise comparison is meaningless otherwise.
+func (h *Histogram) Comparable(other *Histogram) bool {
+	if other == nil {
+		return false
+	}
+	return h.BucketCount == other.BucketCount &&
+		h.BucketMin == other.BucketMin &&
+		h.BucketMax == other.BucketMax
+}
+
 // BhattacharyyaCoefficient computes the Bhattacharyya coefficient between two histograms.
-// Returns a value in [0, 1] where 1 = identical distributions.
+// Returns a value in [0, 1] where 1 = identical distributions, and 0 when the
+// histograms have different bucket layouts or either is empty.
 func (h *Histogram) BhattacharyyaCoefficient(other *Histogram) float64 {
-	if h.BucketCount != other.BucketCount || h.TotalCount == 0 || other.TotalCount == 0 {
+	if !h.Comparable(other) || h.BucketCount <= 0 || h.TotalCount == 0 || other.TotalCount == 0 {
 		return 0
 	}
+	h.ensureCounts()
+	other.ensureCounts()
 	// Normalize by bucket counts only (excluding underflow/overflow)
 	hBucketTotal := h.TotalCount - h.Underflow - h.Overflow
 	oBucketTotal := other.TotalCount - other.Underflow - other.Overflow

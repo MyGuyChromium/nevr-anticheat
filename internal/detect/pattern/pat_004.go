@@ -2,6 +2,8 @@ package pattern
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -62,7 +64,7 @@ func (d *Pat004) RecordDetection(playerID, category string) {
 func (d *Pat004) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	for _, ps := range players {
+	for _, ps := range detect.SortedPlayers(players) {
 		pid := ps.PlayerID
 
 		cats := d.playerCategories[pid]
@@ -79,14 +81,13 @@ func (d *Pat004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		severity := model.SigmoidConfidence(float64(catCount), float64(d.minCategories), d.sigmoidSteepness)
 		confidence := model.Clamp01(severity * 0.9)
 
-		// List categories
-		catList := ""
+		// List categories (sorted for reproducible evidence)
+		names := make([]string, 0, len(cats))
 		for c := range cats {
-			if catList != "" {
-				catList += ", "
-			}
-			catList += c
+			names = append(names, c)
 		}
+		sort.Strings(names)
+		catList := strings.Join(names, ", ")
 
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
 			severity, confidence,
