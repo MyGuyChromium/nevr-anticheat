@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -28,15 +29,31 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
+	defaults := ingest.DefaultServerConfig()
+
 	configPath := flag.String("config", "", "Path to config file")
 	listenAddr := flag.String("listen", ":8080", "Telemetry listen address")
 	metricsAddr := flag.String("metrics", ":9090", "Metrics listen address")
+	allowUnauth := flag.Bool("allow-unauthenticated", false,
+		"Run without NEVR_AC_AUTH_TOKEN (INSECURE; also enabled by NEVR_AC_ALLOW_UNAUTH=1)")
+	maxMatches := flag.Int("max-matches", ingest.DefaultMaxMatches, "Maximum concurrently tracked live matches")
+	maxPlayers := flag.Int("max-players", defaults.MaxPlayersPerMatch, "Maximum players per live match")
+	maxConns := flag.Int("max-connections", defaults.MaxConnectionsPerServer, "Maximum concurrent telemetry connections")
+	maxFrameSize := flag.Int("max-message-bytes", defaults.MaxFrameSize, "Maximum bytes per WebSocket message")
+	maxFrameRate := flag.Int("max-frame-rate", defaults.MaxFrameRatePerPlayer, "Maximum frames per second per player")
+	idleTimeout := flag.Duration("idle-timeout", defaults.ReadTimeout, "Disconnect a peer silent for this long")
+	staleAfter := flag.Duration("stale-match-after", 30*time.Minute, "Finalize a live match idle for this long")
+	persistEvery := flag.Duration("persist-interval", ingest.DefaultPersistInterval, "How often live match context is re-persisted")
 	flag.Parse()
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
@@ -44,7 +61,7 @@ func main() {
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer store.Close()
 
@@ -52,10 +69,16 @@ func main() {
 		logger.Warn("database file is large", "size_mb", fi.Size()/1024/1024, "path", cfg.General.DBPath)
 	}
 
-	// Run v2 migrations
+	// Run v2 migrations. A failed migration means telemetry_frames /
+	// match_contexts may not exist, so refusing to start is the only honest
+	// option: accepting telemetry we cannot store would silently lose it.
 	if err := sqlite.RunMigrationsV2(store.DB(), logger); err != nil {
-		logger.Error("migration error", "error", err)
+		logger.Error("migration error; refusing to start", "error", err)
+		return 1
 	}
+
+	// Metrics registry shared by the ingest server and match manager.
+	m := metrics.NewMetrics()
 
 	// Wire history provider so PAT_003 can query cross-match data
 	historyProvider := sqlite.NewStoreHistoryProvider(store)
@@ -69,33 +92,51 @@ func main() {
 	// Inline detection is a convenience for immediate feedback. The canonical
 	// analysis path is async reprocessing via the CLI (reprocess-match, etc.).
 	matchMgr := ingest.NewMatchManager(cfg, store, detectorFactory, logger)
+	matchMgr.SetMetrics(m)
+	matchMgr.SetLimits(*maxMatches, *maxPlayers)
+	matchMgr.SetPersistInterval(*persistEvery)
 
 	// Telemetry server
-	serverCfg := ingest.DefaultServerConfig()
+	serverCfg := defaults
 	serverCfg.ListenAddr = *listenAddr
 	serverCfg.AuthToken = os.Getenv("NEVR_AC_AUTH_TOKEN")
+	serverCfg.AllowUnauthenticated = *allowUnauth || os.Getenv("NEVR_AC_ALLOW_UNAUTH") == "1"
+	serverCfg.MaxConnectionsPerServer = *maxConns
+	serverCfg.MaxFrameSize = *maxFrameSize
+	serverCfg.MaxFrameRatePerPlayer = *maxFrameRate
+	serverCfg.MaxPlayersPerMatch = *maxPlayers
+	serverCfg.ReadTimeout = *idleTimeout
 
-	telemetryServer := ingest.NewServer(serverCfg, matchMgr.HandleFrames, logger)
+	telemetryServer := ingest.NewServer(serverCfg, matchMgr, logger)
+	telemetryServer.SetMetrics(m)
+
+	// Bind before starting anything else so a bad address fails fast.
+	if err := telemetryServer.Listen(); err != nil {
+		if errors.Is(err, ingest.ErrAuthTokenRequired) {
+			logger.Error("refusing to start: NEVR_AC_AUTH_TOKEN is not set; pass --allow-unauthenticated (or NEVR_AC_ALLOW_UNAUTH=1) to run an open ingest endpoint deliberately")
+		} else {
+			logger.Error("telemetry listener failed", "error", err)
+		}
+		return 1
+	}
 
 	// Metrics endpoint
-	// TODO: wire metrics into MatchManager and Pipeline for full observability
-	m := metrics.NewMetrics()
 	promExporter := metrics.NewPrometheusExporter(m)
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("/metrics", promExporter.Handler())
 	metricsServer := &http.Server{Addr: *metricsAddr, Handler: metricsMux}
 
-	// Background cleanup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Background maintenance
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				matchMgr.CleanupStaleMatches(30 * time.Minute)
+				matchMgr.CleanupStaleMatches(*staleAfter)
 				telemetryServer.CleanupStaleRateLimiters()
 				// Prune DERIVED analysis outputs only. Detection events and scores are
 				// recomputable from stored telemetry via reprocessing.
@@ -119,36 +160,54 @@ func main() {
 	// Start metrics server
 	go func() {
 		logger.Info("metrics server starting", "addr", *metricsAddr)
-		if err := metricsServer.ListenAndServe(); err != http.ErrServerClosed {
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics server error", "error", err)
 		}
 	}()
 
-	// Start telemetry server
+	// Start telemetry server; a failure here must take the process down.
+	serverErr := make(chan error, 1)
 	go func() {
-		if err := telemetryServer.Start(ctx); err != nil {
-			logger.Error("telemetry server error", "error", err)
-			cancel()
-		}
+		serverErr <- telemetryServer.Start(ctx)
 	}()
 
-	// Wait for signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	logger.Info("NEVR telemetry ingestion server running",
-		"telemetry", *listenAddr,
+		"telemetry", telemetryServer.Addr().String(),
 		"metrics", *metricsAddr,
 		"mode", cfg.General.Mode,
+		"authenticated", serverCfg.AuthToken != "",
+		"max_matches", *maxMatches,
 	)
 
-	<-sigCh
-	logger.Info("shutting down...")
+	exitCode := 0
+	select {
+	case sig := <-sigCh:
+		logger.Info("shutting down...", "signal", sig.String())
+	case err := <-serverErr:
+		if err != nil {
+			logger.Error("telemetry server error", "error", err)
+			exitCode = 1
+		} else {
+			logger.Info("telemetry server stopped")
+		}
+	}
 	cancel()
 
+	// Graceful shutdown order: stop accepting and close WebSocket
+	// connections, wait for in-flight batches, finalize live matches (persist
+	// context, summary, scores), then the deferred store.Close runs.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	metricsServer.Shutdown(shutdownCtx)
+	if err := telemetryServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Warn("telemetry server shutdown", "error", err)
+	}
+	matchMgr.Close()
+	_ = metricsServer.Shutdown(shutdownCtx)
+	logger.Info("shutdown complete")
+	return exitCode
 }
 
 func buildDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider) []detect.Detector {
@@ -194,9 +253,11 @@ func buildDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider)
 		if !dc.Enabled {
 			continue
 		}
-		params := dc.Params
-		if params == nil {
-			params = make(map[string]any)
+		// Copy the params map so injecting the history provider does not
+		// mutate the shared config for every match's detector set.
+		params := make(map[string]any, len(dc.Params)+1)
+		for k, v := range dc.Params {
+			params[k] = v
 		}
 		// Inject history provider for PAT_003 (cross-match consistency)
 		if e.id == "PAT_003" && historyProvider != nil {

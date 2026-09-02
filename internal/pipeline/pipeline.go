@@ -21,12 +21,23 @@
 //
 // The pipeline does NOT make enforcement decisions. It produces scored
 // detection events that feed into moderator review cases.
+//
+// # Live (incremental) mode
+//
+// With SetSkipReset(true) the pipeline treats successive ProcessMatch calls
+// as consecutive slices of ONE match: detector, scorer, dedup and rate-limit
+// state persist, and so does the per-player PlayerState map, so kinematics,
+// throw detection, warmup and history buffers continue across batches even
+// when the producer sends one frame per batch. Call Finalize at match end to
+// close the open incidents held by the deduplicator.
 package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
@@ -35,6 +46,14 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 )
+
+// DefaultMergeWindow is the dedup merge window in frames (~1.3 s at 15 Hz).
+const DefaultMergeWindow = 20
+
+// pat004MinConfidence is the confidence floor for events fed to PAT_004.
+// Low-confidence events (replay artifacts, borderline triggers) should not
+// cascade into composite multi-cheat flags.
+const pat004MinConfidence = 0.7
 
 // MatchResult holds the complete output of a match analysis.
 type MatchResult struct {
@@ -45,6 +64,23 @@ type MatchResult struct {
 	DetectionEvents []model.DetectionEvent          `json:"detection_events"`
 	ReviewCases     []model.ReviewCase              `json:"review_cases"`
 	Duration        time.Duration                   `json:"duration"`
+
+	// InvalidFrameReasons counts rejected frames by validation reason code.
+	InvalidFrameReasons map[string]int `json:"invalid_frame_reasons,omitempty"`
+	// InvalidFramesByPlayer counts rejected frames per player.
+	InvalidFramesByPlayer map[string]int `json:"invalid_frames_by_player,omitempty"`
+	// SanitizedFrames counts in-place repairs (NaN hands, bad disc, ...) by reason.
+	SanitizedFrames map[string]int `json:"sanitized_frames,omitempty"`
+	// EventsMerged is the number of raw detector emissions folded into an
+	// existing incident by the deduplicator during this call.
+	EventsMerged int `json:"events_merged"`
+	// EventsRateLimited is the number of incidents dropped by the per
+	// player/detector cap during this call; EventsRateLimitedByKey breaks it
+	// down by "player:detector".
+	EventsRateLimited      int            `json:"events_rate_limited"`
+	EventsRateLimitedByKey map[string]int `json:"events_rate_limited_by_key,omitempty"`
+	// EventsInvalid counts detector emissions dropped by DetectionEvent.Validate.
+	EventsInvalid int `json:"events_invalid"`
 }
 
 // Pipeline orchestrates frame processing through detectors and scoring.
@@ -59,12 +95,26 @@ type Pipeline struct {
 	logger      *slog.Logger
 	shadowIDs   map[string]bool
 	skipReset   bool
+
+	// players persists across ProcessMatch calls while skipReset is set so
+	// live batches accumulate kinematic and throw state.
+	players map[string]*model.PlayerState
+
+	// invalidLogged throttles per (player, reason) warnings across batches.
+	invalidLogged map[string]int
 }
 
-// SetSkipReset controls whether ProcessMatch skips resetting detector and scorer state.
-// Used by the live pipeline to preserve per-match state across frame batches.
+// SetSkipReset controls whether ProcessMatch skips resetting detector, scorer,
+// dedup, rate-limit and per-player state. Used by the live pipeline to
+// preserve per-match state across frame batches.
 func (p *Pipeline) SetSkipReset(skip bool) {
 	p.skipReset = skip
+}
+
+// Players returns the persistent per-player state map. The map is owned by
+// the pipeline; callers must not mutate it while ProcessMatch may run.
+func (p *Pipeline) Players() map[string]*model.PlayerState {
+	return p.players
 }
 
 // NewPipeline creates a new detection pipeline.
@@ -83,16 +133,20 @@ func NewPipeline(
 			shadowIDs[id] = true
 		}
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Pipeline{
-		detectors:   detectors,
-		scorer:      scorer,
-		dedup:       NewDeduplicator(20),
-		rateLimiter: NewRateLimiter(cfg.Pipeline.MaxEventsPerPlayerPerDetector),
-		validator:   NewFrameValidator(cfg),
-		extractor:   NewFeatureExtractor(cfg.Pipeline.HistoryWindow),
-		cfg:         cfg,
-		logger:      logger,
-		shadowIDs:   shadowIDs,
+		detectors:     detectors,
+		scorer:        scorer,
+		dedup:         NewDeduplicator(DefaultMergeWindow),
+		rateLimiter:   NewRateLimiter(cfg.Pipeline.MaxEventsPerPlayerPerDetector),
+		validator:     NewFrameValidator(cfg),
+		extractor:     NewFeatureExtractor(cfg.Pipeline.HistoryWindow),
+		cfg:           cfg,
+		logger:        logger,
+		shadowIDs:     shadowIDs,
+		invalidLogged: make(map[string]int),
 	}
 }
 
@@ -106,53 +160,58 @@ func (p *Pipeline) detectorCategory(detectorID string) string {
 	return detectorID
 }
 
-// ProcessMatch runs the full detection pipeline over a match.
+// resetState clears every piece of per-match state.
+func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
+	for _, d := range p.detectors {
+		d.Reset()
+	}
+	p.scorer.Reset()
+	p.dedup.Reset()
+	p.rateLimiter.Reset()
+	p.invalidLogged = make(map[string]int)
+	p.players = make(map[string]*model.PlayerState, len(matchCtx.PlayerIDs))
+	for _, pid := range matchCtx.PlayerIDs {
+		p.players[pid] = &model.PlayerState{
+			PlayerID: pid,
+			Team:     matchCtx.TeamAssignments[pid],
+		}
+	}
+}
+
+// ProcessMatch runs the full detection pipeline over a match (or, in live
+// mode, over the next slice of one).
 func (p *Pipeline) ProcessMatch(
 	ctx context.Context,
 	matchCtx *model.MatchContext,
 	frames []model.PlayerTelemetryFrame,
 ) (*MatchResult, error) {
 	start := time.Now()
-	result := &MatchResult{
-		MatchID:      matchCtx.MatchID,
-		PlayerScores: make(map[string]model.SuspicionScore),
+	result := newMatchResult(matchCtx.MatchID)
+
+	// Reset all state (skipped for incremental live processing)
+	if !p.skipReset || p.players == nil {
+		p.resetState(matchCtx)
 	}
 
-	// Reset all detector state (skipped for incremental live processing)
-	if !p.skipReset {
-		for _, d := range p.detectors {
-			d.Reset()
-		}
-		p.scorer.Reset()
-		p.dedup.Reset()
-		p.rateLimiter.Reset()
-	}
-
-	// Build player states
-	players := make(map[string]*model.PlayerState)
-	for _, pid := range matchCtx.PlayerIDs {
-		players[pid] = &model.PlayerState{
-			PlayerID: pid,
-			Team:     matchCtx.TeamAssignments[pid],
-		}
-	}
-
-	// Group frames by index
+	// Group frames by index and process them in ascending index order. Only
+	// indices present in this call are visited (a live match at frame 54k
+	// must not scan 54k empty slots per poll).
 	frameGroups := make(map[int][]model.PlayerTelemetryFrame)
-	maxFrame := 0
 	for _, f := range frames {
 		frameGroups[f.FrameIndex] = append(frameGroups[f.FrameIndex], f)
-		if f.FrameIndex > maxFrame {
-			maxFrame = f.FrameIndex
-		}
 	}
+	indices := make([]int, 0, len(frameGroups))
+	for fi := range frameGroups {
+		indices = append(indices, fi)
+	}
+	sort.Ints(indices)
 
-	// Process frames in order
-	for fi := 0; fi <= maxFrame; fi++ {
-		pFrames, ok := frameGroups[fi]
-		if !ok {
-			continue
-		}
+	// eligible caches, per frame, the subset of framePlayers that has passed
+	// a given warmup length.
+	eligible := make(map[int]map[string]*model.PlayerState)
+
+	for _, fi := range indices {
+		pFrames := frameGroups[fi]
 
 		select {
 		case <-ctx.Done():
@@ -160,22 +219,33 @@ func (p *Pipeline) ProcessMatch(
 		default:
 		}
 
-		// Validate and update player states
-		validFrame := false
-		for _, pf := range pFrames {
-			if err := p.validator.Validate(&pf, matchCtx); err != nil {
-				result.InvalidFrames++
+		// Validate and update player states. framePlayers holds only the
+		// players that produced a valid frame at this index; stale PlayerState
+		// from earlier frames is never re-scored.
+		framePlayers := make(map[string]*model.PlayerState, len(pFrames))
+		sort.SliceStable(pFrames, func(i, j int) bool { return pFrames[i].PlayerID < pFrames[j].PlayerID })
+		for i := range pFrames {
+			pf := &pFrames[i]
+			sanitized, err := p.validator.Validate(pf, matchCtx)
+			if err != nil {
+				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, err)
 				continue
 			}
-			validFrame = true
-			ps, ok := players[pf.PlayerID]
-			if !ok {
-				ps = &model.PlayerState{PlayerID: pf.PlayerID}
-				players[pf.PlayerID] = ps
+			for _, s := range sanitized {
+				result.SanitizedFrames[s]++
 			}
-			p.extractor.UpdatePlayerState(ps, &pf, matchCtx)
+			ps, ok := p.players[pf.PlayerID]
+			if !ok {
+				ps = &model.PlayerState{PlayerID: pf.PlayerID, Team: matchCtx.TeamAssignments[pf.PlayerID]}
+				p.players[pf.PlayerID] = ps
+			}
+			if pf.Team != "" {
+				ps.Team = pf.Team
+			}
+			p.extractor.UpdatePlayerState(ps, pf, matchCtx)
+			framePlayers[pf.PlayerID] = ps
 		}
-		if !validFrame {
+		if len(framePlayers) == 0 {
 			continue
 		}
 		result.FramesProcessed++
@@ -184,76 +254,184 @@ func (p *Pipeline) ProcessMatch(
 		// CONFIRMED from real replay: players teleport during round transitions, causing
 		// massive false positives from MOV_002 and other spatial detectors.
 		activePhase := true
-		for _, pf := range pFrames {
-			if pf.GamePhase != "" && !matchCtx.IsActivePhase(pf.GamePhase) {
+		for i := range pFrames {
+			if pFrames[i].GamePhase != "" && !matchCtx.IsActivePhase(pFrames[i].GamePhase) {
 				activePhase = false
 				break
 			}
 		}
-
-		// Run detectors (only during active gameplay)
-		var frameEvents []model.DetectionEvent
 		if !activePhase {
-			// Still update feature extractor (above) to maintain state continuity,
-			// but don't run detectors during non-active phases.
+			// Feature extractor state was updated above to maintain continuity,
+			// but detectors do not run during non-active phases.
 			continue
 		}
-		for _, det := range p.detectors {
-			if fi < det.WarmupFrames() {
-				continue
-			}
-			events := det.Evaluate(matchCtx, players, fi)
-			for i := range events {
-				if p.shadowIDs[events[i].DetectorID] {
-					events[i].IsShadow = true
-				}
-				frameEvents = append(frameEvents, events[i])
-			}
-		}
 
-		// Feed detection events to PAT_004 (composite multi-cheat)
-		for _, ev := range frameEvents {
-			// Only count high-confidence events toward composite multi-cheat detection.
-			// Low-confidence events (replay artifacts, borderline triggers) should not
-			// cascade into PAT_004 flags.
-			if ev.Confidence >= 0.7 {
-				category := p.detectorCategory(ev.DetectorID)
-				for _, det := range p.detectors {
-					if pat, ok := det.(*pattern.Pat004); ok {
-						pat.RecordDetection(ev.PlayerID, category)
+		// Run detectors. Warmup is per player: a detector only sees players
+		// that have accumulated more than WarmupFrames() valid frames, so a
+		// late joiner or reconnecting player is not evaluated on an empty
+		// history.
+		for k := range eligible {
+			delete(eligible, k)
+		}
+		var frameEvents []model.DetectionEvent
+		for _, det := range p.detectors {
+			warm := det.WarmupFrames()
+			subset, ok := eligible[warm]
+			if !ok {
+				subset = make(map[string]*model.PlayerState, len(framePlayers))
+				for pid, ps := range framePlayers {
+					if ps.FrameCount > warm {
+						subset[pid] = ps
 					}
 				}
+				eligible[warm] = subset
+			}
+			if len(subset) == 0 {
+				continue
+			}
+			events := det.Evaluate(matchCtx, subset, fi)
+			sortEmissions(events)
+			for i := range events {
+				ev := events[i]
+				if err := ev.Validate(); err != nil {
+					result.EventsInvalid++
+					p.logger.Warn("dropping invalid detection event",
+						"detector", ev.DetectorID, "player", ev.PlayerID, "frame", fi, "error", err)
+					continue
+				}
+				if p.shadowIDs[ev.DetectorID] {
+					ev.IsShadow = true
+				}
+				frameEvents = append(frameEvents, ev)
 			}
 		}
 
-		// Deduplicate
-		frameEvents = p.dedup.Deduplicate(frameEvents)
-
-		// Rate limit
-		frameEvents = p.rateLimiter.Filter(frameEvents)
-
-		// Score
-		for _, ev := range frameEvents {
-			p.scorer.IngestEvent(ev)
-			result.DetectionEvents = append(result.DetectionEvents, ev)
-
-			if !ev.IsShadow {
-				p.logger.Info("detection",
-					"detector", ev.DetectorID,
-					"player", ev.PlayerID,
-					"severity", fmt.Sprintf("%.2f", ev.Severity),
-					"confidence", fmt.Sprintf("%.2f", ev.Confidence),
-					"observed", ev.ObservedValue,
-				)
-			}
-		}
+		// Deduplicate: fold this frame's emissions into open incidents and
+		// emit the incidents that have closed.
+		mergedBefore := p.dedup.MergedCount()
+		closed := p.dedup.Deduplicate(frameEvents, fi)
+		result.EventsMerged += int(p.dedup.MergedCount() - mergedBefore)
+		p.emit(closed, result)
 	}
 
-	// Apply correlation bonus for players with detections across multiple categories
+	// Offline mode: the match is complete, close every open incident.
+	if !p.skipReset {
+		p.emit(p.dedup.Flush(), result)
+	}
+
+	// Apply correlation bonus for players with detections across multiple
+	// categories. The scorer keeps the bonus idempotent, so calling it once
+	// per ProcessMatch is safe in live mode.
 	p.scorer.ApplyCorrelationBonus()
 
 	// Collect final scores
 	result.PlayerScores = p.scorer.GetAllScores()
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// Finalize closes every open dedup incident (live match end), scores the
+// resulting events and returns them so the caller can persist them.
+func (p *Pipeline) Finalize(matchCtx *model.MatchContext) *MatchResult {
+	result := newMatchResult(matchCtx.MatchID)
+	p.emit(p.dedup.Flush(), result)
+	p.scorer.ApplyCorrelationBonus()
+	result.PlayerScores = p.scorer.GetAllScores()
+	return result
+}
+
+// emit runs closed incidents through the rate limiter, scoring, the PAT_004
+// feed and logging, appending the kept events to result.
+func (p *Pipeline) emit(events []model.DetectionEvent, result *MatchResult) {
+	if len(events) == 0 {
+		return
+	}
+	kept, dropped := p.rateLimiter.Filter(events)
+	for key, n := range dropped {
+		result.EventsRateLimited += n
+		if result.EventsRateLimitedByKey[key] == 0 {
+			p.logger.Warn("detection events rate limited; later incidents for this player/detector are not stored",
+				"match", result.MatchID, "key", key, "cap", p.cfg.Pipeline.MaxEventsPerPlayerPerDetector)
+		}
+		result.EventsRateLimitedByKey[key] += n
+	}
+	for _, ev := range kept {
+		p.scorer.IngestEvent(ev)
+		result.DetectionEvents = append(result.DetectionEvents, ev)
+
+		if ev.IsShadow {
+			continue
+		}
+
+		// Feed PAT_004 (composite multi-cheat) only with events that are
+		// non-shadow, deduplicated and not rate limited, so a composite flag
+		// can never be built from detections that are never scored.
+		if ev.Confidence >= pat004MinConfidence && ev.DetectorID != "PAT_004" {
+			category := p.detectorCategory(ev.DetectorID)
+			for _, det := range p.detectors {
+				if pat, ok := det.(*pattern.Pat004); ok {
+					pat.RecordDetection(ev.PlayerID, category)
+				}
+			}
+		}
+
+		p.logger.Info("detection",
+			"detector", ev.DetectorID,
+			"player", ev.PlayerID,
+			"severity", fmt.Sprintf("%.2f", ev.Severity),
+			"confidence", fmt.Sprintf("%.2f", ev.Confidence),
+			"frames", fmt.Sprintf("%d-%d", ev.FrameRangeStart, ev.FrameRangeEnd),
+			"merged", ev.MergedCount,
+			"observed", ev.ObservedValue,
+		)
+	}
+}
+
+// recordInvalid accounts a rejected frame and logs it with throttling.
+func (p *Pipeline) recordInvalid(result *MatchResult, matchID, playerID string, err error) {
+	result.InvalidFrames++
+	reason := "invalid"
+	var verr *ValidationError
+	if errors.As(err, &verr) {
+		reason = verr.Reason
+	}
+	result.InvalidFrameReasons[reason]++
+	if playerID != "" {
+		result.InvalidFramesByPlayer[playerID]++
+	}
+	key := playerID + ":" + reason
+	n := p.invalidLogged[key] + 1
+	p.invalidLogged[key] = n
+	// First occurrence, then every 1000th, so a persistently broken player
+	// or a physics mismatch stays visible without flooding the log.
+	if n == 1 || n%1000 == 0 {
+		p.logger.Warn("telemetry frame rejected",
+			"match", matchID, "player", playerID, "reason", reason, "count", n, "error", err)
+	}
+}
+
+func newMatchResult(matchID string) *MatchResult {
+	return &MatchResult{
+		MatchID:                matchID,
+		PlayerScores:           make(map[string]model.SuspicionScore),
+		InvalidFrameReasons:    make(map[string]int),
+		InvalidFramesByPlayer:  make(map[string]int),
+		SanitizedFrames:        make(map[string]int),
+		EventsRateLimitedByKey: make(map[string]int),
+	}
+}
+
+// sortEmissions orders one detector's per-frame emissions deterministically
+// regardless of the detector's internal map iteration order.
+func sortEmissions(evs []model.DetectionEvent) {
+	sort.SliceStable(evs, func(i, j int) bool {
+		a, b := evs[i], evs[j]
+		if a.PlayerID != b.PlayerID {
+			return a.PlayerID < b.PlayerID
+		}
+		if a.FrameRangeStart != b.FrameRangeStart {
+			return a.FrameRangeStart < b.FrameRangeStart
+		}
+		return a.CausalKey.AnomalyType < b.CausalKey.AnomalyType
+	})
 }
