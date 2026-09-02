@@ -55,7 +55,7 @@ func NewMov005(params map[string]any) *Mov005 {
 			IsAutoEnforce:    false,
 		},
 		windowSeconds:       detect.GetFloat(params, "window_seconds", 10.0),
-		maxBoostsPerWindow:  detect.GetIntAlias(params, 8, "max_boosts_per_window", "max_boosts_per_10s"),
+		maxBoostsPerWindow:  detect.GetIntAlias(params, 25, "max_boosts_per_window", "max_boosts_per_10s"),
 		maxConsecutive:      detect.GetInt(params, "max_consecutive", 5),
 		rechargePauseFrames: detect.GetInt(params, "recharge_pause_frames", 10),
 		minSequences:        detect.GetIntAlias(params, 2, "min_sequences", "min_sequences_to_surface"),

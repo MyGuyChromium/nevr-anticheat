@@ -44,7 +44,7 @@ func NewPat001(params map[string]any) *Pat001 {
 			Weight:           0.7,
 			IsAutoEnforce:    false,
 		},
-		minThrowCount:    detect.GetInt(params, "min_throw_count", 8),
+		minThrowCount:    detect.GetInt(params, "min_throw_count", 12),
 		maxCoV:           detect.GetFloat(params, "max_cov", 0.05),
 		maxStddev:        detect.GetFloatAlias(params, 3.0, "max_stddev", "max_stddev_frames"),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 20.0),

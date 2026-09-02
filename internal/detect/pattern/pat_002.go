@@ -45,8 +45,8 @@ func NewPat002(params map[string]any) *Pat002 {
 			Weight:           0.7,
 			IsAutoEnforce:    false,
 		},
-		minThrowCount:    detect.GetInt(params, "min_throw_count", 8),
-		minReleaseSpread: detect.GetFloat(params, "min_release_spread", 0.02),
+		minThrowCount:    detect.GetInt(params, "min_throw_count", 12),
+		minReleaseSpread: detect.GetFloat(params, "min_release_spread", 0.01),
 		minReleaseSpeed:  detect.GetFloat(params, "min_release_speed", 0),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 50.0),
 	}

@@ -41,7 +41,7 @@ func NewState002(params map[string]any) *State002 {
 			Weight:           0.9,
 			IsAutoEnforce:    false,
 		},
-		minStunFrames:    detect.GetInt(params, "min_stun_frames", 30),
+		minStunFrames:    detect.GetInt(params, "min_stun_frames", 20),
 		minStunSeconds:   detect.GetFloat(params, "min_stun_seconds", 0),
 		minIncidents:     detect.GetIntAlias(params, 2, "min_incidents", "min_incidents_to_surface"),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 0.2),

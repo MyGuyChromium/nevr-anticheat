@@ -21,7 +21,7 @@ import (
 type State001 struct {
 	detect.BaseDetector
 	grabDistanceThreshold float64
-	closingVelocityScale  float64 // seconds of latency credited; <= 0 means one frame (FrameDt)
+	closingVelocityScale  float64 // seconds of latency credited (shipped 0.25); <= 0 means one frame (FrameDt)
 	desyncMargin          float64
 	sigmoidSteepness      float64
 
@@ -43,7 +43,7 @@ func NewState001(params map[string]any) *State001 {
 			IsAutoEnforce:    false,
 		},
 		grabDistanceThreshold: detect.GetFloat(params, "grab_distance_threshold", 3.0),
-		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0),
+		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0.25),
 		desyncMargin:          detect.GetFloat(params, "desync_margin", 3.0),
 		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 2.0),
 		prevHasDisc:           make(map[string]bool),

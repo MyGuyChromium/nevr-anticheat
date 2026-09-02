@@ -61,7 +61,7 @@ func NewMov002(params map[string]any) *Mov002 {
 			Weight:           1.0,
 			IsAutoEnforce:    true,
 		},
-		teleportThreshold:      detect.GetFloat(params, "teleport_threshold", 5.0),
+		teleportThreshold:      detect.GetFloat(params, "teleport_threshold", 8.0),
 		velocityMismatchFactor: detect.GetFloat(params, "velocity_mismatch_factor", 3.0),
 		maxFrameGap:            detect.GetInt(params, "max_frame_gap", 5),
 		sigmoidSteepness:       detect.GetFloat(params, "sigmoid_steepness", 0.5),

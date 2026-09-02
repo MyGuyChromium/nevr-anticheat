@@ -52,7 +52,9 @@ func throwSchedule(d *Pat001, n int, throwAt map[int]bool, startCount int) ([]mo
 }
 
 func TestPat001_NoPhantomThrowsAfterDetection(t *testing.T) {
-	d := NewPat001(nil)
+	// The shipped min_throw_count is 12; this test pins 8 so the schedule
+	// below fires at the 8th throw.
+	d := NewPat001(map[string]any{"min_throw_count": 8})
 	throwAt := map[int]bool{}
 	for i := 1; i <= 8; i++ {
 		throwAt[i*30] = true // perfectly regular: fires at the 8th throw
@@ -126,7 +128,9 @@ func TestPat002_LeftHandedThrowerNotFlaggedByIdleRightHand(t *testing.T) {
 }
 
 func TestPat002_BodyFrameReleasePointFiresWhenFacingChanges(t *testing.T) {
-	d := NewPat002(nil)
+	// The shipped min_throw_count is 12; 8 keeps the ten-throw schedule
+	// below firing exactly once.
+	d := NewPat002(map[string]any{"min_throw_count": 8})
 	mc := ctx()
 	rel := model.Vec3{0.4, 0.2, 0.3} // fixed body-relative macro release point
 	var events []model.DetectionEvent
