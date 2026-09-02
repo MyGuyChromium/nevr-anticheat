@@ -28,8 +28,21 @@
 // as consecutive slices of ONE match: detector, scorer, dedup and rate-limit
 // state persist, and so does the per-player PlayerState map, so kinematics,
 // throw detection, warmup and history buffers continue across batches even
-// when the producer sends one frame per batch. Call Finalize at match end to
-// close the open incidents held by the deduplicator.
+// when the producer sends one frame per batch. The first slice only creates
+// the roster; it never resets state that was seeded before it (a scorer
+// carrying events, for example). Call Finalize at match end to flush open
+// throw tracks and close the open incidents held by the deduplicator.
+//
+// # What detectors receive
+//
+// Detectors get the FULL per-match player map filtered only by their own
+// warmup (every player whose FrameCount exceeds WarmupFrames), including
+// players whose latest frame is older than the current index. That is
+// deliberate: STATE_007 needs the victims of a punch and MOV_003 needs
+// nearby players for collision exclusion, and those may not have a frame at
+// exactly this index. A stale PlayerState must never be re-scored, so every
+// detector iterates detect.ActivePlayers (or checks LastFrameIdx itself, as
+// the throw detectors do through throwAt/currentDisc).
 package pipeline
 
 import (
@@ -54,6 +67,16 @@ const DefaultMergeWindow = 20
 // Low-confidence events (replay artifacts, borderline triggers) should not
 // cascade into composite multi-cheat flags.
 const pat004MinConfidence = 0.7
+
+// TrackFlusher is implemented by detectors that keep open per-throw tracks
+// (THROW_006 trajectory, THROW_008 speed/distance) which must be judged at
+// match end instead of being dropped with the detector state. The pipeline
+// calls it once at the end of an offline match and once from Finalize on the
+// live path; the returned events go through the same dedup, rate-limit,
+// validation and scoring path as frame events.
+type TrackFlusher interface {
+	FlushTracks(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent
+}
 
 // MatchResult holds the complete output of a match analysis.
 type MatchResult struct {
@@ -100,13 +123,19 @@ type Pipeline struct {
 	// live batches accumulate kinematic and throw state.
 	players map[string]*model.PlayerState
 
+	// lastFrameIdx is the highest frame index that produced at least one
+	// valid frame; FlushTracks is evaluated "as of" it. -1 before any frame.
+	lastFrameIdx int
+
 	// invalidLogged throttles per (player, reason) warnings across batches.
 	invalidLogged map[string]int
 }
 
 // SetSkipReset controls whether ProcessMatch skips resetting detector, scorer,
 // dedup, rate-limit and per-player state. Used by the live pipeline to
-// preserve per-match state across frame batches.
+// preserve per-match state across frame batches. Set it BEFORE the first
+// batch: with it set, ProcessMatch never resets anything, it only creates the
+// roster on first use.
 func (p *Pipeline) SetSkipReset(skip bool) {
 	p.skipReset = skip
 }
@@ -115,6 +144,11 @@ func (p *Pipeline) SetSkipReset(skip bool) {
 // the pipeline; callers must not mutate it while ProcessMatch may run.
 func (p *Pipeline) Players() map[string]*model.PlayerState {
 	return p.players
+}
+
+// Extractor exposes the feature extractor (goal-side configuration, tests).
+func (p *Pipeline) Extractor() *FeatureExtractor {
+	return p.extractor
 }
 
 // NewPipeline creates a new detection pipeline.
@@ -136,16 +170,19 @@ func NewPipeline(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	extractor := NewFeatureExtractor(cfg.Pipeline.HistoryWindow)
+	extractor.SetHighPingThreshold(cfg.Pipeline.HighPingThresholdMs)
 	return &Pipeline{
 		detectors:     detectors,
 		scorer:        scorer,
 		dedup:         NewDeduplicator(DefaultMergeWindow),
 		rateLimiter:   NewRateLimiter(cfg.Pipeline.MaxEventsPerPlayerPerDetector),
 		validator:     NewFrameValidator(cfg),
-		extractor:     NewFeatureExtractor(cfg.Pipeline.HistoryWindow),
+		extractor:     extractor,
 		cfg:           cfg,
 		logger:        logger,
 		shadowIDs:     shadowIDs,
+		lastFrameIdx:  -1,
 		invalidLogged: make(map[string]int),
 	}
 }
@@ -160,7 +197,8 @@ func (p *Pipeline) detectorCategory(detectorID string) string {
 	return detectorID
 }
 
-// resetState clears every piece of per-match state.
+// resetState clears every piece of per-match state (offline mode: one
+// ProcessMatch call is one whole match).
 func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
 	for _, d := range p.detectors {
 		d.Reset()
@@ -169,6 +207,13 @@ func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
 	p.dedup.Reset()
 	p.rateLimiter.Reset()
 	p.invalidLogged = make(map[string]int)
+	p.initMatch(matchCtx)
+}
+
+// initMatch seeds the roster from the match context and anchors the scorer
+// on the match start so event times are match-relative, not ingest-relative.
+func (p *Pipeline) initMatch(matchCtx *model.MatchContext) {
+	p.lastFrameIdx = -1
 	p.players = make(map[string]*model.PlayerState, len(matchCtx.PlayerIDs))
 	for _, pid := range matchCtx.PlayerIDs {
 		p.players[pid] = &model.PlayerState{
@@ -176,6 +221,15 @@ func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
 			Team:     matchCtx.TeamAssignments[pid],
 		}
 	}
+	p.scorer.SetMatchStart(matchCtx.StartTime)
+}
+
+// warmView is the player map handed to detectors sharing one warmup length:
+// every player past the warmup (stale ones included, for cross-player
+// lookups) plus the number of those that have a fresh frame at this index.
+type warmView struct {
+	players map[string]*model.PlayerState
+	active  int
 }
 
 // ProcessMatch runs the full detection pipeline over a match (or, in live
@@ -188,9 +242,13 @@ func (p *Pipeline) ProcessMatch(
 	start := time.Now()
 	result := newMatchResult(matchCtx.MatchID)
 
-	// Reset all state (skipped for incremental live processing)
-	if !p.skipReset || p.players == nil {
+	// Offline: every call is a whole match, reset everything. Live: the
+	// first slice only creates the roster; state seeded before it (and by
+	// earlier slices) is kept.
+	if !p.skipReset {
 		p.resetState(matchCtx)
+	} else if p.players == nil {
+		p.initMatch(matchCtx)
 	}
 
 	// Group frames by index and process them in ascending index order. Only
@@ -206,9 +264,8 @@ func (p *Pipeline) ProcessMatch(
 	}
 	sort.Ints(indices)
 
-	// eligible caches, per frame, the subset of framePlayers that has passed
-	// a given warmup length.
-	eligible := make(map[int]map[string]*model.PlayerState)
+	// eligible caches, per frame, the detector view for a given warmup length.
+	eligible := make(map[int]warmView)
 
 	for _, fi := range indices {
 		pFrames := frameGroups[fi]
@@ -220,8 +277,7 @@ func (p *Pipeline) ProcessMatch(
 		}
 
 		// Validate and update player states. framePlayers holds only the
-		// players that produced a valid frame at this index; stale PlayerState
-		// from earlier frames is never re-scored.
+		// players that produced a valid frame at this index.
 		framePlayers := make(map[string]*model.PlayerState, len(pFrames))
 		sort.SliceStable(pFrames, func(i, j int) bool { return pFrames[i].PlayerID < pFrames[j].PlayerID })
 		for i := range pFrames {
@@ -249,6 +305,7 @@ func (p *Pipeline) ProcessMatch(
 			continue
 		}
 		result.FramesProcessed++
+		p.lastFrameIdx = fi
 
 		// Skip detectors during non-active game phases (round_start, score, pre_match, post_match).
 		// CONFIRMED from real replay: players teleport during round transitions, causing
@@ -269,53 +326,45 @@ func (p *Pipeline) ProcessMatch(
 		// Run detectors. Warmup is per player: a detector only sees players
 		// that have accumulated more than WarmupFrames() valid frames, so a
 		// late joiner or reconnecting player is not evaluated on an empty
-		// history.
+		// history. The view keeps warmed-up players whose latest frame is
+		// older than fi (cross-player lookups); detectors skip them via
+		// detect.ActivePlayers. A detector with no fresh warm player is not
+		// called at all.
 		for k := range eligible {
 			delete(eligible, k)
 		}
 		var frameEvents []model.DetectionEvent
 		for _, det := range p.detectors {
 			warm := det.WarmupFrames()
-			subset, ok := eligible[warm]
+			view, ok := eligible[warm]
 			if !ok {
-				subset = make(map[string]*model.PlayerState, len(framePlayers))
-				for pid, ps := range framePlayers {
+				view = warmView{players: make(map[string]*model.PlayerState, len(p.players))}
+				for pid, ps := range p.players {
 					if ps.FrameCount > warm {
-						subset[pid] = ps
+						view.players[pid] = ps
+						if _, fresh := framePlayers[pid]; fresh {
+							view.active++
+						}
 					}
 				}
-				eligible[warm] = subset
+				eligible[warm] = view
 			}
-			if len(subset) == 0 {
+			if view.active == 0 {
 				continue
 			}
-			events := det.Evaluate(matchCtx, subset, fi)
-			sortEmissions(events)
-			for i := range events {
-				ev := events[i]
-				if err := ev.Validate(); err != nil {
-					result.EventsInvalid++
-					p.logger.Warn("dropping invalid detection event",
-						"detector", ev.DetectorID, "player", ev.PlayerID, "frame", fi, "error", err)
-					continue
-				}
-				if p.shadowIDs[ev.DetectorID] {
-					ev.IsShadow = true
-				}
-				frameEvents = append(frameEvents, ev)
-			}
+			events := det.Evaluate(matchCtx, view.players, fi)
+			frameEvents = append(frameEvents, p.acceptEmissions(events, fi, result)...)
 		}
 
 		// Deduplicate: fold this frame's emissions into open incidents and
 		// emit the incidents that have closed.
-		mergedBefore := p.dedup.MergedCount()
-		closed := p.dedup.Deduplicate(frameEvents, fi)
-		result.EventsMerged += int(p.dedup.MergedCount() - mergedBefore)
-		p.emit(closed, result)
+		p.dedupAndEmit(frameEvents, fi, result)
 	}
 
-	// Offline mode: the match is complete, close every open incident.
+	// Offline mode: the match is complete. Judge the throws still in flight,
+	// then close every open incident.
 	if !p.skipReset {
+		p.flushTracks(matchCtx, result)
 		p.emit(p.dedup.Flush(), result)
 	}
 
@@ -330,14 +379,66 @@ func (p *Pipeline) ProcessMatch(
 	return result, nil
 }
 
-// Finalize closes every open dedup incident (live match end), scores the
-// resulting events and returns them so the caller can persist them.
+// Finalize ends a live match: open throw tracks are judged, every open dedup
+// incident is closed, the resulting events are scored and returned so the
+// caller can persist them.
 func (p *Pipeline) Finalize(matchCtx *model.MatchContext) *MatchResult {
 	result := newMatchResult(matchCtx.MatchID)
+	p.flushTracks(matchCtx, result)
 	p.emit(p.dedup.Flush(), result)
 	p.scorer.ApplyCorrelationBonus()
 	result.PlayerScores = p.scorer.GetAllScores()
 	return result
+}
+
+// acceptEmissions validates one detector's emissions, stamps shadow status
+// and returns the kept events in deterministic order.
+func (p *Pipeline) acceptEmissions(events []model.DetectionEvent, fi int, result *MatchResult) []model.DetectionEvent {
+	sortEmissions(events)
+	kept := events[:0:0]
+	for i := range events {
+		ev := events[i]
+		if err := ev.Validate(); err != nil {
+			result.EventsInvalid++
+			p.logger.Warn("dropping invalid detection event",
+				"detector", ev.DetectorID, "player", ev.PlayerID, "frame", fi, "error", err)
+			continue
+		}
+		if p.shadowIDs[ev.DetectorID] {
+			ev.IsShadow = true
+		}
+		kept = append(kept, ev)
+	}
+	return kept
+}
+
+// dedupAndEmit folds events emitted at frame fi into the open incidents and
+// emits the incidents that closed.
+func (p *Pipeline) dedupAndEmit(events []model.DetectionEvent, fi int, result *MatchResult) {
+	mergedBefore := p.dedup.MergedCount()
+	closed := p.dedup.Deduplicate(events, fi)
+	result.EventsMerged += int(p.dedup.MergedCount() - mergedBefore)
+	p.emit(closed, result)
+}
+
+// flushTracks asks every TrackFlusher detector to judge its open tracks as
+// of the last processed frame and routes the results like frame events.
+func (p *Pipeline) flushTracks(matchCtx *model.MatchContext, result *MatchResult) {
+	if p.lastFrameIdx < 0 {
+		return
+	}
+	var events []model.DetectionEvent
+	for _, det := range p.detectors {
+		tf, ok := det.(TrackFlusher)
+		if !ok {
+			continue
+		}
+		events = append(events, p.acceptEmissions(tf.FlushTracks(matchCtx, p.lastFrameIdx), p.lastFrameIdx, result)...)
+	}
+	if len(events) == 0 {
+		return
+	}
+	p.dedupAndEmit(events, p.lastFrameIdx, result)
 }
 
 // emit runs closed incidents through the rate limiter, scoring, the PAT_004
@@ -434,4 +535,43 @@ func sortEmissions(evs []model.DetectionEvent) {
 		}
 		return a.CausalKey.AnomalyType < b.CausalKey.AnomalyType
 	})
+}
+
+// PhysicsFromConfig builds the match physics from the loaded [physics] block,
+// falling back to model.DefaultPhysics for any field the config leaves at
+// zero (arena geometry and GoalZ are not configurable and always come from
+// the defaults). Both the offline CLI and the live ingest path use it so a
+// replay analyzed offline and the same match analyzed live see one set of
+// constants.
+func PhysicsFromConfig(cfg *config.Config) model.PhysicsConstants {
+	ph := model.DefaultPhysics()
+	if cfg == nil {
+		return ph
+	}
+	c := cfg.Physics
+	if c.DiscSpeedCap > 0 {
+		ph.DiscSpeedCap = c.DiscSpeedCap
+	}
+	if c.BoostSpeedCap > 0 {
+		ph.BoostSpeedCap = c.BoostSpeedCap
+	}
+	if c.MaxPlayerSpeed > 0 {
+		ph.MaxPlayerSpeed = c.MaxPlayerSpeed
+	}
+	if c.MaxThrowSpeed > 0 {
+		ph.MaxThrowSpeed = c.MaxThrowSpeed
+	}
+	if c.StunDuration > 0 {
+		ph.StunDuration = c.StunDuration
+	}
+	if c.ShieldCooldown > 0 {
+		ph.ShieldCooldown = c.ShieldCooldown
+	}
+	if c.ImmunityWindow > 0 {
+		ph.ImmunityWindow = c.ImmunityWindow
+	}
+	if c.GrabRange > 0 {
+		ph.GrabRange = c.GrabRange
+	}
+	return ph
 }

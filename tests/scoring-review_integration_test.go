@@ -3,8 +3,6 @@ package tests
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -78,9 +76,6 @@ func TestScoringReview_LiveBatchesDoNotInflateScore(t *testing.T) {
 // `flagged`/`report` data -> replay bundle export.
 func TestScoringReview_CasesReachStore(t *testing.T) {
 	store := newTestStore(t)
-	if err := sqlite.RunMigrationsV2(store.DB(), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
 	p, scorer := newTestPipeline([]detect.Detector{})
 	p.SetSkipReset(true) // live-path semantics: keep the seeded scorer

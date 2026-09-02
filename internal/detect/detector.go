@@ -69,6 +69,14 @@ func (b *BaseDetector) SetAutoEnforce(auto bool) {
 // MakeEvent constructs a DetectionEvent with common fields populated.
 // Severity and confidence are clamped to [0, 1] (NaN becomes 0) and the
 // causal frame range is normalised so FrameRangeStart <= FrameRangeEnd.
+//
+// EnforcementWeight is the detector's (config-settable) weight and
+// AutoEnforce is the detector's auto-enforce flag; detectors that gate
+// auto-enforcement on per-event evidence (THROW_001) override the field
+// after the call. A nil matchCtx is tolerated so unit tests can build events
+// without a match, but the resulting event has no MatchID and therefore
+// fails DetectionEvent.Validate: the pipeline drops it. Production callers
+// always pass the match context.
 func (b *BaseDetector) MakeEvent(
 	matchCtx *model.MatchContext,
 	playerID string,
@@ -109,7 +117,7 @@ func (b *BaseDetector) MakeEvent(
 		ExpectedRange:     expected,
 		CausalKey:         causalKey,
 		EnforcementWeight: b.Weight,
-		AutoEnforce:       false,
+		AutoEnforce:       b.IsAutoEnforce,
 	}
 }
 

@@ -167,7 +167,8 @@ func ids(ps []*model.PlayerState) []string {
 
 func TestMakeEventNormalisesRangeAndClamps(t *testing.T) {
 	b := &detect.BaseDetector{DetectorID: "X_001", DetectorVersion: "1", Weight: 0.5}
-	ev := b.MakeEvent(nil, "p1", 5, 0.3, 1.7, -0.2, model.StateEvidence{}, "o", "e",
+	mc := &model.MatchContext{MatchID: "m1", Physics: model.DefaultPhysics()}
+	ev := b.MakeEvent(mc, "p1", 5, 0.3, 1.7, -0.2, model.StateEvidence{}, "o", "e",
 		model.CausalKey{FrameStart: -4, FrameEnd: -9, AnomalyType: "a"})
 	if ev.Severity != 1 || ev.Confidence != 0 {
 		t.Errorf("severity/confidence not clamped: %.2f/%.2f", ev.Severity, ev.Confidence)
@@ -175,8 +176,30 @@ func TestMakeEventNormalisesRangeAndClamps(t *testing.T) {
 	if ev.FrameRangeStart != 0 || ev.FrameRangeEnd != 0 || ev.CausalKey.PlayerID != "p1" {
 		t.Errorf("causal key not normalised: %+v", ev.CausalKey)
 	}
+	if ev.MatchID != "m1" || ev.EnforcementWeight != 0.5 || ev.AutoEnforce {
+		t.Errorf("identity fields wrong: %+v", ev)
+	}
 	if err := ev.Validate(); err != nil {
 		t.Errorf("event should validate: %v", err)
+	}
+
+	// Contract: an event without a match is not a valid production event.
+	// MakeEvent tolerates a nil context (unit tests) but the pipeline's
+	// Validate gate rejects the result, so it can never be scored or stored.
+	orphan := b.MakeEvent(nil, "p1", 5, 0.3, 0.5, 0.5, model.StateEvidence{}, "o", "e",
+		model.CausalKey{AnomalyType: "a"})
+	if orphan.MatchID != "" {
+		t.Errorf("nil context must not invent a match id: %q", orphan.MatchID)
+	}
+	if err := orphan.Validate(); err == nil {
+		t.Error("event built without a match context must fail validation")
+	}
+
+	// AutoEnforce follows the detector flag (config-settable), not a literal.
+	b.SetAutoEnforce(true)
+	if ev := b.MakeEvent(mc, "p1", 5, 0.3, 0.5, 0.5, model.StateEvidence{}, "o", "e",
+		model.CausalKey{AnomalyType: "a"}); !ev.AutoEnforce {
+		t.Error("MakeEvent must stamp AutoEnforce from the detector flag")
 	}
 }
 
