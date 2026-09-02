@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,7 +32,10 @@ const appVersion = "0.1.0"
 
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file")
+	verbose := flag.Bool("verbose", false, "Print the effective detector table to stderr at startup (also NEVR_AC_VERBOSE=1)")
+	flag.BoolVar(verbose, "v", false, "Alias for --verbose")
 	flag.Parse()
+	startupVerbose = *verbose || os.Getenv("NEVR_AC_VERBOSE") == "1"
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -153,7 +157,7 @@ func fatal(format string, args ...any) {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "NEVR-Anticheat: Async cheat detection engine for Echo VR")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] <command> [args]")
+	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] [--verbose|-v] <command> [args]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  analyze <file> [--force]   Analyze a replay file (stores telemetry + results; skips stored matches)")
@@ -183,12 +187,22 @@ type app struct {
 	}
 }
 
+// startupVerbose is set from --verbose / -v / NEVR_AC_VERBOSE=1. Config
+// warnings are always logged (to stderr); the effective detector table is
+// printed only when verbose so report output on stdout stays clean.
+var startupVerbose bool
+
 func openApp(configPath string) (*app, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
+	var table io.Writer
+	if startupVerbose {
+		table = os.Stderr
+	}
+	config.LogStartup(logger, cfg, table)
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening store: %w", err)

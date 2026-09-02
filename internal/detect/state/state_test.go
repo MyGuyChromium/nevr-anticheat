@@ -46,10 +46,14 @@ func grabAt(d *State001, dist, speed float64) []model.DetectionEvent {
 }
 
 func TestState001_FastPlayersAreNotExempt(t *testing.T) {
-	if ev := grabAt(NewState001(nil), 5.9, 0); len(ev) != 1 {
+	// closing_velocity_scale = 0 exercises the one-frame (FrameDt) credit;
+	// the shipped 0.25 s would credit 3 m at 12 m/s and legitimately absorb
+	// a 5.9 m grab.
+	frameDt := map[string]any{"closing_velocity_scale": 0.0}
+	if ev := grabAt(NewState001(frameDt), 5.9, 0); len(ev) != 1 {
 		t.Fatalf("5.9 m grab at rest must fire, got %d", len(ev))
 	}
-	ev := grabAt(NewState001(nil), 5.9, 12)
+	ev := grabAt(NewState001(frameDt), 5.9, 12)
 	if len(ev) != 1 {
 		t.Fatalf("5.9 m grab at 12 m/s must still fire (window must not close), got %d", len(ev))
 	}
