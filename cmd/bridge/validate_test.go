@@ -65,9 +65,9 @@ func TestValidateBroadcasterIP(t *testing.T) {
 		{"10.0.0.1", false},
 		{"203.0.113.50", false},
 		{"", true},
-		{" 1.2.3.4", true},   // leading space
+		{" 1.2.3.4", true}, // leading space
 		{"not-an-ip", true},
-		{"0.0.0.0", true},     // unspecified
+		{"0.0.0.0", true}, // unspecified
 	}
 
 	for _, tt := range tests {
