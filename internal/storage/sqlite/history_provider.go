@@ -9,6 +9,13 @@ import (
 // StoreHistoryProvider adapts the Store to the pattern.HistoryProvider interface,
 // enabling PAT_003 (Cross-Match Consistency) to query historical detection events
 // from the database rather than requiring in-memory state.
+//
+// History is defined exactly as the cross-match aggregator defines it:
+// non-shadow events only, excluding the meta-detectors PAT_003 and PAT_004 so a
+// meta-detector never feeds on its own (or another meta-detector's) output.
+// The limit is match-aware: the most recent matchLimit matches are selected
+// first and every event of those matches is returned, so a match is never cut
+// in half by a row cap.
 type StoreHistoryProvider struct {
 	store *Store
 }
@@ -18,28 +25,8 @@ func NewStoreHistoryProvider(store *Store) *StoreHistoryProvider {
 	return &StoreHistoryProvider{store: store}
 }
 
-// GetPlayerDetections returns up to matchLimit recent matches' worth of
-// detection events for a player.
+// GetPlayerDetections returns the player's non-shadow, non-meta detection
+// events from their matchLimit most recent matches.
 func (hp *StoreHistoryProvider) GetPlayerDetections(playerID string, matchLimit int) ([]model.DetectionEvent, error) {
-	// Query enough events to cover matchLimit matches.
-	// Each match may have multiple events; fetch a generous limit and trim.
-	events, err := hp.store.GetPlayerEvents(context.Background(), playerID, matchLimit*50, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	// Trim to events from at most matchLimit distinct matches.
-	seen := make(map[string]bool)
-	var result []model.DetectionEvent
-	for _, ev := range events {
-		if ev.MatchID == "" {
-			continue
-		}
-		seen[ev.MatchID] = true
-		if len(seen) > matchLimit {
-			break
-		}
-		result = append(result, ev)
-	}
-	return result, nil
+	return hp.store.GetPlayerHistoryEvents(context.Background(), playerID, matchLimit)
 }

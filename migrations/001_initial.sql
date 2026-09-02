@@ -1,5 +1,16 @@
--- NEVR-Anticheat Initial Schema
+-- NEVR-Anticheat Initial Schema (migration version 1)
 -- Run via: sqlite3 nevr-anticheat.db < migrations/001_initial.sql
+--
+-- This file only bootstraps the base tables. The binaries apply every
+-- versioned migration (including this one, idempotently) on startup through
+-- internal/storage/sqlite/migrations.go, which adds telemetry_frames,
+-- match_ticks, match_contexts, cross_match_review_cases and later columns.
+-- A hand-bootstrapped database is upgraded automatically the first time it is
+-- opened; running this file is never required.
+--
+-- Timestamps: every timestamp column is TEXT in UTC RFC3339 with a literal 'Z'
+-- ('2006-01-02T15:04:05Z'). Writes always supply the value from Go; the SQL
+-- DEFAULT below only covers ad-hoc inserts and uses the same layout.
 
 CREATE TABLE IF NOT EXISTS detection_events (
     event_id         TEXT PRIMARY KEY,
@@ -20,7 +31,7 @@ CREATE TABLE IF NOT EXISTS detection_events (
     is_shadow        INTEGER NOT NULL DEFAULT 0,
     evidence_json    TEXT,
     causal_key       TEXT,
-    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_player ON detection_events(player_id, created_at);
@@ -35,7 +46,7 @@ CREATE TABLE IF NOT EXISTS suspicion_scores (
     score_by_category TEXT,
     event_count      INTEGER NOT NULL DEFAULT 0,
     match_count      INTEGER NOT NULL DEFAULT 0,
-    snapshot_time    TEXT NOT NULL DEFAULT (datetime('now'))
+    snapshot_time    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_scores_player ON suspicion_scores(player_id, snapshot_time);
@@ -50,7 +61,7 @@ CREATE TABLE IF NOT EXISTS match_summaries (
     frame_count      INTEGER,
     total_detections INTEGER,
     flagged_players  TEXT,
-    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE TABLE IF NOT EXISTS enforcement_actions (
@@ -64,7 +75,7 @@ CREATE TABLE IF NOT EXISTS enforcement_actions (
     evidence_ids     TEXT,
     score_at_time    REAL,
     notes            TEXT,
-    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_actions_player ON enforcement_actions(player_id, issued_at);
@@ -80,7 +91,7 @@ CREATE TABLE IF NOT EXISTS review_cases (
     status           TEXT NOT NULL DEFAULT 'pending',
     assigned_to      TEXT,
     detectors_json   TEXT,
-    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at       TEXT
 );
 
@@ -94,19 +105,19 @@ CREATE TABLE IF NOT EXISTS moderator_decisions (
     verdict          TEXT NOT NULL,
     action_taken     TEXT,
     notes            TEXT,
-    decided_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    decided_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE TABLE IF NOT EXISTS player_profiles (
     player_id        TEXT PRIMARY KEY,
     profile_json     TEXT NOT NULL,
     match_count      INTEGER NOT NULL DEFAULT 0,
-    last_updated     TEXT NOT NULL DEFAULT (datetime('now'))
+    last_updated     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
 CREATE TABLE IF NOT EXISTS population_baselines (
     metric           TEXT PRIMARY KEY,
     baseline_json    TEXT NOT NULL,
     sample_count     INTEGER NOT NULL DEFAULT 0,
-    last_updated     TEXT NOT NULL DEFAULT (datetime('now'))
+    last_updated     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
