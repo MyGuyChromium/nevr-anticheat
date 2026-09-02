@@ -147,6 +147,19 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	return events
 }
 
+// FlushTracks finalizes every open speed track as of frameIdx and clears
+// them. Call it at match end so an in-flight throw is judged, not dropped.
+func (d *Throw008) FlushTracks(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent {
+	var events []model.DetectionEvent
+	for _, pid := range sortedKeys(d.activeTracks) {
+		if ev := d.finalizeTrack(matchCtx, d.activeTracks[pid], frameIdx); ev != nil {
+			events = append(events, *ev)
+		}
+	}
+	d.activeTracks = make(map[string]*speedTrack)
+	return events
+}
+
 func (d *Throw008) finalizeTrack(matchCtx *model.MatchContext, track *speedTrack, frameIdx int) *model.DetectionEvent {
 	if track.violations < minSpeedViolations {
 		return nil

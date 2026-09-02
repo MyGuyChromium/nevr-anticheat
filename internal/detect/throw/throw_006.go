@@ -198,6 +198,20 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	return events
 }
 
+// FlushTracks finalizes every open trajectory track as of frameIdx and
+// clears them. Call it at match end so a throw still in flight when the
+// match (or a live batch stream) ends is judged instead of dropped.
+func (d *Throw006) FlushTracks(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent {
+	var events []model.DetectionEvent
+	for _, throwerID := range sortedKeys(d.activeThrows) {
+		if ev := d.finalizeTrack(matchCtx, d.activeThrows[throwerID], frameIdx); ev != nil {
+			events = append(events, *ev)
+		}
+	}
+	d.activeThrows = make(map[string]*trajectoryTrack)
+	return events
+}
+
 func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectoryTrack, frameIdx int) *model.DetectionEvent {
 	// Net alignment improvement check: detect smooth magnetism
 	alignmentImprovement := 0.0
