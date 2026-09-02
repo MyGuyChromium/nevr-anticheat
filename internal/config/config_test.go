@@ -289,6 +289,21 @@ func TestPhysicsConstants(t *testing.T) {
 	if (PhysicsConfig{}).Constants() != model.DefaultPhysics() {
 		t.Fatal("zero physics config must fall back to defaults")
 	}
+	// Per-field fallback: a zero field keeps the engine default while the
+	// others apply, and arena geometry is never configurable. This is the
+	// contract the former pipeline.PhysicsFromConfig / ingest.physicsFromConfig
+	// had, plus goal_z.
+	cfg = DefaultConfig()
+	cfg.Physics.MaxPlayerSpeed = 42
+	cfg.Physics.DiscSpeedCap = 21.5
+	cfg.Physics.GrabRange = 0 // unset -> default
+	cfg.Physics.GoalZ = 0     // unset -> default
+	ph := cfg.Physics.Constants()
+	def := model.DefaultPhysics()
+	if ph.MaxPlayerSpeed != 42 || ph.DiscSpeedCap != 21.5 || ph.GrabRange != def.GrabRange || ph.GoalZ != def.GoalZ ||
+		ph.ArenaLength != def.ArenaLength || ph.BoostSpeedCap != def.BoostSpeedCap {
+		t.Fatalf("per-field fallback wrong: %+v", ph)
+	}
 }
 
 func TestLevelTableDefaults(t *testing.T) {

@@ -23,6 +23,7 @@ func newTestPipeline(detectors []detect.Detector) (*pipeline.Pipeline, *scoring.
 		dc.Mode = "enforce"
 		cfg.Detectors[id] = dc
 	}
+	cfg.Scoring.ReviewThreshold = 15 // one detector firing once (15 points) reaches the review tier
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
 		MaxSingleContribution:         cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: cfg.Scoring.MaxContribPerDetectorPerMatch,
@@ -32,6 +33,7 @@ func newTestPipeline(detectors []detect.Detector) (*pipeline.Pipeline, *scoring.
 		DecayHalfLifeHours:            cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           cfg.Scoring.CorrelationBonusCap,
+		Levels:                        cfg.Scoring.LevelTable(),
 	})
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	p := pipeline.NewPipeline(cfg, detectors, scorer, logger)

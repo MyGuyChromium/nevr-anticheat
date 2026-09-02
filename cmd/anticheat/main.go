@@ -197,18 +197,21 @@ func openApp(configPath string) (*app, error) {
 }
 
 // scorerConfig is the single place the [scoring] block is turned into scorer
-// parameters; levels() derives the tier table every command classifies with.
+// parameters. Levels carries the configured tier keys with review_threshold
+// already mapped onto high_risk (config.ScoringConfig.LevelTable), so the
+// scorer, review cases, cross-match severity and CLI output all classify
+// with the same table.
 func (a *app) scorerConfig() scoring.ScorerConfig {
 	cfg := a.cfg
 	return scoring.ScorerConfig{
 		MaxSingleContribution:         cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: cfg.Scoring.MaxContribPerDetectorPerMatch,
 		SameCategoryDiminishing:       cfg.Scoring.SameCategoryDiminishing,
-		ReviewThreshold:               cfg.Scoring.ReviewThreshold,
 		AutoEnforceThreshold:          cfg.Scoring.AutoEnforceThreshold,
 		DecayHalfLifeHours:            cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           cfg.Scoring.CorrelationBonusCap,
+		Levels:                        cfg.Scoring.LevelTable(),
 	}
 }
 
@@ -216,12 +219,12 @@ func (a *app) scorerConfig() scoring.ScorerConfig {
 // cases, cross-match aggregation and CLI output (contract 7: one source of
 // truth, review_threshold mapped onto high_risk).
 func (a *app) levels() model.LevelTable {
-	return a.scorerConfig().EffectiveLevels()
+	return a.cfg.Scoring.LevelTable()
 }
 
 // physics is the match physics built from the [physics] block.
 func (a *app) physics() model.PhysicsConstants {
-	return pipeline.PhysicsFromConfig(a.cfg)
+	return a.cfg.Physics.Constants()
 }
 
 // analysisOptions is what StoreMatchAnalysis needs to write cases the way
@@ -682,7 +685,6 @@ func runCrossMatchAnalysis(configPath string) {
 func runCrossMatchAggregation(a *app) (int, int) {
 	ctx := context.Background()
 	levels := a.levels()
-	reviewThreshold := levels.HighRisk // scoring.review_threshold mapped onto high_risk
 	minMatches := a.cfg.Scoring.MinMatchesForCrossMatch
 	if minMatches < 2 {
 		minMatches = 2
@@ -721,7 +723,9 @@ func runCrossMatchAggregation(a *app) (int, int) {
 		}
 		playerCount++
 
-		if summary.DecayedScore >= reviewThreshold {
+		// The review tier is high_risk (scoring.review_threshold) in the
+		// same table the summary's Level was classified with.
+		if levels.LevelFor(summary.DecayedScore).AtLeast(model.LevelHighRisk) {
 			fmt.Printf("  [%s] %s: decayed=%.1f raw=%.1f matches=%d events=%d\n",
 				summary.Level, pid, summary.DecayedScore, summary.CumulativeScore,
 				summary.DistinctMatches, summary.TotalEvents)

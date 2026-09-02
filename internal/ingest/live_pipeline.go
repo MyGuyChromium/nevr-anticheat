@@ -327,7 +327,7 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 		StartTime:       now,
 		PlayerIDs:       []string{},
 		TeamAssignments: make(map[string]string),
-		Physics:         physicsFromConfig(mm.cfg),
+		Physics:         mm.cfg.Physics.Constants(),
 		Source:          "live_telemetry",
 		TickRate:        15.0,
 	}
@@ -337,15 +337,18 @@ func (mm *MatchManager) createMatch(matchID string) *LiveMatch {
 	for _, d := range detectors {
 		names[d.ID()] = d.Name()
 	}
+	// Levels is the configured tier table with review_threshold mapped onto
+	// high_risk; the review cases created at match end classify with the
+	// same table (createReviewCases uses Scorer.Levels()).
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
 		MaxSingleContribution:         mm.cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: mm.cfg.Scoring.MaxContribPerDetectorPerMatch,
 		SameCategoryDiminishing:       mm.cfg.Scoring.SameCategoryDiminishing,
-		ReviewThreshold:               mm.cfg.Scoring.ReviewThreshold,
 		AutoEnforceThreshold:          mm.cfg.Scoring.AutoEnforceThreshold,
 		DecayHalfLifeHours:            mm.cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                mm.cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           mm.cfg.Scoring.CorrelationBonusCap,
+		Levels:                        mm.cfg.Scoring.LevelTable(),
 	})
 
 	// Live mode from the start: batches are slices of one match and the
@@ -721,12 +724,6 @@ func (mm *MatchManager) warnThrottled(key, msg string, args ...any) {
 	if n == 1 || n%1000 == 0 {
 		mm.logger.Warn(msg, append(args, "count", n)...)
 	}
-}
-
-// physicsFromConfig builds the match physics from the loaded [physics] block;
-// the live and offline paths share pipeline.PhysicsFromConfig.
-func physicsFromConfig(cfg *config.Config) model.PhysicsConstants {
-	return pipeline.PhysicsFromConfig(cfg)
 }
 
 // normalizeTeam maps a producer team label to "blue"/"orange" or "".

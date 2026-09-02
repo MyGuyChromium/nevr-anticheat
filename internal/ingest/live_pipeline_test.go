@@ -37,6 +37,10 @@ func newTestManager(t *testing.T) (*MatchManager, *sqlite.Store, *metrics.Metric
 		cfg.Detectors[id] = dc
 	}
 	cfg.Shadow.ShadowDetectors = nil
+	// One detector firing once scores 15 points; the shipped review
+	// threshold (60) needs several categories. Lowering it through the
+	// config proves the configured tier table reaches the live scorer.
+	cfg.Scoring.ReviewThreshold = 15
 	store := newTestStore(t)
 	factory := func() []detect.Detector {
 		return []detect.Detector{movement.NewMov001(cfg.GetDetectorConfig("MOV_001").Params)}
@@ -258,14 +262,23 @@ func TestMatchManager_StaleCleanupAndClosePersist(t *testing.T) {
 	}
 }
 
-// TestMatchManager_PhysicsFromConfig covers the live half of F42.
+// TestMatchManager_PhysicsFromConfig covers the live half of F42: a live
+// match context carries the [physics] block (config.PhysicsConfig.Constants).
 func TestMatchManager_PhysicsFromConfig(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Physics.MaxPlayerSpeed = 42
-	cfg.Physics.DiscSpeedCap = 0 // unset -> default
-	ph := physicsFromConfig(cfg)
+	mm, _, _ := newTestManager(t)
+	mm.cfg.Physics.MaxPlayerSpeed = 42
+	mm.cfg.Physics.DiscSpeedCap = 0 // unset -> default
+	mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
+	mc := mm.GetMatchContext("M1")
+	if mc == nil {
+		t.Fatal("match not created")
+	}
+	ph := mc.Physics
 	if ph.MaxPlayerSpeed != 42 || ph.DiscSpeedCap != model.DefaultPhysics().DiscSpeedCap || ph.ArenaLength != model.DefaultPhysics().ArenaLength {
 		t.Errorf("physics=%+v", ph)
+	}
+	if ph != mm.cfg.Physics.Constants() {
+		t.Errorf("live context physics %+v != cfg.Physics.Constants() %+v", ph, mm.cfg.Physics.Constants())
 	}
 }
 

@@ -230,6 +230,19 @@ func TestLevelTableFromReviewThreshold(t *testing.T) {
 	if sc2.ExceedsReview || sc2.Level() != model.LevelClean {
 		t.Fatalf("default table: review=%v level=%s", sc2.ExceedsReview, sc2.Level())
 	}
+	// Levels alone (what the binaries pass: config.ScoringConfig.LevelTable()
+	// with review_threshold already applied) is honoured verbatim.
+	cfg3 := testConfig()
+	cfg3.ReviewThreshold = 0
+	cfg3.Levels = model.LevelTable{Informational: 5, Suspicious: 10, HighRisk: 15, Critical: 50, ActionWorthy: 90}
+	s3 := NewSuspicionScorer(cfg3)
+	if s3.Levels() != cfg3.Levels {
+		t.Fatalf("Levels not honoured: %+v", s3.Levels())
+	}
+	sc3 := s3.IngestEvent(ev("THROW_001", "p", 0, 1, 1, 1))
+	if !sc3.ExceedsReview || sc3.Level() != model.LevelHighRisk || sc3.ReviewThreshold != 15 {
+		t.Fatalf("Levels-only config: review=%v level=%s threshold=%v", sc3.ExceedsReview, sc3.Level(), sc3.ReviewThreshold)
+	}
 }
 
 func TestMatchCountAndTimes(t *testing.T) {

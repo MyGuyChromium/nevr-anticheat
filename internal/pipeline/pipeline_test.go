@@ -654,19 +654,6 @@ func TestMatchStartAnchorsEventTimes(t *testing.T) {
 	}
 }
 
-func TestPhysicsFromConfig(t *testing.T) {
-	if got, want := PhysicsFromConfig(nil), model.DefaultPhysics(); got != want {
-		t.Errorf("nil config: %+v", got)
-	}
-	cfg := config.DefaultConfig()
-	cfg.Physics.DiscSpeedCap = 21.5
-	cfg.Physics.GrabRange = 0 // unset -> default
-	ph := PhysicsFromConfig(cfg)
-	if ph.DiscSpeedCap != 21.5 || ph.GrabRange != model.DefaultPhysics().GrabRange || ph.GoalZ != model.DefaultPhysics().GoalZ {
-		t.Errorf("physics from config: %+v", ph)
-	}
-}
-
 // TestDeterministicEventOrder covers F229.
 func TestDeterministicEventOrder(t *testing.T) {
 	cfg := testConfig("enforce")

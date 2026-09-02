@@ -145,10 +145,11 @@ func TestDetectors(t *testing.T) {
 			category: "clear_violation",
 			detector: func() detect.Detector {
 				// Override min_incidents to 1 for unit test — we're testing
-				// detection capability, not FP filtering thresholds.
-				d := movement.NewMov002(map[string]any{"min_incidents": 1})
-				dc := cfg.GetDetectorConfig("MOV_002")
-				_ = d.Configure(dc.Params)
+				// detection capability, not FP filtering thresholds. The
+				// override goes last so the config's min_incidents=5 does
+				// not re-apply on top of it.
+				d := movement.NewMov002(cfg.GetDetectorConfig("MOV_002").Params)
+				_ = d.Configure(map[string]any{"min_incidents": 1})
 				// Pre-seed position
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
