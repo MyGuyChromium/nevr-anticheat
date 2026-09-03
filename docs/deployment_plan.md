@@ -24,7 +24,7 @@ Every stage below uses only features that exist in the binaries today. Where the
 - **Rollback trigger**: any stop condition (crash, > 20 % rejection, detector spam, auth failures).
 
 ### Stage 2: shadow mode, multiple servers
-- One `nevr-server`; one `nevr-bridge` per Nakama instance (or one bridge with a wider allowlist). `server_id` on every event tells you which broadcaster produced it.
+- One `nevr-server`; one `nevr-bridge` per Nakama instance (or one bridge with a wider allowlist). Provenance lives on the match context: the `server_id` the bridge sends on every batch and `match_start` is recorded and persisted with `match_contexts` (and shown by `report`), so join events to their match to see which broadcaster produced them; events do not carry it individually.
 - Collect baseline distributions from `evidence_json` across skill brackets.
 - **Gate**: per-detector event rates within 2× across servers; ≥ 100 matches stored.
 - **Rollback trigger**: cross-server variance > 5×; storage growth beyond the disk budget (telemetry is never pruned automatically).
@@ -57,7 +57,7 @@ Every stage below uses only features that exist in the binaries today. Where the
 ## Rollback procedure
 
 1. Edit the live config: set `mode = "shadow"` (or `enabled = false`) for the affected detector(s).
-2. Restart `nevr-server` (no hot reload). Confirm the effective detector table printed at startup.
+2. Restart `nevr-server` (no hot reload). Confirm the effective detector table it reports at startup (`grep '"msg":"effective detector"' server.log`; `nevr-ac` shows the same table only with `--verbose`).
 3. Existing cases stay in the database with their status; nothing is cancelled automatically. Close or dismiss them with `verdict`.
 4. Events keep being stored in shadow for analysis.
 5. Do not re-promote without a new calibration round.

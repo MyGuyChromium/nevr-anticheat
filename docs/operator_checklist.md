@@ -1,6 +1,6 @@
 # Match Day Operator Checklist
 
-Two processes make a live deployment: `nevr-server` (ingestion + storage) and `nevr-bridge` (the only telemetry producer). Both log JSON to **stderr**; redirect it or you have no log file.
+Two processes make a live deployment: `nevr-server` (ingestion + storage) and `nevr-bridge` (the only telemetry producer). Both log JSON to **stderr**, one record per line (the effective detector table `nevr-server` reports at startup is one `"msg":"effective detector"` record per detector in that stream); redirect it or you have no log file.
 
 ## Pre-launch (once)
 
@@ -9,9 +9,10 @@ Two processes make a live deployment: `nevr-server` (ingestion + storage) and `n
 - [ ] Capture a raw session: `curl http://<broadcaster>:6721/session > test_session.json`
 - [ ] Compat check: `./nevr-compat test_session.json` — 0 errors, review warnings.
 - [ ] Strict check: `./nevr-compat --strict test_session.json` — explain every strict failure before continuing.
-- [ ] Config check: `./nevr-ac --config configs/shadow_deploy.toml version` loads and validates the file (any unknown key is an error). Read the effective detector table `nevr-server` prints at startup: every mode must be `shadow`.
+- [ ] Config check: `./nevr-ac --verbose --config configs/shadow_deploy.toml flagged` loads and validates the file (every unknown key, detector ID, param or wrong value type is listed and the command exits non-zero) and reports the effective detector table on stderr; it also opens (creates if missing) the configured `db_path`, which is the shadow database anyway. Do **not** use `version` for this: it prints the version without reading any file. Every mode in the table must be `shadow`: with the file's `log_format = "json"` run it as `2> check.log` and `grep '"msg":"effective detector"' check.log | grep -v '"mode":"shadow"'` must print nothing.
 - [ ] Token: `export NEVR_AC_AUTH_TOKEN=<long random secret>` in the server's environment; the same value goes to the bridge's `--anticheat-token`.
 - [ ] Start the server: `./nevr-server --config configs/shadow_deploy.toml --listen :8080 --metrics :9090 2> server.log &`
+- [ ] Startup table: `grep '"msg":"effective detector"' server.log | grep -v '"mode":"shadow"'` prints nothing (every detector is in shadow) and `grep -c '"msg":"effective detector"' server.log` is 29.
 - [ ] Health: `curl -s localhost:8080/health` → `{"status":"ok","connections":0,...}`
 - [ ] Metrics: `curl -s localhost:9090/metrics | grep nevr_ac_uptime_seconds`
 - [ ] Bridge probe (no send): `./nevr-bridge --nakama-url <url> --nakama-server-key <key> --broadcaster-allowlist <cidr> --probe --dump-dir ./dump` — manifest has `session_matches_match_id: true`, `players_seen > 0`, `mapped_frames > 0`, `errors_count: 0`.

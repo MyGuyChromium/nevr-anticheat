@@ -43,7 +43,7 @@ The file is an overlay on `configs/default.toml`; every param keeps its calibrat
 
 ### Disabled (13)
 
-THROW_002 (BROKEN label pending re-test of the v2.0.0 mechanism), THROW_004 (UNSAFE), THROW_007 (STUB), MOV_003 (UNSAFE), MOV_004 / MOV_005 (need `is_boosting`), STATE_003 / STATE_005 (need `shield_active`), STATE_004 (needs `is_immune`), STATE_006 (SUSPENDED), PAT_001 / PAT_002 (UNSAFE), PAT_003 (needs 3+ matches of non-shadow history).
+THROW_002 (UNVERIFIED: v2.0.0 single-delta approach, needs real-data calibration; the BROKEN mechanism was removed, its replacement is unvalidated), THROW_004 (UNSAFE), THROW_007 (STUB), MOV_003 (UNSAFE), MOV_004 / MOV_005 (need `is_boosting`), STATE_003 / STATE_005 (need `shield_active`), STATE_004 (needs `is_immune`), STATE_006 (SUSPENDED), PAT_001 / PAT_002 (UNSAFE), PAT_003 (needs 3+ matches of non-shadow history).
 
 ## Build
 
@@ -70,10 +70,10 @@ STOP if strict mode reports errors you cannot explain. Lost hand tracking (zero 
 ## Step 2: analyse one replay offline
 
 ```bash
-./nevr-ac --config configs/shadow_deploy.toml analyze match.echoreplay
+./nevr-ac --verbose --config configs/shadow_deploy.toml analyze match.echoreplay
 ```
 
-Expected output: `Parsed N player-frames`, `Frames: N processed, M invalid` with M a few percent at most, `Detections: K (K stored)`, `Review cases: 0` (everything is shadow), no player score lines. The startup log shows the effective detector table; check that the modes are all `shadow`. Re-running prints `already stored`; add `--force` to replace the events.
+Expected output: `Parsed N player-frames`, `Frames: N processed, M invalid` with M a few percent at most, `Detections: K (K stored)`, `Review cases: 0` (everything is shadow), no player score lines. `--verbose` (or `-v`, or `NEVR_AC_VERBOSE=1`) makes `nevr-ac` report the effective detector table on stderr at startup; without it the CLI prints only config warnings (`nevr-server` always reports the table). With the file's `log_format = "json"` the table is one JSON record per detector, so check the modes with `2> analyze.log` and `grep '"msg":"effective detector"' analyze.log | grep -v '"mode":"shadow"'` (must print nothing); with `log_format = "text"` it is a fixed-width block whose MODE column must read `shadow` everywhere. Re-running prints `already stored`; add `--force` to replace the events.
 
 ## Step 3: batch-analyse 5–10 known-clean matches
 
@@ -98,7 +98,7 @@ export NEVR_AC_AUTH_TOKEN='<long random secret>'
 ./nevr-server --config configs/shadow_deploy.toml --listen :8080 --metrics :9090 2> server.log
 ```
 
-The server refuses to start without the token unless `--allow-unauthenticated` (or `NEVR_AC_ALLOW_UNAUTH=1`) is passed deliberately; it then logs a SECURITY warning. Logs are JSON on stderr. Flags mirror the `[server]` section of the config (`--max-matches`, `--max-players`, `--max-connections`, `--max-message-bytes`, `--max-frame-rate`, `--idle-timeout`, `--stale-match-after`, `--persist-interval`); a flag wins over the file.
+The server refuses to start without the token unless `--allow-unauthenticated` (or `NEVR_AC_ALLOW_UNAUTH=1`) is passed deliberately; it then logs a SECURITY warning. Logs are JSON on stderr, one record per line; the effective detector table the server reports at startup is part of that stream (one `"msg":"effective detector"` record per detector with `id`, `enabled`, `mode`, `shadow`, `weight`, `auto_enforce`, `params`), so `grep '"msg":"effective detector"' server.log | grep -v '"mode":"shadow"'` must print nothing. Flags mirror the `[server]` section of the config (`--max-matches`, `--max-players`, `--max-connections`, `--max-message-bytes`, `--max-frame-rate`, `--idle-timeout`, `--stale-match-after`, `--persist-interval`); a flag wins over the file.
 
 ```bash
 curl -s localhost:8080/health
@@ -124,7 +124,7 @@ Read `dump/<match>_manifest.json`:
 | `spectators_seen` | any | spectators/moderators are dropped, not forwarded |
 | `mapped_frames` | = players_seen | 0 with players → non-active `game_status`, zero positions, or all spectators |
 | `errors_count` / `warnings_count` | 0 / few | inspect `dump/<match>_session_raw.json` |
-| `server_id` | `<broadcaster_ip>:6721` | provenance stamp on every batch |
+| `server_id` | `<broadcaster_ip>:6721` | provenance stamp on every batch and `match_start`; the server records it on the match context (persisted with `match_contexts`, shown by `report`), not on every event row |
 
 ```bash
 # Once: full cycle for one match (discover → fetch → map → send match_start + batch + match_end → wait for ack).
@@ -249,4 +249,4 @@ Use the stored evidence, not scores: `evidence_json` carries the measured values
 3. Reprocess the collected matches with it: `./nevr-ac --config calib.toml reprocess-timerange 2026-09-01T00:00:00Z 2026-10-01T00:00:00Z` (half-open on match time). This **replaces** the events of those matches in `calib.db`; the candidate's events are now scored, players at or above `review_threshold` (60) get `RC-<match>-<player>` cases, and `cross-match` builds `XM-<player>` cases.
 4. Moderators review: `./nevr-ac --config calib.toml flagged`, `report <case-id>`, then `verdict <case-id> confirmed_cheat|false_positive|inconclusive|needs_more_data --by <mod> --detector THROW_001=yes|no`.
 5. `./nevr-ac --config calib.toml calibration-report` shows per-detector confirmed / false-positive counts and precision. Promote a detector to `mode = "review"` in the live config only when its precision is acceptable over a meaningful number of decided cases; demote (`mode = "shadow"`) at the first confirmed false positive.
-6. Restart `nevr-server` after every config change (there is no hot reload). The startup effective-config table is the confirmation.
+6. Restart `nevr-server` after every config change (there is no hot reload). The effective detector table it reports at startup (`"msg":"effective detector"` records in `server.log`) is the confirmation; for an offline `nevr-ac` run add `--verbose` to see the same table.

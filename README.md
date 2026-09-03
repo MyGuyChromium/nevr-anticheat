@@ -75,7 +75,7 @@ go build -o nevr-compat ./cmd/compat      # /session payload compatibility check
 
 Verdicts are `confirmed_cheat`, `false_positive`, `inconclusive` or `needs_more_data`. `--detector ID=yes|no|uncertain` records per-detector feedback that overrides the case verdict for that detector in the calibration report. Shadow events inside decided cases count on purpose: that is how a shadow detector earns promotion.
 
-All CLI commands take `--config <file>` before the command. Reports go to stdout, logs to stderr.
+All CLI commands take `--config <file>` before the command; `--verbose` / `-v` (or `NEVR_AC_VERBOSE=1`) additionally reports the effective detector table at startup. Reports go to stdout, logs to stderr. Every command except `version` loads and validates the config first (unknown keys, detector IDs, params and wrong value types are errors); `version` prints the version without reading any file.
 
 ## Quick start: live (bridge + server)
 
@@ -105,7 +105,7 @@ export NEVR_AC_AUTH_TOKEN='<long random secret>'
     --broadcaster-allowlist 10.0.0.0/24 --match-id <nakama-match-id>
 ```
 
-Bridge defaults worth knowing: `--nakama-auth device` (creates/uses a bridge account through the server key; the raw server key alone cannot list matches), `--modes echo_arena` (prefix filter; `*` polls everything), `--session-check strict` (stops a poller whose `/session` `sessionid` is not the Nakama match id), `--broadcaster-allowlist` (the trust boundary: only listed IPs/CIDRs are polled; everything forwarded was pulled over plaintext HTTP from whatever host the match label advertises). Every batch carries `server_id = "<broadcaster_ip>:<api_port>"`.
+Bridge defaults worth knowing: `--nakama-auth device` (creates/uses a bridge account through the server key; the raw server key alone cannot list matches), `--modes echo_arena` (prefix filter; `*` polls everything), `--session-check strict` (stops a poller whose `/session` `sessionid` is not the Nakama match id), `--broadcaster-allowlist` (the trust boundary: only listed IPs/CIDRs are polled; everything forwarded was pulled over plaintext HTTP from whatever host the match label advertises). Every batch and `match_start` carries `server_id = "<broadcaster_ip>:<api_port>"`; the server records it on the match context (`server_id`, persisted with `match_contexts` and shown wherever the match context is printed, e.g. `report`), not on every event row, so provenance is looked up per match.
 
 Expected log lines: server `telemetry server starting`, `game server connected`, `live match created`; bridge `connected to anticheat WebSocket (hello ok)`, `match_start`, periodic `bridge status` with `frames_acked`, and `match_end` with a reason (`post_match_detected`, `session_changed`, `broadcaster_unreachable`, `broadcaster_error`, `session_mismatch`, `cancelled`). Live matches are finalized on `match_end`, after `--stale-match-after` (30 min idle) or at shutdown.
 
@@ -122,18 +122,18 @@ Every message is JSON over the WebSocket. A message with a non-empty `type` is a
 enabled = true
 ```
 
-keeps MOV_001 in shadow mode with its calibrated params, and a `[detector.X.params]` section changes only the keys it names. Unknown keys, unknown detector IDs, unknown params and wrong value types are startup errors; keys documented by earlier versions but no longer read are dropped with a warning (the renamed/removed list is at the end of `default.toml`). Both binaries print the effective per-detector table (id, enabled, mode, weight, auto_enforce, resolved params) at startup so you can see what an edit did.
+keeps MOV_001 in shadow mode with its calibrated params, and a `[detector.X.params]` section changes only the keys it names. Unknown keys, unknown detector IDs, unknown params and wrong value types are startup errors; keys documented by earlier versions but no longer read are dropped with a warning (the renamed/removed list is at the end of `default.toml`). To see what an edit did, read the effective per-detector table (id, enabled, mode, weight, auto_enforce, resolved params): `nevr-server` always reports it at startup; `nevr-ac` only with `--verbose` / `-v` or `NEVR_AC_VERBOSE=1` (report output on stdout stays clean otherwise). With `log_format = "json"` the table is one JSON log record per detector (`"msg":"effective detector"`), with `"text"` a fixed-width block; both go to stderr. `[server]` durations must be strings (`"5m"`, `"300s"`): a bare number is rejected at startup because it would be read as nanoseconds.
 
 Per detector: `enabled`, `enforcement_weight` (0-1, multiplies every event's score contribution, this is the weight scoring uses), `auto_enforce` (only THROW_001 has a rule that can stamp `AutoEnforce` on an event, and only when this is true), `mode` (`shadow` = stored, never scored; `review`/`enforce` both mean scored, nothing else is wired), `params` (units per key, frames not milliseconds). `configs/shadow_deploy.toml` is the first-deployment overlay.
 
 ## Detector Catalog
 
-Weight is the `enforcement_weight` from `configs/default.toml`, which is what scoring applies. Status labels are unchanged from the readiness assessment; none is validated on real data.
+Weight is the `enforcement_weight` from `configs/default.toml`, which is what scoring applies. Status labels are those of `docs/production_readiness.md` (the single source for them); none is validated on real data. The one label that changed since the original assessment is THROW_002: its BROKEN multi-frame mechanism was removed in the v2.0.0 rewrite (commit 3ab978b) and the replacement is unvalidated, hence Unverified rather than an upgrade to any validated status.
 
 | ID | Name | Category | Weight | Status |
 |----|------|----------|--------|--------|
 | THROW_001 | Impossible Release Velocity | throw | 0.8 | Physics-grounded |
-| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — single-delta approach (v2.0.0), needs real-data calibration |
+| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |
 | THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
 | THROW_005 | Superhuman Target Precision | throw | 0.7 | Unverified — needs accuracy data |

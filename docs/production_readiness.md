@@ -36,18 +36,18 @@
 | Field | Issue | Status |
 |-------|-------|--------|
 | Rotation / HandRotation | API gives `{forward, left, up}` direction vectors, not quaternions | **DONE**: `model.QuatFromDirectionVectorsChecked` normalises forward, Gram-Schmidts up and rebuilds left = up × forward, so the result is always a proper rotation. It measures the handedness of the input (`BasisProper` vs `BasisReflected`, counted in `MapperStats.BasesProper/BasesReflected`) and handles both conventions exactly. **Which convention Echo VR really uses is still unconfirmed**: every fixture in this repo has det −1 (reflected). The first real `/session` capture settles it (the bridge logs the `basis_reflected` warning once). A degenerate basis (zero or collinear vectors) yields the **zero quaternion** (tracking loss), never a silent identity. |
-| DeltaTime | Not in the raw API | **DONE**: the bridge stamps `timestamp`/`delta_time` from the real HTTP sample time per match; the replay parser uses line timestamps. dt ≤ 0 means unknown; known dt is clamped to [0.005, 0.5] s. |
+| DeltaTime | Not in the raw API | **DONE**: the bridge stamps `timestamp`/`delta_time` from the real HTTP sample time per match; the replay parser uses line timestamps. dt ≤ 0 means unknown; a known dt above `pipeline.max_frame_dt` (0.5 s) is a gap (kinematics and histories cleared), smaller values are clamped to [0.005, 0.5] s. The validator rejects only dt > 60 s. |
 | Disc.Speed | Not raw | **DONE**: derived as `|velocity|` by the adapter and, for wire producers that omit it, by the decoder. |
 | holder_id | Contract used a different disc holder spelling | **DONE**: `DiscState.UnmarshalJSON` accepts `holder_id` as an alias of `possessor_id`/`is_held`. |
 
 ## 2. Detector Viability Matrix
 
-**IMPORTANT**: no detector has been validated against real Echo VR telemetry. "PHYSICS_GROUNDED" means the detection logic has a sound physics basis and conservative thresholds, NOT that it has been proven correct on real data. Status labels below are unchanged from the original assessment; changing one requires real-data evidence.
+**IMPORTANT**: no detector has been validated against real Echo VR telemetry. "PHYSICS_GROUNDED" means the detection logic has a sound physics basis and conservative thresholds, NOT that it has been proven correct on real data. This table is the single source of status labels (README, `configs/*.toml`, `internal/config/defaults.go` and the tests copy it). Labels are unchanged from the original assessment with one exception: THROW_002 moved from BROKEN to UNVERIFIED because the mechanism the BROKEN label described no longer exists (removed in the v2.0.0 rewrite, commit 3ab978b); the replacement is unvalidated, so this is not an upgrade to any validated status. Every other change requires real-data evidence.
 
 | Detector | Status | Safe for Shadow? | Safe to score? | Primary Risk |
 |----------|--------|-------------------|----------------|-------------|
 | THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until tolerances validated | Physics cap is real; tolerance/ping values are UNVERIFIED. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2 and excluded from cap-riding; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. |
-| THROW_002 | **BROKEN** | No (until re-tested) | No | Label retained pending data. The mechanism the label described (multi-frame acceleration over snapshots with identical velocities) was **replaced in v2.0.0** by a single delta: last pre-release disc speed vs release speed (`max_speed_delta` 22 m/s), and snapshots now exclude the release frame. The README lists it as Unverified for that reason; re-test on real replays before changing this row. |
+| THROW_002 | **UNVERIFIED** | Observation only, after the pre-release snapshot is confirmed non-identical | No | v2.0.0 single-delta approach, needs real-data calibration. The old BROKEN mechanism (multi-frame acceleration over pre-release snapshots that carried identical velocities in every real replay) was **removed** in v2.0.0 and replaced by a single delta: last pre-release disc speed vs release speed (`max_speed_delta` 22 m/s), with snapshots now excluding the release frame. The new mechanism is **unvalidated**: nobody has yet shown on a real replay that the pre-release snapshot carries a genuine, non-identical disc velocity. Ships disabled. |
 | THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed. Frame-of-reference guard skips throws where body speed ≥ hand speed. |
 | THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally; with the 1e-8 threshold even varied human throws fire. Degenerate dimensions are now excluded from the product, which removes one collapse mechanism but does not make the threshold meaningful. |
 | THROW_005 | **UNVERIFIED** | Yes (observation only) | After calibration | "Faster throws deviate more" premise unvalidated. Correlation gate now needs ≥ 30 pairs and a Fisher-z 95 % CI upper bound < 0.1. Goal side is learned per match from the first score increment. |
@@ -78,7 +78,7 @@
 
 ### Summary
 
-0 validated · 8 physics-grounded (incl. the PAT_004 meta-detector) · 7 unverified · 4 unsafe · 6 telemetry-dependent · 1 cross-match-dependent · 1 stub · 1 broken · 1 suspended = 29.
+0 validated · 8 physics-grounded (incl. the PAT_004 meta-detector) · 8 unverified (incl. THROW_002, whose BROKEN mechanism was removed) · 4 unsafe · 6 telemetry-dependent · 1 cross-match-dependent · 1 stub · 1 suspended = 29.
 
 ### Recommended initial enable list (shadow mode)
 
@@ -89,7 +89,7 @@ In shadow mode `enforcement_weight` has **no effect**: shadow events are never s
 - **Disabled until telemetry fields confirmed:** MOV_004, MOV_005, STATE_003, STATE_004, STATE_005
 - **Disabled until calibrated:** THROW_004, MOV_003, PAT_001, PAT_002
 - **Disabled until history exists:** PAT_003
-- **Disabled (suspended / broken / stub):** STATE_006, THROW_002, THROW_007
+- **Disabled (suspended / unvalidated rewrite / stub):** STATE_006, THROW_002, THROW_007
 
 ## 3. Integration Gap Analysis
 
@@ -100,7 +100,7 @@ In shadow mode `enforcement_weight` has **no effect**: shadow events are never s
 | **Stun count granularity.** STATE_007 needs per-frame `stuns` increments. | STATE_007 may be dead on live data. | **HIGH** |
 | **Replay format.** The `.echoreplay` parser exists (`internal/adapter/replay_parser.go`): NDJSON lines of `timestamp\tJSON`, optionally inside a ZIP, streamed per tick. It is what `analyze`/`batch` use. The `internal/replay` `FrameParser` interface and its JSON parser remain for legacy JSON replays only. | None for offline mode; comments that still mention protobuf are stale. | **LOW** |
 | **Live path statefulness.** The pipeline keeps per-player state across batches (`SetSkipReset`), so inline detection works even with one frame per batch. Inline results are `analysis_source = initial`; reprocessing stays canonical. | None; earlier revisions of this document called inline detection non-functional. | **LOW** |
-| **Trust boundary.** Everything the bridge forwards was pulled over plaintext HTTP from whatever host the Nakama match label advertises. Every batch/control message carries `server_id = "<ip>:<port>"`, and `--broadcaster-allowlist` restricts polling to known hosts. There is no authentication of the broadcaster itself. | A hostile or misconfigured broadcaster can inject arbitrary telemetry (and therefore detection events) for real player IDs. | **HIGH** — always run with an allowlist; treat evidence from unknown `server_id` values as untrusted |
+| **Trust boundary.** Everything the bridge forwards was pulled over plaintext HTTP from whatever host the Nakama match label advertises. Every batch/control message carries `server_id = "<ip>:<port>"`, which the server records on the match context (`MatchContext.ServerID`, persisted with `match_contexts`, shown in evidence reports); `--broadcaster-allowlist` restricts polling to known hosts. There is no authentication of the broadcaster itself. | A hostile or misconfigured broadcaster can inject arbitrary telemetry (and therefore detection events) for real player IDs. | **HIGH** — always run with an allowlist; treat evidence from a match whose context carries an unknown `server_id` as untrusted |
 
 ## 4. Producers
 
@@ -124,7 +124,7 @@ Y-up is confirmed from real replays (X ±5 m, Y −4..+7 m, Z ±77 m, goals at Z
 `.echoreplay` files are client-side recordings with interpolated positions. **Every threshold calibrated on replay data is calibrated on interpolated data, not server truth.**
 
 ### Timing
-Producers now report real sample intervals (bridge: HTTP sample time; replays: line timestamps), dt ≤ 0 is treated as unknown and known values are clamped to [0.005, 0.5] s, so the "dt clamping handles variable intervals" claim is now true. Kinematics from variable-dt frames are still noisier than uniform synthetic data, and **the bridge's 15 Hz poll bounds what can be observed**: BIO_001 cannot exceed 46.9 rad/s, single-frame teleports shorter than 67 ms are invisible, and THROW_002's pre-release snapshot is one 67 ms sample.
+Producers now report real sample intervals (bridge: HTTP sample time; replays: line timestamps), dt ≤ 0 is treated as unknown, a known dt above `pipeline.max_frame_dt` (0.5 s) is a gap that clears kinematics, and smaller known values are clamped to [0.005, 0.5] s, so the "dt clamping handles variable intervals" claim is now true. Kinematics from variable-dt frames are still noisier than uniform synthetic data, and **the bridge's 15 Hz poll bounds what can be observed**: BIO_001 cannot exceed 46.9 rad/s, single-frame teleports shorter than 67 ms are invisible, and THROW_002's pre-release snapshot is one 67 ms sample.
 
 ### Overfitting to synthetic data
 The test suite passes on synthetic telemetry (`internal/testutil/synthetic.go`: sinusoidal motion, deterministic jitter, idealised throws). Real gameplay has chaotic collisions, network reconciliation artifacts, tracking occlusion, playspace-dependent hand positions and controller-specific noise. **None of these are modelled.** The first real match will reveal false-positive patterns not seen in testing.
@@ -139,7 +139,7 @@ Scores are evidence pointers, not verdicts. The single-match and cross-match cas
 All 29 detectors depend on the feature extractor. A single bug in velocity or throw derivation silently breaks everything downstream. There is no independent cross-validation of derived features.
 
 ### THROW_002
-The v2.0.0 mechanism (last pre-release speed vs release speed) is untested on real data. The label stays BROKEN until a real replay shows the pre-release snapshot carries a genuine, non-identical disc velocity.
+The BROKEN multi-frame mechanism is gone; the v2.0.0 replacement (last pre-release speed vs release speed) is untested on real data, hence UNVERIFIED and disabled. It stays that way until a real replay shows the pre-release snapshot carries a genuine, non-identical disc velocity and `max_speed_delta` is calibrated on it.
 
 ### Storage growth
 Telemetry is never pruned automatically; `nevr-server` prunes detection events after 90 days and score snapshots after 30 days. Raw `.echoreplay` ticks are stored once per tick in `match_ticks`. Budget disk accordingly.
