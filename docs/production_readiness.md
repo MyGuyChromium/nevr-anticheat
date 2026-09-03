@@ -190,7 +190,7 @@ Collected from the quality-pass fixer reports. Each has a conservative default i
 14. **Calibration counts shadow events** inside decided cases (that is how shadow detectors earn promotion); add `AND is_shadow = 0` if you want the opposite.
 15. **Decay fallback**: events whose match has no start time are decayed from storage time (count reported); the stricter alternative is no decay for them.
 16. **Change detection** (`Mapper.SetDedupeIdentical`) is on for the bridge and off for replay parsing; decide whether `analyze`/`batch` should enable it.
-17. **Reflected basis**: fixtures are reflected; no threshold was changed on that basis. The first real capture decides.
+17. **Reflected basis — RESOLVED 2026-09-03.** Three real recordings (330k hand/body poses) decode as 100% proper (det +1) bases; the synthetic fixtures were the reflected ones. Both conventions are handled; `basis quality` in the diagnostic report reads `reflected=0` on real data.
 18. **Unnamed team entries** fall back to array index (0 = blue, 1 = orange); real payloads always carry `team`.
 19. **Bridge defaults**: `--session-check strict`, `--modes echo_arena`, `--nakama-auth device` (creates a `nevr-anticheat-bridge` account), `--ack-timeout 30s`, `--idle-give-up 10m`. Confirm each against the target Nakama.
 20. **Ingest defaults**: idle deadline 5 min, ack interval 1 s, persist interval 2 min, 64 matches, 16 players, stale finalization 30 min, dedup merge window 20 frames; NaN disc data nils the disc, NaN hands become the tracking-loss sentinel (flip to rejection if preferred).
