@@ -126,7 +126,7 @@ func liveRun(t *testing.T, cfg *config.Config, matchID string, batches [][]model
 	m := metrics.NewMetrics()
 	mm.SetMetrics(m)
 	for i, batch := range batches {
-		res := mm.HandleFrames(matchID, batch)
+		res := mm.HandleFrames(matchID, "", batch)
 		if res.Accepted != len(batch) || res.Rejected != 0 || res.Ignored != 0 {
 			t.Fatalf("batch %d: %+v", i, res)
 		}
@@ -246,18 +246,16 @@ func TestEquivalence_LiveOneTickBatches(t *testing.T) {
 	assertSameEvents(t, offEvents, liveEvents, offScores, liveScores)
 }
 
-// TestEquivalence_LivePerPlayerFrameBatches is the reproducer for the
-// multi-player one-frame-per-batch defect: MatchManager.HandleFrames
-// re-bases any batch whose lowest frame index is <= the last index seen,
-// so the second player's frame of the SAME tick is treated as a producer
-// restart and pushed to a new index. Every player then lives on its own
-// index stream (8x the ticks, per-player frame gaps of 8 > MOV_002's
-// max_frame_gap), and the live events diverge from offline (MOV_002
-// disappears, warm-up and dedup windows stretch). Skipped until the
-// re-basing condition distinguishes "same tick, another player" from
-// "index went backwards" (see the workstream report, bugsFound).
+// TestEquivalence_LivePerPlayerFrameBatches is the regression for the
+// multi-player one-frame-per-batch defect: MatchManager.HandleFrames used
+// to re-base any batch whose lowest frame index was <= the last index seen,
+// so the second player's frame of the SAME tick was treated as a producer
+// restart and pushed to a new index (every player on its own index stream,
+// per-player frame gaps of 8 > MOV_002's max_frame_gap, live events
+// diverging from offline). Re-basing is now per (match, player): a batch
+// that merely repeats the match's last index for another player is not a
+// restart (contract F).
 func TestEquivalence_LivePerPlayerFrameBatches(t *testing.T) {
-	t.Skip("known defect: HandleFrames re-bases same-tick frames delivered in separate batches (bugsFound in the tests report); remove this skip once fixed")
 	cfg := enforceConfig()
 	mc, frames := equivalenceMatch("match-live-perplayer")
 	offEvents, offScores := offlineRun(t, cfg, mc, frames)

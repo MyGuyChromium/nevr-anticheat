@@ -77,7 +77,7 @@ func TestMatchManager_LiveDetectionAcrossOneFrameBatches(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 90; i++ {
-		res := mm.HandleFrames("M1", []model.PlayerTelemetryFrame{speedHack("P1", i)})
+		res := mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{speedHack("P1", i)})
 		if res.Accepted != 1 || res.Rejected != 0 {
 			t.Fatalf("batch %d: %+v", i, res)
 		}
@@ -92,7 +92,9 @@ func TestMatchManager_LiveDetectionAcrossOneFrameBatches(t *testing.T) {
 	if live == nil || live.TeamAssignments["P1"] != "blue" || len(live.PlayerIDs) != 1 {
 		t.Fatalf("live context wrong: %+v", live)
 	}
-	if ps := mm.matches["M1"].Players["P1"]; ps == nil || ps.FrameCount != 90 {
+	// The newest tick is held back until the next index closes it, so the
+	// pipeline has seen 89 of the 90 frames before the match ends.
+	if ps := mm.matches["M1"].Players["P1"]; ps == nil || ps.FrameCount != 89 {
 		t.Fatalf("PlayerState not persistent across batches: %+v", ps)
 	}
 
@@ -155,8 +157,8 @@ func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
 		}
 		return out
 	}
-	mm.HandleFrames("M1", batch(0, 10))
-	res := mm.HandleFrames("M1", batch(0, 10)) // producer restarted its counter
+	mm.HandleFrames("M1", "", batch(0, 10))
+	res := mm.HandleFrames("M1", "", batch(0, 10)) // producer restarted its counter
 	if res.Accepted != 10 || res.Ignored != 0 {
 		t.Fatalf("rebased batch result %+v", res)
 	}
@@ -173,7 +175,7 @@ func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
 
 	// A new manager (server restart) seeds its counter from the store.
 	mm2 := NewMatchManager(mm.cfg, store, mm.detectorFn, quietLogger())
-	mm2.HandleFrames("M1", batch(0, 5))
+	mm2.HandleFrames("M1", "", batch(0, 5))
 	if maxIdx, _ := store.GetMaxFrameIndex(ctx, "M1"); maxIdx != 24 {
 		t.Errorf("after restart max index=%d want 24", maxIdx)
 	}
@@ -191,17 +193,17 @@ func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
 func TestMatchManager_Caps(t *testing.T) {
 	mm, _, _ := newTestManager(t)
 	mm.SetLimits(1, 2)
-	if res := mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("A", 0), goodFrame("B", 0), goodFrame("C", 0)}); res.Accepted != 2 || res.Rejected != 1 {
+	if res := mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("A", 0), goodFrame("B", 0), goodFrame("C", 0)}); res.Accepted != 2 || res.Rejected != 1 {
 		t.Errorf("player cap: %+v", res)
 	}
-	if res := mm.HandleFrames("M2", []model.PlayerTelemetryFrame{goodFrame("A", 0)}); res.Rejected != 1 || res.Accepted != 0 {
+	if res := mm.HandleFrames("M2", "", []model.PlayerTelemetryFrame{goodFrame("A", 0)}); res.Rejected != 1 || res.Accepted != 0 {
 		t.Errorf("match cap: %+v", res)
 	}
 	if mm.ActiveMatchCount() != 1 {
 		t.Errorf("active=%d", mm.ActiveMatchCount())
 	}
 	mm.EndMatch("M1")
-	if res := mm.HandleFrames("M2", []model.PlayerTelemetryFrame{goodFrame("A", 0)}); res.Accepted != 1 {
+	if res := mm.HandleFrames("M2", "", []model.PlayerTelemetryFrame{goodFrame("A", 0)}); res.Accepted != 1 {
 		t.Errorf("after EndMatch the slot should free up: %+v", res)
 	}
 }
@@ -224,7 +226,7 @@ func TestMatchManager_ControlMessages(t *testing.T) {
 	if _, ok := mc.TeamAssignments["S1"]; ok {
 		t.Error("spectator must not get a team assignment")
 	}
-	mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P2", 0)})
+	mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P2", 0)})
 	mm.HandleControl(model.ControlMessage{Type: model.ControlMatchEnd, MatchID: "M1", Reason: "poller_stopped"})
 	if mm.ActiveMatchCount() != 0 {
 		t.Error("match_end should finalize the match")
@@ -233,7 +235,7 @@ func TestMatchManager_ControlMessages(t *testing.T) {
 		t.Errorf("summary rows=%d", n)
 	}
 	// Frames after match_end start a fresh match rather than being dropped.
-	if res := mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 1)}); res.Accepted != 1 {
+	if res := mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 1)}); res.Accepted != 1 {
 		t.Errorf("post-end frames: %+v", res)
 	}
 }
@@ -242,8 +244,8 @@ func TestMatchManager_ControlMessages(t *testing.T) {
 // and shutdown finalize instead of discarding.
 func TestMatchManager_StaleCleanupAndClosePersist(t *testing.T) {
 	mm, store, _ := newTestManager(t)
-	mm.HandleFrames("STALE", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
-	mm.HandleFrames("LIVE", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
+	mm.HandleFrames("STALE", "", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
+	mm.HandleFrames("LIVE", "", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
 	mm.matches["STALE"].LastActivity = time.Now().Add(-time.Hour)
 
 	mm.CleanupStaleMatches(30 * time.Minute)
@@ -268,7 +270,7 @@ func TestMatchManager_PhysicsFromConfig(t *testing.T) {
 	mm, _, _ := newTestManager(t)
 	mm.cfg.Physics.MaxPlayerSpeed = 42
 	mm.cfg.Physics.DiscSpeedCap = 0 // unset -> default
-	mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
+	mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 0)})
 	mc := mm.GetMatchContext("M1")
 	if mc == nil {
 		t.Fatal("match not created")
@@ -289,7 +291,7 @@ func TestMatchManager_PhysicsFromConfig(t *testing.T) {
 func TestMatchManager_AckAccountingInvariant(t *testing.T) {
 	mm, _, m := newTestManager(t)
 	batch := []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P1", 0), goodFrame("P1", 1), goodFrame("P2", 1)}
-	res := mm.HandleFrames("M1", batch)
+	res := mm.HandleFrames("M1", "", batch)
 	if res.Accepted+res.Rejected+res.Ignored != len(batch) {
 		t.Fatalf("counts do not cover the batch: %+v for %d frames", res, len(batch))
 	}
@@ -301,7 +303,7 @@ func TestMatchManager_AckAccountingInvariant(t *testing.T) {
 	}
 	// Player cap rejections are counted too, and only once.
 	mm.SetLimits(10, 2)
-	res = mm.HandleFrames("M1", []model.PlayerTelemetryFrame{goodFrame("P1", 2), goodFrame("P3", 2)})
+	res = mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 2), goodFrame("P3", 2)})
 	if res.Accepted != 1 || res.Rejected != 1 || res.Ignored != 0 {
 		t.Errorf("cap batch: %+v", res)
 	}
@@ -319,7 +321,7 @@ func TestMatchManager_ReviewCaseAtMatchEnd(t *testing.T) {
 	mm.OnReviewCase = func(rc model.ReviewCase) { reported = append(reported, rc) }
 
 	for i := 0; i < 120; i++ {
-		mm.HandleFrames("M1", []model.PlayerTelemetryFrame{speedHack("P1", i), goodFrame("P2", i)})
+		mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{speedHack("P1", i), goodFrame("P2", i)})
 	}
 	live := mm.matches["M1"]
 	score := live.Scorer.GetScore("P1")

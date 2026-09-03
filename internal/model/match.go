@@ -17,7 +17,11 @@ type MatchContext struct {
 	Source          string            `json:"source"`
 	ReplayFile      string            `json:"replay_file,omitempty"`
 	ServerRegion    string            `json:"server_region,omitempty"`
-	Physics         PhysicsConstants  `json:"physics"`
+	// ServerID is the provenance of live telemetry: the producer's
+	// server_id stamp (the bridge sends "<broadcaster_ip>:<api_port>").
+	// Provenance lives here, on the match context, not on every event row.
+	ServerID string           `json:"server_id,omitempty"`
+	Physics  PhysicsConstants `json:"physics"`
 }
 
 // IsActivePhase returns true if the game phase is active gameplay.
