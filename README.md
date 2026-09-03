@@ -46,6 +46,8 @@ go build -o nevr-compat ./cmd/compat      # /session payload compatibility check
 
 ## Quick start: offline (replays)
 
+**Drag and drop:** drop one or more `.echoreplay` files (or a folder of them) onto `nevr-ac.exe` in Explorer. It runs `analyze` (or `batch`) on each, prints the flagged summary, and waits for Enter. Without `--config` the database `nevr-anticheat.db` is created next to the executable.
+
 ```bash
 # Ingest one replay: stores telemetry + raw ticks, runs detection, stores events/scores/cases.
 ./nevr-ac analyze match.echoreplay

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,11 @@ import (
 
 const appVersion = "0.1.0"
 
+// dropMode is set when replay files or folders were passed instead of a
+// command (files dropped onto nevr-ac.exe in Explorer); fatal paths then
+// wait for Enter so the console window stays readable.
+var dropMode bool
+
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file")
 	verbose := flag.Bool("verbose", false, "Print the effective detector table to stderr at startup (also NEVR_AC_VERBOSE=1)")
@@ -41,6 +47,10 @@ func main() {
 	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
+	}
+	if isDropInvocation(args) {
+		runDropMode(*configPath, args)
+		return
 	}
 
 	sub := args[1:]
