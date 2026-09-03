@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEVR-Anticheat</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --ink: #1c1f24; --muted: #5f6672; --line: #d9dde3;
+    --accent: #2457c5; --accent-ink: #ffffff; --danger: #b3261e; --ok: #1d7a3d;
+    --blue: #2f6fd6; --orange: #d8731f;
+    --lvl-clean: #e6efe8; --lvl-informational: #e8eef9; --lvl-suspicious: #fff2d6;
+    --lvl-high_risk: #ffe1c4; --lvl-critical: #ffd4d1; --lvl-action_worthy: #f3c6f6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { background: #1c1f24; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+  header .sub { color: #aeb4bd; font-size: 12px; }
+  header .spacer { flex: 1; }
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 24px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin-bottom: 18px; }
+  .card h2 { font-size: 16px; margin: 0 0 10px; }
+  .card h3 { font-size: 14px; margin: 16px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  #drop { border: 2px dashed #aeb4bd; border-radius: 8px; padding: 26px; text-align: center; color: var(--muted); transition: background .15s, border-color .15s; }
+  #drop.over { background: #e8eef9; border-color: var(--accent); color: var(--accent); }
+  #drop input { display: none; }
+  .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+  .status { color: var(--muted); }
+  .status.err { color: var(--danger); }
+  .status.ok { color: var(--ok); }
+  .meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px 18px; margin: 8px 0 4px; }
+  .meta div { font-size: 13px; }
+  .meta b { display: block; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.shadow td { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid rgba(0,0,0,.08); white-space: nowrap; }
+  .team-blue { color: var(--blue); font-weight: 600; }
+  .team-orange { color: var(--orange); font-weight: 600; }
+  .lvl-clean { background: var(--lvl-clean); } .lvl-informational { background: var(--lvl-informational); }
+  .lvl-suspicious { background: var(--lvl-suspicious); } .lvl-high_risk { background: var(--lvl-high_risk); }
+  .lvl-critical { background: var(--lvl-critical); } .lvl-action_worthy { background: var(--lvl-action_worthy); }
+  .warn { background: #fff7e0; border: 1px solid #f0d58c; padding: 8px 10px; border-radius: 6px; margin: 8px 0; font-size: 13px; }
+  .error-card { border-color: #e6a09b; background: #fff5f4; }
+  details summary { cursor: pointer; color: var(--muted); }
+  pre { background: #f7f8fa; border: 1px solid var(--line); padding: 10px; border-radius: 6px; overflow: auto; font-size: 12px; max-height: 420px; }
+  .empty { color: var(--muted); font-style: italic; }
+  .score { font-size: 20px; font-weight: 600; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>NEVR-Anticheat</h1>
+  <span class="sub">Offline replay analysis (local, 127.0.0.1)</span>
+  <span class="spacer"></span>
+  <button id="quit" title="Stop the desktop app">Quit</button>
+</header>
+<main>
+  <section class="card">
+    <h2>Upload replays</h2>
+    <div id="drop">
+      <input id="files" type="file" multiple accept=".echoreplay,.json">
+      <div><strong>Drop .echoreplay files here</strong> or <a href="#" id="pick">choose files</a></div>
+      <div style="margin-top:4px;font-size:12px">Each file is stored in the database and run through the detectors, exactly like <code>nevr-ac analyze</code>.</div>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="force"> Re-analyze matches that are already stored (<code>--force</code>: replaces their detection events and scores)</label>
+      <span class="spacer" style="flex:1"></span>
+      <button id="clear" class="small">Clear results</button>
+    </div>
+    <div class="row"><span id="status" class="status">Waiting for files.</span></div>
+  </section>
+
+  <section id="results"></section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Flagged / pending cases</h2>
+      <div id="flagged" class="empty">Loading…</div>
+    </section>
+    <section class="card">
+      <h2>History</h2>
+      <div id="history" class="empty">Loading…</div>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtNum = (n, d = 1) => (typeof n === 'number' ? n.toFixed(d) : '');
+  const fmtTime = (s) => { if (!s) return '—'; const t = new Date(s); return isNaN(t) ? s : t.toLocaleString(); };
+  const fmtDur = (sec) => {
+    if (!sec || sec <= 0) return '—';
+    const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    return m ? `${m} min ${s} s` : `${s} s`;
+  };
+  const badge = (level) => `<span class="badge lvl-${esc(level)}">${esc(level)}</span>`;
+  const team = (t) => t ? `<span class="team-${esc(t)}">${esc(t)}</span>` : '<span class="empty">—</span>';
+  const who = (name, id) => name ? `${esc(name)} <span class="mono" style="color:var(--muted)">${esc(id)}</span>` : `<span class="mono">${esc(id)}</span>`;
+
+  const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
+
+  async function getJSON(url) {
+    const r = await fetch(url, { cache: 'no-store' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+    return body;
+  }
+
+  // ---- match card ---------------------------------------------------------
+  function matchCard(m, source) {
+    const score = m.has_score
+      ? `<span class="score"><span class="team-blue">${m.blue_score}</span> – <span class="team-orange">${m.orange_score}</span></span>`
+      : '<span class="empty">not in this replay</span>';
+    const players = m.players.length ? `<table><thead><tr>
+        <th>Player</th><th>Team</th><th class="num">Frames</th><th class="num">Score</th><th>Level</th>
+        <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th></tr></thead><tbody>` +
+      m.players.map(p => `<tr>
+        <td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${p.frames}</td>
+        <td class="num">${fmtNum(p.score)}</td><td>${badge(p.level)}</td>
+        <td class="num">${p.detections}</td><td class="num">${p.shadow_detections}</td>
+        <td>${p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="empty">none</span>'}</td></tr>`).join('') +
+      '</tbody></table>' : '<div class="empty">No players.</div>';
+
+    const events = m.events.length ? `<table><thead><tr>
+        <th>Detector</th><th>Player</th><th class="num">Frame</th><th>Range</th><th class="num">Time (s)</th>
+        <th>Severity</th><th class="num">Confidence</th><th>Observed</th><th>Expected</th><th>Shadow</th></tr></thead><tbody>` +
+      m.events.map(e => `<tr class="${e.is_shadow ? 'shadow' : ''}">
+        <td class="mono">${esc(e.detector_id)} <span style="color:var(--muted)">v${esc(e.detector_version)}</span></td>
+        <td>${who(e.player_name, e.player_id)}</td><td class="num">${e.frame_index}</td>
+        <td class="num">${e.frame_range_start}–${e.frame_range_end}</td><td class="num">${fmtNum(e.timestamp, 2)}</td>
+        <td>${fmtNum(e.severity, 2)} <span class="badge">${esc(e.severity_label)}</span></td><td class="num">${fmtNum(e.confidence, 2)}</td>
+        <td>${esc(e.observed_value)}</td><td>${esc(e.expected_range)}</td>
+        <td>${e.is_shadow ? 'shadow (not scored)' : '—'}</td></tr>`).join('') +
+      '</tbody></table>' : '<div class="empty">No detections.</div>';
+
+    const cases = m.cases.length ? `<table><thead><tr>
+        <th>Case</th><th>Player</th><th>Level</th><th class="num">Score</th><th>Recommended action</th><th>Status</th></tr></thead><tbody>` +
+      m.cases.map(c => `<tr><td class="mono">${esc(c.case_id)}</td><td>${who(c.player_name, c.player_id)}</td>
+        <td>${badge(c.level)}</td><td class="num">${fmtNum(c.suspicion_score)}</td>
+        <td>${esc(c.recommended_action)}</td><td>${esc(c.status)}</td></tr>`).join('') +
+      '</tbody></table>' : '<div class="empty">No review cases created (no player reached the review threshold).</div>';
+
+    let diag = '<div class="empty">Adapter diagnostics are only available right after an analysis; this match was loaded from the database.</div>';
+    if (m.diagnostics) {
+      const d = m.diagnostics;
+      const rej = Object.keys(d.rejections_by_field).length
+        ? Object.entries(d.rejections_by_field).map(([k, v]) => `${k}=${v}`).join(', ') : 'none';
+      const basis = d.basis ? `<div><b>Basis quality (poses)</b>proper ${d.basis.proper}, reflected ${d.basis.reflected}, non-orthonormal ${d.basis.non_orthonormal}, degenerate ${d.basis.degenerate}</div>
+        <div><b>Hand tracking lost</b>${d.basis.hand_tracking_lost}</div><div><b>Non-monotonic samples</b>${d.basis.non_monotonic_samples}</div><div><b>Clock steps re-based</b>${d.basis.clock_steps}</div>` : '';
+      diag = `<div class="meta">
+        <div><b>Snapshots</b>${d.snapshots}</div><div><b>Lines rejected</b>${d.lines_rejected}</div>
+        <div><b>Player frames mapped</b>${d.frames_mapped}</div><div><b>Player frames rejected</b>${d.player_frames_rejected} (${esc(rej)})</div>
+        <div><b>Spectator entries dropped</b>${d.spectator_entries_dropped}</div><div><b>Players seen</b>${d.players_seen}</div>
+        ${d.session_changes ? `<div><b>Session changes</b>${d.session_changes} (file holds ${d.session_changes + 1} matches; the first was analyzed)</div>` : ''}
+        ${basis}</div><pre>${esc(d.report)}</pre>`;
+    }
+
+    const tel = m.telemetry ? `<div><b>Stored</b>${m.telemetry.frames_inserted} frames (${m.telemetry.frames_ignored} already present)${m.telemetry.ticks_inserted || m.telemetry.ticks_ignored ? `, ${m.telemetry.ticks_inserted} raw ticks (${m.telemetry.ticks_ignored} present)` : ''}</div>` : '';
+    const replaced = m.replaced ? `<div class="warn">Re-analyzed: the previous analysis of this match was cleared (${m.cleared_events} events, ${m.cleared_scores} score snapshots).</div>` : '';
+    const warnings = m.warnings.length ? m.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join('') : '';
+
+    return `<section class="card">
+      <h2>Match <span class="mono">${esc(m.match_id)}</span> <span class="status" style="font-size:12px;font-weight:normal">${esc(source)}</span></h2>
+      ${replaced}${warnings}
+      <div class="meta">
+        <div><b>Source file</b>${esc(m.source_file || '—')}</div>
+        <div><b>Start</b>${esc(fmtTime(m.start_time))}</div>
+        <div><b>Duration</b>${fmtDur(m.duration_seconds)}</div>
+        <div><b>Mode / map</b>${esc(m.game_mode || '—')} / ${esc(m.map || '—')}${m.is_private ? ' (private)' : ''}</div>
+        <div><b>Final score (blue – orange)</b>${score}</div>
+        <div><b>Frames</b>${m.frames_processed} ticks, ${m.player_frames} player-frames, ${m.invalid_frames} invalid</div>
+        ${tel}
+        <div><b>Analyzed</b>${esc(fmtTime(m.analyzed_at))}</div>
+      </div>
+      <h3>Players</h3>${players}
+      <h3>Detections (${m.events.length})</h3>${events}
+      <h3>Review cases (${m.cases.length})</h3>${cases}
+      <h3>Adapter diagnostics</h3><details><summary>Show</summary>${diag}</details>
+    </section>`;
+  }
+
+  function errorCard(title, msg) {
+    return `<section class="card error-card"><h2>${esc(title)}</h2><div>${esc(msg)}</div></section>`;
+  }
+
+  function prependResult(html) {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    $('results').prepend(...wrap.childNodes);
+  }
+
+  // ---- upload -------------------------------------------------------------
+  let busy = false;
+  async function analyze(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length || busy) return;
+    busy = true;
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f, f.name));
+    if ($('force').checked) fd.append('force', '1');
+    const total = files.reduce((n, f) => n + f.size, 0);
+    setStatus(`Uploading and analyzing ${files.length} file(s), ${(total / 1048576).toFixed(1)} MB… this can take a while for long replays.`);
+    try {
+      const r = await fetch('api/analyze', { method: 'POST', body: fd });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+      let ok = 0, failed = 0;
+      // Prepend in reverse so the first file ends up on top.
+      body.results.slice().reverse().forEach(res => {
+        if (res.ok) { ok++; prependResult(matchCard(res.match, `from ${res.file}`)); }
+        else {
+          failed++;
+          const title = res.already_stored ? `${res.file}: already stored` : `${res.file}: not analyzed`;
+          prependResult(errorCard(title, res.error));
+        }
+      });
+      setStatus(`Done: ${ok} analyzed, ${failed} failed.`, failed ? 'err' : 'ok');
+    } catch (e) {
+      setStatus(`Upload failed: ${e.message}`, 'err');
+    } finally {
+      busy = false;
+      $('files').value = '';
+      refreshPanels();
+    }
+  }
+
+  const drop = $('drop');
+  ['dragenter', 'dragover'].forEach(ev => document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === document.documentElement) drop.classList.remove('over'); }));
+  document.addEventListener('drop', (e) => { drop.classList.remove('over'); analyze(e.dataTransfer && e.dataTransfer.files); });
+  $('pick').addEventListener('click', (e) => { e.preventDefault(); $('files').click(); });
+  drop.addEventListener('click', (e) => { if (e.target === drop) $('files').click(); });
+  $('files').addEventListener('change', (e) => analyze(e.target.files));
+  $('clear').addEventListener('click', () => { $('results').innerHTML = ''; setStatus('Results cleared.'); });
+
+  // ---- panels -------------------------------------------------------------
+  async function loadFlagged() {
+    const el = $('flagged');
+    try {
+      const f = await getJSON('api/flagged');
+      if (!f.single_match.length && !f.cross_match.length) { el.className = 'empty'; el.textContent = 'No flagged players.'; return; }
+      let html = '';
+      if (f.cross_match.length) {
+        html += `<h3>Cross-match cases (${f.cross_match.length})</h3><table><thead><tr><th>Case</th><th>Player</th><th class="num">Decayed</th><th class="num">Raw</th><th class="num">Matches</th><th>Severity</th></tr></thead><tbody>` +
+          f.cross_match.map(c => `<tr><td class="mono">${esc(c.case_id)}</td><td>${who(c.player_name, c.player_id)}</td><td class="num">${fmtNum(c.decayed_score)}</td><td class="num">${fmtNum(c.cumulative_score)}</td><td class="num">${c.match_count}</td><td>${esc(c.severity)}</td></tr>`).join('') + '</tbody></table>';
+      }
+      if (f.single_match.length) {
+        html += `<h3>Single-match cases (${f.single_match.length})</h3><table><thead><tr><th>Case</th><th>Player</th><th class="num">Score</th><th>Level</th><th>Action</th><th></th></tr></thead><tbody>` +
+          f.single_match.map(c => `<tr><td class="mono">${esc(c.case_id)}</td><td>${who(c.player_name, c.player_id)}</td><td class="num">${fmtNum(c.suspicion_score)}</td><td>${badge(c.level)}</td><td>${esc(c.recommended_action)}</td><td><button class="small" data-open="${esc(c.match_id)}">Open match</button></td></tr>`).join('') + '</tbody></table>';
+      }
+      el.className = ''; el.innerHTML = html;
+    } catch (e) { el.className = 'status err'; el.textContent = `Could not load cases: ${e.message}`; }
+  }
+
+  async function loadHistory() {
+    const el = $('history');
+    try {
+      const h = await getJSON('api/matches');
+      if (!h.matches.length) { el.className = 'empty'; el.textContent = 'No matches analyzed yet.'; return; }
+      el.className = '';
+      el.innerHTML = `<table><thead><tr><th>Match</th><th>Start</th><th>Players</th><th>Analyzed</th><th></th></tr></thead><tbody>` +
+        h.matches.map(m => `<tr>
+          <td><span class="mono">${esc(m.match_id)}</span><br><span style="color:var(--muted);font-size:12px">${esc(m.source_file || m.source)}${m.game_mode ? ' · ' + esc(m.game_mode) : ''}</span></td>
+          <td>${esc(fmtTime(m.start_time))}<br><span style="color:var(--muted);font-size:12px">${fmtDur(m.duration_seconds)}</span></td>
+          <td>${m.players.map(p => `<span class="team-${esc(p.team)}">${esc(p.name || p.player_id)}</span>`).join(', ') || '<span class="empty">—</span>'}</td>
+          <td>${esc(fmtTime(m.analyzed_at))}</td>
+          <td><button class="small" data-open="${esc(m.match_id)}">Open</button></td></tr>`).join('') + '</tbody></table>';
+    } catch (e) { el.className = 'status err'; el.textContent = `Could not load history: ${e.message}`; }
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-open]');
+    if (!btn) return;
+    const id = btn.dataset.open;
+    btn.disabled = true;
+    try {
+      const m = await getJSON('api/match/' + encodeURIComponent(id));
+      prependResult(matchCard(m, 'from the database'));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) { prependResult(errorCard(`Match ${id}`, err.message)); }
+    finally { btn.disabled = false; }
+  });
+
+  $('quit').addEventListener('click', async () => {
+    if (!confirm('Stop the NEVR-Anticheat desktop app?')) return;
+    try { await fetch('quit'); } catch (_) {}
+    document.body.innerHTML = '<main><section class="card"><h2>NEVR-Anticheat desktop has stopped.</h2><div>You can close this tab.</div></section></main>';
+  });
+
+  function refreshPanels() { loadFlagged(); loadHistory(); }
+  refreshPanels();
+})();
+</script>
+</body>
+</html>

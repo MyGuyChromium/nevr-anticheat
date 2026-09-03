@@ -38,10 +38,11 @@ Design rules:
 
 ```bash
 export CGO_ENABLED=1
-go build -o nevr-ac     ./cmd/anticheat   # offline CLI + moderator tools
-go build -o nevr-server ./cmd/server      # live ingestion server
-go build -o nevr-bridge ./cmd/bridge      # broadcaster → server bridge
-go build -o nevr-compat ./cmd/compat      # /session payload compatibility checker
+go build -o nevr-ac      ./cmd/anticheat   # offline CLI + moderator tools
+go build -o nevr-desktop ./cmd/desktop     # desktop app: upload replays in a local web page
+go build -o nevr-server  ./cmd/server      # live ingestion server
+go build -o nevr-bridge  ./cmd/bridge      # broadcaster → server bridge
+go build -o nevr-compat  ./cmd/compat      # /session payload compatibility checker
 ```
 
 ## Quick start: offline (replays)
@@ -78,6 +79,19 @@ go build -o nevr-compat ./cmd/compat      # /session payload compatibility check
 Verdicts are `confirmed_cheat`, `false_positive`, `inconclusive` or `needs_more_data`. `--detector ID=yes|no|uncertain` records per-detector feedback that overrides the case verdict for that detector in the calibration report. Shadow events inside decided cases count on purpose: that is how a shadow detector earns promotion.
 
 All CLI commands take `--config <file>` before the command. Reports go to stdout, logs to stderr.
+
+## Desktop app
+
+`nevr-desktop` is the point-and-click front end of the offline path: start it, drop `.echoreplay` files onto the page, read the result.
+
+```bash
+go build -o nevr-desktop.exe ./cmd/desktop     # CGO_ENABLED=1, like every binary here
+./nevr-desktop.exe                              # or double-click it
+```
+
+On start it opens the database (`nevr-anticheat.db` next to the executable, or `general.db_path` with `--config <file>`), listens on **127.0.0.1 only** at a random free port behind a random per-run token, opens that URL in the default browser and prints it (`--no-browser` only prints it, `--port` pins the port). Uploaded files are analyzed one after another through the same code as `nevr-ac analyze` (telemetry, raw ticks, detection events, scores and review cases are stored; a match that is already in the database is refused unless the **Re-analyze** box, i.e. `--force`, is ticked) and deleted afterwards. Each match card shows the roster with names, teams, frames, per-match score and level, detection counts (shadow events separately), the detections table, the review cases created, and the adapter diagnostics. The page also lists the pending single-match and cross-match cases (`nevr-ac flagged`) and the analyzed matches in the database, any of which can be re-opened. **Quit** on the page or Ctrl+C in the console stops it. Nothing is reachable from other machines and nothing but this page can reach the app.
+
+The JSON API behind the page (all under `/<token>/`): `POST api/analyze` (multipart `files[]`, optional `force=1`), `GET api/flagged`, `GET api/matches`, `GET api/match/{id}`, `GET quit`.
 
 ## Quick start: live (bridge + server)
 
