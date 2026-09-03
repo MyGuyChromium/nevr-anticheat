@@ -104,8 +104,8 @@ func TestReplayParser_MalformedLines(t *testing.T) {
 		"no tab separator here",
 		"2025/01/01 00:00:00.000\t{invalid json!!!}",
 		"2025/01/01 00:00:00.000\t",   // empty JSON
-		validSessionLine,               // one valid line
-		"",                             // empty line
+		validSessionLine,              // one valid line
+		"",                            // empty line
 		"2025/01/01 00:00:00.000\t{}", // empty object (no teams)
 	}
 	path := writeNDJSON(t, dir, "malformed.echoreplay", lines)
@@ -137,57 +137,4 @@ func TestReplayParser_EmptyFile(t *testing.T) {
 		t.Fatal("expected error for empty replay")
 	}
 	t.Logf("Empty file error: %v", err)
-}
-
-func TestReplayParser_RealFileIfAvailable(t *testing.T) {
-	// Test against the real replay file if it exists
-	path := "/tmp/rec_2025-12-03_21-38-17.echoreplay"
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Skip("real replay file not available at " + path)
-	}
-
-	parser := adapter.NewEchoReplayParser()
-	matchCtx, frames, diag, err := parser.ParseFile(path)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	t.Logf("Real replay results:")
-	t.Logf("  Match:    %s", matchCtx.MatchID)
-	t.Logf("  Mode:     %s", matchCtx.GameMode)
-	t.Logf("  Map:      %s", matchCtx.Map)
-	t.Logf("  Players:  %d", len(matchCtx.PlayerIDs))
-	t.Logf("  Frames:   %d", len(frames))
-	t.Logf("  Rejected: %d", diag.FramesRejected)
-
-	if len(frames) < 1000 {
-		t.Errorf("expected >1000 frames from real replay, got %d", len(frames))
-	}
-	if len(matchCtx.PlayerIDs) < 2 {
-		t.Errorf("expected >2 players, got %d", len(matchCtx.PlayerIDs))
-	}
-}
-
-func TestReplayParser_RealZIPIfAvailable(t *testing.T) {
-	// Test against the original ZIP-compressed file
-	path := "/mnt/c/Users/colli/Downloads/rec_2025-12-03_21-38-17.echoreplay"
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Skip("real ZIP replay not available at " + path)
-	}
-
-	parser := adapter.NewEchoReplayParser()
-	matchCtx, frames, diag, err := parser.ParseFile(path)
-	if err != nil {
-		t.Fatalf("parse error on ZIP: %v", err)
-	}
-
-	t.Logf("Real ZIP replay results:")
-	t.Logf("  Match:    %s", matchCtx.MatchID)
-	t.Logf("  Players:  %d", len(matchCtx.PlayerIDs))
-	t.Logf("  Frames:   %d", len(frames))
-	t.Logf("  Rejected: %d", diag.FramesRejected)
-
-	if len(frames) < 1000 {
-		t.Errorf("expected >1000 frames from real replay, got %d", len(frames))
-	}
 }

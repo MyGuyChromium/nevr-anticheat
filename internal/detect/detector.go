@@ -2,6 +2,8 @@
 package detect
 
 import (
+	"sort"
+
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
@@ -51,7 +53,30 @@ func (b *BaseDetector) WarmupFrames() int                 { return b.Warmup }
 func (b *BaseDetector) DefaultEnforcementWeight() float64 { return b.Weight }
 func (b *BaseDetector) AutoEnforce() bool                 { return b.IsAutoEnforce }
 
+// SetWeight overrides the enforcement weight stamped on every event this
+// detector emits. Registration code applies the configured
+// enforcement_weight through this setter; the constructor literal is only
+// the fallback when no config entry exists. Values are clamped to [0, 1].
+func (b *BaseDetector) SetWeight(w float64) {
+	b.Weight = model.Clamp01(w)
+}
+
+// SetAutoEnforce overrides the detector's auto-enforce eligibility flag from config.
+func (b *BaseDetector) SetAutoEnforce(auto bool) {
+	b.IsAutoEnforce = auto
+}
+
 // MakeEvent constructs a DetectionEvent with common fields populated.
+// Severity and confidence are clamped to [0, 1] (NaN becomes 0) and the
+// causal frame range is normalised so FrameRangeStart <= FrameRangeEnd.
+//
+// EnforcementWeight is the detector's (config-settable) weight and
+// AutoEnforce is the detector's auto-enforce flag; detectors that gate
+// auto-enforcement on per-event evidence (THROW_001) override the field
+// after the call. A nil matchCtx is tolerated so unit tests can build events
+// without a match, but the resulting event has no MatchID and therefore
+// fails DetectionEvent.Validate: the pipeline drops it. Production callers
+// always pass the match context.
 func (b *BaseDetector) MakeEvent(
 	matchCtx *model.MatchContext,
 	playerID string,
@@ -62,11 +87,24 @@ func (b *BaseDetector) MakeEvent(
 	observed, expected string,
 	causalKey model.CausalKey,
 ) model.DetectionEvent {
+	if causalKey.FrameStart < 0 {
+		causalKey.FrameStart = 0
+	}
+	if causalKey.FrameEnd < causalKey.FrameStart {
+		causalKey.FrameEnd = causalKey.FrameStart
+	}
+	if causalKey.PlayerID == "" {
+		causalKey.PlayerID = playerID
+	}
+	matchID := ""
+	if matchCtx != nil {
+		matchID = matchCtx.MatchID
+	}
 	return model.DetectionEvent{
 		EventID:           model.NewEventID(),
 		DetectorID:        b.DetectorID,
 		DetectorVersion:   b.DetectorVersion,
-		MatchID:           matchCtx.MatchID,
+		MatchID:           matchID,
 		PlayerID:          playerID,
 		FrameIndex:        frameIdx,
 		FrameRangeStart:   causalKey.FrameStart,
@@ -79,8 +117,52 @@ func (b *BaseDetector) MakeEvent(
 		ExpectedRange:     expected,
 		CausalKey:         causalKey,
 		EnforcementWeight: b.Weight,
-		AutoEnforce:       false,
+		AutoEnforce:       b.IsAutoEnforce,
 	}
+}
+
+// SortedPlayers returns every player state ordered by PlayerID. Detectors
+// must iterate this slice instead of ranging over the map so that event
+// order, rate-limit victims and any "first player" sample are reproducible
+// across reprocessing runs.
+func SortedPlayers(players map[string]*model.PlayerState) []*model.PlayerState {
+	out := make([]*model.PlayerState, 0, len(players))
+	for _, ps := range players {
+		if ps == nil {
+			continue
+		}
+		out = append(out, ps)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PlayerID < out[j].PlayerID })
+	return out
+}
+
+// ActivePlayers returns, in PlayerID order, the players whose state was
+// updated by the feature extractor at frameIdx. A PlayerState that still
+// carries kinematics from an earlier frame (the player left, or their frame
+// was rejected by the validator) is stale and must not be re-scored: a
+// single-frame speed spike would otherwise be re-counted on every later
+// frame until match end. States that have never been updated (FrameCount
+// == 0, e.g. hand-built states in unit tests) are included, because the
+// extractor always sets FrameCount together with LastFrameIdx.
+func ActivePlayers(players map[string]*model.PlayerState, frameIdx int) []*model.PlayerState {
+	out := make([]*model.PlayerState, 0, len(players))
+	for _, ps := range players {
+		if ps == nil {
+			continue
+		}
+		if IsStale(ps, frameIdx) {
+			continue
+		}
+		out = append(out, ps)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PlayerID < out[j].PlayerID })
+	return out
+}
+
+// IsStale reports whether ps was NOT updated at frameIdx (see ActivePlayers).
+func IsStale(ps *model.PlayerState, frameIdx int) bool {
+	return ps.FrameCount > 0 && ps.LastFrameIdx != frameIdx
 }
 
 // GetFloat reads a float64 from a params map with a default fallback.
@@ -89,6 +171,8 @@ func GetFloat(params map[string]any, key string, def float64) float64 {
 		switch val := v.(type) {
 		case float64:
 			return val
+		case float32:
+			return float64(val)
 		case int:
 			return float64(val)
 		case int64:
@@ -108,6 +192,8 @@ func GetInt(params map[string]any, key string, def int) int {
 			return int(val)
 		case float64:
 			return int(val)
+		case float32:
+			return int(val)
 		}
 	}
 	return def
@@ -121,4 +207,48 @@ func GetBool(params map[string]any, key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+// GetFloatAlias reads the first of keys present in params (canonical key
+// first, then legacy/TOML aliases) so that constructors and Configure()
+// honour exactly the same spellings.
+func GetFloatAlias(params map[string]any, def float64, keys ...string) float64 {
+	for _, k := range keys {
+		if _, ok := params[k]; ok {
+			return GetFloat(params, k, def)
+		}
+	}
+	return def
+}
+
+// GetIntAlias is GetFloatAlias for integers.
+func GetIntAlias(params map[string]any, def int, keys ...string) int {
+	for _, k := range keys {
+		if _, ok := params[k]; ok {
+			return GetInt(params, k, def)
+		}
+	}
+	return def
+}
+
+// GetStringList reads a list of strings from params. Both []string and
+// []any (as produced by TOML/JSON decoding) are accepted; other values yield nil.
+func GetStringList(params map[string]any, key string) []string {
+	v, ok := params[key]
+	if !ok {
+		return nil
+	}
+	switch val := v.(type) {
+	case []string:
+		return append([]string(nil), val...)
+	case []any:
+		out := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }

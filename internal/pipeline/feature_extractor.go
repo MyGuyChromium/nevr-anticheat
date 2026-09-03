@@ -6,9 +6,70 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+const (
+	// MinFrameDt and MaxFrameDt bound the time step used for kinematics.
+	// A known dt is clamped into this range; a dt <= 0 (first frame,
+	// duplicate or out-of-order timestamp) is unknown and no kinematics are
+	// derived for that frame. Nothing here assumes a fixed tick rate.
+	//
+	// MaxFrameDt is also the extractor's GAP threshold: a dt above it is too
+	// long for finite differences, so kinematics and the throw state machine
+	// skip that frame. It is the default for SetMaxFrameDt (config key
+	// pipeline.max_frame_dt); the validator's hard rejection bound is the
+	// separate MaxProducerDt.
+	MinFrameDt = 0.005
+	MaxFrameDt = 0.5
+
+	// DefaultHighPingThresholdMs is the ping above which PlayerState.IsHighPing
+	// is set. Override with SetHighPingThreshold (config high_ping_threshold_ms).
+	DefaultHighPingThresholdMs = 150.0
+
+	// preReleaseSnapshotCount is how many frames before a release are captured.
+	preReleaseSnapshotCount = 5
+
+	// goalDirectedMaxDeviationDeg: a throw deviating more than this from the
+	// chosen goal is not goal-directed (ThrowEvent.TargetPosition stays nil).
+	goalDirectedMaxDeviationDeg = 30.0
+
+	// maxTrackedDiscHistories bounds the extractor-side disc history map.
+	maxTrackedDiscHistories = 4096
+
+	// Goal selection labels recorded in ThrowEvent.GoalSelection (defined
+	// on the model so detectors can read them without importing pipeline).
+	GoalSelectionTeam    = model.GoalSelectionTeam
+	GoalSelectionAngular = model.GoalSelectionAngular
+	GoalSelectionNearest = model.GoalSelectionNearest
+)
+
+// discSample is one frame of disc position for the pre-release snapshots.
+// PlayerState has no disc position history, so the extractor keeps one here,
+// pushed in lockstep with PlayerState.DiscVelocityHistory.
+type discSample struct {
+	pos      model.Vec3
+	missing  bool
+	frameIdx int // frame index of the sample (histories are per frame SEEN)
+}
+
+// goalSides records which goal the blue team scores into for one match.
+type goalSides struct {
+	matchID   string
+	blueGoalZ float64
+	known     bool
+}
+
 // FeatureExtractor computes derived features from raw telemetry frames.
 type FeatureExtractor struct {
-	historyWindow int
+	historyWindow       int
+	highPingThresholdMs float64
+	maxFrameDt          float64 // gap threshold and dt clamp upper bound (s)
+
+	// configuredBlueSign: +1 blue attacks +Z, -1 blue attacks -Z, 0 unknown.
+	// When unknown the side is learned from score increments (see
+	// learnGoalSides); until then goals are chosen by release direction.
+	configuredBlueSign int
+	learned            goalSides
+
+	discHistory map[string][]discSample
 }
 
 // NewFeatureExtractor creates a new feature extractor.
@@ -16,7 +77,86 @@ func NewFeatureExtractor(historyWindow int) *FeatureExtractor {
 	if historyWindow < 5 {
 		historyWindow = 30
 	}
-	return &FeatureExtractor{historyWindow: historyWindow}
+	return &FeatureExtractor{
+		historyWindow:       historyWindow,
+		highPingThresholdMs: DefaultHighPingThresholdMs,
+		maxFrameDt:          MaxFrameDt,
+		discHistory:         make(map[string][]discSample),
+	}
+}
+
+// SetMaxFrameDt sets the gap threshold in seconds (config key
+// pipeline.max_frame_dt): a frame whose real spacing from the player's
+// previous frame exceeds it updates raw state but derives no kinematics and
+// is never a throw release; known spacings are clamped to at most this
+// value. Values that are not finite or not above MinFrameDt restore the
+// default MaxFrameDt.
+func (fe *FeatureExtractor) SetMaxFrameDt(seconds float64) {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= MinFrameDt {
+		seconds = MaxFrameDt
+	}
+	fe.maxFrameDt = seconds
+}
+
+// MaxFrameDtSeconds returns the current gap threshold in seconds.
+func (fe *FeatureExtractor) MaxFrameDtSeconds() float64 {
+	if fe.maxFrameDt <= 0 {
+		return MaxFrameDt
+	}
+	return fe.maxFrameDt
+}
+
+// SetHighPingThreshold sets the ping (ms) above which IsHighPing is set.
+// Non-positive values restore the default.
+func (fe *FeatureExtractor) SetHighPingThreshold(ms float64) {
+	if ms <= 0 || math.IsNaN(ms) {
+		ms = DefaultHighPingThresholdMs
+	}
+	fe.highPingThresholdMs = ms
+}
+
+// HighPingThreshold returns the current high-ping threshold in ms.
+func (fe *FeatureExtractor) HighPingThreshold() float64 { return fe.highPingThresholdMs }
+
+// SetBlueGoalSide configures which goal the blue team attacks: sign > 0 means
+// blue scores into the goal at +GoalZ, sign < 0 into the goal at -GoalZ, and
+// 0 (the default) means unknown, in which case the side is learned from the
+// first scored goal of each match and throws before that use the goal the
+// release velocity points at.
+func (fe *FeatureExtractor) SetBlueGoalSide(sign int) {
+	switch {
+	case sign > 0:
+		fe.configuredBlueSign = 1
+	case sign < 0:
+		fe.configuredBlueSign = -1
+	default:
+		fe.configuredBlueSign = 0
+	}
+}
+
+// TeamGoalZ returns the Z coordinate of the goal the given team attacks in
+// the given match, and whether it is known (configured or learned).
+func (fe *FeatureExtractor) TeamGoalZ(matchCtx *model.MatchContext, team string) (float64, bool) {
+	goalZ := matchCtx.Physics.GoalZ
+	if goalZ <= 0 {
+		return 0, false
+	}
+	var blueGoalZ float64
+	switch {
+	case fe.configuredBlueSign != 0:
+		blueGoalZ = float64(fe.configuredBlueSign) * goalZ
+	case fe.learned.known && fe.learned.matchID == matchCtx.MatchID:
+		blueGoalZ = fe.learned.blueGoalZ
+	default:
+		return 0, false
+	}
+	switch team {
+	case "blue":
+		return blueGoalZ, true
+	case "orange":
+		return -blueGoalZ, true
+	}
+	return 0, false
 }
 
 // UpdatePlayerState updates a player's derived state from a new telemetry frame.
@@ -34,9 +174,18 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	prevRightHandRot := ps.RightHandRot
 	prevTimestamp := ps.LastTimestamp
 	prevHasDisc := ps.HasDisc
+	prevBlueScore := ps.PrevBlueScore
+	prevOrangeScore := ps.PrevOrangeScore
 	wasStunned := ps.IsStunned
 	wasShieldActive := ps.ShieldActive
 	wasBoosting := ps.IsBoosting
+	firstFrame := ps.FrameCount == 0
+
+	if firstFrame {
+		// Fresh PlayerState (new match or new player): drop any side history
+		// left over from an earlier state with the same ID.
+		delete(fe.discHistory, ps.PlayerID)
+	}
 
 	// Update raw state from frame
 	ps.Position = frame.Position
@@ -52,9 +201,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	ps.IsImmune = frame.IsImmune
 	ps.HasDisc = frame.HasPossession
 	ps.EstimatedPingMs = frame.EstimatedPingMs
-	ps.IsHighPing = frame.EstimatedPingMs > 150
+	ps.IsHighPing = frame.EstimatedPingMs > fe.highPingThresholdMs
 	ps.LastFrameIdx = frame.FrameIndex
 	ps.LastTimestamp = frame.Timestamp
+	if ps.Team == "" && frame.Team != "" {
+		ps.Team = frame.Team
+	}
 
 	// Score/stat tracking for state detectors
 	ps.PrevBlueScore = frame.BlueScore
@@ -62,28 +214,30 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	ps.PrevGoals = frame.Goals
 	ps.PrevStuns = frame.Stuns
 
-	// Compute dt with clamping
-	dt := frame.Timestamp - prevTimestamp
-	if ps.FrameCount == 0 || dt <= 0 {
-		dt = 0.067 // default ~15fps for first frame
-	}
-	if dt < 0.01 {
-		dt = 0.01
-	}
-	largeGap := dt > 0.5
-	if dt > 0.2 {
-		dt = 0.2
+	// Time step. dt <= 0 (first frame, duplicate or out-of-order timestamp)
+	// is unknown: FrameDt is 0 and no kinematics are derived. A gap longer
+	// than the configured max frame dt is too long for finite differences;
+	// the frame still updates raw state but kinematics are skipped.
+	maxDt := fe.MaxFrameDtSeconds()
+	rawDt := frame.Timestamp - prevTimestamp
+	dtKnown := !firstFrame && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
+	largeGap := dtKnown && rawDt > maxDt
+	dt := 0.0
+	if dtKnown {
+		dt = model.Clamp(rawDt, MinFrameDt, maxDt)
 	}
 	ps.FrameDt = dt
 
-	// Compute kinematics (only after first frame with valid previous position).
-	// Skip kinematic computation when player has post-respawn immunity AND
-	// position jumped significantly — real respawns teleport to spawn points,
-	// producing false velocity/acceleration spikes. Continuous immune movement
-	// (e.g. god mode exploit) should still compute kinematics so STATE_004 can
-	// detect active play during extended immunity.
-	immuneRespawnJump := frame.IsImmune && !prevPos.IsZero() && frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
-	if ps.FrameCount > 0 && !prevPos.IsZero() && !largeGap && !immuneRespawnJump {
+	// Skip kinematics when a player with post-respawn immunity jumped
+	// (respawn teleport). Continuous immune movement (god mode) still computes
+	// kinematics so STATE_004 can see active play during immunity.
+	immuneRespawnJump := false
+	if dtKnown && frame.IsImmune && !prevPos.IsZero() {
+		immuneRespawnJump = frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+	}
+
+	kinematicsValid := dtKnown && !prevPos.IsZero() && !largeGap && !immuneRespawnJump
+	if kinematicsValid {
 		// Body velocity and acceleration
 		ps.Velocity = frame.Position.Sub(prevPos).Scale(1.0 / dt)
 		ps.Speed = ps.Velocity.Magnitude()
@@ -124,9 +278,52 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.SpeedStats.Update(ps.Speed)
 		ps.LeftHandSpeedStats.Update(ps.LeftHandSpeed)
 		ps.RightHandSpeedStats.Update(ps.RightHandSpeed)
+	} else {
+		// No valid finite difference for this frame: clear derived kinematics
+		// so detectors and histories never consume values from before a gap,
+		// a respawn teleport or a tracking loss as if they were current.
+		ps.Velocity = model.Vec3{}
+		ps.Speed = 0
+		ps.Acceleration = model.Vec3{}
+		ps.AccelerationMagnitude = 0
+		ps.LeftHandVelocity = model.Vec3{}
+		ps.RightHandVelocity = model.Vec3{}
+		ps.LeftHandSpeed = 0
+		ps.RightHandSpeed = 0
+		ps.LeftWristAngularRate = 0
+		ps.RightWristAngularRate = 0
 	}
 
-	// Push to history buffers
+	// Learn which goal each team attacks from score increments (needs the
+	// disc position at the moment a score changed).
+	if !firstFrame {
+		fe.learnGoalSides(frame, matchCtx, prevBlueScore, prevOrangeScore)
+	}
+
+	// --- State machine tracking ---
+
+	// Throw detection: possession transition held -> free, evaluated BEFORE
+	// this frame is pushed into the histories so pre-release snapshots hold
+	// only frames strictly before the release.
+	// Require at least 2 frames of possession to filter out possession flicker.
+	// A 1-frame possession glitch (API reporting error) would otherwise attribute
+	// the current disc flight velocity as a "throw" to this player — a false positive.
+	// Possession released outside active play (round-end disc reset) is not a throw.
+	// A release first seen after a gap (dt unknown, or longer than the max
+	// frame dt) is not a measured release either: the disc velocity on that
+	// frame is mid-flight state, the hand kinematics were cleared and the
+	// pre-release snapshots predate the gap, so every consumer (release
+	// speed, signature, spread, trajectory anchor) would be fed the wrong
+	// moment. Such a release is skipped, consistent with "gap = no
+	// kinematics"; the next possession starts a fresh track.
+	if prevHasDisc && !ps.HasDisc && !firstFrame && dtKnown && !largeGap && matchCtx.IsActivePhase(frame.GamePhase) {
+		possessionFrames := frame.FrameIndex - ps.PossessionStartFrame
+		if possessionFrames >= 2 {
+			fe.detectThrow(ps, frame, matchCtx, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
+		}
+	}
+
+	// Push to history buffers (all buffers advance together so indices align).
 	model.PushVec3History(&ps.PositionHistory, ps.Position, fe.historyWindow)
 	model.PushVec3History(&ps.VelocityHistory, ps.Velocity, fe.historyWindow)
 	model.PushFloat64History(&ps.SpeedHistory, ps.Speed, fe.historyWindow)
@@ -135,24 +332,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	model.PushQuatHistory(&ps.LeftHandRotHistory, ps.LeftHandRot, fe.historyWindow)
 	model.PushQuatHistory(&ps.RightHandRotHistory, ps.RightHandRot, fe.historyWindow)
 	model.PushFloat64History(&ps.TimestampHistory, frame.Timestamp, fe.historyWindow)
-
-	// Push disc velocity to history for pre-release snapshot accuracy
-	if frame.Disc != nil {
-		model.PushVec3History(&ps.DiscVelocityHistory, frame.Disc.Velocity, fe.historyWindow)
-	}
-
-	// --- State machine tracking ---
-
-	// Throw detection: possession transition held -> free.
-	// Require at least 2 frames of possession to filter out possession flicker.
-	// A 1-frame possession glitch (API reporting error) would otherwise attribute
-	// the current disc flight velocity as a "throw" to this player — a false positive.
-	if prevHasDisc && !ps.HasDisc && ps.FrameCount > 0 {
-		possessionFrames := frame.FrameIndex - ps.PossessionStartFrame
-		if possessionFrames >= 2 {
-			fe.detectThrow(ps, frame, matchCtx, dt, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
-		}
-	}
+	fe.pushDiscHistory(ps, frame.Disc, frame.FrameIndex)
 
 	// Possession start tracking
 	if !prevHasDisc && ps.HasDisc {
@@ -197,12 +377,190 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	ps.FrameCount++
 }
 
+// pushDiscHistory advances the disc velocity history on PlayerState and the
+// extractor-side disc position history (which also records the frame index
+// of every sample). A frame without disc state pushes a zero placeholder
+// (flagged missing) so both stay index-aligned with PositionHistory.
+func (fe *FeatureExtractor) pushDiscHistory(ps *model.PlayerState, disc *model.DiscState, frameIdx int) {
+	sample := discSample{missing: true, frameIdx: frameIdx}
+	vel := model.Vec3{}
+	if disc != nil {
+		sample = discSample{pos: disc.Position, frameIdx: frameIdx}
+		vel = disc.Velocity
+	}
+	model.PushVec3History(&ps.DiscVelocityHistory, vel, fe.historyWindow)
+
+	if fe.discHistory == nil {
+		fe.discHistory = make(map[string][]discSample)
+	}
+	if _, ok := fe.discHistory[ps.PlayerID]; !ok && len(fe.discHistory) >= maxTrackedDiscHistories {
+		// Evidence-only data: drop everything rather than grow without bound
+		// across many matches.
+		fe.discHistory = make(map[string][]discSample)
+	}
+	hist := append(fe.discHistory[ps.PlayerID], sample)
+	if len(hist) > fe.historyWindow {
+		copy(hist, hist[len(hist)-fe.historyWindow:])
+		hist = hist[:fe.historyWindow]
+	}
+	fe.discHistory[ps.PlayerID] = hist
+}
+
+// learnGoalSides infers which goal the blue team scores into from the first
+// score increment seen with the disc near a goal. Only used when no side has
+// been configured with SetBlueGoalSide.
+func (fe *FeatureExtractor) learnGoalSides(frame *model.PlayerTelemetryFrame, matchCtx *model.MatchContext, prevBlue, prevOrange int) {
+	if fe.configuredBlueSign != 0 {
+		return
+	}
+	if fe.learned.matchID != matchCtx.MatchID {
+		fe.learned = goalSides{matchID: matchCtx.MatchID}
+	}
+	if fe.learned.known || frame.Disc == nil {
+		return
+	}
+	goalZ := matchCtx.Physics.GoalZ
+	if goalZ <= 0 {
+		return
+	}
+	dz := frame.Disc.Position.Z()
+	if math.Abs(dz) < goalZ*0.5 {
+		// Disc already reset to centre (or nowhere near a goal): no information.
+		return
+	}
+	blueDelta := frame.BlueScore - prevBlue
+	orangeDelta := frame.OrangeScore - prevOrange
+	// Echo Arena goals are worth 2 or 3 points; accept 1-3 to be safe and
+	// require exactly one team to have scored.
+	switch {
+	case blueDelta >= 1 && blueDelta <= 3 && orangeDelta == 0:
+		fe.learned.blueGoalZ = math.Copysign(goalZ, dz)
+		fe.learned.known = true
+	case orangeDelta >= 1 && orangeDelta <= 3 && blueDelta == 0:
+		fe.learned.blueGoalZ = -math.Copysign(goalZ, dz)
+		fe.learned.known = true
+	}
+}
+
+// chooseGoal picks the goal a throw is measured against. When the thrower's
+// attacking side is known the attacked goal is used; otherwise the goal the
+// release velocity points at most closely (ties and near-zero velocity fall
+// back to the nearest goal by distance). ok is false when no goal geometry
+// is available.
+func (fe *FeatureExtractor) chooseGoal(ps *model.PlayerState, matchCtx *model.MatchContext, releasePos, releaseVel model.Vec3) (goal model.Vec3, selection string, ok bool) {
+	goalZ := matchCtx.Physics.GoalZ
+	if goalZ <= 0 {
+		return model.Vec3{}, "", false
+	}
+	team := ps.Team
+	if team == "" && matchCtx.TeamAssignments != nil {
+		team = matchCtx.TeamAssignments[ps.PlayerID]
+	}
+	if z, known := fe.TeamGoalZ(matchCtx, team); known {
+		return model.Vec3{0, 0, z}, GoalSelectionTeam, true
+	}
+
+	goalPos := model.Vec3{0, 0, goalZ}
+	goalNeg := model.Vec3{0, 0, -goalZ}
+	if releaseVel.Magnitude() > 0.1 {
+		devPos := releaseVel.AngleBetween(goalPos.Sub(releasePos))
+		devNeg := releaseVel.AngleBetween(goalNeg.Sub(releasePos))
+		if devPos < devNeg {
+			return goalPos, GoalSelectionAngular, true
+		}
+		if devNeg < devPos {
+			return goalNeg, GoalSelectionAngular, true
+		}
+	}
+	if releasePos.Distance(goalNeg) < releasePos.Distance(goalPos) {
+		return goalNeg, GoalSelectionNearest, true
+	}
+	return goalPos, GoalSelectionNearest, true
+}
+
+// tailIndex maps index i of a history of length refLen onto a history of
+// length otherLen, aligning both from the most recent entry. Returns -1 when
+// the other history has no entry for that frame.
+func tailIndex(otherLen, refLen, i int) int {
+	j := otherLen - (refLen - i)
+	if j < 0 || j >= otherLen {
+		return -1
+	}
+	return j
+}
+
+// buildPreReleaseSnapshots captures the last frames strictly before the
+// release frame. It must be called before the release frame is pushed into
+// the histories.
+func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, frame *model.PlayerTelemetryFrame, throwingHand string) []model.ThrowFrameSnapshot {
+	histLen := len(ps.PositionHistory)
+	n := preReleaseSnapshotCount
+	if histLen < n {
+		n = histLen
+	}
+	if n <= 0 {
+		return nil
+	}
+	handHist := ps.RightHandHistory
+	rotHist := ps.RightHandRotHistory
+	if throwingHand == "left" {
+		handHist = ps.LeftHandHistory
+		rotHist = ps.LeftHandRotHistory
+	}
+	discHist := fe.discHistory[ps.PlayerID]
+
+	maxDt := fe.MaxFrameDtSeconds()
+	snaps := make([]model.ThrowFrameSnapshot, 0, n)
+	for i := histLen - n; i < histLen; i++ {
+		snap := model.ThrowFrameSnapshot{
+			// Histories hold one entry per frame SEEN for this player (a
+			// rejected frame or a missed poll leaves a hole), so the label
+			// comes from the recorded frame index of the sample; the
+			// consecutive-frames arithmetic is only the fallback when the
+			// extractor-side history was evicted.
+			FrameIndex:     frame.FrameIndex - (histLen - i),
+			PlayerPosition: ps.PositionHistory[i],
+		}
+		if di := tailIndex(len(discHist), histLen, i); di >= 0 {
+			snap.FrameIndex = discHist[di].frameIdx
+		}
+		ti := tailIndex(len(ps.TimestampHistory), histLen, i)
+		if ti >= 0 {
+			snap.Timestamp = ps.TimestampHistory[ti]
+		}
+		if hi := tailIndex(len(handHist), histLen, i); hi >= 0 {
+			snap.HandPosition = handHist[hi]
+			if hi > 0 && ti > 0 && !handHist[hi].IsZero() && !handHist[hi-1].IsZero() {
+				hdt := ps.TimestampHistory[ti] - ps.TimestampHistory[ti-1]
+				if hdt > 0 && hdt <= maxDt {
+					snap.HandVelocity = handHist[hi].Sub(handHist[hi-1]).Scale(1.0 / model.Clamp(hdt, MinFrameDt, maxDt))
+				}
+			}
+		}
+		if ri := tailIndex(len(rotHist), histLen, i); ri >= 0 {
+			snap.HandRotation = rotHist[ri]
+		}
+		if vi := tailIndex(len(ps.DiscVelocityHistory), histLen, i); vi >= 0 {
+			snap.DiscVelocity = ps.DiscVelocityHistory[vi]
+		} else {
+			snap.DiscMissing = true
+		}
+		if di := tailIndex(len(discHist), histLen, i); di >= 0 {
+			snap.DiscPosition = discHist[di].pos
+			snap.DiscMissing = snap.DiscMissing || discHist[di].missing
+		} else {
+			snap.DiscMissing = true
+		}
+		snaps = append(snaps, snap)
+	}
+	return snaps
+}
+
 // detectThrow fires when a player releases the disc.
 func (fe *FeatureExtractor) detectThrow(
 	ps *model.PlayerState,
 	frame *model.PlayerTelemetryFrame,
 	matchCtx *model.MatchContext,
-	dt float64,
 	prevLeftHand, prevRightHand model.Vec3,
 	prevLeftHandRot, prevRightHandRot model.Quat,
 ) {
@@ -211,16 +569,21 @@ func (fe *FeatureExtractor) detectThrow(
 		return
 	}
 
-	releaseSpeed := disc.Speed
+	// Release speed comes from the game-reported disc velocity, never from
+	// position deltas, so it does not depend on the sampling interval.
 	releaseVel := disc.Velocity
+	releaseSpeed := disc.Speed
+	if releaseSpeed <= 0 {
+		releaseSpeed = releaseVel.Magnitude()
+	}
 	releasePos := disc.Position
 
 	// Guard against NaN/Inf
-	if math.IsNaN(releaseSpeed) || math.IsInf(releaseSpeed, 0) || releaseSpeed <= 0 {
+	if math.IsNaN(releaseSpeed) || math.IsInf(releaseSpeed, 0) || releaseSpeed <= 0 || releaseVel.HasNaN() || releaseVel.HasInf() {
 		return
 	}
 
-	// Determine throwing hand: which hand was closer AND velocity-aligned
+	// Determine throwing hand: which hand was closer to the disc at release
 	leftDist := prevLeftHand.Distance(releasePos)
 	rightDist := prevRightHand.Distance(releasePos)
 
@@ -242,7 +605,7 @@ func (fe *FeatureExtractor) detectThrow(
 
 	handToDiscDist := handPos.Distance(releasePos)
 
-	// Release angle: angle between hand velocity and disc velocity
+	// Release angle: world-frame angle between hand velocity and disc velocity
 	releaseAngle := 0.0
 	if handSpeed > 0.1 && releaseSpeed > 0.1 {
 		releaseAngle = model.RadToDeg(handVel.AngleBetween(releaseVel))
@@ -254,59 +617,20 @@ func (fe *FeatureExtractor) detectThrow(
 		possessionDuration = 0
 	}
 
-	// Build pre-release frame snapshots from history
-	var preRelease []model.ThrowFrameSnapshot
-	histLen := len(ps.PositionHistory)
-	snapshotCount := 5
-	if histLen < snapshotCount {
-		snapshotCount = histLen
-	}
-	for i := histLen - snapshotCount; i < histLen; i++ {
-		if i < 0 {
-			continue
-		}
-		ts := 0.0
-		if i < len(ps.TimestampHistory) {
-			ts = ps.TimestampHistory[i]
-		}
-		snap := model.ThrowFrameSnapshot{
-			FrameIndex:     frame.FrameIndex - (histLen - i),
-			Timestamp:      ts,
-			PlayerPosition: ps.PositionHistory[i],
-		}
-		if i < len(ps.LeftHandHistory) {
-			snap.HandPosition = ps.LeftHandHistory[i]
-		}
-		// Use historical disc velocity instead of current frame's release velocity
-		discHistIdx := len(ps.DiscVelocityHistory) - snapshotCount + (i - (histLen - snapshotCount))
-		if discHistIdx >= 0 && discHistIdx < len(ps.DiscVelocityHistory) {
-			snap.DiscVelocity = ps.DiscVelocityHistory[discHistIdx]
-		}
-		if disc != nil {
-			snap.DiscPosition = disc.Position
-		}
-		preRelease = append(preRelease, snap)
-	}
+	preRelease := fe.buildPreReleaseSnapshots(ps, frame, throwingHand)
 
-	// Estimate target (nearest goal)
+	// Goal geometry: deviation of the release direction from the chosen goal.
 	var targetPos *model.Vec3
 	targetDev := 0.0
-	// CONFIRMED from real replay: goals are on the Z axis, not X.
-	// Disc position at goal was Z=36.078, arena half-length ~36-40.
-	goalBlue := model.Vec3{0, 0, -matchCtx.Physics.ArenaLength / 2}
-	goalOrange := model.Vec3{0, 0, matchCtx.Physics.ArenaLength / 2}
-	distBlue := releasePos.Distance(goalBlue)
-	distOrange := releasePos.Distance(goalOrange)
-	nearestGoal := goalBlue
-	if distOrange < distBlue {
-		nearestGoal = goalOrange
-	}
-	toGoal := nearestGoal.Sub(releasePos)
-	if releaseSpeed > 0.1 && toGoal.Magnitude() > 0.1 {
-		targetDev = model.RadToDeg(releaseVel.AngleBetween(toGoal))
-		if targetDev < 30 {
-			tp := nearestGoal
-			targetPos = &tp
+	goalPos, goalSelection, goalOK := fe.chooseGoal(ps, matchCtx, releasePos, releaseVel)
+	if goalOK {
+		toGoal := goalPos.Sub(releasePos)
+		if releaseSpeed > 0.1 && toGoal.Magnitude() > 0.1 {
+			targetDev = model.RadToDeg(releaseVel.AngleBetween(toGoal))
+			if targetDev < goalDirectedMaxDeviationDeg {
+				tp := goalPos
+				targetPos = &tp
+			}
 		}
 	}
 
@@ -329,8 +653,10 @@ func (fe *FeatureExtractor) detectThrow(
 		WristAngularVelocity: wristAngVel,
 		PlayerPosition:       ps.Position,
 		PlayerVelocity:       ps.Velocity,
-		HandToDiscDistance:    handToDiscDist,
+		HandToDiscDistance:   handToDiscDist,
 		ReleaseAngle:         releaseAngle,
+		GoalPosition:         goalPos,
+		GoalSelection:        goalSelection,
 		TargetPosition:       targetPos,
 		TargetDeviation:      targetDev,
 		PossessionDuration:   possessionDuration,

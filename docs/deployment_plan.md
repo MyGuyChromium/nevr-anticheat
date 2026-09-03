@@ -1,215 +1,162 @@
 # NEVR-Anticheat Deployment Plan
 
-## Rollout Stages
+Every stage below uses only features that exist in the binaries today. Where the plan needs something that is not implemented, it says so.
 
-### Stage 0: Local Development (Week 1-2)
-- Run `nevr-ac analyze` on 10-20 known-clean replays from community matches
-- Verify zero high-severity detections on clean data
-- Run on 2-3 known-cheat replays (if available) to verify detections fire
-- Fix any false positives discovered
-- **Gate**: Zero false positives on clean corpus, at least one true positive on cheat corpus
+## What exists
 
-### Stage 1: Shadow Mode — Single Server (Week 3-4)
-- Deploy `nevr-server` on ONE community server in shadow mode (default)
-- All detectors run, all events logged to SQLite, NO enforcement actions
-- Monitor via `/health` endpoint and Prometheus metrics at `/metrics`
-- Review daily: detection rates, detector firing distributions, score distributions
-- **Gate**: Detection rate stable, no crash/OOM, <5% of players flagged above score 40
-- **Rollback trigger**: >20% of players flagged, server CPU >10% increase, any crash
+- Detection: 29 detectors, all shipping in `mode = "shadow"` (events stored with `is_shadow = 1`, never scored). Scoring happens only for detectors whose mode is `review` or `enforce` (both simply mean "scored"; there is no separate enforcement path).
+- Cases: single-match `RC-<match>-<player>` cases for match scores ≥ `review_threshold` (60), cross-match `XM-<player>` cases for decayed scores ≥ 60 across ≥ 3 matches (`nevr-ac cross-match`).
+- Moderator tools: `flagged`, `report`, `cross-match-report`, `player-history`, `verdict` (with per-detector feedback), `calibration-report`.
+- Reprocessing: `reprocess-match`, `reprocess-player`, `reprocess-timerange` (half-open on match time) replace derived outputs from stored telemetry under any config.
+- Not implemented / not wired: automatic enforcement (`enforce.Engine` exists but no binary constructs it), replay-bundle export to moderators (`evidence.Exporter` exists but has no CLI command), hot config reload, per-server dashboards.
 
-### Stage 2: Shadow Mode — Multiple Servers (Week 5-8)
-- Expand to 3-5 servers across different regions
-- Collect baseline data across skill brackets
-- Begin baseline calibration (see Calibration Plan below)
-- Compare detection rates across servers for consistency
-- **Gate**: Cross-server detection rate variance <2x, baseline collection complete (5000+ matches)
-- **Rollback trigger**: Cross-server variance >5x, storage growth >1GB/day
+## Rollout stages
 
-### Stage 3: Moderator Review (Week 9-12)
-- Switch enforcement mode to `flag` on all servers
-- Moderators review ALL flagged cases (score >= 60) manually
-- Track moderator verdicts: confirmed_cheat / false_positive / inconclusive
-- Compute per-detector false positive rates from verdicts
-- **Gate**: Overall FPR < 5%, per-detector FPR < 10%, moderator workflow functional
-- **Rollback trigger**: FPR > 15%, moderator queue backlog > 100 cases
+### Stage 0: local development
+- Run `nevr-ac analyze` on 10–20 known-clean replays and 2–3 known-cheat replays (if available) with `configs/shadow_deploy.toml`.
+- Inspect `detection_events` per detector; there are no scores in shadow.
+- **Gate**: no detector produces more than ~20 events on any clean replay; THROW_001/THROW_006 fire on the cheat replays.
 
-### Stage 4: Active Review (Week 13-16)
-- Switch to `review` mode: create review cases, moderators act on recommendations
-- Promote ONLY detectors with FPR < 3% from shadow to review mode
-- Keep remaining detectors in shadow
-- Add automated alerts for score spikes and detection rate changes
-- **Gate**: Promoted detectors FPR < 3% for 4 consecutive weeks
-- **Rollback trigger**: Any promoted detector FPR > 5%, any false enforcement action
+### Stage 1: shadow mode, single server
+- One `nevr-server` and one `nevr-bridge` with `--broadcaster-allowlist` and, for the first match, `--match-id`.
+- Follow `docs/operator_checklist.md`. Nothing is scored; the product is the `detection_events` table.
+- **Gate**: 10 matches without a stop condition; per-detector event rates stable; BIO_001 at 0 on bridge data.
+- **Rollback trigger**: any stop condition (crash, > 20 % rejection, detector spam, auth failures).
 
-### Stage 5: Full Moderator Workflow (Week 17+)
-- Switch to `enforce` mode: generate strongest recommendations for moderator review
-- Restrict/ban actions require moderator confirmation in all cases
-- Cross-match review cases surface repeat offenders across sessions
-- Monitor continuously
-- **Gate**: Zero false bans in 4 weeks of review mode data
-- **Rollback trigger**: ANY false ban → immediate rollback to review mode
+### Stage 2: shadow mode, multiple servers
+- One `nevr-server`; one `nevr-bridge` per Nakama instance (or one bridge with a wider allowlist). Provenance lives on the match context: the `server_id` the bridge sends on every batch and `match_start` is recorded and persisted with `match_contexts` (and shown by `report`), so join events to their match to see which broadcaster produced them; events do not carry it individually.
+- Collect baseline distributions from `evidence_json` across skill brackets.
+- **Gate**: per-detector event rates within 2× across servers; ≥ 100 matches stored.
+- **Rollback trigger**: cross-server variance > 5×; storage growth beyond the disk budget (telemetry is never pruned automatically).
 
-## Hard Stop Criteria (Immediate Rollback)
+### Stage 3: offline calibration and moderator review
+- Copy the database. Reprocess the collected matches with a calibration overlay that sets `mode = "review"` for one candidate detector at a time (see the promotion loop in `docs/shadow_deployment_guide.md`).
+- Moderators work the resulting cases with `flagged` / `report` / `cross-match-report` and record `verdict` with `--detector ID=yes|no|uncertain`.
+- `calibration-report` gives per-detector confirmed / false-positive counts and precision.
+- **Gate**: ≥ 30 decided cases per candidate detector; precision acceptable to the moderation team; no confirmed false positive that the detector's evidence could not have explained.
+- **Rollback trigger**: precision below the team's floor → keep the detector in shadow and recalibrate its params.
 
-Any of these triggers immediate rollback to the previous stage:
+### Stage 4: live scoring for promoted detectors
+- In the live config set `mode = "review"` for the promoted detectors only; everything else stays shadow. Restart `nevr-server`.
+- Live matches now produce scores and `RC-*` cases for those detectors; `nevr-ac cross-match` (run on a schedule) produces `XM-*` cases.
+- Moderators review every case; `verdict` keeps feeding `calibration-report`.
+- **Gate**: 4 weeks with no confirmed false positive from a promoted detector.
+- **Rollback trigger**: any confirmed false positive → set that detector back to `mode = "shadow"` and restart.
 
-1. **False enforcement action confirmed** → Roll back to review mode, investigate, disable offending detector
-2. **FPR > 20%** for any detector for 1 week → Disable that detector
-3. **Server crash or OOM** → Roll back, investigate memory leak
-4. **Detection rate spikes 10x** in 1 hour → Likely game update broke assumptions, pause enforcement
-5. **Player community reports false flags** → Investigate immediately, pause if confirmed
+### Stage 5: enforcement recommendations (not implemented)
+- Automatic recommendations (`enforce.Engine`/`Policy`: review_queue, restrict, temp_ban proposals) exist as code but are not wired into any binary, and `auto_enforce` stays `false` for every detector. Until that wiring lands and is validated, every action is a moderator decision recorded with `verdict --action <warn|temp_ban|...>`.
 
-## Rollback Procedure
+## Hard stop criteria (immediate rollback)
 
-1. Change enforcement mode in config: `mode = "shadow"`
-2. Restart server (or hot-reload if supported)
-3. All pending enforcement actions are cancelled
-4. Detection events continue logging (for analysis)
-5. Review queue is frozen (no new cases created)
-6. Investigate root cause before re-promoting
+1. A moderator confirms a false positive from a promoted detector → demote it to shadow.
+2. A detector's precision in `calibration-report` drops below the team's floor for a week → demote.
+3. Server crash, OOM or `nevr_ac_store_errors_total` > 0 → stop, investigate.
+4. Event rate for any detector spikes 10× in an hour → a game update probably changed the telemetry; stop the bridge, re-run `nevr-compat --strict`.
+5. Player reports of false flags → investigate the case evidence; demote on confirmation.
 
-## Configuration Per Stage
+## Rollback procedure
 
-| Stage | Mode | Detectors Active | Moderator Review | Recommendations |
-|-------|------|-----------------|-----------------|-----------------|
-| 0 | offline | all (shadow) | no cases | logging only |
-| 1 | shadow | all (shadow) | no cases | logging only |
-| 2 | shadow | all (shadow) | no cases | logging only |
-| 3 | flag | calibrated only | manual review | flagging only |
-| 4 | review | promoted only | review queue | flag + review cases |
-| 5 | enforce | promoted only | review queue | strongest recommendations |
+1. Edit the live config: set `mode = "shadow"` (or `enabled = false`) for the affected detector(s).
+2. Restart `nevr-server` (no hot reload). Confirm the effective detector table it reports at startup (`grep '"msg":"effective detector"' server.log`; `nevr-ac` shows the same table only with `--verbose`).
+3. Existing cases stay in the database with their status; nothing is cancelled automatically. Close or dismiss them with `verdict`.
+4. Events keep being stored in shadow for analysis.
+5. Do not re-promote without a new calibration round.
+
+## Configuration per stage
+
+| Stage | Detectors scored (`mode = "review"`) | Cases | Moderator work |
+|-------|--------------------------------------|-------|----------------|
+| 0 | none | none | inspect events |
+| 1 | none | none | inspect events |
+| 2 | none | none | inspect events, build baselines |
+| 3 | one candidate at a time, offline on a DB copy | RC-*/XM-* in the copy | verdicts, calibration report |
+| 4 | promoted detectors, live | RC-*/XM-* live | review every case |
+| 5 | (not implemented) | — | — |
 
 ---
 
 # Calibration Plan
 
-## Phase 1: Data Collection (Stages 1-2)
+## Phase 1: data collection (stages 1–2)
 
-### What to Collect
-For every match processed in shadow mode, store:
-- All detection events (detector ID, severity, confidence, evidence)
-- Per-player per-match: max speed, max throw speed, avg throw speed, throw count, max hand speed, avg hand speed, max wrist angular rate
-- Per-match: tick rate, frame count, duration, player count
+Every shadow match stores all telemetry (`telemetry_frames`, `match_ticks`), the match context and every detector's events with typed evidence. Per-player summaries (max/avg speed, throw speeds, hand speeds, wrist rates) are recomputable from the telemetry by reprocessing; nothing further needs to be collected.
 
-### Sample Size Targets
-- **Minimum**: 5,000 matches across all skill levels
-- **Per-bracket minimum**: 500 matches (if skill brackets are available)
-- **Throw events**: 50,000+ throws
-- **Target**: 25,000 matches for full calibration
+Sample size targets: minimum 500 matches before any threshold change, 5,000 for a threshold anyone will defend, 50,000+ throws for the throw detectors.
 
-### Metrics to Inspect
-For each metric, compute from clean-match data:
-1. Mean, stddev, median, p90, p95, p99, p99.9, max
-2. Per-skill-bracket distributions (if available)
-3. Per-server/region distributions
+## Phase 2: threshold computation
 
-### Key Calibration Metrics
+For each detector metric (from `evidence_json` of clean matches): mean, stddev, median, p90/p95/p99/p99.9, max; per skill bracket and per server if available. Suspicious = p99, extremely improbable = p99.9, impossible = min(p99.99, physics cap). Widen by 15 % when n < 5,000. Record the commit hash and config used next to every number.
 
-| Metric | Source | Expected Legit Range |
-|--------|--------|---------------------|
-| Throw release speed | ThrowEvent.ReleaseSpeed | 0.5 - 18.0 m/s |
-| Hand speed at release | ThrowEvent.HandSpeed | 0.5 - 12.0 m/s |
-| Release angle | ThrowEvent.ReleaseAngle | 0 - 45 degrees |
-| Player speed (sustained) | PlayerState.Speed (median over 30 frames) | 0 - 50 m/s |
-| Wrist angular rate | PlayerState.LeftWristAngularRate | 0 - 25 rad/s |
-| Hand jitter variance | ComputePositionVariance | 0.00005 - 0.01 m² |
-| Stun recovery frames | StunStartFrame to StunEnd | 30 - 50 frames |
+| Metric | Source | Expected legit range (to be measured) |
+|--------|--------|---------------------------------------|
+| Throw release speed | THROW_001 evidence `release_speed` | 0.5 – 18.7 m/s |
+| Hand speed at release | THROW_001/THROW_003 evidence `hand_speed` | 0.5 – 12 m/s |
+| Release angle | THROW_003 evidence | 0 – 45° |
+| Sustained player speed | MOV_001 evidence (median over 30 frames) | 0 – 50 m/s |
+| Wrist angular rate | BIO_001 evidence (bounded by 46.9 rad/s at 15 Hz) | 0 – 25 rad/s |
+| Hand jitter variance | BIO_003 evidence | 0.00005 – 0.01 m² |
+| Stun duration | STATE_002 evidence (seconds) | 2.5 – 3.5 s |
 
-## Phase 2: Threshold Computation
+## Phase 3: detector promotion
 
-For each metric:
-1. Collect all observations from clean matches
-2. Sort and compute percentiles
-3. Set thresholds:
-   - **Suspicious**: p99 (1 in 100 legit events)
-   - **Extremely Improbable**: p99.9 (1 in 1000)
-   - **Impossible**: p99.99 or physics cap (whichever is lower)
-4. Widen thresholds by 15% if sample size < 5000
-5. Compute 95% confidence intervals via bootstrap
+1. Precision from `calibration-report` over ≥ 30 decided cases.
+2. Promote to `mode = "review"` when the moderation team accepts the precision; demote at the first confirmed false positive.
+3. There is no enforce tier to promote into yet.
 
-## Phase 3: Detector Promotion
+## Phase 4: ongoing tuning
 
-For each detector:
-1. Compute FPR from moderator verdicts (Phase 3 of deployment)
-2. If FPR < 3% for 4 weeks → promote to review mode
-3. If FPR < 1% for 4 weeks after review → promote to enforce mode (strongest recommendations)
-4. If FPR > 5% at any time → demote to shadow, re-calibrate
-
-## Phase 4: Ongoing Tuning
-
-- **Weekly**: Compute per-detector FPR from verdicts
-- **Monthly**: Re-compute baseline percentiles from accumulated clean data
-- **After game updates**: Re-run shadow mode for 1 week, re-validate thresholds
-- **Threshold version bumps**: Create new version, A/B test in shadow before promoting
+- Weekly: `calibration-report --since 7d`.
+- Monthly: re-derive percentiles from the accumulated clean matches.
+- After a game update: bridge back to `--probe`/`--once`, `nevr-compat --strict` on a fresh `/session`, one week of shadow before re-enabling scoring.
+- Threshold changes: new config file, `reprocess-timerange` on a DB copy, compare event counts before applying live.
 
 ---
 
 # Moderator Workflow
 
-## Review Case Lifecycle
+## Case lifecycle (as implemented)
 
 ```
-Detection Event → Score Accumulation → Review Threshold → Case Created → Queue
+scored detection events → per-match score ≥ 60 → RC-<match>-<player> case (pending)
+stored events across ≥ 3 matches → cross-match decayed score ≥ 60 → XM-<player> case (pending)
     ↓
-Moderator Claims Case
+nevr-ac flagged                     list pending cases
+nevr-ac report <RC-id>              evidence summary, every stored event with typed evidence, prior decisions
+nevr-ac cross-match-report <XM-id>  per-match evidence
+nevr-ac player-history <player>     capped, decayed history
     ↓
-Reviews Evidence Package:
-  - Detection timeline (which detectors fired, when, with what values)
-  - Score breakdown (per-detector contributions)
-  - Replay bundle (frames before/during/after event)
-  - Player history (prior cases, prior verdicts, account age)
-  - Threshold comparison (observed vs expected ranges)
+nevr-ac verdict <case-id> <confirmed_cheat|false_positive|inconclusive|needs_more_data> --by <mod> \
+    [--detector ID=yes|no|uncertain ...] [--action warn|temp_ban|none] [--notes ...]
     ↓
-Renders Verdict:
-  - confirmed_cheat → enforcement action (warn/restrict/ban)
-  - false_positive → dismiss, feeds back to threshold tuning
-  - inconclusive → enhanced monitoring
-  - needs_more_data → flag for future match analysis
-    ↓
-Logs Decision (immutable audit trail)
+moderator_decisions row (immutable), case status → decided
+nevr-ac calibration-report          per-detector confirmed / false-positive counts, precision
 ```
 
-## What Moderators See First
+Case statuses: `pending`, `assigned`, `in_review`, `decided`, `appealed`, `closed`. A cross-match case whose status a moderator changed is refreshed but never reopened by re-aggregation.
 
-1. **Case Summary**: Player ID, match ID, suspicion score, severity level, recommended action
-2. **Detection Timeline**: Chronological list of detector firings with timestamps and one-line descriptions
-3. **Score Breakdown**: Which detectors contributed how much to the total score
-4. **Threshold Comparison**: For each detection, the observed value vs. the threshold (e.g., "disc_speed: 22.3 m/s, threshold: 20.0 m/s")
+## What moderators see
 
-## Replay Bundle Consumption
+1. Case summary: player, match, score, severity level, recommended action (informational).
+2. Every stored detection event for the player in the match: detector, version, frame range, timestamp, severity, confidence, weight, observed vs expected, causal key, typed evidence JSON.
+3. Prior decisions on the case.
 
-Moderators receive a JSON bundle containing:
-- 3 seconds of frames before the detection event
-- The frames during the event
-- 3 seconds of frames after
-- All player telemetry in those frames
-- Disc telemetry
+Replay clips around an event are **not** exported yet (`evidence.Exporter` has no CLI); moderators work from the evidence JSON and, where needed, the raw ticks in `match_ticks`.
 
-This can be loaded into a replay viewer (future tool) or inspected as raw data.
+## Verdicts
 
-## Available Actions
+| Verdict | Meaning | Effect |
+|---------|---------|--------|
+| `confirmed_cheat` | evidence supports cheating | counts as confirmed for every detector that fired (or per `--detector` feedback) |
+| `false_positive` | legitimate play | counts as a false positive for every detector that fired (or per feedback) |
+| `inconclusive` | ambiguous | counted as inconclusive |
+| `needs_more_data` | insufficient evidence | counted; case can be revisited |
 
-| Action | When | Effect |
-|--------|------|--------|
-| `confirmed_cheat` | Clear evidence of cheating | Score locked, enforcement applied |
-| `false_positive` | Legitimate gameplay flagged incorrectly | Score reset, case dismissed, feeds FPR tracking |
-| `inconclusive` | Evidence ambiguous | Enhanced monitoring, no enforcement |
-| `needs_more_data` | Insufficient evidence | Flag player for detailed analysis in future matches |
-| `escalate` | Needs senior review | Case reassigned to senior moderator |
+`--detector ID=yes|no|uncertain` overrides the case verdict for that detector only. Shadow events inside a decided case count on purpose: that is how a shadow detector accumulates calibration data.
 
-## Feedback Loop
-
-Every moderator verdict is stored and used to:
-1. Compute per-detector FPR weekly
-2. Identify detectors needing threshold adjustment
-3. Build a labeled dataset of confirmed-cheat vs false-positive cases
-4. Train future threshold optimization
-
-## Decision Quality Tracking
+## Decision quality tracking
 
 | Metric | Target | Alert |
 |--------|--------|-------|
-| Cases reviewed per week | Track (no target) | Alert if backlog > 50 |
-| Median review time | < 5 minutes | Alert if > 15 minutes |
-| Verdict distribution | <5% false_positive | Alert if >10% FP |
-| Inter-moderator agreement | >90% on clear cases | Review if <80% |
+| Pending cases (`flagged`) | track | > 50 backlog |
+| False-positive share (`calibration-report`) | < 5 % | > 10 % |
+| Decided cases per promoted detector | ≥ 30 before promotion | — |

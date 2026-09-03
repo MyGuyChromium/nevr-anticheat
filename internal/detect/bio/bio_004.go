@@ -9,20 +9,20 @@ import (
 )
 
 // Bio004 detects zero aim wobble, indicating non-human aiming (BIO_004).
+// The activity gate is windowed exactly as in BIO_003.
 type Bio004 struct {
 	detect.BaseDetector
-	wobbleWindowFrames int
-	maxWobbleVariance  float64
-	minActiveFrames    int
-	sigmoidSteepness   float64
-
+	wobbleWindowFrames    int
+	maxWobbleVariance     float64
+	minActiveFrames       int
+	severityDecades       float64
 	minConsecutiveWindows int
 
 	leftHandRotHistory   map[string][]model.Quat
 	rightHandRotHistory  map[string][]model.Quat
-	activeFrames         map[string]int
-	consecutiveZeroLeft  map[string]int
-	consecutiveZeroRight map[string]int
+	activeHistory        map[string][]bool
+	consecutiveZeroLeft  map[string]*windowRun
+	consecutiveZeroRight map[string]*windowRun
 }
 
 // NewBio004 creates a new BIO_004 Zero Aim Wobble detector.
@@ -30,7 +30,7 @@ func NewBio004(params map[string]any) *Bio004 {
 	d := &Bio004{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "BIO_004",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Zero Aim Wobble",
 			DetectorCategory: "bio",
 			Inputs:           []string{"hand_tracking", "hand_rotation"},
@@ -38,57 +38,86 @@ func NewBio004(params map[string]any) *Bio004 {
 			Weight:           0.7,
 			IsAutoEnforce:    false,
 		},
-		wobbleWindowFrames:  detect.GetInt(params, "wobble_window_frames", 90),
-		maxWobbleVariance:   detect.GetFloat(params, "max_wobble_variance", 0.00005),
-		minActiveFrames:     detect.GetInt(params, "min_active_frames", 60),
-		sigmoidSteepness:    detect.GetFloat(params, "sigmoid_steepness", 50000.0),
+		wobbleWindowFrames:    detect.GetInt(params, "wobble_window_frames", 90),
+		maxWobbleVariance:     detect.GetFloat(params, "max_wobble_variance", 0.00005),
+		minActiveFrames:       detect.GetInt(params, "min_active_frames", 60),
+		severityDecades:       detect.GetFloat(params, "severity_decades", 2.0),
 		minConsecutiveWindows: detect.GetInt(params, "min_consecutive_windows", 2),
-		leftHandRotHistory:  make(map[string][]model.Quat),
-		rightHandRotHistory: make(map[string][]model.Quat),
-		activeFrames:        make(map[string]int),
-		consecutiveZeroLeft:  make(map[string]int),
-		consecutiveZeroRight: make(map[string]int),
+		leftHandRotHistory:    make(map[string][]model.Quat),
+		rightHandRotHistory:   make(map[string][]model.Quat),
+		activeHistory:         make(map[string][]bool),
+		consecutiveZeroLeft:   make(map[string]*windowRun),
+		consecutiveZeroRight:  make(map[string]*windowRun),
 	}
+	d.sanitize()
 	return d
+}
+
+func (d *Bio004) sanitize() {
+	if d.wobbleWindowFrames < 2 {
+		d.wobbleWindowFrames = 2
+	}
+	if d.minActiveFrames > d.wobbleWindowFrames {
+		d.minActiveFrames = d.wobbleWindowFrames
+	}
+	if d.minConsecutiveWindows < 1 {
+		d.minConsecutiveWindows = 1
+	}
 }
 
 func (d *Bio004) Reset() {
 	d.leftHandRotHistory = make(map[string][]model.Quat)
 	d.rightHandRotHistory = make(map[string][]model.Quat)
-	d.activeFrames = make(map[string]int)
-	d.consecutiveZeroLeft = make(map[string]int)
-	d.consecutiveZeroRight = make(map[string]int)
+	d.activeHistory = make(map[string][]bool)
+	d.consecutiveZeroLeft = make(map[string]*windowRun)
+	d.consecutiveZeroRight = make(map[string]*windowRun)
 }
 
 func (d *Bio004) Configure(params map[string]any) error {
 	d.wobbleWindowFrames = detect.GetInt(params, "wobble_window_frames", d.wobbleWindowFrames)
 	d.maxWobbleVariance = detect.GetFloat(params, "max_wobble_variance", d.maxWobbleVariance)
 	d.minActiveFrames = detect.GetInt(params, "min_active_frames", d.minActiveFrames)
-	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.severityDecades = detect.GetFloat(params, "severity_decades", d.severityDecades)
+	d.minConsecutiveWindows = detect.GetInt(params, "min_consecutive_windows", d.minConsecutiveWindows)
+	d.sanitize()
 	return nil
 }
 
 func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 
-		leftHist := d.leftHandRotHistory[pid]
-		model.PushQuatHistory(&leftHist, ps.LeftHandRot, d.wobbleWindowFrames)
-		d.leftHandRotHistory[pid] = leftHist
-
-		rightHist := d.rightHandRotHistory[pid]
-		model.PushQuatHistory(&rightHist, ps.RightHandRot, d.wobbleWindowFrames)
-		d.rightHandRotHistory[pid] = rightHist
+		// A non-unit hand rotation means no rotation data for that hand
+		// this frame; break that hand's window instead of measuring it.
+		if !ps.LeftHandRot.IsUnit() {
+			d.dropHand(pid, "left")
+		} else {
+			leftHist := d.leftHandRotHistory[pid]
+			model.PushQuatHistory(&leftHist, ps.LeftHandRot, d.wobbleWindowFrames)
+			d.leftHandRotHistory[pid] = leftHist
+		}
+		if !ps.RightHandRot.IsUnit() {
+			d.dropHand(pid, "right")
+		} else {
+			rightHist := d.rightHandRotHistory[pid]
+			model.PushQuatHistory(&rightHist, ps.RightHandRot, d.wobbleWindowFrames)
+			d.rightHandRotHistory[pid] = rightHist
+		}
 
 		// Require meaningful movement — players floating or drifting slowly
 		// naturally have near-zero aim wobble.
-		if !ps.IsStunned && ps.Speed > 1.0 {
-			d.activeFrames[pid]++
-		}
-
-		if d.activeFrames[pid] < d.minActiveFrames {
+		active := !ps.IsStunned && ps.Speed > 1.0
+		actHist := d.activeHistory[pid]
+		pushBoolHistory(&actHist, active, d.wobbleWindowFrames)
+		d.activeHistory[pid] = actHist
+		activeInWindow := countTrue(actHist)
+		if activeInWindow < d.minActiveFrames {
+			// Gate closed: nothing is measured, so no window counted while
+			// it stays closed can be "consecutive" with an earlier one.
+			getRun(d.consecutiveZeroLeft, pid).reset()
+			getRun(d.consecutiveZeroRight, pid).reset()
 			continue
 		}
 
@@ -110,31 +139,24 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			// Frozen data guard: exactly 0.0 variance means rotation data
 			// is not updating (replay artifact / tracking loss), not bot input.
 			if variance < 1e-10 {
+				d.clearHand(pid, h.name)
 				continue
 			}
 
-			consecutiveMap := d.consecutiveZeroLeft
+			// Consecutive zero-wobble windows per hand; windowRun restarts
+			// the count unless this window ends exactly one window after
+			// the last counted one (see common.go).
+			run := getRun(d.consecutiveZeroLeft, pid)
 			if h.name == "right" {
-				consecutiveMap = d.consecutiveZeroRight
+				run = getRun(d.consecutiveZeroRight, pid)
 			}
 
-			if variance < d.maxWobbleVariance {
-				consecutiveMap[pid]++
-			} else {
-				consecutiveMap[pid] = 0
-			}
-
-			if consecutiveMap[pid] < d.minConsecutiveWindows {
-				if h.name == "left" {
-					d.leftHandRotHistory[pid] = nil
-				} else {
-					d.rightHandRotHistory[pid] = nil
-				}
-				d.activeFrames[pid] = 0
+			if run.add(frameIdx, d.wobbleWindowFrames, variance < d.maxWobbleVariance) < d.minConsecutiveWindows {
+				d.clearHand(pid, h.name)
 				continue
 			}
 
-			severity := model.SigmoidConfidence(d.maxWobbleVariance-variance, 0, d.sigmoidSteepness)
+			severity := logRatioSeverity(d.maxWobbleVariance, variance, d.severityDecades)
 			confidence := model.Clamp01(severity * 0.85)
 			stddevDeg := model.RadToDeg(math.Sqrt(variance))
 
@@ -159,15 +181,29 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			)
 			events = append(events, ev)
 
-			consecutiveMap[pid] = 0
-			if h.name == "left" {
-				d.leftHandRotHistory[pid] = nil
-			} else {
-				d.rightHandRotHistory[pid] = nil
-			}
-			d.activeFrames[pid] = 0
+			run.reset()
+			d.clearHand(pid, h.name)
 		}
 	}
 
 	return events
+}
+
+func (d *Bio004) clearHand(pid, hand string) {
+	if hand == "left" {
+		d.leftHandRotHistory[pid] = nil
+	} else {
+		d.rightHandRotHistory[pid] = nil
+	}
+}
+
+// dropHand discards one hand's window for missing rotation data and breaks
+// its run.
+func (d *Bio004) dropHand(pid, hand string) {
+	d.clearHand(pid, hand)
+	if hand == "left" {
+		getRun(d.consecutiveZeroLeft, pid).reset()
+	} else {
+		getRun(d.consecutiveZeroRight, pid).reset()
+	}
 }

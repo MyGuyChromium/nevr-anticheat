@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -12,126 +14,325 @@ import (
 
 // TelemetryFrameRow pairs a normalized frame with optional raw profiler JSON.
 //
-// Storage contract for telemetry_frames:
+// Storage contract:
 //
-//   frame_json: Always populated. Contains the normalized PlayerTelemetryFrame
-//               as JSON. This is what the detection pipeline consumes during
-//               reprocessing. All fields needed for current detectors are here.
+//	telemetry_frames.frame_json: Always populated. Contains the normalized
+//	    PlayerTelemetryFrame as JSON, one row per (match, player, frame_index).
+//	    This is what the detection pipeline consumes during reprocessing.
 //
-//   raw_json:   The original, unmodified profiler/API session payload.
-//               Populated when the source provides richer data than the normalized
-//               frame captures (e.g., per-player stats, goal events, disc bounce
-//               count, player level). Specifically:
+//	match_ticks.raw_json: The original, unmodified profiler/API session payload,
+//	    stored ONCE per (match_id, frame_index) — never once per player row.
+//	    Populated when the source provides richer data than the normalized frame
+//	    (.echoreplay ingestion: EchoVRSessionResponse JSON with stats, goal
+//	    events, player level, ...). Absent for legacy JSON and live WebSocket
+//	    ingestion, which carry no raw payload. Absent means "not available from
+//	    this source", never "bug / not wired".
 //
-//               - .echoreplay ingestion: populated with EchoVRSessionResponse JSON.
-//                 Contains assists, saves, steals, passes, catches, blocks,
-//                 interceptions, possession_time, shots_taken, last_score details,
-//                 player level/name, and any future API fields.
-//
-//               - Legacy JSON ingestion: NULL. The legacy format IS the normalized
-//                 schema (RawFrame). No additional profiler fields exist to preserve.
-//
-//               - Live WebSocket ingestion: NULL. The FrameBatch protocol sends
-//                 PlayerTelemetryFrame directly. No extra profiler fields in transit.
-//
-//               NULL means "not available from this source", never "bug / not wired."
-//               Future ingestion paths that have raw profiler payloads should populate
-//               this column to preserve the profiler truth.
+// RawJSON on a row is the raw payload for that row's frame_index; rows of the
+// same tick may all carry it (it is de-duplicated on write) or only one may.
 type TelemetryFrameRow struct {
 	Frame   model.PlayerTelemetryFrame
-	RawJSON string // original profiler/API JSON, empty if unavailable
+	RawJSON string // original profiler/API JSON for this tick, empty if unavailable
+}
+
+// TelemetryStoreResult reports what a telemetry write actually did.
+type TelemetryStoreResult struct {
+	Inserted      int // player-frame rows actually inserted
+	Ignored       int // rows skipped because (match_id, player_id, frame_index) already existed
+	TicksInserted int // match_ticks rows inserted (raw payloads)
+	TicksIgnored  int // match_ticks rows that already existed
 }
 
 // StoreTelemetryFrames persists normalized telemetry frames for a match in bulk.
-// Uses a transaction with prepared statement for efficiency.
+// Returns the number of rows ACTUALLY inserted; rows whose
+// (match_id, player_id, frame_index) already existed are ignored and not
+// counted. Callers should log/metric len(frames)-inserted as ignored duplicates.
 func (s *Store) StoreTelemetryFrames(ctx context.Context, matchID string, frames []model.PlayerTelemetryFrame) (int, error) {
-	rows := make([]TelemetryFrameRow, len(frames))
-	for i, f := range frames {
-		rows[i] = TelemetryFrameRow{Frame: f}
-	}
-	return s.StoreTelemetryFrameRows(ctx, matchID, rows)
+	res, err := s.StoreTelemetryFramesWithRaw(ctx, matchID, frames, nil)
+	return res.Inserted, err
 }
 
-// StoreTelemetryFrameRows persists telemetry frame rows that may include raw profiler JSON.
-// The raw_json column preserves the original API/profiler payload (stats, goal events, etc.)
-// that the normalized frame_json does not capture.
+// StoreTelemetryFrameRows persists frame rows that may include raw profiler
+// JSON. Raw payloads are written once per frame_index to match_ticks.
+// Returns the number of player-frame rows actually inserted.
 func (s *Store) StoreTelemetryFrameRows(ctx context.Context, matchID string, rows []TelemetryFrameRow) (int, error) {
+	frames := make([]model.PlayerTelemetryFrame, len(rows))
+	var rawByFrame map[int]string
+	for i, r := range rows {
+		frames[i] = r.Frame
+		if r.RawJSON != "" {
+			if rawByFrame == nil {
+				rawByFrame = make(map[int]string)
+			}
+			if _, seen := rawByFrame[r.Frame.FrameIndex]; !seen {
+				rawByFrame[r.Frame.FrameIndex] = r.RawJSON
+			}
+		}
+	}
+	res, err := s.StoreTelemetryFramesWithRaw(ctx, matchID, frames, rawByFrame)
+	return res.Inserted, err
+}
+
+// StoreTelemetryFramesWithRaw is the canonical telemetry write: normalized
+// frames go to telemetry_frames (one row per player per tick) and rawByFrame
+// (frame_index -> raw session JSON) goes to match_ticks (one row per tick).
+//
+// The whole batch is one transaction. Any per-row failure other than a
+// primary-key conflict (I/O error, SQLITE_FULL, context cancellation, a frame
+// that cannot be serialized) aborts the transaction and is returned; nothing
+// is partially committed and nothing is silently skipped. Primary-key
+// conflicts are counted in Ignored, never in Inserted.
+func (s *Store) StoreTelemetryFramesWithRaw(ctx context.Context, matchID string, frames []model.PlayerTelemetryFrame, rawByFrame map[int]string) (TelemetryStoreResult, error) {
+	var res TelemetryStoreResult
+	if len(frames) == 0 && len(rawByFrame) == 0 {
+		return res, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
+		return res, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
+	ingestedAt := fmtDBTime(time.Now())
+
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO telemetry_frames (match_id, player_id, frame_index, timestamp, frame_json, raw_json)
+		`INSERT OR IGNORE INTO telemetry_frames (match_id, player_id, frame_index, timestamp, frame_json, ingested_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, fmt.Errorf("prepare: %w", err)
+		return res, fmt.Errorf("prepare: %w", err)
 	}
 	defer stmt.Close()
 
-	stored := 0
-	for _, row := range rows {
-		frameJSON, err := json.Marshal(row.Frame)
+	for _, f := range frames {
+		frameJSON, err := json.Marshal(f)
 		if err != nil {
-			continue
+			return TelemetryStoreResult{}, fmt.Errorf("marshal frame match=%s player=%s frame=%d: %w",
+				matchID, f.PlayerID, f.FrameIndex, err)
 		}
-		var rawPtr *string
-		if row.RawJSON != "" {
-			rawPtr = &row.RawJSON
-		}
-		_, err = stmt.ExecContext(ctx, matchID, row.Frame.PlayerID, row.Frame.FrameIndex,
-			row.Frame.Timestamp, string(frameJSON), rawPtr)
+		r, err := stmt.ExecContext(ctx, matchID, f.PlayerID, f.FrameIndex, f.Timestamp, string(frameJSON), ingestedAt)
 		if err != nil {
-			continue
+			return TelemetryStoreResult{}, fmt.Errorf("insert frame match=%s player=%s frame=%d: %w",
+				matchID, f.PlayerID, f.FrameIndex, err)
 		}
-		stored++
+		n, err := r.RowsAffected()
+		if err != nil {
+			return TelemetryStoreResult{}, fmt.Errorf("rows affected: %w", err)
+		}
+		if n > 0 {
+			res.Inserted++
+		} else {
+			res.Ignored++
+		}
+	}
+
+	if len(rawByFrame) > 0 {
+		tickStmt, err := tx.PrepareContext(ctx,
+			`INSERT OR IGNORE INTO match_ticks (match_id, frame_index, raw_json, ingested_at) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			return TelemetryStoreResult{}, fmt.Errorf("prepare ticks: %w", err)
+		}
+		defer tickStmt.Close()
+		// Deterministic order so a failure is reproducible.
+		idxs := make([]int, 0, len(rawByFrame))
+		for idx := range rawByFrame {
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		for _, idx := range idxs {
+			raw := rawByFrame[idx]
+			if raw == "" {
+				continue
+			}
+			r, err := tickStmt.ExecContext(ctx, matchID, idx, raw, ingestedAt)
+			if err != nil {
+				return TelemetryStoreResult{}, fmt.Errorf("insert tick match=%s frame=%d: %w", matchID, idx, err)
+			}
+			n, _ := r.RowsAffected()
+			if n > 0 {
+				res.TicksInserted++
+			} else {
+				res.TicksIgnored++
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit: %w", err)
+		return TelemetryStoreResult{}, fmt.Errorf("commit: %w", err)
 	}
-	return stored, nil
+	return res, nil
 }
 
-// StoreMatchContext persists match metadata so it can be reconstructed for reprocessing.
+// GetMatchRawTicks returns raw session payloads for frame indices in
+// [fromIdx, toIdx] (inclusive), keyed by frame_index. Reads match_ticks first
+// and falls back to the legacy telemetry_frames.raw_json column for matches
+// ingested before match_ticks existed. Returns an empty map when the source
+// carried no raw payload.
+func (s *Store) GetMatchRawTicks(ctx context.Context, matchID string, fromIdx, toIdx int) (map[int]string, error) {
+	out := make(map[int]string)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT frame_index, raw_json FROM match_ticks
+		 WHERE match_id = ? AND frame_index >= ? AND frame_index <= ? ORDER BY frame_index`,
+		matchID, fromIdx, toIdx)
+	if err != nil {
+		return nil, err
+	}
+	if err := collectTicks(rows, out); err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT frame_index, raw_json FROM telemetry_frames
+		 WHERE match_id = ? AND raw_json IS NOT NULL AND frame_index >= ? AND frame_index <= ?
+		 GROUP BY frame_index ORDER BY frame_index`,
+		matchID, fromIdx, toIdx)
+	if err != nil {
+		return nil, err
+	}
+	if err := collectTicks(rows, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func collectTicks(rows *sql.Rows, out map[int]string) error {
+	defer rows.Close()
+	for rows.Next() {
+		var idx int
+		var raw string
+		if err := rows.Scan(&idx, &raw); err != nil {
+			return err
+		}
+		out[idx] = raw
+	}
+	return rows.Err()
+}
+
+// GetMatchTickCount returns how many raw ticks are stored for a match.
+func (s *Store) GetMatchTickCount(ctx context.Context, matchID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM match_ticks WHERE match_id = ?`, matchID).Scan(&n)
+	return n, err
+}
+
+// StoreMatchContext persists match metadata so it can be reconstructed for
+// reprocessing. The wall-clock start time is also written to an indexed column
+// so time-range queries and cross-match decay can use match time rather than
+// ingestion time. Replaces any existing row for the match.
 func (s *Store) StoreMatchContext(ctx context.Context, matchCtx *model.MatchContext, frameCount int) error {
 	ctxJSON, err := json.Marshal(matchCtx)
 	if err != nil {
 		return fmt.Errorf("marshal match context: %w", err)
 	}
+	var startPtr *string
+	if start := fmtDBTimeOrEmpty(matchCtx.StartTime); start != "" {
+		startPtr = &start
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO match_contexts (match_id, context_json, frame_count)
-		 VALUES (?, ?, ?)`,
-		matchCtx.MatchID, string(ctxJSON), frameCount,
+		`INSERT OR REPLACE INTO match_contexts (match_id, context_json, frame_count, ingested_at, match_start_time)
+		 VALUES (?, ?, ?, ?, ?)`,
+		matchCtx.MatchID, string(ctxJSON), frameCount, fmtDBTime(time.Now()), startPtr,
 	)
 	return err
 }
 
+// HasMatchContext reports whether an explicit match_contexts row exists.
+func (s *Store) HasMatchContext(ctx context.Context, matchID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM match_contexts WHERE match_id = ?`, matchID).Scan(&n)
+	return n > 0, err
+}
+
+// HasMatch reports whether any source data (context or telemetry) exists for the match.
+func (s *Store) HasMatch(ctx context.Context, matchID string) (bool, error) {
+	ok, err := s.HasMatchContext(ctx, matchID)
+	if err != nil || ok {
+		return ok, err
+	}
+	var n int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ? LIMIT 1`, matchID).Scan(&n)
+	return n > 0, err
+}
+
 // GetMatchContext loads match metadata from the database.
+//
+// When no match_contexts row exists but telemetry frames do (a live match whose
+// context was never finalized), a context is synthesized from the frames:
+// distinct player IDs (sorted), team assignments from the earliest frame per
+// player, StartTime = earliest ingestion time, DefaultPhysics, Source
+// "live_telemetry" and ReplayFile "" — enough for reprocessing to run. Callers
+// that need to know can compare Source or call HasMatchContext.
 func (s *Store) GetMatchContext(ctx context.Context, matchID string) (*model.MatchContext, error) {
 	var ctxJSON string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT context_json FROM match_contexts WHERE match_id = ?`, matchID,
 	).Scan(&ctxJSON)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("match %s not found in database", matchID)
+	switch {
+	case err == nil:
+		var mc model.MatchContext
+		if err := json.Unmarshal([]byte(ctxJSON), &mc); err != nil {
+			return nil, fmt.Errorf("unmarshal match context: %w", err)
 		}
+		return &mc, nil
+	case err == sql.ErrNoRows:
+		return s.synthesizeMatchContext(ctx, matchID)
+	default:
 		return nil, err
 	}
-	var mc model.MatchContext
-	if err := json.Unmarshal([]byte(ctxJSON), &mc); err != nil {
-		return nil, fmt.Errorf("unmarshal match context: %w", err)
+}
+
+func (s *Store) synthesizeMatchContext(ctx context.Context, matchID string) (*model.MatchContext, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT t.player_id, t.frame_json, (SELECT MIN(ingested_at) FROM telemetry_frames WHERE match_id = t.match_id)
+		 FROM telemetry_frames t
+		 WHERE t.match_id = ?
+		   AND t.frame_index = (SELECT MIN(frame_index) FROM telemetry_frames
+		                        WHERE match_id = t.match_id AND player_id = t.player_id)
+		 ORDER BY t.player_id`, matchID)
+	if err != nil {
+		return nil, err
 	}
-	return &mc, nil
+	defer rows.Close()
+
+	mc := &model.MatchContext{
+		MatchID:         matchID,
+		TeamAssignments: make(map[string]string),
+		Source:          "live_telemetry",
+		Physics:         model.DefaultPhysics(),
+	}
+	for rows.Next() {
+		var pid, frameJSON, firstIngested string
+		if err := rows.Scan(&pid, &frameJSON, &firstIngested); err != nil {
+			return nil, err
+		}
+		mc.PlayerIDs = append(mc.PlayerIDs, pid)
+		var f model.PlayerTelemetryFrame
+		if err := json.Unmarshal([]byte(frameJSON), &f); err == nil && f.Team != "" {
+			mc.TeamAssignments[pid] = f.Team
+		}
+		if mc.StartTime.IsZero() {
+			mc.StartTime = parseDBTimeLenient(firstIngested)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(mc.PlayerIDs) == 0 {
+		return nil, fmt.Errorf("match %s: %w", matchID, ErrNotFound)
+	}
+	sort.Strings(mc.PlayerIDs)
+	return mc, nil
 }
 
 // GetMatchFrames loads all telemetry frames for a match from the database,
-// ordered by frame_index and player_id.
+// ordered by frame_index and player_id. A row whose frame_json cannot be
+// decoded is an error (naming the row), never silently dropped: reprocessing
+// a subset of the source frames would produce different detections with no
+// indication why.
 func (s *Store) GetMatchFrames(ctx context.Context, matchID string) ([]model.PlayerTelemetryFrame, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT frame_json FROM telemetry_frames
+		`SELECT player_id, frame_index, frame_json FROM telemetry_frames
 		 WHERE match_id = ? ORDER BY frame_index, player_id`,
 		matchID,
 	)
@@ -139,72 +340,76 @@ func (s *Store) GetMatchFrames(ctx context.Context, matchID string) ([]model.Pla
 		return nil, err
 	}
 	defer rows.Close()
+	return scanFrames(rows, matchID)
+}
 
+func scanFrames(rows *sql.Rows, matchID string) ([]model.PlayerTelemetryFrame, error) {
 	var frames []model.PlayerTelemetryFrame
 	for rows.Next() {
-		var fJSON string
-		if err := rows.Scan(&fJSON); err != nil {
+		var pid, fJSON string
+		var idx int
+		if err := rows.Scan(&pid, &idx, &fJSON); err != nil {
 			return nil, err
 		}
 		var f model.PlayerTelemetryFrame
 		if err := json.Unmarshal([]byte(fJSON), &f); err != nil {
-			continue
+			return nil, fmt.Errorf("corrupt telemetry row match=%s player=%s frame=%d: %w", matchID, pid, idx, err)
 		}
 		frames = append(frames, f)
 	}
 	return frames, rows.Err()
 }
 
-// GetPlayerFrames loads telemetry frames for a specific player across matches.
-func (s *Store) GetPlayerFrames(ctx context.Context, playerID string, matchLimit int) (map[string][]model.PlayerTelemetryFrame, error) {
-	// First get distinct match IDs for this player, most recent first
+// GetPlayerMatchIDs returns up to limit match IDs the player has stored
+// telemetry in, most recent match first. "Recent" is the match's wall-clock
+// start time when the context records one, else the earliest ingestion time.
+func (s *Store) GetPlayerMatchIDs(ctx context.Context, playerID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = -1
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT match_id FROM telemetry_frames
-		 WHERE player_id = ? ORDER BY ingested_at DESC LIMIT ?`,
-		playerID, matchLimit,
-	)
+		`SELECT t.match_id
+		 FROM telemetry_frames t
+		 LEFT JOIN match_contexts mc ON mc.match_id = t.match_id
+		 WHERE t.player_id = ?
+		 GROUP BY t.match_id
+		 ORDER BY COALESCE(mc.match_start_time, MIN(t.ingested_at)) DESC, t.match_id
+		 LIMIT ?`, playerID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var matchIDs []string
+	var ids []string
 	for rows.Next() {
 		var mid string
 		if err := rows.Scan(&mid); err != nil {
 			return nil, err
 		}
-		matchIDs = append(matchIDs, mid)
+		ids = append(ids, mid)
 	}
-	if err := rows.Err(); err != nil {
+	return ids, rows.Err()
+}
+
+// GetPlayerFrames loads telemetry frames for a specific player across their
+// matchLimit most recent matches (see GetPlayerMatchIDs).
+func (s *Store) GetPlayerFrames(ctx context.Context, playerID string, matchLimit int) (map[string][]model.PlayerTelemetryFrame, error) {
+	matchIDs, err := s.GetPlayerMatchIDs(ctx, playerID, matchLimit)
+	if err != nil {
 		return nil, err
 	}
-
 	result := make(map[string][]model.PlayerTelemetryFrame, len(matchIDs))
 	for _, mid := range matchIDs {
 		frows, err := s.db.QueryContext(ctx,
-			`SELECT frame_json FROM telemetry_frames
+			`SELECT player_id, frame_index, frame_json FROM telemetry_frames
 			 WHERE match_id = ? AND player_id = ? ORDER BY frame_index`,
 			mid, playerID,
 		)
 		if err != nil {
 			return nil, err
 		}
-		var frames []model.PlayerTelemetryFrame
-		for frows.Next() {
-			var fJSON string
-			if err := frows.Scan(&fJSON); err != nil {
-				frows.Close()
-				return nil, err
-			}
-			var f model.PlayerTelemetryFrame
-			if err := json.Unmarshal([]byte(fJSON), &f); err != nil {
-				continue
-			}
-			frames = append(frames, f)
-		}
+		frames, err := scanFrames(frows, mid)
 		frows.Close()
-		if err := frows.Err(); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		result[mid] = frames
@@ -212,13 +417,23 @@ func (s *Store) GetPlayerFrames(ctx context.Context, playerID string, matchLimit
 	return result, nil
 }
 
-// GetMatchIDsByTimeRange returns match IDs with telemetry ingested in the given time range.
+// GetMatchIDsByTimeRange returns match IDs whose match time falls in
+// [since, until). Match time is match_contexts.match_start_time when the
+// context records one, otherwise the earliest telemetry ingestion time for
+// the match. A zero since means no lower bound; a zero until means now.
+// Results are ordered by match time, then match ID.
 func (s *Store) GetMatchIDsByTimeRange(ctx context.Context, since, until time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT match_id FROM telemetry_frames
-		 WHERE ingested_at >= ? AND ingested_at <= ?
-		 ORDER BY ingested_at`,
-		since.Format(time.RFC3339), until.Format(time.RFC3339),
+		`SELECT m.match_id FROM (
+		    SELECT t.match_id AS match_id,
+		           COALESCE(mc.match_start_time, MIN(t.ingested_at)) AS match_time
+		    FROM telemetry_frames t
+		    LEFT JOIN match_contexts mc ON mc.match_id = t.match_id
+		    GROUP BY t.match_id
+		 ) m
+		 WHERE m.match_time >= ? AND m.match_time < ?
+		 ORDER BY m.match_time, m.match_id`,
+		fmtDBTimeSince(since), fmtDBTime(until),
 	)
 	if err != nil {
 		return nil, err
@@ -236,16 +451,49 @@ func (s *Store) GetMatchIDsByTimeRange(ctx context.Context, since, until time.Ti
 	return ids, rows.Err()
 }
 
+// GetMatchStartTimes returns the recorded wall-clock start time for each of
+// the given matches. Matches without a recorded start time are absent from
+// the result.
+func (s *Store) GetMatchStartTimes(ctx context.Context, matchIDs []string) (map[string]time.Time, error) {
+	out := make(map[string]time.Time, len(matchIDs))
+	if len(matchIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(matchIDs)), ",")
+	args := make([]any, len(matchIDs))
+	for i, id := range matchIDs {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT match_id, match_start_time FROM match_contexts
+		 WHERE match_start_time IS NOT NULL AND match_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, ts string
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, err
+		}
+		if t, err := parseDBTime(ts); err == nil {
+			out[id] = t
+		}
+	}
+	return out, rows.Err()
+}
+
 // GetStoredMatchCount returns how many matches have stored telemetry.
 func (s *Store) GetStoredMatchCount(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(DISTINCT match_id) FROM match_contexts`,
+		`SELECT COUNT(DISTINCT match_id) FROM telemetry_frames`,
 	).Scan(&count)
 	return count, err
 }
 
-// PruneOldTelemetry removes telemetry frames older than the given duration.
+// PruneOldTelemetry removes telemetry frames (and their raw ticks) ingested
+// before the given duration ago.
 //
 // WARNING: Telemetry frames are IMMUTABLE SOURCE DATA — the profiler truth.
 // Pruning telemetry permanently destroys the ability to reprocess those matches.
@@ -253,11 +501,13 @@ func (s *Store) GetStoredMatchCount(ctx context.Context) (int, error) {
 // It MUST NOT be called automatically or on a timer. The default retention policy
 // is indefinite: "all telemetry ever collected."
 func (s *Store) PruneOldTelemetry(ctx context.Context, olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan).Format(time.RFC3339)
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM telemetry_frames WHERE ingested_at < ?`, cutoff)
+	cutoff := time.Now().Add(-olderThan)
+	frames, err := s.pruneBefore(ctx, "telemetry_frames", "ingested_at", cutoff)
 	if err != nil {
-		return 0, err
+		return frames, err
 	}
-	return result.RowsAffected()
+	if _, err := s.pruneBefore(ctx, "match_ticks", "ingested_at", cutoff); err != nil {
+		return frames, err
+	}
+	return frames, nil
 }

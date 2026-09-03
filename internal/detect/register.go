@@ -1,9 +1,9 @@
 package detect
 
-// This file is intentionally minimal to avoid import cycles.
-// Detector registration is handled at the application level (cmd/anticheat)
-// by directly importing and constructing detector sub-packages.
-//
-// The detect package provides only the Detector interface and BaseDetector.
-// Sub-packages (throw, bio, movement, state, pattern) import detect for
-// BaseDetector embedding, so detect must NOT import any sub-packages.
+// Detector sub-packages (throw, bio, movement, state, pattern) embed
+// BaseDetector and therefore import this package, so detect must NOT import
+// any of them. The catalog is instead populated by each sub-package's init()
+// calling MustRegister (see registry.go). Any binary or test that imports
+// the sub-packages — cmd/anticheat, cmd/server and internal/testutil already
+// do — then sees the complete catalog through Catalog()/BuildAll() without
+// maintaining its own hand-rolled constructor list.

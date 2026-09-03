@@ -1,221 +1,202 @@
 # NEVR-Anticheat Production Readiness Assessment
 
+**Bottom line: 0 of 29 detectors are validated on real Echo VR telemetry.** Every threshold comes from game physics constants, community documentation and synthetic test data. The system is ready for a *shadow* deployment whose purpose is to collect real data; it is not ready to act on anyone.
+
 ## 1. Telemetry Compatibility Audit
 
 ### Fields confirmed available in Echo VR
 
 | Field | Echo VR Source | Status |
 |-------|---------------|--------|
-| PlayerID | `/session` → `name` | Available |
+| PlayerID | `/session` → `name` (emitted as `echovr:<userid>`) | Available |
+| Team | `/session` → `teams[].team` (`BLUE`/`ORANGE`, case-insensitive) | Available; SPECTATORS and any other team are dropped |
 | Position | `/session` → `position` [3]float64 | Available |
-| Rotation | `/session` → `forward/left/up` vectors (need quat conversion) | Available (needs conversion) |
-| LeftHandPosition | `/session` → `lhand.pos` | Available |
-| RightHandPosition | `/session` → `rhand.pos` | Available |
-| LeftHandRotation | `/session` → `lhand` direction vectors | Available in replays; needs conversion from API |
-| RightHandRotation | `/session` → `rhand` direction vectors | Available in replays; needs conversion from API |
+| Rotation | `/session` → `forward/left/up` vectors | Available, converted to a quaternion |
+| LeftHandPosition / RightHandPosition | `/session` → `lhand.pos` / `rhand.pos` | Available |
+| LeftHandRotation / RightHandRotation | `/session` → `lhand`/`rhand` direction vectors | Available, converted; handedness convention **unconfirmed** |
 | IsStunned | `/session` → `stunned` | Available |
 | HasPossession | `/session` → `possession` | Available |
-| Disc.Position | `/session` → `disc.position` | Available |
-| Disc.Velocity | `/session` → `disc.velocity` | Available |
-| BlueScore/OrangeScore | `/session` → `blue_points`/`orange_points` | Available |
-| Goals/Stuns | `/session` → per-player stats | Available |
+| Disc.Position / Disc.Velocity | `/session` → `disc.position` / `disc.velocity` | Available; one `DiscState` per tick copied onto every player's frame |
+| BlueScore / OrangeScore | `/session` → `blue_points` / `orange_points` | Available |
+| Goals / Stuns | `/session` → per-player stats | Available; per-frame update granularity **unconfirmed** |
+| Sample time | HTTP response time (bridge) / line timestamp (`.echoreplay`) | Available; frames carry real intervals |
 
 ### Fields NOT reliably available
 
 | Field | Impact | Detectors Affected | Mitigation |
 |-------|--------|-------------------|------------|
-| IsBoosting | MOV_004, MOV_005 dead | Boost abuse undetectable | Infer from velocity spikes (future) |
-| ShieldActive | STATE_003, STATE_005 dead | Shield abuse undetectable | Cannot infer; needs game server mod |
-| IsImmune | STATE_004 dead | God mode undetectable via this field | Infer from spawn timing |
-| EstimatedPingMs | No lag compensation | All timing detectors slightly more strict | Default 0 is safe (strict) |
-| InPenaltyField | THROW_007 stub | No penalty field detection | Needs geometric derivation |
+| IsBoosting | MOV_004, MOV_005 inert | Boost abuse undetectable | Infer from velocity spikes (future) |
+| ShieldActive | STATE_003, STATE_005 inert | Shield abuse undetectable | Cannot infer; needs game server mod |
+| IsImmune | STATE_004 inert | God mode undetectable via this field | Infer from spawn timing (future) |
+| EstimatedPingMs | No lag compensation | All timing detectors slightly stricter | Default 0 is safe (strict) |
+| InPenaltyField | THROW_007 stub | No penalty-field detection | Needs geometric derivation |
 
-### Fields with conversion needed
+### Conversions
 
-| Field | Issue | Fix Required |
-|-------|-------|-------------|
-| Rotation | API gives direction vectors, not quaternion | **DONE**: `directionVectorsToQuat()` in `internal/adapter/mapper.go` handles body and hand rotation conversion from direction vectors to quaternions |
-| HandRotation | Same as Rotation | **DONE**: Same converter, with zero-vector fallback to identity quaternion |
-| DeltaTime | Not in raw API; derived from timestamps | Already handled by feature extractor |
-| Disc.Speed | Not raw; derived from velocity magnitude | Already handled by `convertFrame()` |
+| Field | Issue | Status |
+|-------|-------|--------|
+| Rotation / HandRotation | API gives `{forward, left, up}` direction vectors, not quaternions | **DONE**: `model.QuatFromDirectionVectorsChecked` normalises forward, Gram-Schmidts up and rebuilds left = up × forward, so the result is always a proper rotation. It measures the handedness of the input (`BasisProper` vs `BasisReflected`, counted in `MapperStats.BasesProper/BasesReflected`) and handles both conventions exactly. **Confirmed on real data (2026-09-03)**: three real recordings decode as 100 % proper (det +1) bases; the synthetic fixtures were the reflected ones. The bridge still logs `basis_reflected` once if a source ever sends the other convention. A degenerate basis (zero or collinear vectors) yields the **zero quaternion** (tracking loss), never a silent identity. |
+| DeltaTime | Not in the raw API | **DONE**: the bridge stamps `timestamp`/`delta_time` from the real HTTP sample time per match; the replay parser uses line timestamps. dt ≤ 0 means unknown; a known dt above `pipeline.max_frame_dt` (0.5 s) is a gap (kinematics and histories cleared), smaller values are clamped to [0.005, 0.5] s. The validator rejects only dt > 60 s. |
+| Disc.Speed | Not raw | **DONE**: derived as `|velocity|` by the adapter and, for wire producers that omit it, by the decoder. |
+| holder_id | Contract used a different disc holder spelling | **DONE**: `DiscState.UnmarshalJSON` accepts `holder_id` as an alias of `possessor_id`/`is_held`. |
 
 ## 2. Detector Viability Matrix
 
-**IMPORTANT**: No detector has been validated against real Echo VR telemetry. All
-thresholds are derived from game physics documentation and synthetic test data.
-"PHYSICS_GROUNDED" means the detection logic has a sound physics basis and
-conservative thresholds, NOT that it has been proven correct on real data.
+**IMPORTANT**: no detector has been validated against real Echo VR telemetry. "PHYSICS_GROUNDED" means the detection logic has a sound physics basis and conservative thresholds, NOT that it has been proven correct on real data. This table is the single source of status labels (README, `configs/*.toml`, `internal/config/defaults.go` and the tests copy it). Labels are unchanged from the original assessment with one exception: THROW_002 moved from BROKEN to UNVERIFIED because the mechanism the BROKEN label described no longer exists (removed in the v2.0.0 rewrite, commit 3ab978b); the replacement is unvalidated, so this is not an upgrade to any validated status. Every other change requires real-data evidence.
 
-| Detector | Status | Safe for Shadow? | Safe for Enforce? | Primary Risk |
-|----------|--------|-------------------|-------------------|-------------|
-| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until tolerances validated | Physics cap is real; tolerance/ping values are UNVERIFIED |
-| THROW_002 | **BROKEN** | No (bad data) | No | Pre-release frame bug: all snapshots have same disc velocity |
-| THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed |
-| THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally |
-| THROW_005 | **UNVERIFIED** | Yes (observation only) | After calibration | Close-range shots have inherently low deviation; threshold guessed |
-| THROW_006 | **PHYSICS_GROUNDED** | Yes | Not until thresholds validated | Straight-line physics is a hard constraint; angle thresholds UNVERIFIED |
+| Detector | Status | Safe for Shadow? | Safe to score? | Primary Risk |
+|----------|--------|-------------------|----------------|-------------|
+| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until tolerances validated | Physics cap is real; tolerance/ping values are UNVERIFIED. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2 and excluded from cap-riding; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. |
+| THROW_002 | **UNVERIFIED** | Observation only, after the pre-release snapshot is confirmed non-identical | No | v2.0.0 single-delta approach, needs real-data calibration. The old BROKEN mechanism (multi-frame acceleration over pre-release snapshots that carried identical velocities in every real replay) was **removed** in v2.0.0 and replaced by a single delta: last pre-release disc speed vs release speed (`max_speed_delta` 22 m/s), with snapshots now excluding the release frame. The new mechanism is **unvalidated**: nobody has yet shown on a real replay that the pre-release snapshot carries a genuine, non-identical disc velocity. Ships disabled. |
+| THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed. Frame-of-reference guard skips throws where body speed ≥ hand speed. |
+| THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally; with the 1e-8 threshold even varied human throws fire. Degenerate dimensions are now excluded from the product, which removes one collapse mechanism but does not make the threshold meaningful. |
+| THROW_005 | **UNVERIFIED** | Yes (observation only) | After calibration | "Faster throws deviate more" premise unvalidated. Correlation gate now needs ≥ 30 pairs and a Fisher-z 95 % CI upper bound < 0.1. Goal side is learned per match from the first score increment. |
+| THROW_006 | **PHYSICS_GROUNDED** | Yes | Not until thresholds validated | Straight-line physics is a hard constraint; angle thresholds UNVERIFIED. Needs **5** sustained violation frames (not 7 as earlier revisions of this document said) and 5 tracked frames; the goal is fixed at release. |
 | THROW_007 | **STUB** | N/A | N/A | Evaluate() returns nil; no telemetry for penalty fields |
-| THROW_008 | **UNVERIFIED** | Yes (observation only) | After calibration | Tight tolerance; arena geometry may cause speed bumps |
-| BIO_001 | **UNVERIFIED** | Yes (if rotation format correct) | No | Hand rotation format UNCONFIRMED — may receive garbage input from live API |
-| BIO_002 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | 50 m/s threshold is 4× human limit; hand positions generally available |
-| BIO_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Controller jitter baseline unknown; resting controllers trigger zero-jitter |
-| BIO_004 | **UNVERIFIED** | Yes (if rotation format correct) | After calibration | Same rotation format risk as BIO_001 + wobble baseline unknown |
-| MOV_001 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | Median filter + 30-frame window is robust; 55 m/s threshold is generous |
-| MOV_002 | **PHYSICS_GROUNDED** | Yes | Not until network desync quantified | Dual-condition + 5-incident minimum is defensive; desync behavior UNVERIFIED |
-| MOV_003 | **UNSAFE** | Log only | No | Wall bounces produce legitimate 180° reversals |
+| THROW_008 | **UNVERIFIED** | Yes (observation only) | After calibration | Tight tolerance; arena geometry may cause speed bumps. Uses game `DistanceFromThrower` when present. |
+| BIO_001 | **UNVERIFIED** | Yes (rotation-format probe) | No | Rotation convention UNCONFIRMED. **Saturation:** the wrist-rate metric is bounded by π/dt = 46.9 rad/s at 15 Hz, so the 50 rad/s threshold is unreachable on bridge data (`Bio001.Reachable(0.067) == false`). Any event on 15 Hz data means the rotation pipeline is broken. |
+| BIO_002 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | 50 m/s is 4× the human limit; hand positions generally available |
+| BIO_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Controller jitter baseline unknown; resting controllers trigger zero-jitter (activity gate mitigates) |
+| BIO_004 | **UNVERIFIED** | Yes (rotation-format probe) | After calibration | Same rotation dependency as BIO_001 + wobble baseline unknown |
+| MOV_001 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | Median filter + 30-frame window; 55 m/s is generous; burst branch tied to `physics.max_player_speed` |
+| MOV_002 | **PHYSICS_GROUNDED** | Yes | Not until network desync quantified | Dual condition + 5-incident minimum; jumps > 12 m (`max_displacement`) are treated as resets and are invisible; desync behaviour UNVERIFIED |
+| MOV_003 | **UNSAFE** | Log only | No | Wall bounces produce legitimate 180° reversals (collision radius + heading confirmation help, not enough) |
 | MOV_004 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | IsBoosting not in standard API |
-| MOV_005 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | Same + sequence counter design limitation |
+| MOV_005 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | Same; counts activations, `max_consecutive` limit unvalidated |
 | STATE_001 | **UNVERIFIED** | Yes (observation only) | After calibration | Network desync inflates grab distance; grab range unquantified |
-| STATE_002 | **PHYSICS_GROUNDED** | Yes | Not until stun duration validated | 2-incident minimum is conservative; real stun duration UNVERIFIED |
-| STATE_003 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed in .echoreplay format |
-| STATE_004 | **TELEMETRY_DEPENDENT** | Only if IsImmune present | No | IsImmune not confirmed in .echoreplay format |
-| STATE_005 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed (same as STATE_003) |
+| STATE_002 | **PHYSICS_GROUNDED** | Yes | Not until stun duration validated | 2-incident minimum; real stun duration UNVERIFIED (measured in seconds against tick rate) |
+| STATE_003 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed in any source |
+| STATE_004 | **TELEMETRY_DEPENDENT** | Only if IsImmune present | No | IsImmune not confirmed in any source |
+| STATE_005 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | Same as STATE_003 |
 | STATE_006 | **SUSPENDED** | No | No | No confirmed impossible score invariant; delta=1 proved legitimate in real profiler data |
 | STATE_007 | **TELEMETRY_DEPENDENT** | Only if per-frame stun count updates | After validation | Per-frame stun count granularity UNCONFIRMED; may be round-end only |
 | PAT_001 | **UNSAFE** | Log only | No | Regrab rhythm produces low CoV naturally |
-| PAT_002 | **UNSAFE** | Log only | No | Consistent throwing form produces <2cm spread |
-| PAT_003 | **CROSS_MATCH_DEPENDENT** | After history collected | After validation | Wired in cmd/anticheat + cmd/server; needs min_matches of prior data in DB |
-| PAT_004 | **PHYSICS_GROUNDED** | Yes | Not until upstream detectors validated | Meta-detector; accuracy depends entirely on upstream detector quality |
-| PAT_005 | **PHYSICS_GROUNDED** | Yes | Not until validated | 1.6m threshold is 2× physical arm reach; sustained 30-frame window |
+| PAT_002 | **UNSAFE** | Log only | No | Consistent throwing form produces < 2 cm spread |
+| PAT_003 | **CROSS_MATCH_DEPENDENT** | After history collected | After validation | Reads prior non-shadow, non-meta events; nothing until `min_matches` of history |
+| PAT_004 | **PHYSICS_GROUNDED** | Yes | Not until upstream detectors validated | Meta-detector fed only with non-shadow events ≥ 0.7 confidence; in an all-shadow deployment it receives nothing |
+| PAT_005 | **PHYSICS_GROUNDED** | Yes | Not until validated | 1.6 m threshold is 2× arm reach; 30-frame sustain |
 
-### Summary: 0 confirmed, 7 physics-grounded (unvalidated), 6 unverified, 4 unsafe, 6 telemetry-dependent, 1 cross-match-dependent, 1 stub, 1 broken, 1 suspended, 1 meta (physics-grounded)
+### Summary
 
-### Recommended Initial Enable List (Shadow Mode)
+0 validated · 8 physics-grounded (incl. the PAT_004 meta-detector) · 8 unverified (incl. THROW_002, whose BROKEN mechanism was removed) · 4 unsafe · 6 telemetry-dependent · 1 cross-match-dependent · 1 stub · 1 suspended = 29.
 
-**Enable in shadow with scoring weight (physics-grounded, conservative thresholds):**
-THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, STATE_002, PAT_004, PAT_005
+### Recommended initial enable list (shadow mode)
 
-**Enable in shadow at weight=0 (observation only — collect baseline data):**
-THROW_003, THROW_005, THROW_008, BIO_001, BIO_003, BIO_004, STATE_001
+In shadow mode `enforcement_weight` has **no effect**: shadow events are never scored, whatever the weight. The split below is about which weight *would* apply after promotion, and it is what `configs/shadow_deploy.toml` encodes.
 
-**Disable until telemetry fields confirmed:**
-MOV_004, MOV_005, STATE_003, STATE_004, STATE_005, STATE_007
-
-**Disable until calibrated with real data:**
-THROW_004, MOV_003, PAT_001, PAT_002
-
-**Disable until sufficient match history collected:**
-PAT_003 (wired in cmd/anticheat + cmd/server; needs min_matches of prior DB data)
-
-**Disable (suspended — no confirmed invariant):**
-STATE_006 (delta=1 proved legitimate; no impossible score delta confirmed)
-
-**Disable (broken / stub):**
-THROW_002 (pre-release frame data wrong), THROW_007 (Evaluate returns nil; no penalty field data)
+- **Enabled, weight as configured for promotion:** THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, STATE_002, PAT_004, PAT_005
+- **Enabled at weight 0.0 (observation only):** THROW_003, THROW_005, THROW_008, BIO_001, BIO_003, BIO_004, STATE_001, STATE_007
+- **Disabled until telemetry fields confirmed:** MOV_004, MOV_005, STATE_003, STATE_004, STATE_005
+- **Disabled until calibrated:** THROW_004, MOV_003, PAT_001, PAT_002
+- **Disabled until history exists:** PAT_003
+- **Disabled (suspended / unvalidated rewrite / stub):** STATE_006, THROW_002, THROW_007
 
 ## 3. Integration Gap Analysis
 
-### Critical gaps between implementation and real Echo VR data
-
 | Gap | Impact | Severity |
 |-----|--------|----------|
-| **Coordinate frame assumption**: Code assumes Y-up right-handed coordinates. Echo VR uses Y-up but with specific axis conventions for forward/left/up that may differ from the assumed quaternion representation. | All spatial calculations could be wrong if axes are flipped. | **CRITICAL** — must be validated with first real data |
-| **Hand rotation format**: Echo VR provides hand pose as `{pos, forward, left, up}` direction vectors. The mapper (`internal/adapter/mapper.go`) converts these to quaternions via `directionVectorsToQuat()` for both body and hand rotations, with fallback to identity quaternion when vectors are zero. **RESOLVED** in code — still needs validation that direction vectors are non-zero and properly oriented in real telemetry. | BIO_001 and BIO_004 depend on rotation quality; if direction vectors are garbage, detections are meaningless. | **MEDIUM** (was HIGH, mitigated by direction-vector converter) |
-| **Disc state during possession**: When a player holds the disc, does Echo VR still report disc position/velocity? If disc velocity is zero while held and only set at release, the feature extractor's throw detection may work. If disc position matches player position while held, the hand-to-disc distance is wrong. | Throw detection may fail or produce wrong evidence. | **HIGH** — needs empirical validation |
-| **Score update frequency**: Code assumes per-frame score updates. If Echo VR only updates score on goal events (not every tick), the score delta between frames where a goal happened could be 0,0,0,...,2 instead of smooth updates. | STATE_006 works correctly with sparse updates (delta=2 is valid). No issue. | **LOW** |
-| **Stun count granularity**: STATE_007 assumes per-frame stun count increments. If stun stats are only updated at round/match end, the detector is dead. | STATE_007 may be non-functional on live data. | **HIGH** |
-| **Replay protobuf schema**: The `FrameParser` interface abstracts the actual replay format, but no concrete protobuf parser exists. The `JSONFrameParser` is for testing only. | Cannot process real .echoreplay files without implementing the protobuf parser. | **CRITICAL** for offline mode |
+| **Coordinate frame / handedness.** Resolved 2026-09-03: real recordings are 100 % proper-basis; the converter handles both conventions and counts them. | A mixed count on a new source would mean an inconsistent producer; hand-rotation detectors stay observation-only until calibrated regardless. | **LOW** — resolved |
+| **Disc state during possession.** The adapter now emits one disc per tick with `possessor_id`/`is_held` from the first possessing player in team order (multi-holder ticks counted as `PossessionConflicts`). Whether Echo VR reports disc velocity as zero, player velocity or stale while held is still unknown. | Release speed (THROW_001/002) and hand-to-disc distance could be wrong. | **HIGH** — needs empirical validation |
+| **Stun count granularity.** STATE_007 needs per-frame `stuns` increments. | STATE_007 may be dead on live data. | **HIGH** |
+| **Replay format.** The `.echoreplay` parser exists (`internal/adapter/replay_parser.go`): NDJSON lines of `timestamp\tJSON`, optionally inside a ZIP, streamed per tick. It is what `analyze`/`batch` use. The `internal/replay` `FrameParser` interface and its JSON parser remain for legacy JSON replays only. | None for offline mode; comments that still mention protobuf are stale. | **LOW** |
+| **Live path statefulness.** The pipeline keeps per-player state across batches (`SetSkipReset`), so inline detection works even with one frame per batch. Inline results are `analysis_source = initial`; reprocessing stays canonical. | None; earlier revisions of this document called inline detection non-functional. | **LOW** |
+| **Trust boundary.** Everything the bridge forwards was pulled over plaintext HTTP from whatever host the Nakama match label advertises. Every batch/control message carries `server_id = "<ip>:<port>"`, which the server records on the match context (`MatchContext.ServerID`, persisted with `match_contexts`, shown in evidence reports); `--broadcaster-allowlist` restricts polling to known hosts. There is no authentication of the broadcaster itself. | A hostile or misconfigured broadcaster can inject arbitrary telemetry (and therefore detection events) for real player IDs. | **HIGH** — always run with an allowlist; treat evidence from a match whose context carries an unknown `server_id` as untrusted |
 
-## 4. Real Replay Adapter
+## 4. Producers
 
-The adapter interface is already defined in `internal/replay/reader.go`:
+| Producer | Status |
+|----------|--------|
+| **EchoReplayParser** (`internal/adapter`) | DONE. NDJSON/ZIP `.echoreplay`, real line timestamps, spectators dropped, team names mapped, one disc per tick, diagnostics report (`nevr-compat --replay`). |
+| **Live bridge** (`cmd/bridge`) | DONE. Nakama device-auth discovery, `/session` polling with real sample times (`MapSessionAt`), per-match monotonic frame epochs, hello/ack protocol, bounded send queue, `match_start`/`match_end` with team rosters, `--probe`/`--once` validation modes, `--broadcaster-allowlist`. |
+| **Legacy JSON replay reader** (`internal/replay`) | Kept for the old JSON layout; physics from `DefaultPhysics`. |
 
-```go
-type FrameParser interface {
-    Open(path string) error
-    Close() error
-    Header() (*ReplayHeader, error)
-    NextFrame() (*RawFrame, bool, error)
-}
-```
-
-### What needs to be implemented for real Echo VR data:
-
-1. **EchoReplayParser** — implements FrameParser for `.echoreplay` protobuf files
-   - Requires: nevr-common/v4 protobuf definitions
-   - Maps: protobuf player entries → `RawPlayerFrame`
-   - Maps: protobuf disc state → `RawDiscFrame`
-   - Handles: quaternion extraction from protobuf rotation fields
-
-2. **LiveAPIAdapter** — **DONE**: `cmd/bridge` polls `/session`, maps via `internal/adapter/mapper.go`
-   - Polls at configurable interval (default 67ms = 15fps)
-   - Maps: JSON player objects → `PlayerTelemetryFrame`
-   - Converts: direction vectors → quaternions via `directionVectorsToQuat(forward, left, up)`
-   - Derives: delta_time from frame index × assumed dt
-   - Forwards: telemetry frames to anticheat server via WebSocket
-
-### Unknown mapping points (must be validated with real data):
-
-| Source Field | Target Field | Uncertainty |
-|-------------|-------------|-------------|
-| `.echoreplay` player rotation format | `Quat [4]float64` | Is it (x,y,z,w) or (w,x,y,z)? |
-| `/session` hand pose `forward/left/up` | Hand rotation `Quat` | Which axis convention? |
-| Disc velocity when held | `DiscState.Velocity` | Zero or player velocity? |
-| `possession` array format | Per-player `HasPossession` bool | Array of player IDs or single holder ID? |
-| Boost state availability | `IsBoosting` | Available in API? In replays? |
+Unknown mapping points that only real data can settle: hand-basis handedness, disc velocity while held, whether `possession` is ever true for more than one player, whether `stuns` updates per frame, whether `is_boosting`/`shield_active`/`is_immune` exist anywhere.
 
 ## 5. Why This Could Still Fail in Production
 
-### Telemetry Drift
-Echo VR's API has changed between versions. Field names, value ranges, and available data have shifted without notice. If a game update adds, removes, or renames a field, the ingestion layer will silently produce zero-valued or missing data, and detectors will either go silent (false negatives) or fire on garbage (false positives). **There is no telemetry schema validation that alerts on unexpected field changes.**
+### Telemetry drift
+Echo VR's API has changed between versions. A renamed or removed field makes the ingestion layer emit zero-valued data, and detectors go silent (false negatives) or fire on garbage (false positives). `nevr-compat --strict` and the bridge manifest (`errors_count`, `warnings_count`, `mapped_frames`) are the only schema checks; they are manual.
 
-### Coordinate Space Mismatch
-The entire codebase assumes a specific coordinate convention (Y-up, right-handed). If Echo VR uses a different convention (e.g., Z-up, or left-handed), every distance calculation, velocity computation, and angle comparison is wrong. This cannot be detected from synthetic data. **It will only be discovered on the first real replay.**
+### Coordinate space
+Y-up is confirmed from real replays (X ±5 m, Y −4..+7 m, Z ±77 m, goals at Z ≈ ±36.078). Handedness of the direction-vector bases is handled either way but unconfirmed (see §3).
 
-### Replay Inaccuracy
-`.echoreplay` files are client-side recordings, not server-authoritative. They contain interpolated positions, not raw server state. The interpolation introduces smoothing that makes legitimate movement look smoother than it actually was on the server, and can create artifacts (position jumps, velocity spikes) at interpolation boundaries. **Every threshold calibrated on replay data is calibrated on interpolated data, not ground truth.**
+### Replay inaccuracy
+`.echoreplay` files are client-side recordings with interpolated positions. **Every threshold calibrated on replay data is calibrated on interpolated data, not server truth.**
 
-### Timing Artifacts
-Frame timestamps in replays are not guaranteed to be uniform. The spec says ~15 FPS but actual frame intervals vary (50ms to 200ms). The feature extractor handles this via dt clamping, but velocity and acceleration computed from variable-dt frames have higher noise than uniform-dt data. **Detectors calibrated on synthetic data with uniform 67ms dt will behave differently on real variable-dt data.**
+### Timing
+Producers now report real sample intervals (bridge: HTTP sample time; replays: line timestamps), dt ≤ 0 is treated as unknown, a known dt above `pipeline.max_frame_dt` (0.5 s) is a gap that clears kinematics, and smaller known values are clamped to [0.005, 0.5] s, so the "dt clamping handles variable intervals" claim is now true. Kinematics from variable-dt frames are still noisier than uniform synthetic data, and **the bridge's 15 Hz poll bounds what can be observed**: BIO_001 cannot exceed 46.9 rad/s, single-frame teleports shorter than 67 ms are invisible, and THROW_002's pre-release snapshot is one 67 ms sample.
 
-### Detector Overfitting to Synthetic Data
-All 60 tests pass on synthetic telemetry generated by `synthetic.go`. The synthetic generators use sinusoidal motion, deterministic jitter, and idealized throw mechanics. Real Echo VR gameplay involves:
-- Chaotic multi-player physics interactions (bumping, bouncing, grabbing through bodies)
-- Network prediction/reconciliation artifacts
-- VR tracking occlusion (hands disappear briefly)
-- Playspace-dependent hand positions (tall vs short players, room-scale vs seated)
-- Controller-specific tracking noise profiles (Quest 2 vs Index vs Rift S)
+### Overfitting to synthetic data
+The test suite passes on synthetic telemetry (`internal/testutil/synthetic.go`: sinusoidal motion, deterministic jitter, idealised throws). Real gameplay has chaotic collisions, network reconciliation artifacts, tracking occlusion, playspace-dependent hand positions and controller-specific noise. **None of these are modelled.** The first real match will reveal false-positive patterns not seen in testing.
 
-**None of these are modeled in synthetic data.** The first real match will likely reveal false positive patterns not seen in testing.
+### UNSAFE detectors that look safe
+THROW_004, PAT_001, PAT_002 and MOV_003 pass their tests because the tests avoid triggering them on legitimate data. **They will false-positive on real skilled players.** Keep them disabled until calibrated on thousands of real matches.
 
-### UNSAFE Detectors That Look Safe
-THROW_004 (signature repeat), PAT_001 (throw timing), PAT_002 (release points), and MOV_003 (direction change) all pass their tests — but their tests explicitly avoid triggering them on legitimate data by excluding them or using parameters that don't exercise the risky code paths. **These detectors WILL false-positive on real skilled players.** They must remain in shadow mode indefinitely until calibrated against 5000+ real matches.
+### Moderator misuse
+Scores are evidence pointers, not verdicts. The single-match and cross-match cases put the evidence in front of a moderator; `verdict` records the decision and `calibration-report` turns decisions into per-detector precision. **A moderator who acts on a score alone defeats the false-positive prevention design.** No automatic action exists: `enforce.Engine` and `enforce.Policy` are implemented but not wired into any binary.
 
-### Moderator Misuse
-The system produces evidence packages and recommended actions for moderator review. If moderators treat "score >= 80" as proof of cheating without reviewing evidence, innocent players will be punished. The recommendation engine requires multi-category + multi-match confirmation for the strongest recommendations, but moderator manual actions bypass these safeguards. **A moderator who acts on score alone, without reviewing evidence, defeats the entire false-positive prevention architecture.**
+### Single point of failure: feature extractor
+All 29 detectors depend on the feature extractor. A single bug in velocity or throw derivation silently breaks everything downstream. There is no independent cross-validation of derived features.
 
-### Single Point of Failure: Feature Extractor
-All 29 detectors depend on the feature extractor computing derived state correctly. A single bug in velocity computation (like the hand velocity bug found and fixed during audit) silently breaks every detector downstream. **There is no cross-validation of derived features against independent computation.**
+### THROW_002
+The BROKEN multi-frame mechanism is gone; the v2.0.0 replacement (last pre-release speed vs release speed) is untested on real data, hence UNVERIFIED and disabled. It stays that way until a real replay shows the pre-release snapshot carries a genuine, non-identical disc velocity and `max_speed_delta` is calibrated on it.
 
-### Pre-Release Frame Data Bug (THROW_002)
-The feature extractor stores the same current-frame disc velocity in every pre-release snapshot, making THROW_002's acceleration analysis meaningless. This detector appears to work but produces wrong results.
+### Storage growth
+Telemetry is never pruned automatically; `nevr-server` prunes detection events after 90 days and score snapshots after 30 days. Raw `.echoreplay` ticks are stored once per tick in `match_ticks`. Budget disk accordingly.
 
-### Storage Growth
-At 15 FPS × 8 players × ~200 bytes per detection event, a match generating many detections can produce megabytes of evidence. Over thousands of matches, the SQLite database will grow unboundedly. Detection events are pruned after 90 days and scores after 30 days (automatic in server mode), but telemetry frames are never auto-pruned by design.
+## 6. Calibration Findings from Real Data (historical)
 
-## 6. Calibration Findings from Real Data
+**Data source**: nevr-anticheat.db — 17,498 detection events across 8 matches, 43 players, produced by an **earlier build**. The numbers are kept as a record of what was learned; they must be regenerated with the current binary (`nevr-ac reprocess-timerange <since> <until>` over the same matches, recording the commit hash and config next to the results) before any threshold decision.
 
-**Data source**: nevr-anticheat.db — 17,498 detection events across 8 matches, 43 players.
+| Detector | Events/Match (old build) | What changed since |
+|----------|-------------------------|--------------------|
+| BIO_002 | ~913 | Generated with the old 15 m/s threshold; current config is 50 m/s. Reprocess. |
+| BIO_003 | ~280 | Activity gate and log-ratio severity added; needs baseline calibration. |
+| BIO_004 | ~238 | Same, plus zero-quaternion tracking-loss handling. |
+| THROW_006 | ~137 | Bounce filter narrowed, alignment gate 0.7, minimum violation frames **5**, goal fixed at release. |
+| THROW_008 | ~118 | Uses game distance-from-thrower; first 3 frames not judged. |
+| MOV_002 | ~91 | Jumps > 12 m treated as resets; distinct-player cluster suppression; goal cooldown. |
+| BIO_001 | ~80 | 3-frame sustained floor; note the 15 Hz saturation. |
+| THROW_001 | ~60 | dt gate removed; releases > 2× cap (37.4 m/s) now reported as `disc_speed_artifact` at severity 0.2 instead of being dropped; cap-riding once per 900 frames. |
+| STATE_004 | ~54 | Escalating re-fire with tolerance. |
 
-### Detector Event Rates (per match, averaged)
+Key conclusions that still hold: THROW_001's over-cap events (22–96 m/s against a ~20 m/s effective cap) are genuinely impossible *if the velocity is real*; the 2×-cap artifacts are now visible rather than hidden so that question can be answered. One match (`6BEF4CA8`) produced ~90 % of all events; a broader sample is required.
 
-| Detector | Events/Match | Assessment |
-|----------|-------------|------------|
-| BIO_002 | ~913 | **Generated with old 15 m/s threshold (not current 50 m/s). Reprocess with current config.** |
-| BIO_003 | ~280 | High for zero-jitter detection. Needs baseline calibration. |
-| BIO_004 | ~238 | High for zero-wobble detection. Same rotation format dependency. |
-| THROW_006 | ~137 | **Tightened**: bounce filter gap narrowed, alignment threshold raised to 0.7, min violation frames raised to 7. |
-| THROW_008 | ~118 | Speed increase tolerance may need widening from 5.0 m/s. |
-| MOV_002 | ~91 | Some events had distances > 12m (pre-guard data). Current code filters > 12m. |
-| BIO_001 | ~80 | Reasonable for observation mode. |
-| THROW_001 | ~60 | All events show genuinely impossible throws (speeds 22-96 m/s vs 20 m/s cap). Detector working correctly. |
-| STATE_004 | ~54 | **Fixed**: all events had excess_frames=1 (timing artifact). Added 5-frame tolerance buffer. |
+## 6b. Real-data run (2026-09-03)
 
-### Key Calibration Conclusions
+Three community recordings from 2024 (a non-Spark recorder: dashed, microsecond timestamps) and the owner's Spark library (`C:\Spark Replays`, ~250 files, ZIPs of NDJSON unpacking to 0.5–1 GB) exposed three parser gaps, all fixed: Spark's `timestamp<TAB>session<TAB>bones` line layout (the bones document is now split off), the 500 MB uncompressed-size guard (now 8 GB), and the single accepted timestamp layout (now slashes or dashes, any fraction length, ISO).
 
-1. **THROW_001 is working correctly** — all 481 events show disc speeds 22-96 m/s against ~20 m/s effective cap. Speed ratios of 4-641x. These are genuinely impossible throws.
-2. **BIO_002 DB data is invalid** — generated with old max_hand_speed=15 m/s threshold. Current 50 m/s config is correct. Existing events should be reprocessed.
-3. **THROW_006 was overfiring** — bounce filter gap (8-15°) let normal physics through. Tightened bounce filter to 12°, raised violation frame minimum to 7, raised alignment threshold to 0.7.
-4. **STATE_004 had no tolerance** — every event showed exactly 1 excess frame. Added 5-frame tolerance buffer.
-5. **MOV_002 events with > 12m distance** — generated before the 12m game-event guard was added. Current code is correct.
-6. **One match dominates** — match `6BEF4CA8` accounts for ~90% of all events. Either this match had cheaters, or it was an early noisy run. Either way, a broader sample is needed for calibration.
+Measured geometry (150k player frames): players span X ±16 m, Y −9..+9.5 m, Z ±78 m (spawn areas beyond the ±40 m play volume); the disc stays within X ±16, Y ±10, Z ±40 with goals at Z ≈ ±36; hand-to-body distance p99.9 = 1.08 m. `DefaultPhysics` arena width/height were corrected from 15/15 m to 32/20 m; before that the validator rejected 11–46% of legitimate frames as `out_of_arena_bounds`, afterwards 0–1 frame per match.
+
+Detector output on those three matches (all shadow): BIO_002 fired twice on two-frame hand-speed spikes of 422 and 145 m/s (tracking glitches; the 3-frame sustained floor removes them), STATE_001 fired three times on grabs at 4.7–6.2 m (lag-compensation candidates; first calibration points), no throw or movement detector fired on legitimate play. This does not validate any detector; it is the first false-positive baseline.
+
+## 7. Decisions pending (owner)
+
+Collected from the quality-pass fixer reports. Each has a conservative default in place.
+
+1. **Goal side per team.** No convention found; the extractor learns the side per match from the first score increment. Confirm from a replay and, if fixed, set `FeatureExtractor.SetBlueGoalSide(±1)` via a config key.
+2. **THROW_001 auto-enforcement** stays off (`auto_enforce = false`). Enabling it makes any possession-tracked release > ~25 m/s carry `AutoEnforce`. Keep off until the 22–96 m/s events are explained.
+3. **Releases > 2× cap** are `disc_speed_artifact` at severity 0.2. Decide after re-running calibration whether they are timing artifacts (keep low) or injection (route to the disc_speed path).
+4. **THROW_005 correlation gate** (n ≥ 30, CI upper < 0.1) is deliberately conservative; keep observation-only until measured on real players.
+5. **THROW_004** remains UNSAFE/disabled; recalibrate the 1e-8 threshold or retire the detector.
+6. **BIO_001 at 15 Hz**: keep 50 rad/s (unreachable on bridge data, observation-only) or calibrate a 15 Hz-attainable value < 46.9 rad/s from real data. Kept at 50.
+7. **MOV_002 `max_displacement`** kept at 12 m (teleports beyond that are invisible); raising it to ~40 m extends coverage and relies on the cluster/goal filters. Needs a calibration re-run.
+8. **BIO_001 `min_violation_frames`**: the code floors it at 3; the config now says 3 so the effective table is truthful. Remove the floor if 2-frame streaks are wanted.
+9. **PAT_002 `min_release_speed`** is 0 (drops sampled like throws); 3–5 m/s would exclude drops but is a real-data choice.
+10. **MOV_005 `max_consecutive`** stays at the code default 5 activations; the old 8-frame limit was a different unit and was not applied.
+11. **Review threshold** is now 60 (= high_risk) everywhere; cross-match cases therefore start at the high_risk tier. `auto_enforce_threshold` moved to 95 (= action_worthy) because it must not be below the review threshold.
+12. **Case creation tier** is high_risk (`review.WithMinLevel` can lower it to suspicious for "monitoring" cases).
+13. **Cross-match case status**: a moderator-set status is never reopened by re-aggregation, even when new matches add evidence.
+14. **Calibration counts shadow events** inside decided cases (that is how shadow detectors earn promotion); add `AND is_shadow = 0` if you want the opposite.
+15. **Decay fallback**: events whose match has no start time are decayed from storage time (count reported); the stricter alternative is no decay for them.
+16. **Change detection** (`Mapper.SetDedupeIdentical`) is on for the bridge and off for replay parsing; decide whether `analyze`/`batch` should enable it.
+17. **Reflected basis — RESOLVED 2026-09-03.** Three real recordings (330k hand/body poses) decode as 100% proper (det +1) bases; the synthetic fixtures were the reflected ones. Both conventions are handled; `basis quality` in the diagnostic report reads `reflected=0` on real data.
+18. **Unnamed team entries** fall back to array index (0 = blue, 1 = orange); real payloads always carry `team`.
+19. **Bridge defaults**: `--session-check strict`, `--modes echo_arena`, `--nakama-auth device` (creates a `nevr-anticheat-bridge` account), `--ack-timeout 30s`, `--idle-give-up 10m`. Confirm each against the target Nakama.
+20. **Ingest defaults**: idle deadline 5 min, ack interval 1 s, persist interval 2 min, 64 matches, 16 players, stale finalization 30 min, dedup merge window 20 frames; NaN disc data nils the disc, NaN hands become the tracking-loss sentinel (flip to rejection if preferred).
+21. **Live score snapshots** are written on tier change and at match end; never for score ≤ 0.
+22. **Rate limiter** is first-N-wins per player/detector; a severity-aware top-K would need to hold events until match end.
+23. **Anti-evasion window randomizer** is unused/EXPERIMENTAL; production wiring should use `NewWindowRandomizerWithSecret`.
+24. **`sudden_death`** is active; `pre_sudden_death`/`post_sudden_death` are not. Confirm against real status strings.
+25. **`enforce` temp-ban recommendation** (7 days) stays unreachable until auto-enforce and cross-match inputs are supplied — deliberate.
+26. **`tests.test`** (a 12 MB `go test -c` binary) was removed from the index and `*.test` is now ignored; nothing further to do.

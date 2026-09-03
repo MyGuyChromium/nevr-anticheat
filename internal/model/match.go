@@ -4,26 +4,39 @@ import "time"
 
 // MatchContext holds match-level metadata passed to all detectors.
 type MatchContext struct {
-	MatchID   string            `json:"match_id"`
-	Map       string            `json:"map"`
-	GameMode  string            `json:"game_mode"`
-	IsRanked  bool              `json:"is_ranked"`
-	IsPrivate bool              `json:"is_private"`
-	StartTime time.Time         `json:"start_time"`
-	Duration  time.Duration     `json:"duration"`
-	PlayerIDs []string          `json:"player_ids"`
+	MatchID         string            `json:"match_id"`
+	Map             string            `json:"map"`
+	GameMode        string            `json:"game_mode"`
+	IsRanked        bool              `json:"is_ranked"`
+	IsPrivate       bool              `json:"is_private"`
+	StartTime       time.Time         `json:"start_time"`
+	Duration        time.Duration     `json:"duration"`
+	PlayerIDs       []string          `json:"player_ids"`
 	TeamAssignments map[string]string `json:"team_assignments"`
-	TickRate  float64           `json:"tick_rate"`
-	Source    string            `json:"source"`
-	ReplayFile string           `json:"replay_file,omitempty"`
-	ServerRegion string         `json:"server_region,omitempty"`
-	Physics  PhysicsConstants   `json:"physics"`
+	// PlayerNames maps a player ID to the display name the source reported
+	// (the /session "name" field). Informational only: detectors and storage
+	// key everything by PlayerID. Empty for sources that carry no names.
+	PlayerNames  map[string]string `json:"player_names,omitempty"`
+	TickRate     float64           `json:"tick_rate"`
+	Source       string            `json:"source"`
+	ReplayFile   string            `json:"replay_file,omitempty"`
+	ServerRegion string            `json:"server_region,omitempty"`
+	// ServerID is the provenance of live telemetry: the producer's
+	// server_id stamp (the bridge sends "<broadcaster_ip>:<api_port>").
+	// Provenance lives here, on the match context, not on every event row.
+	ServerID string           `json:"server_id,omitempty"`
+	Physics  PhysicsConstants `json:"physics"`
 }
 
 // IsActivePhase returns true if the game phase is active gameplay.
+//
+// Echo VR reports overtime as "sudden_death" (with "pre_sudden_death" and
+// "post_sudden_death" transitions around it). Sudden death is live play and
+// must be covered by detectors; the pre/post transitions teleport players to
+// spawn exactly like round_start/round_over and stay inactive.
 func (mc *MatchContext) IsActivePhase(phase string) bool {
 	switch phase {
-	case "playing", "round", "overtime", "":
+	case "playing", "round", "overtime", "sudden_death", "":
 		return true
 	default:
 		return false
@@ -44,6 +57,10 @@ type PhysicsConstants struct {
 	ArenaWidth     float64 `json:"arena_width" toml:"arena_width"`
 	ArenaHeight    float64 `json:"arena_height" toml:"arena_height"`
 	GoalRadius     float64 `json:"goal_radius" toml:"goal_radius"`
+	// GoalZ is the |Z| coordinate of the goal centres. Goals sit on the Z
+	// axis at (0, 0, +-GoalZ). CONFIRMED from a real replay: the disc was at
+	// Z=36.078 when a goal was scored, well inside the +-77 arena Z extent.
+	GoalZ float64 `json:"goal_z" toml:"goal_z"`
 }
 
 // DefaultPhysics returns the default physics constants for Echo VR.
@@ -59,31 +76,36 @@ func DefaultPhysics() PhysicsConstants {
 		GrabRange:      0.8,
 		// CONFIRMED from real replay: Z range is [-77, +77], X range is [-5, +5], Y range is [-4, +7].
 		// Arena is elongated on Z axis. Goals at Z ≈ ±36.
-		ArenaLength:    154.0,  // Z axis (was 80 — confirmed wrong from real data)
-		ArenaWidth:     15.0,   // X axis
-		ArenaHeight:    15.0,   // Y axis
-		GoalRadius:     1.0,
+		ArenaLength: 154.0, // Z axis (was 80 — confirmed wrong from real data)
+		// MEASURED 2026-09-03 on three real recordings (150k player frames):
+		// players span X in [-16, +16] and Y in [-9, +9.5]; the disc stays
+		// within X ±16, Y ±10, Z ±40. The previous 15 m width (bound ±12.5)
+		// rejected up to 46% of legitimate frames as out_of_arena_bounds.
+		ArenaWidth:  32.0, // X axis
+		ArenaHeight: 20.0, // Y axis
+		GoalRadius:  1.0,
+		GoalZ:       36.078, // confirmed observation (disc Z at a scored goal)
 	}
 }
 
 // MatchSummary holds the end-of-match summary.
 type MatchSummary struct {
-	MatchID              string                       `json:"match_id"`
-	Map                  string                       `json:"map"`
-	GameMode             string                       `json:"game_mode"`
-	IsRanked             bool                         `json:"is_ranked"`
-	StartTime            time.Time                    `json:"start_time"`
-	Duration             time.Duration                `json:"duration"`
-	FrameCount           int                          `json:"frame_count"`
-	InvalidFrameCount    int                          `json:"invalid_frame_count"`
-	AverageTickRate      float64                      `json:"average_tick_rate"`
+	MatchID              string                        `json:"match_id"`
+	Map                  string                        `json:"map"`
+	GameMode             string                        `json:"game_mode"`
+	IsRanked             bool                          `json:"is_ranked"`
+	StartTime            time.Time                     `json:"start_time"`
+	Duration             time.Duration                 `json:"duration"`
+	FrameCount           int                           `json:"frame_count"`
+	InvalidFrameCount    int                           `json:"invalid_frame_count"`
+	AverageTickRate      float64                       `json:"average_tick_rate"`
 	PlayerSummaries      map[string]PlayerMatchSummary `json:"player_summaries"`
-	TotalDetectionEvents int                          `json:"total_detection_events"`
-	DetectionsByDetector map[string]int               `json:"detections_by_detector"`
-	FlaggedPlayers       []string                     `json:"flagged_players"`
-	AnalysisDuration     time.Duration                `json:"analysis_duration"`
-	Source               string                       `json:"source"`
-	ReplayFile           string                       `json:"replay_file,omitempty"`
+	TotalDetectionEvents int                           `json:"total_detection_events"`
+	DetectionsByDetector map[string]int                `json:"detections_by_detector"`
+	FlaggedPlayers       []string                      `json:"flagged_players"`
+	AnalysisDuration     time.Duration                 `json:"analysis_duration"`
+	Source               string                        `json:"source"`
+	ReplayFile           string                        `json:"replay_file,omitempty"`
 }
 
 // PlayerMatchSummary holds per-player statistics from a single match.

@@ -1,18 +1,31 @@
 # Binaries
 nevr-ac
+nevr-desktop
 nevr-server
 nevr-compat
 /bridge
 /nevr-bridge
 *.exe
 
-# Data
+# Compiled test binaries (go test -c)
+*.test
+
+# Data: SQLite files and their WAL/journal sidecars
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.jsonl
 tests/replays/
 
-# Profiling
+# Bridge --dump-dir artifacts
+dump/
+
+# Profiling and coverage
 *.prof
+*.out
+coverage.*
+cover.html
 
 # Temp
 /tmp/

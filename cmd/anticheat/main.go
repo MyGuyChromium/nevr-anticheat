@@ -3,100 +3,127 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
-
 	"time"
 
-	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/bio"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/movement"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/state"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/throw"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/logging"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/review"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
 const appVersion = "0.1.0"
 
+// dropMode is set when replay files or folders were passed instead of a
+// command (files dropped onto nevr-ac.exe in Explorer); fatal paths then
+// wait for Enter so the console window stays readable.
+var dropMode bool
+
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file")
+	verbose := flag.Bool("verbose", false, "Print the effective detector table to stderr at startup (also NEVR_AC_VERBOSE=1)")
+	flag.BoolVar(verbose, "v", false, "Alias for --verbose")
 	flag.Parse()
+	startupVerbose = *verbose || os.Getenv("NEVR_AC_VERBOSE") == "1"
 
 	args := flag.Args()
 	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
+	if isDropInvocation(args) {
+		runDropMode(*configPath, args)
+		return
+	}
 
+	sub := args[1:]
 	switch args[0] {
 	case "version":
 		fmt.Printf("nevr-anticheat %s\n", appVersion)
 		return
 	case "analyze":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat analyze <replay-file>")
-			os.Exit(1)
+		fs := flag.NewFlagSet("analyze", flag.ExitOnError)
+		force := fs.Bool("force", false, "Re-analyze a match that is already stored (replaces its events/scores)")
+		pos := parseSub(fs, sub)
+		if len(pos) < 1 {
+			fatalUsage("anticheat analyze <replay-file> [--force]")
 		}
-		runAnalyze(*configPath, args[1])
+		runAnalyze(*configPath, pos[0], *force)
 	case "batch":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat batch <directory>")
-			os.Exit(1)
+		fs := flag.NewFlagSet("batch", flag.ExitOnError)
+		force := fs.Bool("force", false, "Re-analyze matches that are already stored")
+		pos := parseSub(fs, sub)
+		if len(pos) < 1 {
+			fatalUsage("anticheat batch <directory> [--force]")
 		}
-		runBatch(*configPath, args[1])
+		runBatch(*configPath, pos[0], *force)
 	case "flagged":
 		runFlagged(*configPath)
 	case "report":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat report <case-id>")
-			os.Exit(1)
+		if len(sub) < 1 {
+			fatalUsage("anticheat report <case-id>")
 		}
-		runReport(*configPath, args[1])
+		runReport(*configPath, sub[0])
 	case "player-history":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat player-history <player-id>")
-			os.Exit(1)
+		if len(sub) < 1 {
+			fatalUsage("anticheat player-history <player-id>")
 		}
-		runPlayerHistory(*configPath, args[1])
+		runPlayerHistory(*configPath, sub[0])
 	case "cross-match":
 		runCrossMatchAnalysis(*configPath)
 	case "cross-match-report":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat cross-match-report <case-id>")
-			os.Exit(1)
+		if len(sub) < 1 {
+			fatalUsage("anticheat cross-match-report <case-id>")
 		}
-		runCrossMatchReport(*configPath, args[1])
+		runCrossMatchReport(*configPath, sub[0])
 	case "reprocess-match":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat reprocess-match <match-id>")
-			os.Exit(1)
+		if len(sub) < 1 {
+			fatalUsage("anticheat reprocess-match <match-id>")
 		}
-		runReprocessMatch(*configPath, args[1])
+		runReprocessMatch(*configPath, sub[0])
 	case "reprocess-player":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat reprocess-player <player-id>")
-			os.Exit(1)
+		if len(sub) < 1 {
+			fatalUsage("anticheat reprocess-player <player-id>")
 		}
-		runReprocessPlayer(*configPath, args[1])
+		runReprocessPlayer(*configPath, sub[0])
 	case "reprocess-timerange":
-		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: anticheat reprocess-timerange <since-RFC3339> <until-RFC3339>")
-			os.Exit(1)
+		if len(sub) < 2 {
+			fatalUsage("anticheat reprocess-timerange <since-RFC3339> <until-RFC3339>   (range is [since, until))")
 		}
-		runReprocessTimeRange(*configPath, args[1], args[2])
+		runReprocessTimeRange(*configPath, sub[0], sub[1])
+	case "verdict":
+		fs := flag.NewFlagSet("verdict", flag.ExitOnError)
+		by := fs.String("by", "", "Moderator ID (required)")
+		notes := fs.String("notes", "", "Free-form notes")
+		action := fs.String("action", "", "Action taken (e.g. warn, temp_ban, none)")
+		var detectors multiFlag
+		fs.Var(&detectors, "detector", "Per-detector feedback DETECTOR_ID=yes|no|uncertain (repeatable)")
+		pos := parseSub(fs, sub)
+		if len(pos) < 2 || *by == "" {
+			fatalUsage("anticheat verdict <case-id> <" + strings.Join(sqlite.ValidVerdicts(), "|") + "> --by <moderator> [--detector ID=yes|no|uncertain ...] [--notes ...] [--action ...]")
+		}
+		runVerdict(*configPath, pos[0], pos[1], *by, *notes, *action, detectors)
+	case "calibration-report":
+		fs := flag.NewFlagSet("calibration-report", flag.ExitOnError)
+		since := fs.String("since", "", "Only decisions newer than this window (e.g. 30d, 12h); default: all")
+		parseSub(fs, sub)
+		runCalibrationReport(*configPath, *since)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		printUsage()
@@ -104,186 +131,142 @@ func main() {
 	}
 }
 
+// parseSub parses flags that may appear before or after positional arguments
+// and returns the positionals in order.
+func parseSub(fs *flag.FlagSet, args []string) []string {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			os.Exit(2)
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return pos
+		}
+		pos = append(pos, rest[0])
+		args = rest[1:]
+	}
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+func fatalUsage(usage string) {
+	fmt.Fprintln(os.Stderr, "Usage: "+usage)
+	if dropMode {
+		pauseForEnter()
+	}
+	os.Exit(1)
+}
+
+func fatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	if dropMode {
+		pauseForEnter()
+	}
+	os.Exit(1)
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "NEVR-Anticheat: Async cheat detection engine for Echo VR")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] <command> [args]")
+	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] [--verbose|-v] <command> [args]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  analyze <file>             Analyze a replay file (stores telemetry + results)")
-	fmt.Fprintln(os.Stderr, "  batch <dir>                Batch analyze replays (stores telemetry + results)")
-	fmt.Fprintln(os.Stderr, "  flagged                    List all flagged players")
-	fmt.Fprintln(os.Stderr, "  report <case-id>           Generate human-readable report")
+	fmt.Fprintln(os.Stderr, "  analyze <file> [--force]   Analyze a replay file (stores telemetry + results; skips stored matches)")
+	fmt.Fprintln(os.Stderr, "  batch <dir> [--force]      Batch analyze replays (stores telemetry + results; skips stored matches)")
+	fmt.Fprintln(os.Stderr, "  flagged                    List pending review cases")
+	fmt.Fprintln(os.Stderr, "  report <case-id>           Human-readable single-match case report with evidence")
 	fmt.Fprintln(os.Stderr, "  player-history <id>        Show cross-match history for a player (from DB)")
 	fmt.Fprintln(os.Stderr, "  cross-match                Run cross-match aggregation on stored data")
-	fmt.Fprintln(os.Stderr, "  cross-match-report <id>    Inspect a cross-match review case (from DB)")
+	fmt.Fprintln(os.Stderr, "  cross-match-report <id>    Inspect a cross-match review case with per-match evidence")
 	fmt.Fprintln(os.Stderr, "  reprocess-match <id>       Re-run detection on stored telemetry for a match")
 	fmt.Fprintln(os.Stderr, "  reprocess-player <id>      Re-run detection on stored telemetry for a player")
-	fmt.Fprintln(os.Stderr, "  reprocess-timerange <a> <b> Re-run detection on matches in time range (RFC3339)")
+	fmt.Fprintln(os.Stderr, "  reprocess-timerange <a> <b> Re-run detection on matches with match time in [a, b) (RFC3339)")
+	fmt.Fprintln(os.Stderr, "  verdict <case-id> <verdict> --by <mod> [--detector ID=yes|no|uncertain ...]")
+	fmt.Fprintln(os.Stderr, "                             Record a moderator decision (verdict: "+strings.Join(sqlite.ValidVerdicts(), "|")+")")
+	fmt.Fprintln(os.Stderr, "  calibration-report [--since 30d]")
+	fmt.Fprintln(os.Stderr, "                             Per-detector confirmed/false-positive counts from moderator decisions")
 	fmt.Fprintln(os.Stderr, "  version                    Print version")
 }
 
-// registerAllDetectors constructs and configures all 29 detectors from config.
-// historyProvider may be nil if no database is available (PAT_003 will be inert).
-func registerAllDetectors(cfg *config.Config, historyProvider pattern.HistoryProvider) []detect.Detector {
-	type entry struct {
-		id      string
-		factory func(map[string]any) detect.Detector
+// app bundles what every command needs. The config-derived wiring (scorer,
+// physics, level table, pipelines, analysis options) lives in replay.Engine
+// so the desktop app and the CLI analyze replays identically.
+type app struct {
+	cfg    *config.Config
+	store  *sqlite.Store
+	engine *replay.Engine
+	log    interface {
+		Info(msg string, args ...any)
 	}
-	catalog := []entry{
-		{"THROW_001", func(p map[string]any) detect.Detector { return throw.NewThrow001(p) }},
-		{"THROW_002", func(p map[string]any) detect.Detector { return throw.NewThrow002(p) }},
-		{"THROW_003", func(p map[string]any) detect.Detector { return throw.NewThrow003(p) }},
-		{"THROW_004", func(p map[string]any) detect.Detector { return throw.NewThrow004(p) }},
-		{"THROW_005", func(p map[string]any) detect.Detector { return throw.NewThrow005(p) }},
-		{"THROW_006", func(p map[string]any) detect.Detector { return throw.NewThrow006(p) }},
-		{"THROW_007", func(p map[string]any) detect.Detector { return throw.NewThrow007(p) }},
-		{"THROW_008", func(p map[string]any) detect.Detector { return throw.NewThrow008(p) }},
-		{"BIO_001", func(p map[string]any) detect.Detector { return bio.NewBio001(p) }},
-		{"BIO_002", func(p map[string]any) detect.Detector { return bio.NewBio002(p) }},
-		{"BIO_003", func(p map[string]any) detect.Detector { return bio.NewBio003(p) }},
-		{"BIO_004", func(p map[string]any) detect.Detector { return bio.NewBio004(p) }},
-		{"MOV_001", func(p map[string]any) detect.Detector { return movement.NewMov001(p) }},
-		{"MOV_002", func(p map[string]any) detect.Detector { return movement.NewMov002(p) }},
-		{"MOV_003", func(p map[string]any) detect.Detector { return movement.NewMov003(p) }},
-		{"MOV_004", func(p map[string]any) detect.Detector { return movement.NewMov004(p) }},
-		{"MOV_005", func(p map[string]any) detect.Detector { return movement.NewMov005(p) }},
-		{"STATE_001", func(p map[string]any) detect.Detector { return state.NewState001(p) }},
-		{"STATE_002", func(p map[string]any) detect.Detector { return state.NewState002(p) }},
-		{"STATE_003", func(p map[string]any) detect.Detector { return state.NewState003(p) }},
-		{"STATE_004", func(p map[string]any) detect.Detector { return state.NewState004(p) }},
-		{"STATE_005", func(p map[string]any) detect.Detector { return state.NewState005(p) }},
-		{"STATE_006", func(p map[string]any) detect.Detector { return state.NewState006(p) }},
-		{"STATE_007", func(p map[string]any) detect.Detector { return state.NewState007(p) }},
-		{"PAT_001", func(p map[string]any) detect.Detector { return pattern.NewPat001(p) }},
-		{"PAT_002", func(p map[string]any) detect.Detector { return pattern.NewPat002(p) }},
-		{"PAT_003", func(p map[string]any) detect.Detector { return pattern.NewPat003(p) }},
-		{"PAT_004", func(p map[string]any) detect.Detector { return pattern.NewPat004(p) }},
-		{"PAT_005", func(p map[string]any) detect.Detector { return pattern.NewPat005(p) }},
-	}
-
-	var detectors []detect.Detector
-	for _, e := range catalog {
-		dc := cfg.GetDetectorConfig(e.id)
-		if !dc.Enabled {
-			continue
-		}
-		params := dc.Params
-		if params == nil {
-			params = make(map[string]any)
-		}
-		// Inject history provider for PAT_003 (cross-match consistency)
-		if e.id == "PAT_003" && historyProvider != nil {
-			params["history_provider"] = historyProvider
-		}
-		d := e.factory(params)
-		detectors = append(detectors, d)
-	}
-	return detectors
 }
 
-func buildPipeline(configPath string) (*config.Config, *pipeline.Pipeline, *scoring.SuspicionScorer, *sqlite.Store, error) {
+// startupVerbose is set from --verbose / -v / NEVR_AC_VERBOSE=1. Config
+// warnings are always logged (to stderr); the effective detector table is
+// printed only when verbose so report output on stdout stays clean.
+var startupVerbose bool
+
+func openApp(configPath string) (*app, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
+	var table io.Writer
+	if startupVerbose {
+		table = os.Stderr
+	}
+	config.LogStartup(logger, cfg, table)
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("opening store: %w", err)
+		return nil, fmt.Errorf("opening store: %w", err)
 	}
-	// Run v2+ migrations (telemetry_frames, match_contexts, cross_match_review_cases)
-	if err := sqlite.RunMigrationsV2(store.DB(), logger); err != nil {
-		logger.Warn("migration warning", "error", err)
-	}
-	// Wire up the history provider so PAT_003 can query cross-match data from the database.
-	historyProvider := sqlite.NewStoreHistoryProvider(store)
-	detectors := registerAllDetectors(cfg, historyProvider)
-	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
-		MaxSingleContribution:         cfg.Scoring.MaxSingleContribution,
-		MaxContribPerDetectorPerMatch: cfg.Scoring.MaxContribPerDetectorPerMatch,
-		SameCategoryDiminishing:       cfg.Scoring.SameCategoryDiminishing,
-		ReviewThreshold:               cfg.Scoring.ReviewThreshold,
-		AutoEnforceThreshold:          cfg.Scoring.AutoEnforceThreshold,
-		DecayHalfLifeHours:            cfg.Scoring.DecayHalfLifeHours,
-		CooldownFrames:                cfg.Pipeline.CooldownFrames,
-		CorrelationBonusCap:           cfg.Scoring.CorrelationBonusCap,
-	})
-	p := pipeline.NewPipeline(cfg, detectors, scorer, logger)
-	logger.Info("pipeline ready", "detectors", len(detectors))
-	return cfg, p, scorer, store, nil
+	return &app{cfg: cfg, store: store, engine: replay.NewEngine(cfg, store), log: logger}, nil
 }
 
-func runAnalyze(configPath, replayPath string) {
-	_, p, _, store, err := buildPipeline(configPath)
+// scorerConfig is the [scoring] block as the scorer reads it (replay.Engine).
+func (a *app) scorerConfig() scoring.ScorerConfig { return a.engine.ScorerConfig() }
+
+// levels is the tier table shared by the in-match scorer, single-match review
+// cases, cross-match aggregation and CLI output.
+func (a *app) levels() model.LevelTable { return a.engine.Levels() }
+
+// physics is the match physics built from the [physics] block.
+func (a *app) physics() model.PhysicsConstants { return a.engine.Physics() }
+
+// analysisOptions is what StoreMatchAnalysis needs to write cases the way
+// the scorer scored them.
+func (a *app) analysisOptions() replay.AnalysisOptions { return a.engine.AnalysisOptions() }
+
+// newPipeline builds a fresh pipeline (own detectors, own scorer). Pipelines
+// are not goroutine-safe; build one per worker.
+func (a *app) newPipeline() *pipeline.Pipeline { return a.engine.NewPipeline() }
+
+func (a *app) crossMatchConfig() sqlite.CrossMatchConfig { return a.engine.CrossMatchConfig() }
+
+func mustOpen(configPath string) *app {
+	a, err := openApp(configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
-	defer store.Close()
+	return a
+}
 
-	// Auto-detect format: .echoreplay (NDJSON/ZIP) vs legacy JSON replay
-	var matchCtx *model.MatchContext
-	var frames []model.PlayerTelemetryFrame
-	var rawByFrame map[int]string // frame_index → raw session JSON (echoreplay only)
+func sortedPlayerIDs(scores map[string]model.SuspicionScore) []string {
+	ids := make([]string, 0, len(scores))
+	for pid := range scores {
+		ids = append(ids, pid)
+	}
+	sort.Strings(ids)
+	return ids
+}
 
-	if isEchoReplay(replayPath) {
-		parser := adapter.NewEchoReplayParser()
-		var diag *adapter.DiagnosticReport
-		matchCtx, frames, diag, err = parser.ParseFile(replayPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading echoreplay: %v\n", err)
-			os.Exit(1)
-		}
-		rawByFrame = parser.RawSessionByFrame()
-		fmt.Printf("Parsed %d player-frames from %s (%d rejected)\n",
-			len(frames), replayPath, diag.FramesRejected)
-	} else {
-		reader := replay.NewReplayReader(replayPath, replay.NewJSONFrameParser())
-		matchCtx, frames, err = reader.ReadMatch()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading replay: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	result, err := p.ProcessMatch(context.Background(), matchCtx, frames)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	ctx := context.Background()
-
-	// Persist telemetry and match context so reprocessing doesn't need replay files.
-	// For .echoreplay sources, also store the raw profiler JSON (stats, goal events, etc.).
-	if len(rawByFrame) > 0 {
-		rows := make([]sqlite.TelemetryFrameRow, len(frames))
-		for i, f := range frames {
-			rows[i] = sqlite.TelemetryFrameRow{Frame: f, RawJSON: rawByFrame[f.FrameIndex]}
-		}
-		if stored, storeErr := store.StoreTelemetryFrameRows(ctx, matchCtx.MatchID, rows); storeErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
-		} else {
-			fmt.Printf("Stored %d telemetry frames to database (with raw profiler JSON)\n", stored)
-		}
-	} else {
-		if stored, storeErr := store.StoreTelemetryFrames(ctx, matchCtx.MatchID, frames); storeErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
-		} else {
-			fmt.Printf("Stored %d telemetry frames to database\n", stored)
-		}
-	}
-	_ = store.StoreMatchContext(ctx, matchCtx, len(frames))
-
-	for _, ev := range result.DetectionEvents {
-		_ = store.StoreDetectionEvent(ctx, ev)
-	}
-	for _, score := range result.PlayerScores {
-		_ = store.StoreSuspicionScore(ctx, score)
-	}
-	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d\nDuration: %v\n",
-		result.MatchID, result.FramesProcessed, result.InvalidFrames,
-		len(result.DetectionEvents), result.Duration)
-	for pid, score := range result.PlayerScores {
+func printPlayerScores(scores map[string]model.SuspicionScore) {
+	for _, pid := range sortedPlayerIDs(scores) {
+		score := scores[pid]
 		if score.EventCount > 0 {
 			fmt.Printf("  Player %s: score=%.1f level=%s events=%d\n",
 				pid, score.TotalScore, score.Level(), score.EventCount)
@@ -291,51 +274,162 @@ func runAnalyze(configPath, replayPath string) {
 	}
 }
 
-func runBatch(configPath, dir string) {
-	cfg, p, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+func runAnalyze(configPath, replayPath string, force bool) {
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	if err := analyzeReplay(context.Background(), a, replayPath, force); err != nil {
+		fatal("Error: %v", err)
 	}
-	defer store.Close()
-	analyzer := replay.NewBatchAnalyzer(p, store,
+}
+
+// analyzeReplay is the analyze command over the engine: replay.AnalyzeFileAll
+// parses the replay, and for every match it holds (a recording whose
+// session id changes mid-file holds two) runs the pipeline and persists
+// telemetry, context and derived outputs; the results are printed in the
+// order they happened, one summary block per match. A match that is already
+// stored is reported and left untouched unless force is set; with force the
+// engine clears the previous analysis only after the match parsed
+// completely, the pipeline ran and the source data was stored, so a
+// truncated or corrupt replay never destroys the analysis it was meant to
+// replace. A failure part-way through the file is returned after the
+// matches finished before it were printed, and any persistence failure is
+// returned, so the command exits non-zero.
+func analyzeReplay(ctx context.Context, a *app, replayPath string, force bool) error {
+	results, err := a.engine.AnalyzeFileAll(ctx, replayPath, force)
+	printAnalyzeResults(results)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, res := range results {
+		if perr := res.PersistError(); perr != nil {
+			errs = append(errs, fmt.Errorf("match %s: %w", res.MatchCtx.MatchID, perr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// printAnalyzeResults prints what AnalyzeFileAll did: the parse and the
+// adapter diagnostics of the file once (.echoreplay; the report covers every
+// match in it), then one block per match in file order.
+func printAnalyzeResults(results []*replay.AnalyzeResult) {
+	if len(results) == 0 {
+		return
+	}
+	if diag := results[0].Diagnostics; diag != nil {
+		// The adapter's count covers the whole file, including the matches
+		// refused as already stored (their frames are not kept).
+		fmt.Printf("Parsed %d player-frames from %s (%d lines rejected)\n", diag.FramesMapped, results[0].Path, diag.FramesRejected)
+		fmt.Print(diag.FormatReport())
+	}
+	for i, res := range results {
+		if i > 0 {
+			fmt.Println()
+		}
+		printAnalyzeResult(res)
+	}
+}
+
+// printAnalyzeResult prints what AnalyzeFileAll did for one match, in the
+// order it happened: the refusal of a stored match, or the telemetry
+// writes, the cleared analysis (--force), then the detection summary.
+// Storage failures are not printed here: analyzeReplay returns them
+// (AnalyzeResult.PersistError) so the command fails visibly instead of
+// warning.
+func printAnalyzeResult(res *replay.AnalyzeResult) {
+	if res.AlreadyStored {
+		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", res.MatchCtx.MatchID)
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+		return
+	}
+	if res.TelemetryErr == nil {
+		fmt.Printf("Stored %d telemetry frames (%d already present)", res.Telemetry.Inserted, res.Telemetry.Ignored)
+		if res.RawStored {
+			fmt.Printf(", %d raw ticks (%d already present)", res.Telemetry.TicksInserted, res.Telemetry.TicksIgnored)
+		}
+		fmt.Println()
+	}
+	if res.Replaced {
+		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n",
+			res.MatchCtx.MatchID, res.ClearedEvents, res.ClearedScores)
+	}
+
+	result := res.Result
+	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d (%d stale closed)\nDuration: %v\n",
+		result.MatchID, result.FramesProcessed, result.InvalidFrames,
+		len(result.DetectionEvents), res.Stored.EventsStored, res.Stored.CasesStored, res.Stored.CasesClosed, result.Duration)
+	printCountMap("Invalid frames by reason", result.InvalidFrameReasons)
+	printCountMap("Sanitized frames by reason", result.SanitizedFrames)
+	printPlayerScores(result.PlayerScores)
+}
+
+// printCountMap prints a reason -> count map sorted by count, largest first.
+func printCountMap(title string, m map[string]int) {
+	if len(m) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	fmt.Printf("%s:\n", title)
+	for _, k := range keys {
+		fmt.Printf("  %-32s %d\n", k, m[k])
+	}
+}
+
+func runBatch(configPath, dir string, force bool) {
+	a := mustOpen(configPath)
+	defer a.store.Close()
+
+	analyzer := replay.NewBatchAnalyzer(a.newPipeline(), a.store,
 		func() replay.FrameParser { return replay.NewJSONFrameParser() },
-		cfg.General.MaxWorkers, logging.NewLogger("info", "text"))
+		a.cfg.General.MaxWorkers, logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat))
+	analyzer.SetPipelineFactory(a.newPipeline)
+	analyzer.SetForce(force)
+	analyzer.SetAnalysisOptions(a.analysisOptions())
+	analyzer.SetPhysics(a.physics())
 	result, err := analyzer.AnalyzeDirectory(context.Background(), dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
-	fmt.Printf("Batch: %d/%d processed, %d errors, %d flagged, %v\n",
-		result.Processed, result.TotalFiles, result.Errors, len(result.FlaggedPlayers), result.Duration)
+	fmt.Printf("Batch: %d/%d processed, %d skipped, %d errors, %d non-replay files ignored, %v\n",
+		result.Processed, result.TotalFiles, result.Skipped, result.Errors, result.IgnoredFiles, result.Duration)
+	fmt.Printf("Stored: %d telemetry frames (%d already present), %d detection events, %d players flagged\n",
+		result.FramesInserted, result.FramesIgnored, result.EventsStored, len(result.FlaggedPlayers))
+	if result.PersistFailed > 0 {
+		fmt.Fprintf(os.Stderr, "Error: %d analyzed match(es) could not be persisted (see log); the store may be read-only, locked or full\n",
+			result.PersistFailed)
+	}
 
 	// Post-batch cross-match aggregation: compute cumulative scores across all matches
 	fmt.Println("\nRunning cross-match aggregation...")
-	aggregated, cases := runCrossMatchAggregation(store, cfg.Scoring.DecayHalfLifeHours, cfg.Scoring.ReviewThreshold)
+	aggregated, cases := runCrossMatchAggregation(a)
 	fmt.Printf("Cross-match: %d players aggregated, %d review cases\n", aggregated, cases)
+	if result.Errors > 0 {
+		fmt.Fprintf(os.Stderr, "Batch finished with %d error(s)\n", result.Errors)
+		os.Exit(1)
+	}
 }
 
 func runFlagged(configPath string) {
-	_, _, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
+	a := mustOpen(configPath)
+	defer a.store.Close()
 	ctx := context.Background()
 
-	// Single-match review cases
-	cases, err := store.GetPendingReviewCases(ctx, 100)
+	cases, err := a.store.GetPendingReviewCases(ctx, 100)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
-
-	// Cross-match review cases
-	xmCases, err := store.GetPendingCrossMatchReviewCases(ctx, 100)
+	xmCases, err := a.store.GetPendingCrossMatchReviewCases(ctx, 100)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading cross-match cases: %v\n", err)
-		os.Exit(1)
+		fatal("Error loading cross-match cases: %v", err)
 	}
 
 	if len(cases) == 0 && len(xmCases) == 0 {
@@ -344,7 +438,7 @@ func runFlagged(configPath string) {
 	}
 
 	if len(xmCases) > 0 {
-		fmt.Printf("CROSS-MATCH CASES (%d)\n", len(xmCases))
+		fmt.Printf("CROSS-MATCH CASES (%d)  (decayed score is 0-100, same scale as a match score)\n", len(xmCases))
 		for _, rc := range xmCases {
 			fmt.Printf("  %-30s %-20s decayed=%.1f raw=%.1f matches=%d %s\n",
 				rc.CaseID, rc.PlayerID, rc.DecayedScore, rc.CumulativeScore, rc.MatchCount, rc.Severity)
@@ -361,85 +455,187 @@ func runFlagged(configPath string) {
 }
 
 func runReport(configPath, caseID string) {
-	_, _, _, store, err := buildPipeline(configPath)
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	ctx := context.Background()
+
+	rc, err := a.store.GetReviewCase(ctx, caseID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-	rc, err := store.GetReviewCase(context.Background(), caseID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		if errors.Is(err, sqlite.ErrNotFound) || strings.Contains(err.Error(), "no rows") {
+			fatal("Error: no single-match review case %q (cross-match cases use cross-match-report)", caseID)
+		}
+		fatal("Error: %v", err)
 	}
 	fmt.Print(evidence.FormatReport(rc))
+
+	events, err := a.store.GetMatchPlayerEvents(ctx, rc.MatchID, rc.PlayerID)
+	if err != nil {
+		fatal("Error loading events: %v", err)
+	}
+	printEvidenceSection(events)
+	printDecisions(a, caseID)
+}
+
+// printEvidenceSection prints every stored event with its typed evidence so a
+// moderator can see the measurements behind the case, not just the summary strings.
+func printEvidenceSection(events []model.DetectionEvent) {
+	fmt.Println("================================================================================")
+	fmt.Printf("STORED EVENTS AND EVIDENCE (%d)\n", len(events))
+	fmt.Println("================================================================================")
+	if len(events) == 0 {
+		fmt.Println("  (no detection events stored for this player in this match)")
+		return
+	}
+	for _, ev := range events {
+		shadow := ""
+		if ev.IsShadow {
+			shadow = " [shadow]"
+		}
+		fmt.Printf("\n  %s v%s%s  frame=%d (%d-%d) t=%.2fs  sev=%.2f conf=%.2f weight=%.2f\n",
+			ev.DetectorID, ev.DetectorVersion, shadow, ev.FrameIndex, ev.FrameRangeStart, ev.FrameRangeEnd,
+			ev.Timestamp, ev.Severity, ev.Confidence, ev.EnforcementWeight)
+		fmt.Printf("    observed: %s\n    expected: %s\n", ev.ObservedValue, ev.ExpectedRange)
+		if ev.CausalKey.AnomalyType != "" {
+			fmt.Printf("    causal:   %s\n", ev.CausalKey.Key())
+		}
+		if ev.Evidence == nil {
+			fmt.Println("    evidence: (none stored)")
+			continue
+		}
+		b, err := json.Marshal(ev.Evidence)
+		if err != nil {
+			fmt.Printf("    evidence: %s (unprintable: %v)\n", ev.Evidence.EvidenceType(), err)
+			continue
+		}
+		fmt.Printf("    evidence[%s]: %s\n", ev.Evidence.EvidenceType(), b)
+	}
+}
+
+func printDecisions(a *app, caseID string) {
+	decisions, err := a.store.GetCaseDecisions(context.Background(), caseID)
+	if err != nil || len(decisions) == 0 {
+		return
+	}
+	fmt.Println("================================================================================")
+	fmt.Printf("MODERATOR DECISIONS (%d)\n", len(decisions))
+	fmt.Println("================================================================================")
+	for _, d := range decisions {
+		fmt.Printf("  %s  %-16s by %s", d.DecidedAt.UTC().Format(time.RFC3339), d.Verdict, d.ModeratorID)
+		if d.ActionTaken != "" {
+			fmt.Printf("  action=%s", d.ActionTaken)
+		}
+		fmt.Println()
+		for _, fb := range d.DetectorFeedback {
+			fmt.Printf("      %-12s %s\n", fb.DetectorID, fb.Correct)
+		}
+		if d.Notes != "" {
+			fmt.Printf("      notes: %s\n", d.Notes)
+		}
+	}
 }
 
 func runPlayerHistory(configPath, playerID string) {
-	cfg, _, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-
+	a := mustOpen(configPath)
+	defer a.store.Close()
 	ctx := context.Background()
-	events, err := store.GetAllPlayerEvents(ctx, playerID)
+
+	events, err := a.store.GetAllPlayerEvents(ctx, playerID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
 	if len(events) == 0 {
-		fmt.Printf("No detection events found for player %s\n", playerID)
+		fmt.Printf("No non-shadow detection events found for player %s\n", playerID)
 		return
 	}
-
-	summary := sqlite.ComputePlayerCrossMatchSummary(events, cfg.Scoring.DecayHalfLifeHours)
+	summary, err := computeSummary(ctx, a, events)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
 
 	fmt.Printf("================================================================================\n")
 	fmt.Printf("           CROSS-MATCH PLAYER HISTORY: %s\n", playerID)
 	fmt.Printf("================================================================================\n\n")
-	fmt.Printf("  Total Events:       %d\n", summary.TotalEvents)
+	fmt.Printf("  Total Events:       %d (%d scored after per-detector-per-match cap of %d)\n",
+		summary.TotalEvents, summary.ScoredEvents, a.cfg.Scoring.MaxContribPerDetectorPerMatch)
 	fmt.Printf("  Distinct Matches:   %d\n", summary.DistinctMatches)
 	fmt.Printf("  Distinct Detectors: %d\n", summary.DistinctDetectors)
-	fmt.Printf("  Cumulative Score:   %.1f (raw, no decay)\n", summary.CumulativeScore)
-	fmt.Printf("  Decayed Score:      %.1f (half-life: %.0fh)\n", summary.DecayedScore, cfg.Scoring.DecayHalfLifeHours)
+	fmt.Printf("  Raw Points:         %.1f (per-event cap %.0f, no decay)\n", summary.CumulativeScore, a.cfg.Scoring.MaxSingleContribution)
+	fmt.Printf("  Decayed Score:      %.1f / 100 (half-life: %.0fh, anchored on match time)\n", summary.DecayedScore, a.cfg.Scoring.DecayHalfLifeHours)
+	if summary.AnchorFallbacks > 0 {
+		fmt.Printf("  Note:               %d events had no recorded match start; decay for them used storage time\n", summary.AnchorFallbacks)
+	}
 	fmt.Printf("  Avg Severity:       %.3f\n", summary.AvgSeverity)
 	fmt.Printf("  Avg Confidence:     %.3f\n", summary.AvgConfidence)
 	fmt.Printf("  Level:              %s\n\n", summary.Level)
 
 	fmt.Printf("  BY DETECTOR:\n")
-	for det, count := range summary.ByDetector {
-		fmt.Printf("    %-15s %d events\n", det, count)
+	for _, det := range sortedKeys(summary.ByDetector) {
+		fmt.Printf("    %-15s %d events  %.1f pts\n", det, summary.ByDetector[det], summary.PointsByDetector[det])
 	}
 	fmt.Printf("\n  BY MATCH:\n")
-	for matchID, count := range summary.ByMatch {
-		fmt.Printf("    %-40s %d events\n", matchID, count)
+	for _, mid := range summary.MatchIDs {
+		fmt.Printf("    %-40s %d events\n", mid, summary.ByMatch[mid])
+	}
+
+	if sc, err := a.store.GetPlayerScore(ctx, playerID); err == nil {
+		fmt.Printf("\n  Latest per-match snapshot: score=%.1f level=%s at %s\n",
+			sc.TotalScore, sc.Level(), sc.SnapshotTime.UTC().Format(time.RFC3339))
 	}
 	fmt.Println()
 }
 
-func runCrossMatchAnalysis(configPath string) {
-	cfg, _, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	defer store.Close()
-
-	aggregated, cases := runCrossMatchAggregation(store, cfg.Scoring.DecayHalfLifeHours, cfg.Scoring.ReviewThreshold)
-	fmt.Printf("Cross-match aggregation complete: %d players analyzed, %d review cases created\n", aggregated, cases)
+	sort.Strings(keys)
+	return keys
 }
 
-// runCrossMatchAggregation queries all stored events, computes per-player cross-match
-// summaries with time decay, stores cumulative score snapshots, and generates
-// cross-match review cases for players exceeding the review threshold.
-func runCrossMatchAggregation(store *sqlite.Store, decayHalfLifeHours, reviewThreshold float64) (int, int) {
+// computeSummary looks up the wall-clock start of every match the events
+// belong to and runs the capped, decayed cross-match aggregation.
+func computeSummary(ctx context.Context, a *app, events []model.DetectionEvent) (sqlite.PlayerCrossMatchSummary, error) {
+	seen := make(map[string]bool)
+	var matchIDs []string
+	for _, ev := range events {
+		if !seen[ev.MatchID] {
+			seen[ev.MatchID] = true
+			matchIDs = append(matchIDs, ev.MatchID)
+		}
+	}
+	starts, err := a.store.GetMatchStartTimes(ctx, matchIDs)
+	if err != nil {
+		return sqlite.PlayerCrossMatchSummary{}, fmt.Errorf("loading match start times: %w", err)
+	}
+	return sqlite.ComputePlayerCrossMatchSummary(events, starts, a.crossMatchConfig()), nil
+}
+
+func runCrossMatchAnalysis(configPath string) {
+	a := mustOpen(configPath)
+	defer a.store.Close()
+
+	aggregated, cases := runCrossMatchAggregation(a)
+	fmt.Printf("Cross-match aggregation complete: %d players analyzed, %d review cases created/refreshed\n", aggregated, cases)
+}
+
+// runCrossMatchAggregation queries all stored non-shadow events, computes
+// per-player cross-match summaries (same caps as the in-match scorer, decay
+// anchored on match time), stores cross-match score snapshots, and creates or
+// refreshes cross-match review cases for players at or above the review
+// threshold. Only players with events in at least
+// scoring.min_matches_for_cross_match (floor 2) matches are aggregated.
+func runCrossMatchAggregation(a *app) (int, int) {
 	ctx := context.Background()
+	levels := a.levels()
+	minMatches := a.cfg.Scoring.MinMatchesForCrossMatch
+	if minMatches < 2 {
+		minMatches = 2
+	}
 
 	// Get all players with events in the last 90 days
 	since := time.Now().Add(-90 * 24 * time.Hour)
-	players, err := store.GetDistinctPlayersWithEvents(ctx, since)
+	players, err := a.store.GetDistinctPlayersWithEvents(ctx, since)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting players: %v\n", err)
 		return 0, 0
@@ -448,55 +644,54 @@ func runCrossMatchAggregation(store *sqlite.Store, decayHalfLifeHours, reviewThr
 	playerCount := 0
 	caseCount := 0
 	for _, pid := range players {
-		events, err := store.GetAllPlayerEvents(ctx, pid)
+		events, err := a.store.GetAllPlayerEvents(ctx, pid)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading events for %s: %v\n", pid, err)
 			continue
 		}
 		if len(events) == 0 {
 			continue
 		}
+		summary, err := computeSummary(ctx, a, events)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error aggregating %s: %v\n", pid, err)
+			continue
+		}
+		if summary.DistinctMatches < minMatches {
+			continue
+		}
+		if err := a.store.StoreCrossMatchScore(ctx, summary); err != nil {
+			fmt.Fprintf(os.Stderr, "Error storing cross-match score for %s: %v\n", pid, err)
+			continue
+		}
+		playerCount++
 
-		summary := sqlite.ComputePlayerCrossMatchSummary(events, decayHalfLifeHours)
-
-		// Only store if there are events across multiple matches
-		if summary.DistinctMatches >= 2 {
-			if err := store.StoreCrossMatchScore(ctx, summary); err != nil {
-				fmt.Fprintf(os.Stderr, "Error storing cross-match score for %s: %v\n", pid, err)
-				continue
+		// The review tier is high_risk (scoring.review_threshold) in the
+		// same table the summary's Level was classified with.
+		if levels.LevelFor(summary.DecayedScore).AtLeast(model.LevelHighRisk) {
+			fmt.Printf("  [%s] %s: decayed=%.1f raw=%.1f matches=%d events=%d\n",
+				summary.Level, pid, summary.DecayedScore, summary.CumulativeScore,
+				summary.DistinctMatches, summary.TotalEvents)
+		}
+		if rc := sqlite.BuildCrossMatchReviewCase(summary, levels); rc != nil {
+			if err := a.store.StoreCrossMatchReviewCase(ctx, *rc); err != nil {
+				fmt.Fprintf(os.Stderr, "Error storing cross-match case for %s: %v\n", pid, err)
+			} else {
+				caseCount++
 			}
-
-			if summary.DecayedScore >= 40 {
-				fmt.Printf("  [%s] %s: decayed=%.1f raw=%.1f matches=%d events=%d\n",
-					summary.Level, pid, summary.DecayedScore, summary.CumulativeScore,
-					summary.DistinctMatches, summary.TotalEvents)
-			}
-
-			// Generate cross-match review case if threshold exceeded
-			if rc := sqlite.BuildCrossMatchReviewCase(summary, reviewThreshold); rc != nil {
-				if err := store.StoreCrossMatchReviewCase(ctx, *rc); err != nil {
-					fmt.Fprintf(os.Stderr, "Error storing cross-match case for %s: %v\n", pid, err)
-				} else {
-					caseCount++
-				}
-			}
-			playerCount++
 		}
 	}
 	return playerCount, caseCount
 }
 
 func runCrossMatchReport(configPath, caseID string) {
-	_, _, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	ctx := context.Background()
 
-	rc, err := store.GetCrossMatchReviewCase(context.Background(), caseID)
+	rc, err := a.store.GetCrossMatchReviewCase(ctx, caseID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
 
 	fmt.Printf("================================================================================\n")
@@ -506,30 +701,168 @@ func runCrossMatchReport(configPath, caseID string) {
 	fmt.Printf("  Status:           %s\n", rc.Status)
 	fmt.Printf("  Severity:         %s\n", rc.Severity)
 	fmt.Printf("  Matches:          %d\n", rc.MatchCount)
-	fmt.Printf("  Cumulative Score: %.1f (raw)\n", rc.CumulativeScore)
-	fmt.Printf("  Decayed Score:    %.1f\n", rc.DecayedScore)
-	fmt.Printf("  Created:          %s\n\n", rc.CreatedAt.Format(time.RFC3339))
+	fmt.Printf("  Raw Points:       %.1f (capped per event, no decay)\n", rc.CumulativeScore)
+	fmt.Printf("  Decayed Score:    %.1f / 100\n", rc.DecayedScore)
+	fmt.Printf("  Created:          %s\n", rc.CreatedAt.UTC().Format(time.RFC3339))
+	if !rc.UpdatedAt.IsZero() {
+		fmt.Printf("  Updated:          %s\n", rc.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	fmt.Println()
 
 	fmt.Printf("  DETECTORS:\n")
-	for det, count := range rc.Detectors {
-		fmt.Printf("    %-15s %d events\n", det, count)
-	}
-
-	fmt.Printf("\n  MATCHES:\n")
-	for _, mid := range rc.MatchIDs {
-		fmt.Printf("    %s\n", mid)
+	for _, det := range sortedKeys(rc.Detectors) {
+		fmt.Printf("    %-15s %d events\n", det, rc.Detectors[det])
 	}
 
 	fmt.Printf("\n  EXPLANATION:\n    %s\n", rc.Explanation)
+
+	for _, mid := range rc.MatchIDs {
+		fmt.Printf("\n--------------------------------------------------------------------------------\n")
+		fmt.Printf("MATCH %s\n", mid)
+		if mc, err := a.store.GetMatchContext(ctx, mid); err == nil {
+			fmt.Printf("  %s / %s  start=%s  source=%s\n", mc.GameMode, mc.Map,
+				mc.StartTime.UTC().Format(time.RFC3339), mc.Source)
+		}
+		events, err := a.store.GetMatchPlayerEvents(ctx, mid, rc.PlayerID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Error loading events: %v\n", err)
+			continue
+		}
+		printEvidenceSection(events)
+	}
+	printDecisions(a, caseID)
 	fmt.Printf("================================================================================\n")
 }
 
-// reprocessMatchFromDB loads telemetry from the database and re-runs the detection pipeline.
-// It deletes existing detection events for this match first to prevent duplication.
-func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
+func runVerdict(configPath, caseID, verdict, by, notes, action string, detectorSpecs []string) {
+	feedback, err := sqlite.ParseDetectorFeedback(detectorSpecs)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
+	a := mustOpen(configPath)
+	defer a.store.Close()
+
+	d := model.ModeratorDecision{
+		CaseID:           caseID,
+		ModeratorID:      by,
+		Verdict:          strings.ToLower(verdict),
+		ActionTaken:      action,
+		Notes:            notes,
+		DecidedAt:        time.Now(),
+		DetectorFeedback: feedback,
+	}
+	rc, err := recordVerdict(context.Background(), a, d)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
+	fmt.Printf("Recorded %s for case %s by %s (case status -> %s)\n", d.Verdict, caseID, by, rc.Status)
+	for _, fb := range feedback {
+		fmt.Printf("  %-12s %s\n", fb.DetectorID, fb.Correct)
+	}
+}
+
+// recordVerdict records a moderator decision through review.Queue.Decide so
+// the case lifecycle applies: a case that is already decided or closed is
+// refused instead of receiving a second decision that calibration would count
+// as another reviewed case. Cross-match cases (XM-<player>) are not in the
+// queue's case table; they are decided directly through the store, which
+// applies the same decided/closed guard.
+func recordVerdict(ctx context.Context, a *app, d model.ModeratorDecision) (model.ReviewCase, error) {
+	q := review.NewQueue(a.store, logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat))
+	q.SetLevels(a.levels())
+	rc, err := q.Decide(ctx, d)
+	if err == nil {
+		return rc, nil
+	}
+	if errors.Is(err, review.ErrInvalidTransition) {
+		return rc, fmt.Errorf("case %s is %s and cannot receive another verdict (an appeal must reopen it first)", d.CaseID, rc.Status)
+	}
+	// Not a single-match case: try the cross-match table.
+	if xm, xmErr := a.store.GetCrossMatchReviewCase(ctx, d.CaseID); xmErr == nil {
+		if sErr := a.store.StoreModeratorDecision(ctx, d); sErr != nil {
+			if errors.Is(sErr, sqlite.ErrCaseNotDecidable) {
+				return rc, fmt.Errorf("case %s is %s and cannot receive another verdict", d.CaseID, xm.Status)
+			}
+			return rc, sErr
+		}
+		return model.ReviewCase{CaseID: xm.CaseID, PlayerID: xm.PlayerID, Status: model.CaseStatusDecided}, nil
+	}
+	return rc, err
+}
+
+// parseWindow parses "30d", "12h", "90m" or any time.ParseDuration string.
+func parseWindow(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.ParseFloat(strings.TrimSuffix(s, "d"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid window %q", s)
+		}
+		return time.Duration(n * 24 * float64(time.Hour)), nil
+	}
+	return time.ParseDuration(s)
+}
+
+func runCalibrationReport(configPath, sinceSpec string) {
+	var since time.Time
+	if sinceSpec != "" {
+		window, err := parseWindow(sinceSpec)
+		if err != nil {
+			fatal("Error: %v", err)
+		}
+		since = time.Now().Add(-window)
+	}
+	a := mustOpen(configPath)
+	defer a.store.Close()
+
+	rows, err := a.store.ComputeCalibration(context.Background(), since)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
+	fmt.Println("================================================================================")
+	if since.IsZero() {
+		fmt.Println("DETECTOR CALIBRATION (all moderator decisions)")
+	} else {
+		fmt.Printf("DETECTOR CALIBRATION (decisions since %s)\n", since.UTC().Format(time.RFC3339))
+	}
+	fmt.Println("================================================================================")
+	if len(rows) == 0 {
+		fmt.Println("  No moderator decisions recorded. Use `verdict <case-id> ...` to label cases.")
+		return
+	}
+	fmt.Printf("  %-12s %9s %9s %9s %9s %6s %7s %9s\n",
+		"DETECTOR", "CONFIRMED", "FALSE_POS", "INCONCL", "NEED_DATA", "CASES", "EVENTS", "PRECISION")
+	for _, c := range rows {
+		prec := "n/a"
+		if p, ok := c.Precision(); ok {
+			prec = fmt.Sprintf("%.0f%%", p*100)
+		}
+		fmt.Printf("  %-12s %9d %9d %9d %9d %6d %7d %9s\n",
+			c.DetectorID, c.Confirmed, c.FalsePositive, c.Inconclusive, c.NeedsMoreData,
+			c.CasesReviewed, c.EventsReviewed, prec)
+	}
+	fmt.Println()
+	fmt.Println("  Counts are per decided case in which the detector fired (shadow events included).")
+	fmt.Println("  Explicit --detector feedback overrides the case verdict for that detector.")
+}
+
+// reprocessMatchFromDB loads telemetry from the database and re-runs the
+// detection pipeline. The previous detection events and per-match score
+// snapshots are deleted only after the pipeline has run, immediately before
+// the new outputs are stored, so a pipeline failure leaves the old analysis
+// in place. Review cases are upserted under their deterministic ids and keep
+// any moderator status; pending cases of players the new run no longer flags
+// are closed as stale (replay.StoreMatchAnalysis).
+func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
+	store := a.store
 	matchCtx, err := store.GetMatchContext(ctx, matchID)
 	if err != nil {
 		return nil, fmt.Errorf("loading match context: %w", err)
+	}
+	if matchCtx.Physics == (model.PhysicsConstants{}) {
+		// Context stored without physics (older rows, synthesized contexts):
+		// analyze under the configured constants, as the original run did.
+		matchCtx.Physics = a.physics()
 	}
 	frames, err := store.GetMatchFrames(ctx, matchID)
 	if err != nil {
@@ -539,137 +872,172 @@ func reprocessMatchFromDB(ctx context.Context, store *sqlite.Store, p *pipeline.
 		return nil, fmt.Errorf("no telemetry frames stored for match %s", matchID)
 	}
 
-	// Delete old detection events for this match to prevent duplication on reprocessing.
-	// Scores are append-only snapshots (GetPlayerScore reads latest by timestamp),
-	// so they don't need deletion — new per-match scores naturally supersede old ones.
-	if deleted, err := store.DeleteMatchEvents(ctx, matchID); err != nil {
-		return nil, fmt.Errorf("clearing old events: %w", err)
-	} else if deleted > 0 {
-		fmt.Printf("  Cleared %d old events for match %s\n", deleted, matchID)
-	}
-
 	result, err := p.ProcessMatch(ctx, matchCtx, frames)
 	if err != nil {
 		return nil, err
 	}
 
-	// Store fresh detection results with reprocessing provenance
-	for _, ev := range result.DetectionEvents {
-		_ = store.StoreDetectionEventWithSource(ctx, ev, "reprocess")
+	deletedEvents, deletedScores, err := store.DeleteMatchAnalysis(ctx, matchID)
+	if err != nil {
+		return nil, fmt.Errorf("clearing old analysis: %w", err)
 	}
-	for _, score := range result.PlayerScores {
-		_ = store.StoreSuspicionScore(ctx, score)
+	if deletedEvents > 0 || deletedScores > 0 {
+		fmt.Printf("  Cleared %d old events and %d score snapshots for match %s\n", deletedEvents, deletedScores, matchID)
+	}
+	stored, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions())
+	if err != nil {
+		return nil, err
+	}
+	if stored.CasesClosed > 0 {
+		fmt.Printf("  Closed %d stale review case(s) for match %s\n", stored.CasesClosed, matchID)
 	}
 	return result, nil
 }
 
 func runReprocessMatch(configPath, matchID string) {
-	_, p, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
+	a := mustOpen(configPath)
+	defer a.store.Close()
 
-	ctx := context.Background()
-	result, err := reprocessMatchFromDB(ctx, store, p, matchID)
+	result, err := reprocessMatchFromDB(context.Background(), a, a.newPipeline(), matchID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatal("Error: %v", err)
 	}
 	fmt.Printf("Reprocessed match %s: %d frames, %d detections, %v\n",
 		matchID, result.FramesProcessed, len(result.DetectionEvents), result.Duration)
-	for pid, score := range result.PlayerScores {
-		if score.EventCount > 0 {
-			fmt.Printf("  Player %s: score=%.1f level=%s events=%d\n",
-				pid, score.TotalScore, score.Level(), score.EventCount)
+	printPlayerScores(result.PlayerScores)
+}
+
+// reprocessMany reprocesses each match in order and returns the IDs that failed.
+func reprocessMany(ctx context.Context, a *app, matchIDs []string, verbose bool) (totalDetections int, failed []string) {
+	p := a.newPipeline()
+	for _, matchID := range matchIDs {
+		result, err := reprocessMatchFromDB(ctx, a, p, matchID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Match %s: error: %v\n", matchID, err)
+			failed = append(failed, matchID)
+			continue
 		}
+		detections := len(result.DetectionEvents)
+		totalDetections += detections
+		if verbose || detections > 0 {
+			fmt.Printf("  Match %s: %d frames, %d detections\n", matchID, result.FramesProcessed, detections)
+		}
+	}
+	return totalDetections, failed
+}
+
+func finishReprocess(matchIDs []string, totalDetections int, failed []string) {
+	fmt.Printf("Total: %d matches reprocessed, %d failed, %d detections\n",
+		len(matchIDs)-len(failed), len(failed), totalDetections)
+	if len(failed) > 0 {
+		fmt.Fprintf(os.Stderr, "Failed matches: %s\n", strings.Join(failed, ", "))
+		os.Exit(1)
 	}
 }
 
 func runReprocessPlayer(configPath, playerID string) {
-	_, p, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-
+	a := mustOpen(configPath)
+	defer a.store.Close()
 	ctx := context.Background()
-	matchFrames, err := store.GetPlayerFrames(ctx, playerID, 50)
+
+	matchIDs, err := a.store.GetPlayerMatchIDs(ctx, playerID, 50)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading player frames: %v\n", err)
-		os.Exit(1)
+		fatal("Error loading player matches: %v", err)
 	}
-	if len(matchFrames) == 0 {
+	if len(matchIDs) == 0 {
 		fmt.Printf("No stored telemetry found for player %s\n", playerID)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Reprocessing %d matches for player %s...\n", len(matchFrames), playerID)
-	totalDetections := 0
-	for matchID := range matchFrames {
-		result, err := reprocessMatchFromDB(ctx, store, p, matchID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Match %s: error: %v\n", matchID, err)
-			continue
-		}
-		detections := len(result.DetectionEvents)
-		totalDetections += detections
-		fmt.Printf("  Match %s: %d frames, %d detections\n", matchID, result.FramesProcessed, detections)
-	}
-	fmt.Printf("Total: %d matches reprocessed, %d detections\n", len(matchFrames), totalDetections)
+	fmt.Printf("Reprocessing %d matches for player %s...\n", len(matchIDs), playerID)
+	total, failed := reprocessMany(ctx, a, matchIDs, true)
+	finishReprocess(matchIDs, total, failed)
 }
 
 func runReprocessTimeRange(configPath, sinceStr, untilStr string) {
-	_, p, _, store, err := buildPipeline(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-
 	since, err := time.Parse(time.RFC3339, sinceStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid since time (use RFC3339): %v\n", err)
-		os.Exit(1)
+		fatal("Invalid since time (use RFC3339, e.g. 2026-01-01T00:00:00Z): %v", err)
 	}
 	until, err := time.Parse(time.RFC3339, untilStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid until time (use RFC3339): %v\n", err)
-		os.Exit(1)
+		fatal("Invalid until time (use RFC3339, e.g. 2026-03-01T00:00:00Z): %v", err)
 	}
-
+	if !until.After(since) {
+		fatal("Invalid range: until must be after since")
+	}
+	a := mustOpen(configPath)
+	defer a.store.Close()
 	ctx := context.Background()
-	matchIDs, err := store.GetMatchIDsByTimeRange(ctx, since, until)
+
+	matchIDs, err := a.store.GetMatchIDsByTimeRange(ctx, since, until)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying matches: %v\n", err)
-		os.Exit(1)
+		fatal("Error querying matches: %v", err)
 	}
 	if len(matchIDs) == 0 {
-		fmt.Println("No matches found in the given time range.")
+		fmt.Printf("No matches with match time in [%s, %s).\n",
+			since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
 		return
 	}
 
-	fmt.Printf("Reprocessing %d matches from %s to %s...\n", len(matchIDs), sinceStr, untilStr)
-	totalDetections := 0
-	for _, matchID := range matchIDs {
-		result, err := reprocessMatchFromDB(ctx, store, p, matchID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Match %s: error: %v\n", matchID, err)
-			continue
-		}
-		detections := len(result.DetectionEvents)
-		totalDetections += detections
-		if detections > 0 {
-			fmt.Printf("  Match %s: %d frames, %d detections\n", matchID, result.FramesProcessed, detections)
-		}
-	}
-	fmt.Printf("Total: %d matches reprocessed, %d detections\n", len(matchIDs), totalDetections)
+	fmt.Printf("Reprocessing %d matches with match time in [%s, %s)...\n", len(matchIDs),
+		since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
+	total, failed := reprocessMany(ctx, a, matchIDs, false)
+	finishReprocess(matchIDs, total, failed)
 }
 
 // isEchoReplay returns true if the file path looks like an Echo VR replay.
-func isEchoReplay(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".echoreplay"
+func isEchoReplay(path string) bool { return replay.IsEchoReplay(path) }
+
+// isDropInvocation reports whether the CLI was started with replay files or
+// folders instead of a command, e.g. by dropping files onto nevr-ac.exe.
+func isDropInvocation(args []string) bool {
+	switch args[0] {
+	case "version", "analyze", "batch", "flagged", "report", "cross-match-report",
+		"player-history", "cross-match", "reprocess-match", "reprocess-player",
+		"reprocess-timerange", "verdict", "calibration-report", "help", "-h", "--help":
+		return false
+	}
+	for _, a := range args {
+		if _, err := os.Stat(a); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// runDropMode analyzes every dropped file (analyze) or folder (batch), prints
+// the flagged summary and waits for Enter so an Explorer-launched window stays
+// open. Without --config the database is kept next to the executable so
+// results accumulate in one place regardless of where the replays live.
+func runDropMode(configPath string, paths []string) {
+	dropMode = true
+	if configPath == "" {
+		if exe, err := os.Executable(); err == nil {
+			_ = os.Chdir(filepath.Dir(exe))
+		}
+	}
+	fmt.Printf("NEVR-Anticheat %s: analyzing %d dropped item(s)\n\n", appVersion, len(paths))
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skip %s: %v\n", p, err)
+			continue
+		}
+		fmt.Printf("== %s ==\n", p)
+		if info.IsDir() {
+			runBatch(configPath, p, false)
+		} else {
+			runAnalyze(configPath, p, false)
+		}
+		fmt.Println()
+	}
+	fmt.Println("== Flagged players and pending cases ==")
+	runFlagged(configPath)
+	pauseForEnter()
+}
+
+func pauseForEnter() {
+	fmt.Fprint(os.Stderr, "\nPress Enter to close...")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }

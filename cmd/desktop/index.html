@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>NEVR-Anticheat</title>
+<style>
+  :root {
+    --bg: #f7f5f0; --ink: #1c1b18; --ink-2: #54514a; --muted: #7c786f;
+    --line: #e5e1d8; --line-2: #cbc6ba;
+    --accent: #0e6b66; --accent-ink: #ffffff; --accent-bg: #e2efec;
+    --blue: #2456b6; --blue-bg: #e6edfa; --orange: #c2611a; --orange-bg: #fae9d9;
+    --ok: #2b7a45; --ok-bg: #e3f0e6; --warn: #8a6300; --warn-bg: #f6edd0;
+    --hot: #b04a12; --hot-bg: #f8e3d4; --bad: #b1352c; --bad-bg: #f8e2df;
+    --neutral-bg: #ebe8e0; --code-bg: #f0ede6; --sk: #e9e6de;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151412; --ink: #ebe8e1; --ink-2: #bcb7ad; --muted: #8e897f;
+      --line: #2a2825; --line-2: #403d37;
+      --accent: #62c6be; --accent-ink: #0f1c1b; --accent-bg: #17302d;
+      --blue: #82abff; --blue-bg: #1b2842; --orange: #f2a45c; --orange-bg: #3a2614;
+      --ok: #74c68e; --ok-bg: #17301f; --warn: #e2b84c; --warn-bg: #362c12;
+      --hot: #f18d58; --hot-bg: #3b2114; --bad: #f07d73; --bad-bg: #3d1a17;
+      --neutral-bg: #26241f; --code-bg: #1d1c19; --sk: #23211d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  code, .mono { font-family: var(--mono); font-size: .93em; }
+  code { background: var(--code-bg); padding: 0 3px; border-radius: 3px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  h2 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 16px; }
+  h3 { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 32px 0 8px; }
+  h3 .count { color: var(--ink-2); font-weight: 500; letter-spacing: 0; margin-left: 6px; }
+  p { margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); max-width: 52ch; }
+
+  /* header */
+  .top { border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+  .wordmark { font-size: 16px; font-weight: 650; letter-spacing: -.015em; margin: 0; }
+  .wordmark span { color: var(--muted); font-weight: 400; }
+  .tagline { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+
+  /* buttons */
+  .btn {
+    font: inherit; font-size: 13px; line-height: 1.3; padding: 6px 12px; border-radius: 4px;
+    border: 1px solid var(--line-2); background: transparent; color: var(--ink); cursor: pointer;
+  }
+  .btn:hover { background: var(--neutral-bg); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn-text { border-color: transparent; padding: 4px 6px; color: var(--accent); background: none; }
+  .btn-text:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
+  .btn-sm { font-size: 12px; padding: 2px 6px; }
+
+  /* blocks */
+  main { padding: 40px 0 80px; }
+  .block { padding: 32px 0; border-top: 1px solid var(--line); }
+  .block:first-child { border-top: 0; padding-top: 0; }
+
+  /* upload */
+  .drop {
+    border: 1px dashed var(--line-2); border-radius: 4px; min-height: 152px; padding: 24px;
+    display: flex; flex-direction: column; justify-content: center; text-align: center; cursor: pointer;
+    transition: border-color .15s, background-color .15s;
+  }
+  .drop:hover { border-color: var(--ink-2); }
+  .drop.over { border-style: solid; border-color: var(--accent); background: var(--accent-bg); }
+  .drop.busy { cursor: default; justify-content: flex-start; text-align: left; }
+  .drop input { display: none; }
+  .drop .lead { font-size: 16px; font-weight: 500; }
+  .drop .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .drop .sub a { color: inherit; }
+  .drop.over .lead { color: var(--accent); }
+  .uploads { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 12px; }
+  .uploads li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; font-size: 13px; }
+  .uploads .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .uploads .name .mono { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .uploads .state { color: var(--muted); white-space: nowrap; }
+  .uploads .state.ok { color: var(--ok); } .uploads .state.bad { color: var(--bad); }
+  .uploads .bar { grid-column: 1 / -1; }
+  .overall { font-weight: 500; }
+  .overall .muted { font-weight: 400; margin-left: 8px; }
+  .bar { display: inline-block; height: 4px; background: var(--neutral-bg); border-radius: 2px; overflow: hidden; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .bar.wait > i { width: 30%; animation: slide 1.2s ease-in-out infinite alternate; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(333%); } }
+  .bar.mini { width: 56px; margin-left: 8px; }
+  .bar.mini > i { background: var(--ink-2); }
+  .bar.mini.ok > i { background: var(--ok); } .bar.mini.warn > i { background: var(--warn); }
+  .bar.mini.hot > i { background: var(--hot); } .bar.mini.bad > i { background: var(--bad); }
+  .controls { display: flex; align-items: flex-start; gap: 24px; margin-top: 16px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; flex: 1; }
+  .check input { margin: 3px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+  .check label { font-weight: 500; cursor: pointer; }
+  .help { color: var(--muted); font-size: 13px; margin: 2px 0 0; max-width: 64ch; }
+  .status { margin: 16px 0 0; color: var(--muted); min-height: 21px; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 16px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th:last-child, td:last-child { padding-right: 0; }
+  thead th {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+    white-space: nowrap; border-bottom-color: var(--line-2); position: sticky; top: 0; background: var(--bg); z-index: 1;
+  }
+  .num { text-align: right; white-space: nowrap; }
+  td.dim, tr.shadow td { color: var(--muted); }
+  td.det { white-space: nowrap; }
+  th.wide, td.wide { min-width: 200px; }
+  @media (max-width: 1100px) { .events { overflow-x: auto; } th.wide, td.wide { min-width: 160px; } }
+  .who .name { font-weight: 500; }
+  .who .id { color: var(--muted); margin-left: 8px; }
+  .who .id:only-child { color: var(--ink); margin: 0; }
+  .tag, .lvl, .team {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    line-height: 16px; padding: 1px 6px; border-radius: 3px; white-space: nowrap; vertical-align: middle;
+  }
+  .tag { background: var(--neutral-bg); color: var(--ink-2); }
+  .tag.bad { background: var(--bad-bg); color: var(--bad); }
+  .team-blue { color: var(--blue); background: var(--blue-bg); }
+  .team-orange { color: var(--orange); background: var(--orange-bg); }
+  .team-none { color: var(--muted); background: var(--neutral-bg); }
+  .lvl-clean { color: var(--ok); background: var(--ok-bg); }
+  .lvl-informational, .sev-low { color: var(--ink-2); background: var(--neutral-bg); }
+  .lvl-suspicious, .sev-medium { color: var(--warn); background: var(--warn-bg); }
+  .lvl-high_risk, .sev-high { color: var(--hot); background: var(--hot-bg); }
+  .lvl-critical, .sev-critical { color: var(--bad); background: var(--bad-bg); }
+  .lvl-action_worthy { color: #fff; background: var(--bad); }
+  .val { display: inline-block; min-width: 3.2em; text-align: right; }
+  .tfoot td { color: var(--muted); border-bottom: 0; padding-top: 12px; }
+
+  /* results */
+  .match { border-top: 1px solid var(--line); padding: 24px 0 16px; }
+  .match:first-child { border-top: 0; }
+  .match > summary { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 32px; align-items: center; cursor: pointer; }
+  .match > summary::-webkit-details-marker { display: none; }
+  .tog { display: inline-block; width: 7px; height: 7px; margin: 0 12px 2px 2px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+  details[open] > summary .tog { transform: rotate(45deg); }
+  .mtitle { font-size: 18px; font-weight: 600; letter-spacing: -.01em; display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px; }
+  .mtitle .mono { font-size: 16px; }
+  .mtitle .src { color: var(--muted); font-size: 13px; font-weight: 400; }
+  .mmeta { color: var(--muted); font-size: 13px; margin: 4px 0 0 21px; }
+  .sep { margin: 0 8px; opacity: .6; }
+  .score { text-align: right; line-height: 1; }
+  .score .pts { font-size: 28px; font-weight: 600; letter-spacing: -.02em; }
+  .score .pts .dash { color: var(--muted); font-weight: 400; margin: 0 6px; }
+  .score .lbl { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 6px; display: flex; justify-content: flex-end; gap: 24px; }
+  .score.none { font-size: 13px; color: var(--muted); align-self: end; }
+  .notice { border-left: 2px solid var(--warn); padding: 4px 12px; margin: 16px 0 0; font-size: 13px; }
+  .notice.bad { border-color: var(--bad); }
+  .report-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 28px; }
+  .report-head h3 { margin: 0; }
+  .report-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .report-actions a { text-decoration: none; }
+  .team-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+  .team-card { border: 1px solid var(--line); border-radius: 5px; padding: 16px; min-width: 0; }
+  .team-card.blue { border-top: 3px solid var(--blue); }
+  .team-card.orange { border-top: 3px solid var(--orange); }
+  .team-card .team-title { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+  .team-card .team-title strong { font-size: 15px; text-transform: capitalize; }
+  .team-card .team-score { font-size: 24px; line-height: 1; font-weight: 650; }
+  .team-card.blue .team-score { color: var(--blue); }
+  .team-card.orange .team-score { color: var(--orange); }
+  .team-card .team-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+  .team-card .team-stats div { min-width: 0; }
+  .team-card .team-stats span { display: block; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+  .team-card .team-stats b { display: block; font-weight: 550; margin-top: 2px; }
+  .summary-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .goal-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+  .goal-dot.blue { background: var(--blue); }
+  .goal-dot.orange { background: var(--orange); }
+  .goal-yes { color: var(--ok); font-weight: 600; }
+  .stat-tables { overflow-x: auto; }
+  .stat-tables table { min-width: 980px; }
+  .throw-table { overflow-x: auto; max-height: 430px; }
+  .throw-table table { min-width: 700px; }
+  .flash { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { background: var(--accent-bg); } to { background: transparent; } }
+  details.sub > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; }
+  details.sub > summary::-webkit-details-marker { display: none; }
+  details.sub > summary h3 { margin: 0; }
+  details.sub { margin-top: 32px; }
+  details.sub > summary + * { margin-top: 8px; }
+  .cases { list-style: none; margin: 0; padding: 0; }
+  .cases li { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto auto auto; gap: 16px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .cases .act { color: var(--ink-2); }
+  .cases .case { color: var(--muted); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 0; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  pre { background: var(--code-bg); border-radius: 4px; padding: 12px; margin: 8px 0 0; overflow: auto; font: 12px/1.5 var(--mono); max-height: 400px; white-space: pre-wrap; word-break: break-all; }
+  .foot { color: var(--muted); font-size: 13px; margin: 24px 0 0 21px; }
+
+  /* failure card */
+  .fail { border-top: 1px solid var(--line); padding: 24px 0 16px; }
+  .fail:first-child { border-top: 0; }
+  .fail .ftitle { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .fail .err { color: var(--bad); margin: 8px 0 0; }
+  .diag { margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 48px; }
+  .diag h4 { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .diag ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  .diag .hint { color: var(--ink-2); font-size: 13px; }
+  .diag pre { margin: 0; max-height: 200px; }
+  .diag pre + pre { margin-top: 8px; }
+  .diag .full { grid-column: 1 / -1; }
+
+  /* panels */
+  .panel { min-height: 96px; }
+  .panel h3:first-child { margin-top: 0; }
+  .skeleton .sk { height: 12px; border-radius: 2px; background: var(--sk); margin: 14px 0; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+  .stopped { padding: 64px 0; }
+
+  @media (max-width: 900px) {
+    .wrap { padding: 0 20px; }
+    .diag { grid-template-columns: 1fr; }
+    .cases li { grid-template-columns: 120px 1fr; }
+    .controls { flex-direction: column; gap: 12px; }
+    .team-card .team-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .report-head { align-items: flex-start; flex-direction: column; }
+  }
+  @media (max-width: 620px) { .team-grid { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after { transition: none !important; animation: none !important; }
+    .bar.wait > i { width: 100%; opacity: .45; }
+  }
+  @media print {
+    body { background: #fff; color: #000; font-size: 11px; }
+    .top .btn, .upload, .btn, .status, .tog { display: none !important; }
+    .block, .match, .fail { break-inside: avoid; }
+    thead th { position: static; }
+    pre { max-height: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1 class="wordmark">NEVR<span>-</span>Anticheat</h1>
+    <span class="tagline">Offline replay analysis. Local only, on 127.0.0.1.</span>
+    <span class="spacer"></span>
+    <button id="quit" class="btn" title="Stop the desktop app">Quit</button>
+  </div>
+</header>
+<main class="wrap">
+  <section class="block upload" aria-labelledby="h-upload">
+    <h2 id="h-upload">Analyze replays</h2>
+    <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
+      <input id="files" type="file" multiple accept=".echoreplay,.json">
+      <div id="drop-idle">
+        <div class="lead">Drop <code>.echoreplay</code> files here, or <a href="#" id="pick">choose files</a></div>
+        <div class="sub" id="drop-sub">Each file is stored in the database and run through every detector, exactly like <code>nevr-ac analyze</code>.</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="check">
+        <input type="checkbox" id="force">
+        <div>
+          <label for="force">Re-analyze matches that are already stored</label>
+          <p class="help">Equivalent to <code>--force</code>: a match already in the database is analyzed again and its detection events and scores are replaced. Otherwise a stored match is skipped.</p>
+        </div>
+      </div>
+      <button id="clear" class="btn btn-text" hidden>Clear results</button>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite">Waiting for files.</p>
+  </section>
+
+  <section id="results-block" class="block" aria-labelledby="h-results" hidden>
+    <h2 id="h-results">Results</h2>
+    <div id="results"></div>
+  </section>
+
+  <section class="block" aria-labelledby="h-flagged">
+    <h2 id="h-flagged">Flagged players</h2>
+    <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
+  </section>
+  <section class="block" aria-labelledby="h-history">
+    <h2 id="h-history">History</h2>
+    <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const intFmt = new Intl.NumberFormat();
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const fmtInt = (n) => (typeof n === 'number' ? intFmt.format(n) : '—');
+  const fmtNum = (n, d = 1) => (typeof n === 'number' ? n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : '—');
+  const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`;
+  const fmtDur = (sec) => {
+    if (!sec || sec <= 0) return '—';
+    const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    return m ? (s ? `${m} min ${s} s` : `${m} min`) : `${s} s`;
+  };
+  const fmtClock = (sec) => {
+    if (typeof sec !== 'number') return '—';
+    const m = Math.floor(sec / 60), s = sec - m * 60;
+    return `${m}:${s < 10 ? '0' : ''}${s.toFixed(2)}`;
+  };
+  // Replay clocks carry no zone and are stored as UTC: show them as written.
+  const fmtStart = (iso) => {
+    if (!iso) return '—';
+    const t = new Date(iso);
+    return isNaN(t) ? iso : t.toLocaleString(undefined, { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' });
+  };
+  const fmtAbs = (t) => t.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+  const relUnits = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
+  const fmtRel = (t) => {
+    const s = (t - Date.now()) / 1000, a = Math.abs(s);
+    for (const [u, n] of relUnits) if (a >= n) return rtf.format(Math.round(s / n), u);
+    return a < 15 ? 'just now' : rtf.format(Math.round(s), 'second');
+  };
+  const timeAgo = (iso) => {
+    if (!iso) return '<span class="muted">—</span>';
+    const t = new Date(iso);
+    if (isNaN(t)) return esc(iso);
+    return `<time datetime="${esc(iso)}" title="${esc(fmtAbs(t))}" data-rel="${t.getTime()}">${esc(fmtRel(t))}</time>`;
+  };
+  setInterval(() => document.querySelectorAll('time[data-rel]').forEach((el) => { el.textContent = fmtRel(new Date(+el.dataset.rel)); }), 30000);
+
+  const lvlName = (l) => String(l || '').replace(/_/g, ' ');
+  const lvlTone = (l) => ({ clean: 'ok', informational: '', suspicious: 'warn', high_risk: 'hot', critical: 'bad', action_worthy: 'bad' }[l] || '');
+  const badge = (l) => `<span class="lvl lvl-${esc(l)}">${esc(lvlName(l))}</span>`;
+  const sevBadge = (l) => `<span class="tag sev-${esc(l)}">${esc(l)}</span>`;
+  const team = (t) => t === 'blue' || t === 'orange' ? `<span class="team team-${t}">${t}</span>` : '<span class="team team-none">none</span>';
+  const who = (name, id) => `<span class="who">${name ? `<span class="name">${esc(name)}</span>` : ''}<span class="id mono">${esc(id)}</span></span>`;
+  const bar = (v, max, tone = '') => `<span class="bar mini ${tone}" aria-hidden="true"><i style="width:${max > 0 ? Math.min(100, Math.max(0, v / max * 100)).toFixed(0) : 0}%"></i></span>`;
+  const meter = (v, tone = '') => `<span class="val">${fmtNum(v, 2)}</span>${bar(v, 1, tone)}`;
+  const sep = '<span class="sep">·</span>';
+
+  const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
+  async function getJSON(url) {
+    const r = await fetch(url, { cache: 'no-store' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+    return body;
+  }
+
+  // ---- match sections ------------------------------------------------------
+  const views = []; // full event lists, for "show all"
+  const secId = (id) => 'match-' + encodeURIComponent(id);
+  const EVENT_LIMIT = 50;
+
+  function playersTable(m) {
+    if (!m.players.length) return '<p class="empty">The replay carried no players on the blue or orange team.</p>';
+    const cap = Math.max((m.levels && m.levels.action_worthy) || 0, ...m.players.map((p) => p.score || 0), 1);
+    const rows = m.players.slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+    return `<table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th><th class="num">Score</th><th>Level</th>
+      <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th></tr></thead><tbody>` +
+      rows.map((p) => `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${fmtInt(p.frames)}</td>
+        <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${badge(p.level)}</td>
+        <td class="num">${fmtInt(p.detections)}</td><td class="num dim">${fmtInt(p.shadow_detections)}</td>
+        <td>${p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>'}</td></tr>`).join('') + '</tbody></table>';
+  }
+
+  const person = (name, id) => name || id ? who(name, id) : '<span class="muted">—</span>';
+
+  function teamCard(t, side) {
+    const st = (t && t.stats) || {}, th = (t && t.throws) || {};
+    return `<div class="team-card ${side}">
+      <div class="team-title"><strong>${esc(side)} team</strong><span class="team-score">${fmtInt(t && t.score)}</span></div>
+      <div class="team-stats">
+        <div><span>Players</span><b>${fmtInt(t && t.players)}</b></div><div><span>Points</span><b>${fmtInt(st.points)}</b></div>
+        <div><span>Goals</span><b>${fmtInt(st.goals)}</b></div><div><span>Assists</span><b>${fmtInt(st.assists)}</b></div>
+        <div><span>Saves</span><b>${fmtInt(st.saves)}</b></div><div><span>Stuns</span><b>${fmtInt(st.stuns)}</b></div>
+        <div><span>Throws</span><b>${fmtInt(th.count)}</b></div><div><span>Fastest throw</span><b>${th.count ? `${fmtNum(th.max_speed, 2)} m/s` : '—'}</b></div>
+      </div>
+    </div>`;
+  }
+
+  function gameStatsTable(s) {
+    const players = s.players || [];
+    if (!players.length) return '<p class="empty">The replay carried no player statistics.</p>';
+    return `<div class="stat-tables"><table><thead><tr><th>Player</th><th>Team</th><th class="num">Level</th><th class="num">Ping</th>
+      <th class="num">Pts</th><th class="num">Goals</th><th class="num">Ast</th><th class="num">Saves</th><th class="num">Steals</th><th class="num">Stuns</th>
+      <th class="num">Pass</th><th class="num">Catch</th><th class="num">Block</th><th class="num">Int</th><th class="num">Poss.</th><th class="num">Shots</th>
+      <th class="num">Throws</th><th class="num">Avg m/s</th><th class="num">Max m/s</th><th class="num">Scored</th></tr></thead><tbody>` +
+      players.map((p) => { const st = p.stats || {}, th = p.throws || {}; return `<tr><td>${person(p.name, p.player_id)}</td><td>${team(p.team)}</td>
+        <td class="num">${p.level > 0 ? fmtInt(p.level) : '—'}</td><td class="num">${p.ping_avg > 0 ? `${fmtNum(p.ping_avg, 1)} <span class="muted">/ ${fmtInt(p.ping_max)}</span>` : '—'}</td>
+        <td class="num">${fmtInt(st.points)}</td><td class="num">${fmtInt(st.goals)}</td><td class="num">${fmtInt(st.assists)}</td><td class="num">${fmtInt(st.saves)}</td>
+        <td class="num">${fmtInt(st.steals)}</td><td class="num">${fmtInt(st.stuns)}</td><td class="num">${fmtInt(st.passes)}</td><td class="num">${fmtInt(st.catches)}</td>
+        <td class="num">${fmtInt(st.blocks)}</td><td class="num">${fmtInt(st.interceptions)}</td><td class="num">${fmtNum(st.possession_time, 1)} s</td><td class="num">${fmtInt(st.shots_taken)}</td>
+        <td class="num">${fmtInt(th.count)}</td><td class="num">${th.count ? fmtNum(th.mean_speed, 2) : '—'}</td><td class="num">${th.count ? fmtNum(th.max_speed, 2) : '—'}</td><td class="num">${fmtInt(th.goals)}</td></tr>`; }).join('') +
+      '</tbody></table></div><p class="summary-note">Ping shows average / maximum milliseconds. Possession is seconds. “Scored” is throws linked to a goal.</p>';
+  }
+
+  function goalsTable(s) {
+    const goals = s.goals || [];
+    if (!goals.length) return '<p class="empty">No score change was observed in the recording.</p>';
+    return `<div class="events"><table><thead><tr><th>Clock</th><th>Score</th><th>Team</th><th>Scorer</th><th>Assist</th><th>Shot</th><th class="num">Distance</th><th class="num">Disc speed</th></tr></thead><tbody>` +
+      goals.map((g) => `<tr><td class="mono">${esc(g.clock || fmtClock(g.time))}</td><td><strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong></td>
+        <td><span class="goal-dot ${esc(g.team)}"></span>${team(g.team)} <span class="muted">+${fmtInt(g.points)}</span></td><td>${person(g.scorer, g.scorer_id)}</td><td>${person(g.assist, g.assist_id)}</td>
+        <td>${g.described ? esc(g.goal_type) || '<span class="muted">—</span>' : '<span class="muted">Details unavailable</span>'}</td>
+        <td class="num">${g.described ? `${fmtNum(g.distance, 2)} m` : '—'}</td><td class="num">${g.described ? `${fmtNum(g.disc_speed, 2)} m/s` : '—'}</td></tr>`).join('') +
+      '</tbody></table></div>';
+  }
+
+  function throwsTable(s) {
+    const throws = s.throws || [];
+    if (!throws.length) {
+      const why = s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.';
+      return `<p class="empty">${esc(why)}</p>`;
+    }
+    return `<div class="throw-table"><table><thead><tr><th>Clock</th><th>Player</th><th>Team</th><th class="num">Speed</th><th>Result</th><th class="num">Frame</th></tr></thead><tbody>` +
+      throws.map((th) => `<tr><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
+        <td class="num">${fmtNum(th.speed, 2)} m/s</td><td>${th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'}</td><td class="num dim">${fmtInt(th.frame_index)}</td></tr>`).join('') +
+      `</tbody></table></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}; a throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
+  }
+
+  function matchReport(m) {
+    const s = m.summary;
+    if (!s) return `<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Full match report</h3></summary><p class="empty">A detailed game report is unavailable for this match. Older or legacy JSON analyses may not have stored the raw replay snapshots needed to rebuild one.</p></details>`;
+    const id = encodeURIComponent(m.match_id);
+    return `<div class="report-head"><h3>Full match report</h3><div class="report-actions">
+      <a class="btn btn-sm" href="api/match/${id}/summary.json">Download JSON</a><a class="btn btn-sm" href="api/match/${id}/export.csv">Export player CSV</a></div></div>
+      <div class="team-grid">${teamCard(s.teams && s.teams.blue, 'blue')}${teamCard(s.teams && s.teams.orange, 'orange')}</div>
+      <details class="sub" open><summary><span class="tog" aria-hidden="true"></span><h3>Player statistics<span class="count">${fmtInt((s.players || []).length)}</span></h3></summary>${gameStatsTable(s)}</details>
+      <details class="sub" ${s.goals && s.goals.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Scoring timeline<span class="count">${fmtInt((s.goals || []).length)}</span></h3></summary>${goalsTable(s)}</details>
+      <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s)}</details>`;
+  }
+
+  function eventRows(events) {
+    return events.map((e) => `<tr class="${e.is_shadow ? 'shadow' : ''}">
+      <td class="det"><span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}</td>
+      <td>${who(e.player_name, e.player_id)}</td>
+      <td class="num" title="Frame ${fmtInt(e.frame_index)}">${e.frame_range_start === e.frame_range_end ? fmtInt(e.frame_range_start) : `${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</td>
+      <td class="num">${fmtClock(e.timestamp)}</td>
+      <td class="num">${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</td>
+      <td class="num">${meter(e.confidence)}</td>
+      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td></tr>`).join('');
+  }
+
+  function eventsTable(m, idx, all) {
+    const n = m.events.length;
+    if (!n) return '<p class="empty">No detector fired on this match.</p>';
+    const sorted = m.events.slice().sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index));
+    const shown = all ? sorted : sorted.slice(0, EVENT_LIMIT);
+    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="8">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
+      <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
+    return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
+      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th></tr></thead><tbody>${eventRows(shown)}</tbody>${foot}</table>`;
+  }
+
+  function casesList(m) {
+    if (!m.cases.length) return '<p class="empty">No review case was created: no player reached the review threshold.</p>';
+    return '<ul class="cases">' + m.cases.map((c) => `<li>${badge(c.level)}<span>${who(c.player_name, c.player_id)}</span>
+      <span class="num">score ${fmtNum(c.suspicion_score)}</span><span class="act">${esc(lvlName(c.recommended_action))} · ${esc(c.status)}</span>
+      <span class="case mono">${esc(c.case_id)}</span></li>`).join('') + '</ul>';
+  }
+
+  function diagBlock(m) {
+    const d = m.diagnostics;
+    if (!d) return '<p class="empty">Adapter diagnostics are only kept for the analysis that just ran; this match was loaded from the database.</p>';
+    const rej = Object.entries(d.rejections_by_field).map(([k, v]) => `${k} ${fmtInt(v)}`).join(', ');
+    const b = d.basis;
+    return `<dl class="kv">
+      <dt>Snapshots</dt><dd>${fmtInt(d.snapshots)}</dd>
+      <dt>Lines rejected</dt><dd>${fmtInt(d.lines_rejected)}</dd>
+      <dt>Player frames mapped</dt><dd>${fmtInt(d.frames_mapped)}</dd>
+      <dt>Player frames rejected</dt><dd>${fmtInt(d.player_frames_rejected)}${rej ? ` (${esc(rej)})` : ''}</dd>
+      <dt>Spectator entries dropped</dt><dd>${fmtInt(d.spectator_entries_dropped)}</dd>
+      <dt>Players seen</dt><dd>${fmtInt(d.players_seen)}</dd>
+      ${d.session_changes ? `<dt>Session changes</dt><dd>${fmtInt(d.session_changes)} (the file holds ${fmtInt(d.session_changes + 1)} matches, each analyzed on its own; this report covers the whole file)</dd>` : ''}
+      ${b ? `<dt>Pose bases</dt><dd>${fmtInt(b.proper)} proper, ${fmtInt(b.reflected)} reflected, ${fmtInt(b.non_orthonormal)} non-orthonormal, ${fmtInt(b.degenerate)} degenerate</dd>
+      <dt>Hand tracking lost</dt><dd>${fmtInt(b.hand_tracking_lost)}</dd>
+      <dt>Non-monotonic samples</dt><dd>${fmtInt(b.non_monotonic_samples)}</dd>
+      <dt>Clock steps re-based</dt><dd>${fmtInt(b.clock_steps)}</dd>` : ''}
+    </dl><pre>${esc(d.report)}</pre>`;
+  }
+
+  function matchSection(m, source) {
+    const idx = views.push(m) - 1;
+    const meta = [
+      m.game_mode ? esc(m.game_mode) + (m.map ? ` on ${esc(m.map)}` : '') : (m.map ? esc(m.map) : ''),
+      m.is_private ? 'private' : '',
+      esc(fmtStart(m.start_time)),
+      fmtDur(m.duration_seconds),
+      `${fmtInt(m.players.length)} player${m.players.length === 1 ? '' : 's'}`,
+    ].filter(Boolean).join(sep);
+    const score = m.has_score
+      ? `<div class="score"><div class="pts"><span style="color:var(--blue)">${fmtInt(m.blue_score)}</span><span class="dash">–</span><span style="color:var(--orange)">${fmtInt(m.orange_score)}</span></div><div class="lbl"><span>Blue</span><span>Orange</span></div></div>`
+      : '<div class="score none">No final score in this replay</div>';
+    const notices = (m.replaced ? [`<p class="notice">Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).</p>`] : [])
+      .concat(m.warnings.map((w) => `<p class="notice bad">${esc(w)}</p>`)).join('');
+    const tel = m.telemetry ? `${sep}Stored ${fmtInt(m.telemetry.frames_inserted)} frames${m.telemetry.frames_ignored ? ` (${fmtInt(m.telemetry.frames_ignored)} already present)` : ''}${m.telemetry.ticks_inserted || m.telemetry.ticks_ignored ? `, ${fmtInt(m.telemetry.ticks_inserted)} raw ticks${m.telemetry.ticks_ignored ? ` (${fmtInt(m.telemetry.ticks_ignored)} present)` : ''}` : ''}` : '';
+    return `<details class="match" id="${secId(m.match_id)}" open>
+      <summary>
+        <div><div class="mtitle"><span class="tog" aria-hidden="true"></span><span class="mono">${esc(m.match_id)}</span><span class="src">${esc(source)}${m.source_file ? ` · ${esc(m.source_file)}` : ''}</span></div>
+        <div class="mmeta">${meta}</div></div>
+        ${score}
+      </summary>
+      ${notices}
+      ${matchReport(m)}
+      <h3>Anticheat assessment</h3>${playersTable(m)}
+      <details class="sub" ${m.events.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Detections<span class="count">${fmtInt(m.events.length)}</span></h3></summary><div class="events">${eventsTable(m, idx, false)}</div></details>
+      <h3>Review cases<span class="count">${fmtInt(m.cases.length)}</span></h3>${casesList(m)}
+      <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Adapter diagnostics</h3></summary><div>${diagBlock(m)}</div></details>
+      <p class="foot">Analyzed ${timeAgo(m.analyzed_at)}${sep}${fmtInt(m.frames_processed)} ticks, ${fmtInt(m.player_frames)} player-frames, ${fmtInt(m.invalid_frames)} invalid${tel}</p>
+    </details>`;
+  }
+
+  // ---- failure card ---------------------------------------------------------
+  const diagTexts = [];
+  function failCard(res) {
+    const d = res.diagnostic;
+    let body = '';
+    if (d) {
+      const n = diagTexts.push([
+        'NEVR-Anticheat upload diagnostic', `File: ${res.file}`, `Error: ${res.error}`,
+        `Container: ${d.container} · Size: ${fmtBytes(d.size_bytes)} (${d.size_bytes} bytes) · Lines read: ${d.lines}`,
+        ...(d.zip_entries ? ['ZIP entries:', ...d.zip_entries.map((e) => `  ${e}`)] : []),
+        ...(d.findings.length ? ['Findings:', ...d.findings.map((f) => `- ${f}`)] : []),
+        `First ${d.head_text ? 160 : 0} bytes:`, d.head_text, 'Hex:', d.head_hex, d.hint,
+      ].join('\n')) - 1;
+      body = `<div class="diag">
+        <div><h4>What was uploaded</h4><dl class="kv"><dt>Container</dt><dd>${esc(d.container)}</dd><dt>Size</dt><dd>${fmtBytes(d.size_bytes)} <span class="muted">(${fmtInt(d.size_bytes)} bytes)</span></dd><dt>Lines read</dt><dd>${fmtInt(d.lines)}</dd>
+          ${d.zip_entries ? `<dt>ZIP entries</dt><dd>${d.zip_entries.map(esc).join('<br>')}</dd>` : ''}</dl>
+          ${d.findings.length ? `<h4 style="margin-top:16px">Findings</h4><ul>${d.findings.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
+          <p class="hint" style="margin-top:16px">${esc(d.hint)}</p></div>
+        <div><h4>First 160 bytes</h4><pre>${esc(d.head_text) || '<span class="muted">(empty)</span>'}</pre><pre>${esc(d.head_hex) || '<span class="muted">(empty)</span>'}</pre></div>
+        <div class="full"><button class="btn btn-text btn-sm" data-copy="${n}">Copy this diagnostic</button></div></div>`;
+    } else if (res.already_stored) {
+      body = `<p class="muted">Tick “Re-analyze matches that are already stored” to replace its analysis, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
+    }
+    return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
+      <p class="err">${esc(res.error)}</p>${body}</section>`;
+  }
+
+  function prepend(html) {
+    const wrap = document.createElement('template');
+    wrap.innerHTML = html;
+    const el = wrap.content.firstElementChild;
+    if (el.id) document.getElementById(el.id)?.remove();
+    $('results').prepend(el);
+    $('results-block').hidden = false;
+    $('clear').hidden = false;
+    return el;
+  }
+  function reveal(el) {
+    el.open = true;
+    el.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+    el.querySelector('summary')?.focus({ preventScroll: true });
+  }
+
+  // ---- upload ---------------------------------------------------------------
+  let busy = false;
+  const drop = $('drop');
+  function uploadList(files) {
+    return `<div class="overall" id="overall"></div><ol class="uploads">${files.map((f, i) => `<li>
+      <span class="name">${esc(f.name)}<span class="mono">${fmtBytes(f.size)}</span></span><span class="state" id="ust-${i}">waiting</span>
+      <span class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="${esc(f.name)}" id="ubar-${i}"><i></i></span></li>`).join('')}</ol>`;
+  }
+  function analyze(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length || busy) return;
+    busy = true;
+    drop.classList.add('busy'); drop.setAttribute('aria-busy', 'true');
+    $('drop-idle').hidden = true;
+    const list = document.createElement('div');
+    list.innerHTML = uploadList(files);
+    drop.appendChild(list);
+    const total = files.reduce((n, f) => n + f.size, 0);
+    const offsets = []; files.reduce((o, f) => (offsets.push(o), o + f.size), 0);
+    const setState = (i, text, cls = '') => { const el = $('ust-' + i); el.textContent = text; el.className = 'state ' + cls; };
+    const setBar = (i, pct, wait) => { const b = $('ubar-' + i); b.classList.toggle('wait', !!wait); b.setAttribute('aria-valuenow', pct.toFixed(0)); b.firstElementChild.style.width = pct + '%'; };
+    const overall = (text, sub = '') => { $('overall').innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
+    overall(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}`, fmtBytes(total));
+    setStatus(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}, ${fmtBytes(total)}.`);
+
+    const fd = new FormData();
+    files.forEach((f) => fd.append('files', f, f.name));
+    if ($('force').checked) fd.append('force', '1');
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/analyze');
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const sent = total * (e.loaded / e.total);
+      let done = 0;
+      files.forEach((f, i) => {
+        const frac = f.size ? Math.min(1, Math.max(0, (sent - offsets[i]) / f.size)) : 1;
+        if (frac >= 1) done++;
+        setBar(i, frac * 100);
+        setState(i, frac >= 1 ? 'uploaded' : frac > 0 ? `uploading ${(frac * 100).toFixed(0)}%` : 'waiting');
+      });
+      overall(`Uploading ${Math.min(done + 1, files.length)} of ${files.length}`, `${fmtBytes(sent)} of ${fmtBytes(total)}`);
+      if (e.loaded >= e.total) analyzing();
+    };
+    const analyzing = () => {
+      files.forEach((_, i) => { setBar(i, 100, true); setState(i, 'analyzing'); });
+      overall(`Analyzing ${files.length} file${files.length > 1 ? 's' : ''}`, 'this can take a while for long replays');
+      setStatus(`Upload complete. Analyzing ${files.length} file${files.length > 1 ? 's' : ''}; this can take a while for long replays.`);
+    };
+    xhr.upload.onload = analyzing;
+    const finish = (err) => {
+      busy = false;
+      $('files').value = '';
+      drop.classList.remove('busy'); drop.removeAttribute('aria-busy');
+      list.remove();
+      $('drop-idle').hidden = false;
+      if (err) setStatus(`Upload failed: ${err}`, 'err');
+      refreshPanels();
+    };
+    xhr.onerror = () => finish('the app did not answer (is it still running?)');
+    xhr.onload = () => {
+      const body = xhr.response || {};
+      if (xhr.status !== 200 || !Array.isArray(body.results)) return finish(body.error || `${xhr.status} ${xhr.statusText}`);
+      // A file holds one match, or several after a rematch (res.matches);
+      // each is counted and shown on its own. A failure that stopped the
+      // file after some matches is in res.error next to them.
+      const items = (res) => (res.matches && res.matches.length ? res.matches : [res]);
+      const fileError = (res) => (res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null);
+      let ok = 0, failed = 0, stored = 0;
+      body.results.forEach((res, i) => {
+        let a = 0, s = 0, f = fileError(res) ? 1 : 0;
+        items(res).forEach((m) => { if (m.ok) a++; else if (m.already_stored) s++; else f++; });
+        ok += a; stored += s; failed += f;
+        setState(i, a ? 'analyzed' : (f ? 'failed' : 'already stored'), a && !f ? 'ok' : 'bad');
+      });
+      // Prepend in reverse so the first file, and its first match, end up on top.
+      body.results.slice().reverse().forEach((res) => {
+        const fe = fileError(res);
+        if (fe) prepend(failCard(fe));
+        items(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
+      });
+      const parts = [`${ok} analyzed`]; if (stored) parts.push(`${stored} already stored`); if (failed) parts.push(`${failed} failed`);
+      finish();
+      setStatus(`Done: ${parts.join(', ')}.`, failed ? 'err' : 'ok');
+      $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    };
+    xhr.send(fd);
+  }
+
+  ['dragenter', 'dragover'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (!busy) drop.classList.add('over'); }));
+  document.addEventListener('dragleave', (e) => { if (e.target === document.documentElement || !e.relatedTarget) drop.classList.remove('over'); });
+  document.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); analyze(e.dataTransfer && e.dataTransfer.files); });
+  $('pick').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!busy) $('files').click(); });
+  drop.addEventListener('click', (e) => { if (!busy && !e.target.closest('a, button')) $('files').click(); });
+  drop.addEventListener('keydown', (e) => { if (!busy && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('files').click(); } });
+  $('files').addEventListener('change', (e) => analyze(e.target.files));
+  $('clear').addEventListener('click', () => {
+    $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0;
+    $('results-block').hidden = true; $('clear').hidden = true;
+    setStatus('Results cleared. Stored matches stay in the history below.');
+  });
+
+  // ---- panels ---------------------------------------------------------------
+  function panelError(el, what, e) { el.className = 'status err'; el.textContent = `Could not load ${what}: ${e.message}`; }
+  async function loadFlagged() {
+    const el = $('flagged');
+    try {
+      const f = await getJSON('api/flagged');
+      el.className = ''; el.removeAttribute('aria-busy');
+      if (!f.single_match.length && !f.cross_match.length) {
+        el.innerHTML = '<p class="empty">No player is flagged. A case appears here when a player reaches the review threshold in one match, or accumulates suspicion across several.</p>';
+        return;
+      }
+      let html = '';
+      if (f.cross_match.length) {
+        html += `<h3>Across matches<span class="count">${fmtInt(f.cross_match.length)}</span></h3><table><thead><tr><th>Player</th><th class="num">Decayed</th><th class="num">Raw</th><th class="num">Matches</th><th>Severity</th></tr></thead><tbody>` +
+          f.cross_match.map((c) => `<tr><td>${who(c.player_name, c.player_id)}<br><span class="mono muted">${esc(c.case_id)}</span></td><td class="num">${fmtNum(c.decayed_score)}</td><td class="num dim">${fmtNum(c.cumulative_score)}</td><td class="num">${fmtInt(c.match_count)}</td><td>${sevBadge(c.severity)}</td></tr>`).join('') + '</tbody></table>';
+      }
+      if (f.single_match.length) {
+        html += `<h3>Single match<span class="count">${fmtInt(f.single_match.length)}</span></h3><table><thead><tr><th>Player</th><th class="num">Score</th><th>Level</th><th>Action</th><th></th></tr></thead><tbody>` +
+          f.single_match.map((c) => `<tr><td>${who(c.player_name, c.player_id)}<br><span class="mono muted">${esc(c.case_id)}</span></td><td class="num">${fmtNum(c.suspicion_score)}</td><td>${badge(c.level)}</td><td>${esc(lvlName(c.recommended_action))}</td>
+            <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(c.match_id)}">Open match</button></td></tr>`).join('') + '</tbody></table>';
+      }
+      el.innerHTML = html;
+    } catch (e) { panelError(el, 'the flagged cases', e); }
+  }
+
+  async function loadHistory() {
+    const el = $('history');
+    try {
+      const h = await getJSON('api/matches');
+      el.className = ''; el.removeAttribute('aria-busy');
+      if (!h.matches.length) {
+        el.innerHTML = '<p class="empty">No match has been analyzed yet. Every replay you drop above is kept in the database and listed here.</p>';
+        return;
+      }
+      el.innerHTML = `<table><thead><tr><th>Match</th><th>Mode</th><th class="num">Start</th><th class="num">Duration</th><th>Players</th><th>Analyzed</th><th></th></tr></thead><tbody>` +
+        h.matches.map((m) => `<tr>
+          <td><span class="mono">${esc(m.match_id)}</span><br><span class="muted">${esc(m.source_file || m.source)}</span></td>
+          <td>${esc(m.game_mode) || '<span class="muted">—</span>'}${m.map ? `<br><span class="muted">${esc(m.map)}</span>` : ''}</td>
+          <td class="num">${esc(fmtStart(m.start_time))}</td><td class="num">${fmtDur(m.duration_seconds)}</td>
+          <td>${m.players.map((p) => `<span style="color:var(--${p.team === 'orange' ? 'orange' : p.team === 'blue' ? 'blue' : 'muted'})">${esc(p.name || p.player_id)}</span>`).join(', ') || '<span class="muted">—</span>'}</td>
+          <td>${timeAgo(m.analyzed_at)}</td>
+          <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">Open</button></td></tr>`).join('') + '</tbody></table>';
+    } catch (e) { panelError(el, 'the history', e); }
+  }
+
+  document.addEventListener('click', async (e) => {
+    const open = e.target.closest('button[data-open]');
+    if (open) {
+      const id = open.dataset.open;
+      const existing = document.getElementById(secId(id));
+      if (existing) return reveal(existing);
+      open.disabled = true;
+      try { reveal(prepend(matchSection(await getJSON('api/match/' + encodeURIComponent(id)), 'from the database'))); }
+      catch (err) { prepend(failCard({ file: `Match ${id}`, error: err.message })); }
+      finally { open.disabled = false; }
+      return;
+    }
+    const all = e.target.closest('button[data-showall]');
+    if (all) {
+      const idx = +all.dataset.showall;
+      all.closest('.events').innerHTML = eventsTable(views[idx], idx, all.dataset.all !== '1');
+      return;
+    }
+    const copy = e.target.closest('button[data-copy]');
+    if (copy) {
+      const text = diagTexts[+copy.dataset.copy];
+      try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied'; }
+      catch (_) { copy.textContent = 'Copy failed; select the text instead'; }
+      setTimeout(() => { copy.textContent = 'Copy this diagnostic'; }, 2000);
+    }
+  });
+
+  $('quit').addEventListener('click', async () => {
+    if (!confirm('Stop the NEVR-Anticheat desktop app?')) return;
+    try { await fetch('quit'); } catch (_) {}
+    document.querySelector('main').innerHTML = '<section class="stopped"><h2>NEVR-Anticheat has stopped.</h2><p class="muted">You can close this tab.</p></section>';
+    $('quit').disabled = true;
+  });
+
+  addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
+  addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
+
+  function refreshPanels() { loadFlagged(); loadHistory(); }
+  refreshPanels();
+})();
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ func newTestPipeline(detectors []detect.Detector) (*pipeline.Pipeline, *scoring.
 		dc.Mode = "enforce"
 		cfg.Detectors[id] = dc
 	}
+	cfg.Scoring.ReviewThreshold = 15 // one detector firing once (15 points) reaches the review tier
 	scorer := scoring.NewSuspicionScorer(scoring.ScorerConfig{
 		MaxSingleContribution:         cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: cfg.Scoring.MaxContribPerDetectorPerMatch,
@@ -32,6 +33,7 @@ func newTestPipeline(detectors []detect.Detector) (*pipeline.Pipeline, *scoring.
 		DecayHalfLifeHours:            cfg.Scoring.DecayHalfLifeHours,
 		CooldownFrames:                cfg.Pipeline.CooldownFrames,
 		CorrelationBonusCap:           cfg.Scoring.CorrelationBonusCap,
+		Levels:                        cfg.Scoring.LevelTable(),
 	})
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	p := pipeline.NewPipeline(cfg, detectors, scorer, logger)
@@ -80,37 +82,19 @@ func TestPipeline_SpeedHack_Detected(t *testing.T) {
 
 	matchCtx := testutil.NewMatchContext()
 
-	// Create frames where player moves impossibly fast.
-	// Start at (1,1,1) to avoid zero-position rejection.
-	frames := make([]model.PlayerTelemetryFrame, 60)
-	for i := 0; i < 60; i++ {
-		ts := float64(i) * 0.067
-		// Oscillate on Z axis (long arena axis) at impossible speed.
-		// At 0.067s per frame, moving 5m per frame = ~75 m/s (well over 55 limit).
-		z := 5.0 + float64(i%6)*5.0 // oscillates 5-30m on Z
-		pos := model.Vec3{1.0, 1.0, z}
-		frames[i] = model.PlayerTelemetryFrame{
-			PlayerID:          "player1",
-			FrameIndex:        i,
-			Timestamp:         ts,
-			DeltaTime:         0.067,
-			Position:          pos,
-			Rotation:          model.QuatIdentity(),
-			LeftHandPosition:  model.Vec3{pos[0] - 0.3, 0.3, 0.2},
-			RightHandPosition: model.Vec3{pos[0] + 0.3, 0.3, -0.2},
-			LeftHandRotation:  model.QuatIdentity(),
-			RightHandRotation: model.QuatIdentity(),
-			GamePhase:         "playing",
-		}
-	}
+	// A sustained 75 m/s hack (hands riding on the body, so the frames are
+	// internally consistent and every one passes the validator).
+	frames := testutil.NewFrameBuilder("player1").WithStartPos(model.Vec3{2, 1.6, 0}).SpeedHackFrames(90, 75)
 
 	result, err := p.ProcessMatch(context.Background(), matchCtx, frames)
 	if err != nil {
 		t.Fatalf("pipeline error: %v", err)
 	}
-
-	if len(result.DetectionEvents) == 0 {
-		t.Error("expected speed hack detections, got none")
+	if result.InvalidFrames != 0 {
+		t.Fatalf("%d frames rejected: %v", result.InvalidFrames, result.InvalidFrameReasons)
+	}
+	if len(result.DetectionEvents) != 2 { // one per full 30-frame window after warmup
+		t.Errorf("expected 2 MOV_001 detections, got %d", len(result.DetectionEvents))
 	}
 
 	score := scorer.GetScore("player1")
@@ -130,24 +114,27 @@ func TestPipeline_HighPing_NoFalsePositive(t *testing.T) {
 
 	matchCtx := testutil.NewMatchContext()
 
-	// Create frames with high ping but otherwise clean gameplay
-	frames := testutil.GenerateCleanFrames("player1", 120)
-	for i := range frames {
-		frames[i].EstimatedPingMs = 200.0 // high ping
-	}
+	// Fast (30 m/s) legitimate flight and legitimate throws at 200 ms ping
+	// with jittered sample timing: enough motion for MOV_001 and enough
+	// releases for THROW_001 to have something to judge.
+	fb := testutil.NewFrameBuilder("player1").WithStartPos(model.Vec3{2, 1.6, 0}).WithPing(200)
+	moving := fb.HighPingPlayer(200, 200)
+	throws := fb.After(moving).EliteThrowSequence(6)
+	frames := testutil.Concat(moving, throws)
 
 	result, err := p.ProcessMatch(context.Background(), matchCtx, frames)
 	if err != nil {
 		t.Fatalf("pipeline error: %v", err)
 	}
-
-	// Should have very few or no detections despite high ping
-	score := scorer.GetScore("player1")
-	t.Logf("high ping test: %d detections, score=%.2f", len(result.DetectionEvents), score.TotalScore)
-
-	// The score should be low - not exceeding review threshold
-	if scorer.ExceedsReviewThreshold("player1") {
-		t.Errorf("high-ping clean player should not exceed review threshold, score=%.2f",
-			score.TotalScore)
+	if result.InvalidFrames != 0 || result.FramesProcessed != len(frames) {
+		t.Fatalf("processed %d of %d, %d invalid", result.FramesProcessed, len(frames), result.InvalidFrames)
+	}
+	if len(result.DetectionEvents) != 0 {
+		for _, ev := range result.DetectionEvents {
+			t.Errorf("high-ping legit player flagged: %s sev=%.2f %s", ev.DetectorID, ev.Severity, ev.ObservedValue)
+		}
+	}
+	if score := scorer.GetScore("player1"); score.TotalScore != 0 || scorer.ExceedsReviewThreshold("player1") {
+		t.Errorf("high-ping clean player scored %.2f", score.TotalScore)
 	}
 }

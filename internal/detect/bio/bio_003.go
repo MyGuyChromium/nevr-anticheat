@@ -8,21 +8,26 @@ import (
 )
 
 // Bio003 detects zero hand jitter, indicating non-human input (BIO_003).
+//
+// The activity gate is WINDOWED: a frame counts as active when the player is
+// unstunned and moving faster than 1 m/s, and the window under evaluation
+// must contain at least min_active_frames such frames. (A cumulative
+// counter would let 59 active frames followed by hundreds of idle ones
+// arm the gate for a window made entirely of resting controllers.)
 type Bio003 struct {
 	detect.BaseDetector
-	jitterWindowFrames int
-	maxJitterVariance  float64
-	minActiveFrames    int
-	sigmoidSteepness   float64
-
+	jitterWindowFrames    int
+	maxJitterVariance     float64
+	minActiveFrames       int
+	severityDecades       float64
 	minConsecutiveWindows int
 
 	// Per-player hand position history relative to body
-	leftHandRelHistory  map[string][]model.Vec3
-	rightHandRelHistory map[string][]model.Vec3
-	activeFrames        map[string]int
-	consecutiveZeroLeft  map[string]int
-	consecutiveZeroRight map[string]int
+	leftHandRelHistory   map[string][]model.Vec3
+	rightHandRelHistory  map[string][]model.Vec3
+	activeHistory        map[string][]bool
+	consecutiveZeroLeft  map[string]*windowRun
+	consecutiveZeroRight map[string]*windowRun
 }
 
 // NewBio003 creates a new BIO_003 Zero Hand Jitter detector.
@@ -30,7 +35,7 @@ func NewBio003(params map[string]any) *Bio003 {
 	d := &Bio003{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "BIO_003",
-			DetectorVersion:  "2.0.0",
+			DetectorVersion:  "2.1.0",
 			DetectorName:     "Zero Hand Jitter",
 			DetectorCategory: "bio",
 			Inputs:           []string{"hand_tracking", "position"},
@@ -38,61 +43,86 @@ func NewBio003(params map[string]any) *Bio003 {
 			Weight:           0.7,
 			IsAutoEnforce:    false,
 		},
-		jitterWindowFrames:  detect.GetInt(params, "jitter_window_frames", 90),
-		maxJitterVariance:   detect.GetFloat(params, "max_jitter_variance", 0.00001),
-		minActiveFrames:     detect.GetInt(params, "min_active_frames", 60),
-		sigmoidSteepness:    detect.GetFloat(params, "sigmoid_steepness", 50000.0),
+		jitterWindowFrames:    detect.GetInt(params, "jitter_window_frames", 90),
+		maxJitterVariance:     detect.GetFloat(params, "max_jitter_variance", 0.00001),
+		minActiveFrames:       detect.GetInt(params, "min_active_frames", 60),
+		severityDecades:       detect.GetFloat(params, "severity_decades", 2.0),
 		minConsecutiveWindows: detect.GetInt(params, "min_consecutive_windows", 2),
-		leftHandRelHistory:  make(map[string][]model.Vec3),
-		rightHandRelHistory: make(map[string][]model.Vec3),
-		activeFrames:        make(map[string]int),
-		consecutiveZeroLeft:  make(map[string]int),
-		consecutiveZeroRight: make(map[string]int),
+		leftHandRelHistory:    make(map[string][]model.Vec3),
+		rightHandRelHistory:   make(map[string][]model.Vec3),
+		activeHistory:         make(map[string][]bool),
+		consecutiveZeroLeft:   make(map[string]*windowRun),
+		consecutiveZeroRight:  make(map[string]*windowRun),
 	}
+	d.sanitize()
 	return d
+}
+
+func (d *Bio003) sanitize() {
+	if d.jitterWindowFrames < 2 {
+		d.jitterWindowFrames = 2
+	}
+	if d.minActiveFrames > d.jitterWindowFrames {
+		d.minActiveFrames = d.jitterWindowFrames
+	}
+	if d.minConsecutiveWindows < 1 {
+		d.minConsecutiveWindows = 1
+	}
 }
 
 func (d *Bio003) Reset() {
 	d.leftHandRelHistory = make(map[string][]model.Vec3)
 	d.rightHandRelHistory = make(map[string][]model.Vec3)
-	d.activeFrames = make(map[string]int)
-	d.consecutiveZeroLeft = make(map[string]int)
-	d.consecutiveZeroRight = make(map[string]int)
+	d.activeHistory = make(map[string][]bool)
+	d.consecutiveZeroLeft = make(map[string]*windowRun)
+	d.consecutiveZeroRight = make(map[string]*windowRun)
 }
 
 func (d *Bio003) Configure(params map[string]any) error {
 	d.jitterWindowFrames = detect.GetInt(params, "jitter_window_frames", d.jitterWindowFrames)
 	d.maxJitterVariance = detect.GetFloat(params, "max_jitter_variance", d.maxJitterVariance)
 	d.minActiveFrames = detect.GetInt(params, "min_active_frames", d.minActiveFrames)
-	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+	d.severityDecades = detect.GetFloat(params, "severity_decades", d.severityDecades)
+	d.minConsecutiveWindows = detect.GetInt(params, "min_consecutive_windows", d.minConsecutiveWindows)
+	d.sanitize()
 	return nil
 }
 
 func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	for _, ps := range players {
+	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 
-		// Compute hand positions relative to body (player position)
-		leftRel := ps.LeftHand.Sub(ps.Position)
-		rightRel := ps.RightHand.Sub(ps.Position)
-
-		leftHist := d.leftHandRelHistory[pid]
-		model.PushVec3History(&leftHist, leftRel, d.jitterWindowFrames)
-		d.leftHandRelHistory[pid] = leftHist
-
-		rightHist := d.rightHandRelHistory[pid]
-		model.PushVec3History(&rightHist, rightRel, d.jitterWindowFrames)
-		d.rightHandRelHistory[pid] = rightHist
+		// A zero hand vector is tracking loss, not a hand at the arena
+		// origin: drop that hand's window rather than measuring it.
+		if ps.LeftHand.IsZero() {
+			d.dropHand(pid, "left")
+		} else {
+			leftHist := d.leftHandRelHistory[pid]
+			model.PushVec3History(&leftHist, ps.LeftHand.Sub(ps.Position), d.jitterWindowFrames)
+			d.leftHandRelHistory[pid] = leftHist
+		}
+		if ps.RightHand.IsZero() {
+			d.dropHand(pid, "right")
+		} else {
+			rightHist := d.rightHandRelHistory[pid]
+			model.PushVec3History(&rightHist, ps.RightHand.Sub(ps.Position), d.jitterWindowFrames)
+			d.rightHandRelHistory[pid] = rightHist
+		}
 
 		// Require meaningful movement — players floating or drifting slowly
 		// naturally have near-zero hand jitter relative to body.
-		if !ps.IsStunned && ps.Speed > 1.0 {
-			d.activeFrames[pid]++
-		}
-
-		if d.activeFrames[pid] < d.minActiveFrames {
+		active := !ps.IsStunned && ps.Speed > 1.0
+		actHist := d.activeHistory[pid]
+		pushBoolHistory(&actHist, active, d.jitterWindowFrames)
+		d.activeHistory[pid] = actHist
+		activeInWindow := countTrue(actHist)
+		if activeInWindow < d.minActiveFrames {
+			// Gate closed: nothing is measured, so no window counted while
+			// it stays closed can be "consecutive" with an earlier one.
+			getRun(d.consecutiveZeroLeft, pid).reset()
+			getRun(d.consecutiveZeroRight, pid).reset()
 			continue
 		}
 
@@ -115,36 +145,28 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			// is not updating (replay artifact / tracking loss), not bot input.
 			// A real bot would still have floating-point noise > 0.
 			if variance < 1e-10 {
+				d.clearHand(pid, h.name)
 				continue
 			}
 
 			// Track consecutive windows of zero jitter per hand.
 			// A single zero-jitter window is normal (coasting). Multiple
-			// consecutive windows indicate synthetic/bot input.
-			consecutiveMap := d.consecutiveZeroLeft
+			// consecutive windows indicate synthetic/bot input. windowRun
+			// restarts the count unless this window ends exactly one
+			// window after the last counted one (see common.go).
+			run := getRun(d.consecutiveZeroLeft, pid)
 			if h.name == "right" {
-				consecutiveMap = d.consecutiveZeroRight
+				run = getRun(d.consecutiveZeroRight, pid)
 			}
 
-			if variance < d.maxJitterVariance {
-				consecutiveMap[pid]++
-			} else {
-				consecutiveMap[pid] = 0
-			}
-
-			if consecutiveMap[pid] < d.minConsecutiveWindows {
-				// Reset history to start fresh window, but don't fire
-				if h.name == "left" {
-					d.leftHandRelHistory[pid] = nil
-				} else {
-					d.rightHandRelHistory[pid] = nil
-				}
-				d.activeFrames[pid] = 0
+			if run.add(frameIdx, d.jitterWindowFrames, variance < d.maxJitterVariance) < d.minConsecutiveWindows {
+				// Start a fresh window for this hand, but don't fire
+				d.clearHand(pid, h.name)
 				continue
 			}
 
 			// Multiple consecutive zero-jitter windows — flag it
-			severity := model.SigmoidConfidence(d.maxJitterVariance-variance, 0, d.sigmoidSteepness)
+			severity := logRatioSeverity(d.maxJitterVariance, variance, d.severityDecades)
 			confidence := model.Clamp01(severity * 0.85)
 
 			ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
@@ -153,7 +175,7 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 					Hand:             h.name,
 					PositionVariance: variance,
 					WindowFrames:     d.jitterWindowFrames,
-					ActiveFrames:     d.activeFrames[pid],
+					ActiveFrames:     activeInWindow,
 					Threshold:        d.maxJitterVariance,
 					PlayerSpeed:      ps.Speed,
 				},
@@ -169,15 +191,30 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			events = append(events, ev)
 
 			// Reset after firing
-			consecutiveMap[pid] = 0
-			if h.name == "left" {
-				d.leftHandRelHistory[pid] = nil
-			} else {
-				d.rightHandRelHistory[pid] = nil
-			}
-			d.activeFrames[pid] = 0
+			run.reset()
+			d.clearHand(pid, h.name)
 		}
 	}
 
 	return events
+}
+
+// clearHand starts a fresh window for one hand (the run continues if the
+// next full window ends exactly one window later).
+func (d *Bio003) clearHand(pid, hand string) {
+	if hand == "left" {
+		d.leftHandRelHistory[pid] = nil
+	} else {
+		d.rightHandRelHistory[pid] = nil
+	}
+}
+
+// dropHand discards one hand's window for tracking loss and breaks its run.
+func (d *Bio003) dropHand(pid, hand string) {
+	d.clearHand(pid, hand)
+	if hand == "left" {
+		getRun(d.consecutiveZeroLeft, pid).reset()
+	} else {
+		getRun(d.consecutiveZeroRight, pid).reset()
+	}
 }

@@ -30,37 +30,37 @@ func NewMatchContext() *model.MatchContext {
 // NewPlayerState creates a test PlayerState.
 func NewPlayerState(playerID string) *model.PlayerState {
 	return &model.PlayerState{
-		PlayerID:  playerID,
-		Team:      "blue",
-		Position:  model.Vec3{5, 0, 0},
-		Rotation:  model.QuatIdentity(),
-		LeftHand:  model.Vec3{4.7, 0.3, 0.2},
-		RightHand: model.Vec3{5.3, 0.3, -0.2},
+		PlayerID:     playerID,
+		Team:         "blue",
+		Position:     model.Vec3{5, 0, 0},
+		Rotation:     model.QuatIdentity(),
+		LeftHand:     model.Vec3{4.7, 0.3, 0.2},
+		RightHand:    model.Vec3{5.3, 0.3, -0.2},
 		LeftHandRot:  model.QuatIdentity(),
 		RightHandRot: model.QuatIdentity(),
-		FrameDt:   0.067,
+		FrameDt:      0.067,
 	}
 }
 
 // MakeThrowEvent creates a ThrowEvent with given parameters.
 func MakeThrowEvent(throwerID string, frameIdx int, releaseSpeed, releaseAngle float64) model.ThrowEvent {
 	return model.ThrowEvent{
-		ThrowerID:   throwerID,
-		Attribution: model.ThrowAttribution{PlayerID: throwerID, Confidence: 0.95, Method: "possession_track"},
-		FrameIndex:  frameIdx,
-		Timestamp:   float64(frameIdx) * 0.067,
-		ReleasePosition: model.Vec3{5, 0, 0},
-		ReleaseVelocity: model.Vec3{releaseSpeed, 0, 0},
-		ReleaseSpeed:    releaseSpeed,
-		ThrowingHand:    "right",
-		HandPosition:    model.Vec3{5.3, 0.3, 0},
-		HandVelocity:    model.Vec3{releaseSpeed * 0.5, 0, 0},
-		HandSpeed:       releaseSpeed * 0.5,
-		WristOrientation: model.QuatIdentity(),
-		PlayerPosition:  model.Vec3{5, 0, 0},
-		PlayerVelocity:  model.Vec3{0, 0, 0},
+		ThrowerID:          throwerID,
+		Attribution:        model.ThrowAttribution{PlayerID: throwerID, Confidence: 0.95, Method: "possession_track"},
+		FrameIndex:         frameIdx,
+		Timestamp:          float64(frameIdx) * 0.067,
+		ReleasePosition:    model.Vec3{5, 0, 0},
+		ReleaseVelocity:    model.Vec3{releaseSpeed, 0, 0},
+		ReleaseSpeed:       releaseSpeed,
+		ThrowingHand:       "right",
+		HandPosition:       model.Vec3{5.3, 0.3, 0},
+		HandVelocity:       model.Vec3{releaseSpeed * 0.5, 0, 0},
+		HandSpeed:          releaseSpeed * 0.5,
+		WristOrientation:   model.QuatIdentity(),
+		PlayerPosition:     model.Vec3{5, 0, 0},
+		PlayerVelocity:     model.Vec3{0, 0, 0},
 		HandToDiscDistance: 0.3,
-		ReleaseAngle:      releaseAngle,
+		ReleaseAngle:       releaseAngle,
 		PossessionDuration: 1.0,
 	}
 }
@@ -86,28 +86,10 @@ func MakeDetectionEvent(detectorID, playerID string, severity, confidence float6
 	}
 }
 
-// GenerateCleanFrames creates N frames of normal gameplay.
+// GenerateCleanFrames creates N frames of normal gameplay: a player
+// drifting along Z at 1.5 m/s from a mid-arena start (never the rejected
+// origin), hands riding on the body with human jitter and wobble, an idle
+// disc. Every frame passes the production validator.
 func GenerateCleanFrames(playerID string, count int) []model.PlayerTelemetryFrame {
-	frames := make([]model.PlayerTelemetryFrame, count)
-	for i := 0; i < count; i++ {
-		ts := float64(i) * 0.067
-		frames[i] = model.PlayerTelemetryFrame{
-			PlayerID:          playerID,
-			FrameIndex:        i,
-			Timestamp:         ts,
-			DeltaTime:         0.067,
-			Position:          model.Vec3{float64(i) * 0.1, 0, 0},
-			Rotation:          model.QuatIdentity(),
-			LeftHandPosition:  model.Vec3{float64(i)*0.1 - 0.3, 0.3, 0.2},
-			RightHandPosition: model.Vec3{float64(i)*0.1 + 0.3, 0.3, -0.2},
-			LeftHandRotation:  model.QuatIdentity(),
-			RightHandRotation: model.QuatIdentity(),
-			GamePhase:         "playing",
-			Disc: &model.DiscState{
-				Position: model.Vec3{0, 0, 0},
-				Velocity: model.Vec3{0, 0, 0},
-			},
-		}
-	}
-	return frames
+	return NewFrameBuilder(playerID).WithStartPos(model.Vec3{2, 1.6, -20}).NormalMovingPlayer(count, 1.5)
 }

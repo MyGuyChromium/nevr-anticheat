@@ -1,45 +1,86 @@
-// Package antievasion implements protections against cheat developers evading detection.
+// Package antievasion implements protections against cheat developers evading
+// detection.
+//
+// STATUS: EXPERIMENTAL. Nothing in the pipeline, ingest server or CLI uses
+// this package yet; the anomaly_clusters table has no writer. The types are
+// kept because their contracts are tested and intended for the phase that
+// gates detector evaluation windows and delays enforcement notifications.
+// Do not treat the presence of this package as evidence that the running
+// system randomises evaluation or delays enforcement.
 package antievasion
 
 import (
 	"math"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// WindowRandomizer adds jitter to detector evaluation windows so cheat developers
+// WindowRandomizer jitters detector evaluation frames so cheat developers
 // cannot predict exactly when measurements are taken.
+//
+// Schedule: frames are partitioned into consecutive blocks of baseInterval
+// frames and exactly ONE frame per block is evaluated, chosen by a 64-bit
+// mixed hash of (secret, matchID, detectorID, block). Consequences:
+//
+//   - the average rate is 1/baseInterval, like a fixed stride;
+//   - the maximum gap between evaluations is 2*baseInterval-1 frames (bounded);
+//   - the schedule is reproducible for the same inputs (so offline
+//     reprocessing matches live), but not derivable from the public matchID
+//     when a secret is supplied.
+//
+// Without a secret the schedule is deterministic from public data; use
+// NewWindowRandomizerWithSecret in production.
 type WindowRandomizer struct {
-	// Deterministic jitter based on match+player+frame to be reproducible
 	seed uint64
 }
 
-// NewWindowRandomizer creates a randomizer seeded from match context.
+// NewWindowRandomizer creates a randomizer seeded from the match ID only.
+// The resulting schedule is reproducible from public data; prefer
+// NewWindowRandomizerWithSecret where unpredictability matters.
 func NewWindowRandomizer(matchID string) *WindowRandomizer {
-	// Simple hash of matchID for deterministic-but-unpredictable seed
-	var h uint64
-	for _, b := range []byte(matchID) {
-		h = h*31 + uint64(b)
-	}
+	return NewWindowRandomizerWithSecret(matchID, nil)
+}
+
+// NewWindowRandomizerWithSecret seeds the schedule with a server-side secret
+// in addition to the match ID.
+func NewWindowRandomizerWithSecret(matchID string, secret []byte) *WindowRandomizer {
+	h := fnv64(secret)
+	h = mix64(h ^ fnv64([]byte(matchID)))
 	return &WindowRandomizer{seed: h}
 }
 
 // ShouldEvaluate returns true if a detector should evaluate at this frame.
-// Adds deterministic jitter: instead of evaluating every frame, skip some frames
-// in an unpredictable-but-reproducible pattern.
 func (wr *WindowRandomizer) ShouldEvaluate(detectorID string, frameIdx int, baseInterval int) bool {
-	if baseInterval <= 1 {
+	if baseInterval <= 1 || frameIdx < 0 {
 		return true // evaluate every frame
 	}
-	// Mix detector ID into the hash
-	var dh uint64
-	for _, b := range []byte(detectorID) {
-		dh = dh*37 + uint64(b)
+	interval := uint64(baseInterval)
+	block := uint64(frameIdx) / interval
+	h := mix64(wr.seed ^ mix64(fnv64([]byte(detectorID))^block*0x9E3779B97F4A7C15))
+	pick := h % interval
+	return uint64(frameIdx)%interval == pick
+}
+
+// fnv64 is FNV-1a over the bytes.
+func fnv64(b []byte) uint64 {
+	h := uint64(14695981039346656037)
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= 1099511628211
 	}
-	combined := wr.seed ^ dh ^ uint64(frameIdx)*2654435761
-	return combined%uint64(baseInterval) == 0
+	return h
+}
+
+// mix64 is the splitmix64 finalizer: every output bit depends on every
+// input bit, so low bits of the result are not a function of low input bits.
+func mix64(x uint64) uint64 {
+	x += 0x9E3779B97F4A7C15
+	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9
+	x = (x ^ (x >> 27)) * 0x94D049BB133111EB
+	return x ^ (x >> 31)
 }
 
 // DelayedEnforcement delays enforcement decisions by a randomized amount
@@ -49,6 +90,7 @@ type DelayedEnforcement struct {
 	pending  []pendingAction
 	minDelay time.Duration
 	maxDelay time.Duration
+	now      func() time.Time
 }
 
 type pendingAction struct {
@@ -56,12 +98,26 @@ type pendingAction struct {
 	executeAt time.Time
 }
 
-// NewDelayedEnforcement creates a delayed enforcer.
+// NewDelayedEnforcement creates a delayed enforcer. maxDelay < minDelay is
+// treated as maxDelay == minDelay.
 func NewDelayedEnforcement(minDelay, maxDelay time.Duration) *DelayedEnforcement {
-	return &DelayedEnforcement{
-		minDelay: minDelay,
-		maxDelay: maxDelay,
+	if minDelay < 0 {
+		minDelay = 0
 	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+	return &DelayedEnforcement{minDelay: minDelay, maxDelay: maxDelay, now: time.Now}
+}
+
+// SetClock overrides the wall clock (tests).
+func (de *DelayedEnforcement) SetClock(now func() time.Time) {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	if now == nil {
+		now = time.Now
+	}
+	de.now = now
 }
 
 // Queue adds an enforcement action to the delayed queue.
@@ -70,31 +126,35 @@ func (de *DelayedEnforcement) Queue(action model.EnforcementAction) {
 	defer de.mu.Unlock()
 
 	// Deterministic delay based on action ID hash
-	var h uint64
-	for _, b := range []byte(action.ActionID) {
-		h = h*31 + uint64(b)
-	}
+	h := mix64(fnv64([]byte(action.ActionID)))
 	delayRange := de.maxDelay - de.minDelay
 	delayFraction := float64(h%1000) / 1000.0
 	delay := de.minDelay + time.Duration(float64(delayRange)*delayFraction)
 
 	de.pending = append(de.pending, pendingAction{
 		action:    action,
-		executeAt: time.Now().Add(delay),
+		executeAt: de.now().Add(delay),
 	})
 }
 
-// Ready returns actions that are past their delay window.
+// Pending returns the number of queued actions.
+func (de *DelayedEnforcement) Pending() int {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	return len(de.pending)
+}
+
+// Ready returns actions that are past their delay window, in queue order.
 func (de *DelayedEnforcement) Ready() []model.EnforcementAction {
 	de.mu.Lock()
 	defer de.mu.Unlock()
 
-	now := time.Now()
+	now := de.now()
 	var ready []model.EnforcementAction
 	var remaining []pendingAction
 
 	for _, p := range de.pending {
-		if now.After(p.executeAt) {
+		if !now.Before(p.executeAt) {
 			ready = append(ready, p.action)
 		} else {
 			remaining = append(remaining, p)
@@ -108,12 +168,11 @@ func (de *DelayedEnforcement) Ready() []model.EnforcementAction {
 type AnomalyCluster struct {
 	mu       sync.RWMutex
 	clusters map[string]*playerCluster // playerID -> cluster
+	now      func() time.Time
 }
 
 type playerCluster struct {
 	detectorHits map[string][]clusterEntry // detectorID -> entries
-	totalEvents  int
-	matchIDs     map[string]bool
 }
 
 type clusterEntry struct {
@@ -125,78 +184,117 @@ type clusterEntry struct {
 
 // NewAnomalyCluster creates a cross-match anomaly tracker.
 func NewAnomalyCluster() *AnomalyCluster {
-	return &AnomalyCluster{
-		clusters: make(map[string]*playerCluster),
-	}
+	return &AnomalyCluster{clusters: make(map[string]*playerCluster), now: time.Now}
 }
 
-// Record adds a detection to the cluster.
+// SetClock overrides the wall clock used by Record and Prune (tests).
+func (ac *AnomalyCluster) SetClock(now func() time.Time) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if now == nil {
+		now = time.Now
+	}
+	ac.now = now
+}
+
+// Record adds a detection stamped with the current clock. Prefer RecordAt
+// with the event's real time when replaying historical data, otherwise
+// old events look fresh and never age out.
 func (ac *AnomalyCluster) Record(event model.DetectionEvent) {
+	ac.RecordAt(event, ac.clock())
+}
+
+func (ac *AnomalyCluster) clock() time.Time {
+	ac.mu.RLock()
+	defer ac.mu.RUnlock()
+	return ac.now()
+}
+
+// RecordAt adds a detection with an explicit event time.
+func (ac *AnomalyCluster) RecordAt(event model.DetectionEvent, at time.Time) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
 	pc, ok := ac.clusters[event.PlayerID]
 	if !ok {
-		pc = &playerCluster{
-			detectorHits: make(map[string][]clusterEntry),
-			matchIDs:     make(map[string]bool),
-		}
+		pc = &playerCluster{detectorHits: make(map[string][]clusterEntry)}
 		ac.clusters[event.PlayerID] = pc
 	}
-
 	pc.detectorHits[event.DetectorID] = append(pc.detectorHits[event.DetectorID], clusterEntry{
 		matchID:    event.MatchID,
-		timestamp:  time.Now(),
+		timestamp:  at,
 		severity:   event.Severity,
 		confidence: event.Confidence,
 	})
-	pc.totalEvents++
-	pc.matchIDs[event.MatchID] = true
 }
 
-// Score computes a cross-match anomaly score for a player.
-// Higher score = more suspicious pattern across matches.
-func (ac *AnomalyCluster) Score(playerID string) float64 {
+// Stats summarises a player's cluster.
+type Stats struct {
+	TotalEvents int
+	Matches     []string
+	Detectors   []string
+	AvgSeverity float64
+}
+
+// Stats returns the current (post-prune) summary for a player.
+func (ac *AnomalyCluster) Stats(playerID string) Stats {
 	ac.mu.RLock()
 	defer ac.mu.RUnlock()
-
 	pc, ok := ac.clusters[playerID]
 	if !ok {
-		return 0
+		return Stats{}
 	}
-
-	// Factors: number of distinct matches, number of distinct detectors, total events
-	matchCount := float64(len(pc.matchIDs))
-	detectorCount := float64(len(pc.detectorHits))
-
-	// Weight by average severity across all hits
-	totalSev := 0.0
-	totalHits := 0
-	for _, entries := range pc.detectorHits {
-		for _, e := range entries {
-			totalSev += e.severity
-			totalHits++
-		}
-	}
-	avgSev := 0.0
-	if totalHits > 0 {
-		avgSev = totalSev / float64(totalHits)
-	}
-
-	// Cross-match score: matches * detectors * avgSeverity
-	// Scaled so 3 matches * 2 detectors * 0.8 severity = ~5.0
-	return math.Min(10.0, matchCount*detectorCount*avgSev)
+	return pc.stats()
 }
 
-// Prune removes entries older than maxAge.
+func (pc *playerCluster) stats() Stats {
+	matches := make(map[string]bool)
+	var st Stats
+	totalSev := 0.0
+	for did, entries := range pc.detectorHits {
+		if len(entries) == 0 {
+			continue
+		}
+		st.Detectors = append(st.Detectors, did)
+		for _, e := range entries {
+			matches[e.matchID] = true
+			totalSev += e.severity
+			st.TotalEvents++
+		}
+	}
+	for m := range matches {
+		st.Matches = append(st.Matches, m)
+	}
+	sort.Strings(st.Matches)
+	sort.Strings(st.Detectors)
+	if st.TotalEvents > 0 {
+		st.AvgSeverity = totalSev / float64(st.TotalEvents)
+	}
+	return st
+}
+
+// Score computes a cross-match anomaly score for a player from the entries
+// currently held (so it shrinks after Prune). Higher = more suspicious
+// pattern across matches. Scaled so 3 matches * 2 detectors * 0.8 severity
+// ~= 5.0, capped at 10.
+func (ac *AnomalyCluster) Score(playerID string) float64 {
+	st := ac.Stats(playerID)
+	if st.TotalEvents == 0 {
+		return 0
+	}
+	return math.Min(10.0, float64(len(st.Matches))*float64(len(st.Detectors))*st.AvgSeverity)
+}
+
+// Prune removes entries older than maxAge relative to the clock and drops
+// players with nothing left.
 func (ac *AnomalyCluster) Prune(maxAge time.Duration) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
-	cutoff := time.Now().Add(-maxAge)
+	cutoff := ac.now().Add(-maxAge)
 	for pid, pc := range ac.clusters {
 		for did, entries := range pc.detectorHits {
-			var kept []clusterEntry
+			kept := entries[:0]
 			for _, e := range entries {
 				if e.timestamp.After(cutoff) {
 					kept = append(kept, e)

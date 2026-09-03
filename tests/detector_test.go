@@ -44,11 +44,43 @@ func TestDetectors(t *testing.T) {
 			category: "threshold_boundary",
 			detector: configuredDetector(throw.NewThrow001(nil), cfg, "THROW_001"),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				// Effective cap at 0 ms ping: 18.7 (physics) + 1.3 (base_tolerance) = 20.0.
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				te := testutil.MakeThrowEvent("p1", 100, 19.9, 0.0) // just under default cap+tolerance
+				te := testutil.MakeThrowEvent("p1", 100, 19.9, 0.0) // 0.1 m/s under the effective cap
 				ps.LastThrow = &te
+				return mc, map[string]*model.PlayerState{"p1": ps}, 100
+			},
+			wantEvents: false,
+		},
+		{
+			name:     "THROW_001/threshold_boundary_over",
+			category: "threshold_boundary",
+			detector: configuredDetector(throw.NewThrow001(nil), cfg, "THROW_001"),
+			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				mc := testutil.NewMatchContext()
+				ps := testutil.NewPlayerState("p1")
+				ps.HasDisc = true
+				te := testutil.MakeThrowEvent("p1", 100, 20.1, 0.0) // 0.1 m/s over the effective cap
+				ps.LastThrow = &te
+				return mc, map[string]*model.PlayerState{"p1": ps}, 100
+			},
+			wantEvents: true,
+		},
+		{
+			name:     "THROW_001/laggy_data_ping_tolerance",
+			category: "laggy_data",
+			detector: configuredDetector(throw.NewThrow001(nil), cfg, "THROW_001"),
+			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				// 300 ms ping adds 0.3 * 5.0 = 1.5 m/s of tolerance: 21.0 m/s
+				// is over the 0 ms cap (20.0) but under the laggy cap (21.5).
+				mc := testutil.NewMatchContext()
+				ps := testutil.NewPlayerState("p1")
+				ps.HasDisc = true
+				te := testutil.MakeThrowEvent("p1", 100, 21.0, 0.0)
+				ps.LastThrow = &te
+				ps.EstimatedPingMs = 300.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
 			wantEvents: false,
@@ -61,7 +93,6 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				ps.FrameDt = 0.017 // 60fps — THROW_001 skips replay-rate data
 				te := testutil.MakeThrowEvent("p1", 100, 35.0, 0.0) // way over cap
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
@@ -100,24 +131,44 @@ func TestDetectors(t *testing.T) {
 		{
 			name:     "MOV_001/clear_violation",
 			category: "clear_violation",
-			detector: configuredDetector(movement.NewMov001(nil), cfg, "MOV_001"),
+			detector: func() detect.Detector {
+				// MOV_001 keeps its own 30-frame speed window: feed 29 frames
+				// at 120 m/s so the test frame completes the window.
+				d := configuredDetector(movement.NewMov001(nil), cfg, "MOV_001")
+				mc := testutil.NewMatchContext()
+				for fi := 71; fi < 100; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.Speed = 120.0
+					if evs := d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi); len(evs) != 0 {
+						panic("MOV_001 fired before its window filled")
+					}
+				}
+				return d
+			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
-				// MOV_001 needs sustained speed over a 30-frame window.
-				// Pre-fill SpeedHistory so a single Evaluate sees enough data.
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Speed = 120.0
-				for i := 0; i < 35; i++ {
-					model.PushFloat64History(&ps.SpeedHistory, 120.0, 60)
-				}
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
-			wantEvents: false, // MOV_001 uses internal speedWindow, not SpeedHistory; single frame won't trigger
+			wantEvents: true,
 		},
 		{
 			name:     "MOV_001/laggy_data",
 			category: "laggy_data",
-			detector: configuredDetector(movement.NewMov001(nil), cfg, "MOV_001"),
+			detector: func() detect.Detector {
+				// A single 60 m/s sample in an otherwise 10 m/s window is
+				// under min_burst_frames (5) and leaves the median legitimate.
+				d := configuredDetector(movement.NewMov001(nil), cfg, "MOV_001")
+				mc := testutil.NewMatchContext()
+				for fi := 71; fi < 100; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.Speed = 10.0
+					ps.EstimatedPingMs = 200.0
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
+				return d
+			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
@@ -125,7 +176,7 @@ func TestDetectors(t *testing.T) {
 				ps.EstimatedPingMs = 200.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
-			wantEvents: false, // single-frame Evaluate call won't fill sustained window
+			wantEvents: false,
 		},
 
 		// ---- MOV_002: Teleportation ----
@@ -146,14 +197,16 @@ func TestDetectors(t *testing.T) {
 			category: "clear_violation",
 			detector: func() detect.Detector {
 				// Override min_incidents to 1 for unit test — we're testing
-				// detection capability, not FP filtering thresholds.
-				d := movement.NewMov002(map[string]any{"min_incidents": 1})
-				dc := cfg.GetDetectorConfig("MOV_002")
-				_ = d.Configure(dc.Params)
+				// detection capability, not FP filtering thresholds. The
+				// override goes last so the config's min_incidents=5 does
+				// not re-apply on top of it.
+				d := movement.NewMov002(cfg.GetDetectorConfig("MOV_002").Params)
+				_ = d.Configure(map[string]any{"min_incidents": 1})
 				// Pre-seed position
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Position = model.Vec3{0, 1.6, 0}
+				ps.LastTimestamp = 49 * 0.067 // MOV_002 compares on elapsed telemetry time
 				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 49)
 				return d
 			}(),
@@ -161,35 +214,73 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Position = model.Vec3{10, 1.6, 0} // 10m teleport (cheat range, under 12m game-event guard)
+				ps.LastTimestamp = 50 * 0.067
 				return mc, map[string]*model.PlayerState{"p1": ps}, 50
 			},
 			wantEvents: true,
 		},
 
-		// ---- STATE_006: Score Manipulation ----
+		// ---- STATE_006: Score Manipulation (SUSPENDED) ----
 		{
-			name:     "STATE_006/clean_pass",
-			category: "clean_pass",
-			detector: configuredDetector(state.NewState006(nil), cfg, "STATE_006"),
-			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+			name:     "STATE_006/suspended_ignores_score_jump",
+			category: "clear_violation",
+			detector: func() detect.Detector {
+				d := configuredDetector(state.NewState006(nil), cfg, "STATE_006")
 				mc := testutil.NewMatchContext()
-				return mc, map[string]*model.PlayerState{}, 100
+				ps := testutil.NewPlayerState("p1")
+				ps.PrevBlueScore = 0
+				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 99)
+				return d
+			}(),
+			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				// A +7 score jump: SUSPENDED means no invariant, so no event.
+				mc := testutil.NewMatchContext()
+				ps := testutil.NewPlayerState("p1")
+				ps.PrevBlueScore = 7
+				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
-			wantEvents: false, // no score data in frame-by-frame eval
+			wantEvents: false,
 		},
 
 		// ---- BIO_003: Zero Jitter ----
 		{
 			name:     "BIO_003/clean_pass",
 			category: "clean_pass",
-			detector: configuredDetector(bio.NewBio003(nil), cfg, "BIO_003"),
-			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+			detector: func() detect.Detector {
+				// Two full 90-frame windows of human jitter (1 cm) on an
+				// active player: variance ~7e-5 m^2, over the 1e-5 threshold.
+				d := configuredDetector(bio.NewBio003(nil), cfg, "BIO_003")
 				mc := testutil.NewMatchContext()
-				ps := testutil.NewPlayerState("p1")
-				ps.RightHand = model.Vec3{0.3 + 0.005, 1.4, 0.2} // some jitter
-				return mc, map[string]*model.PlayerState{"p1": ps}, 100
+				for fi := 0; fi < 199; fi++ {
+					ps := bio003Player(fi, 0.01)
+					if evs := d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi); len(evs) != 0 {
+						panic("BIO_003 fired on human jitter")
+					}
+				}
+				return d
+			}(),
+			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				return testutil.NewMatchContext(), map[string]*model.PlayerState{"p1": bio003Player(199, 0.01)}, 199
 			},
-			wantEvents: false, // single frame won't trigger
+			wantEvents: false,
+		},
+		{
+			name:     "BIO_003/clear_violation",
+			category: "clear_violation",
+			detector: func() detect.Detector {
+				// Sub-millimetre jitter (variance ~2e-7 m^2) over two windows.
+				d := configuredDetector(bio.NewBio003(nil), cfg, "BIO_003")
+				mc := testutil.NewMatchContext()
+				for fi := 0; fi < 179; fi++ {
+					ps := bio003Player(fi, 0.0005)
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
+				return d
+			}(),
+			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
+				return testutil.NewMatchContext(), map[string]*model.PlayerState{"p1": bio003Player(179, 0.0005)}, 179
+			},
+			wantEvents: true,
 		},
 
 		// ---- THROW_002: Release Acceleration ----
@@ -406,7 +497,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.FrameDt = 0.067
-				ps.LeftWristAngularRate = 8.0  // moderate rotation, well under 50 rad/s
+				ps.LeftWristAngularRate = 8.0 // moderate rotation, well under 50 rad/s
 				ps.RightWristAngularRate = 12.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
@@ -416,17 +507,21 @@ func TestDetectors(t *testing.T) {
 			name:     "BIO_001/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// BIO_001 requires minViolationFrames(2) consecutive frames above threshold.
-				// Pre-seed one frame of violation, then the test frame fires on the second.
+				// BIO_001 requires at least 3 consecutive frames above threshold
+				// (min_violation_frames is floored at 3: at 15 Hz a 2-frame streak
+				// is a single sample pair). Pre-seed two frames of violation, then
+				// the test frame fires on the third.
 				d := bio.NewBio001(nil)
 				dc := cfg.GetDetectorConfig("BIO_001")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				ps := testutil.NewPlayerState("p1")
-				ps.FrameDt = 0.067
-				ps.RightWristAngularRate = 120.0 // way above 50 rad/s threshold
-				ps.LeftWristAngularRate = 5.0
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 99)
+				for fi := 98; fi <= 99; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.FrameDt = 0.067
+					ps.RightWristAngularRate = 120.0 // way above 50 rad/s threshold
+					ps.LeftWristAngularRate = 5.0
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
@@ -459,16 +554,20 @@ func TestDetectors(t *testing.T) {
 			name:     "BIO_002/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// BIO_002 requires minViolationFrames(2) consecutive frames above threshold(50 m/s).
+				// BIO_002 requires min_violation_frames consecutive frames above
+				// threshold (50 m/s); the code floors it at 3 (a one-frame glitch
+				// is an out-and-back pair). Pre-seed two frames, fire on the third.
 				d := bio.NewBio002(nil)
 				dc := cfg.GetDetectorConfig("BIO_002")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				ps := testutil.NewPlayerState("p1")
-				ps.FrameDt = 0.067
-				ps.RightHandSpeed = 150.0 // impossibly fast hand
-				ps.LeftHandSpeed = 5.0
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 99)
+				for fi := 98; fi <= 99; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.FrameDt = 0.067
+					ps.RightHandSpeed = 150.0 // impossibly fast hand
+					ps.LeftHandSpeed = 5.0
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
@@ -597,28 +696,31 @@ func TestDetectors(t *testing.T) {
 			name:     "MOV_003/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// Zero-inertia hack: instant 180-degree reversal at high speed.
-				// MOV_003 requires 2 consecutive frames of reversed velocity.
+				// Zero-inertia hack: instant 180-degree reversal at high speed,
+				// then the player KEEPS the new heading. MOV_003 confirms a
+				// reversal only after confirm_frames (3) frames on the new heading.
 				d := movement.NewMov003(nil)
 				dc := cfg.GetDetectorConfig("MOV_003")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				// Frame 98: moving fast in +X
+				// Frame 97: moving fast in +X
 				ps0 := testutil.NewPlayerState("p1")
 				ps0.Velocity = model.Vec3{20.0, 0, 0}
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 98)
-				// Frame 99: first reversal (instant 180 flip at high speed)
-				ps1 := testutil.NewPlayerState("p1")
-				ps1.Velocity = model.Vec3{-20.0, 0, 0}
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps1}, 99)
+				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 97)
+				// Frames 98-100: instant 180 flip at high speed, heading held
+				for fi := 98; fi <= 100; fi++ {
+					ps1 := testutil.NewPlayerState("p1")
+					ps1.Velocity = model.Vec3{-20.0, 0, 0}
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps1}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
-				// Frame 100: continued reversal — second consecutive > 175 deg at high speed
-				ps.Velocity = model.Vec3{20.0, 0, 0} // flipped back — 180 deg from frame 99
-				return mc, map[string]*model.PlayerState{"p1": ps}, 100
+				// Frame 101: third frame on the reversed heading — confirmed
+				ps.Velocity = model.Vec3{-20.0, 0, 0}
+				return mc, map[string]*model.PlayerState{"p1": ps}, 101
 			},
 			wantEvents: true,
 		},
@@ -659,6 +761,10 @@ func TestDetectors(t *testing.T) {
 				dc := cfg.GetDetectorConfig("STATE_002")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
+				// An unstunned observation first: STATE_002 only measures a
+				// stun whose start it saw as a false -> true transition.
+				ps0 := testutil.NewPlayerState("p1")
+				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 9)
 				// First short stun: frames 10-14 (5 frames, way under 30)
 				for i := 10; i < 15; i++ {
 					ps := testutil.NewPlayerState("p1")
@@ -851,7 +957,7 @@ func TestDetectors(t *testing.T) {
 				ps.Team = "blue"
 				ps.Position = model.Vec3{5.0, 1.6, 0}
 				ps.LeftHand = model.Vec3{5.5, 1.8, 0}  // hand near body
-				ps.RightHand = model.Vec3{5.8, 1.8, 0}  // hand near victim
+				ps.RightHand = model.Vec3{5.8, 1.8, 0} // hand near victim
 				ps.Speed = 5.0
 				// Victim is close — 1m away
 				ps2 := testutil.NewPlayerState("p2")
@@ -918,6 +1024,25 @@ func TestDetectors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bio003Player is an active (5 m/s) player whose hands carry jitter of the
+// given amplitude relative to the body, as the harness generators do.
+func bio003Player(frame int, amplitude float64) *model.PlayerState {
+	ps := testutil.NewPlayerState("p1")
+	ps.Speed = 5.0
+	ps.Position = model.Vec3{2, 1.6, float64(frame) * 0.33}
+	t := float64(frame)
+	jitter := func(seed float64) model.Vec3 {
+		return model.Vec3{
+			amplitude * math.Sin(t*1.7+seed) * math.Cos(t*0.3+seed*2),
+			amplitude * math.Sin(t*1.3+seed*3) * math.Cos(t*0.7+seed),
+			amplitude * math.Sin(t*0.9+seed*5) * math.Cos(t*1.1+seed*4),
+		}
+	}
+	ps.LeftHand = ps.Position.Add(model.Vec3{-0.3, 0.3, 0.2}).Add(jitter(1))
+	ps.RightHand = ps.Position.Add(model.Vec3{0.3, 0.3, -0.2}).Add(jitter(7))
+	return ps
 }
 
 func configuredDetector(d detect.Detector, cfg *config.Config, id string) detect.Detector {
