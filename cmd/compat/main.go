@@ -204,7 +204,9 @@ func runSessionMode(paths []string, strict bool) {
 			continue
 		}
 
-		diag.RecordSession(&session)
+		// Record with the raw bytes so key presence is tracked and the
+		// compatibility report can tell MISSING from present-but-false.
+		diag.RecordSessionWithJSON(&session, data)
 
 		if strict && strictMapper != nil {
 			result := strictMapper.MapSessionStrict(&session)
