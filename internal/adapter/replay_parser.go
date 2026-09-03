@@ -369,6 +369,12 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		}
 
 		jsonBytes := line[tabIdx+1:]
+		// Spark appends a second tab-separated JSON document (skeleton "bones")
+		// after the session snapshot; the session decoder must only see the first.
+		if j := strings.IndexByte(string(jsonBytes), '\t'); j >= 0 {
+			jsonBytes = jsonBytes[:j]
+			diag.LinesWithBones++
+		}
 		if len(jsonBytes) < 2 {
 			diag.FramesRejected++
 			noteReject("line %d: empty JSON payload", lineNum)

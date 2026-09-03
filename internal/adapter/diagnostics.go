@@ -25,6 +25,9 @@ type DiagnosticReport struct {
 	// SnapshotsNoTeams counts payloads skipped because they carried no teams
 	// (lobby/error states).
 	SnapshotsNoTeams int `json:"snapshots_no_teams"`
+	// LinesWithBones counts lines that carried Spark's trailing bones JSON
+	// document (ignored by the parser).
+	LinesWithBones int `json:"lines_with_bones"`
 	// SnapshotsDuplicate counts payloads skipped by the mapper's change detection.
 	SnapshotsDuplicate int `json:"snapshots_duplicate"`
 
