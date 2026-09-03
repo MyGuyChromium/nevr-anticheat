@@ -90,10 +90,14 @@ func (t LevelTable) WithReviewThreshold(threshold float64) LevelTable {
 	return out
 }
 
-// LevelFor returns the tier a score falls into. A zero-valued table behaves
-// like DefaultLevelTable so scores built outside the scorer still classify.
+// LevelFor returns the tier a score falls into. A table that does not pass
+// Validate (zero-valued, partially populated or non-monotonic) behaves like
+// DefaultLevelTable, so scores built outside the scorer, or decoded from a
+// snapshot with a half-filled "levels" block, still classify sensibly: with
+// a zero ActionWorthy boundary every score, including 0, would otherwise be
+// action_worthy.
 func (t LevelTable) LevelFor(score float64) ScoringLevel {
-	if t.IsZero() {
+	if t.Validate() != nil {
 		t = DefaultLevelTable()
 	}
 	switch {
