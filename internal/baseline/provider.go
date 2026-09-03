@@ -72,8 +72,12 @@ func ComputeBaseline(metric string, observations []float64) *model.Baseline {
 }
 
 // Winsorize clamps extreme values at the given percentiles (fractions in
-// [0,1]). Percentiles outside that range are clamped, and a lower percentile
-// above the upper one is swapped, so the function never panics.
+// [0,1]). The bounds are the interpolated model.Percentile values of the
+// data, the same definition ComputeBaseline uses for P50..P999, so
+// Winsorize(data, 0.1, 0.9) clamps everything below P10 up to P10 and
+// everything above P90 down to P90 for any sample size. Percentiles outside
+// [0,1] are clamped, and a lower percentile above the upper one is swapped,
+// so the function never panics.
 func Winsorize(data []float64, lowerPct, upperPct float64) []float64 {
 	if len(data) == 0 {
 		return data
@@ -94,11 +98,8 @@ func Winsorize(data []float64, lowerPct, upperPct float64) []float64 {
 	copy(sorted, data)
 	sort.Float64s(sorted)
 
-	n := len(sorted)
-	loIdx := clampIndex(int(math.Floor(lowerPct*float64(n))), n)
-	hiIdx := clampIndex(int(math.Floor(upperPct*float64(n))), n)
-	loVal := sorted[loIdx]
-	hiVal := sorted[hiIdx]
+	loVal := model.Percentile(sorted, lowerPct)
+	hiVal := model.Percentile(sorted, upperPct)
 
 	result := make([]float64, len(data))
 	for i, v := range data {
@@ -112,14 +113,4 @@ func Winsorize(data []float64, lowerPct, upperPct float64) []float64 {
 		}
 	}
 	return result
-}
-
-func clampIndex(i, n int) int {
-	if i < 0 {
-		return 0
-	}
-	if i >= n {
-		return n - 1
-	}
-	return i
 }

@@ -362,3 +362,70 @@ func TestConcurrentIngestAndRead(t *testing.T) {
 		t.Fatalf("expected 800 scored events, got %d", total)
 	}
 }
+
+func TestCorrelationBonusStaysDecayedUntilCategoriesChange(t *testing.T) {
+	cfg := testConfig()
+	cfg.DecayHalfLifeHours = 24
+	s := NewSuspicionScorer(cfg)
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return t0 })
+	s.IngestEvent(ev("THROW_001", "p", 0, 1, 1, 1))  // 15
+	s.IngestEvent(ev("BIO_001", "p", 1000, 1, 1, 1)) // 30
+	s.ApplyCorrelationBonus()                        // +5 -> 35
+	s.ApplyDecay(t0.Add(24 * time.Hour))             // 15 / 2.5 / 17.5
+	// The per-batch bonus pass must not restore the undecayed bonus.
+	for i := 0; i < 3; i++ {
+		s.ApplyCorrelationBonus()
+	}
+	sc := s.GetScore("p")
+	if !near(sc.BaseScore, 15) || !near(sc.CorrelationBonus, 2.5) || !near(sc.TotalScore, 17.5) {
+		t.Fatalf("bonus was restored after decay: base=%.2f bonus=%.2f total=%.2f", sc.BaseScore, sc.CorrelationBonus, sc.TotalScore)
+	}
+	// A new independent category changes the nominal bonus and refreshes it.
+	s.SetClock(func() time.Time { return t0.Add(24 * time.Hour) })
+	s.IngestEvent(ev("MOV_001", "p", 2000, 1, 1, 1)) // base 30
+	s.ApplyCorrelationBonus()
+	sc = s.GetScore("p")
+	if !near(sc.CorrelationBonus, 10) || !near(sc.TotalScore, 40) {
+		t.Fatalf("new category should refresh the bonus: bonus=%.2f total=%.2f", sc.CorrelationBonus, sc.TotalScore)
+	}
+	// Reset forgets the basis: a fresh player starts from scratch.
+	s.Reset()
+	if len(s.bonusBasis) != 0 {
+		t.Fatal("Reset should clear the bonus basis")
+	}
+}
+
+func TestZeroContributionEventsDoNotCount(t *testing.T) {
+	s := NewSuspicionScorer(testConfig())
+	s.IngestEvent(ev("THROW_001", "p", 0, 1, 1, 1)) // 15
+	// enforcement_weight 0: an observed-but-not-scored detector.
+	s.IngestEvent(ev("BIO_001", "p", 1000, 1, 1, 0))
+	// zero severity / confidence likewise contribute nothing.
+	s.IngestEvent(ev("MOV_001", "p", 2000, 0, 1, 1))
+	s.IngestEvent(ev("STATE_001", "p", 3000, 1, 0, 1))
+	s.ApplyCorrelationBonus()
+	sc := s.GetScore("p")
+	if !near(sc.BaseScore, 15) || !near(sc.CorrelationBonus, 0) || !near(sc.TotalScore, 15) {
+		t.Fatalf("zero-contribution events earned a bonus: base=%.2f bonus=%.2f total=%.2f", sc.BaseScore, sc.CorrelationBonus, sc.TotalScore)
+	}
+	if sc.Level() != model.LevelClean {
+		t.Fatalf("expected clean, got %s", sc.Level())
+	}
+	if sc.EventCount != 1 || sc.DetectorCounts["BIO_001"] != 0 || sc.CategoryCounts["bio"] != 0 {
+		t.Fatalf("zero-contribution events were counted: events=%d detectors=%v categories=%v", sc.EventCount, sc.DetectorCounts, sc.CategoryCounts)
+	}
+	// A weight-0 detector must not diminish a real detector in its category.
+	s.IngestEvent(ev("BIO_002", "p", 4000, 1, 1, 1))
+	if got := s.GetScore("p").ScoreByDetector["BIO_002"]; !near(got, 15) {
+		t.Fatalf("real BIO event was diminished by an unscored one: %.2f", got)
+	}
+	// A zero-weight event alone must not mark the match as one with detections.
+	s.IngestEvent(ev("THROW_002", "q", 0, 1, 1, 0))
+	if q := s.GetScore("q"); q.MatchCount != 0 || q.EventCount != 0 {
+		t.Fatalf("zero-weight event counted a match: %+v", q)
+	}
+	if !IsMetaDetector("pat_003") || IsMetaDetector("PAT_001") {
+		t.Fatal("IsMetaDetector wrong")
+	}
+}

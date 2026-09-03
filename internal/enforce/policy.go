@@ -5,6 +5,7 @@ package enforce
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,7 +15,7 @@ import (
 // Policy determines enforcement actions based on suspicion scores. It is the
 // stateless (no cooldown, no store) counterpart of Engine.
 type Policy struct {
-	mode        string // "shadow", "review", "enforce"
+	mode        string // one of the Mode constants: "shadow", "flag", "review", "enforce"
 	logger      *slog.Logger
 	levels      model.LevelTable
 	banDuration time.Duration
@@ -22,12 +23,22 @@ type Policy struct {
 }
 
 // NewPolicy creates an enforcement policy. Default mode is "shadow" (safest).
+// The mode is matched case-insensitively after trimming whitespace; a value
+// that is not one of the Mode constants is logged and treated as shadow, so a
+// typo can never switch enforcement on.
 func NewPolicy(mode string, logger *slog.Logger) *Policy {
-	if mode == "" {
-		mode = string(ModeShadow)
-	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	raw := mode
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch Mode(mode) {
+	case ModeShadow, ModeFlag, ModeReview, ModeEnforce:
+	case "":
+		mode = string(ModeShadow)
+	default:
+		logger.Warn("unknown enforcement mode, falling back to shadow", "mode", raw)
+		mode = string(ModeShadow)
 	}
 	return &Policy{
 		mode:        mode,
@@ -68,8 +79,14 @@ func (p *Policy) action(playerID, actionType, reason string, score model.Suspici
 	}
 }
 
+// Mode returns the effective (validated) mode of the policy.
+func (p *Policy) Mode() Mode { return Mode(p.mode) }
+
 // Evaluate determines what action, if any, is warranted. Only the caller's
-// non-shadow events for playerID are considered as evidence.
+// non-shadow events for playerID are considered as evidence. Shadow never
+// acts; flag recommends a moderator flag from the suspicious tier; review
+// queues a case from high_risk; only enforce produces restrict/temp_ban
+// recommendations.
 func (p *Policy) Evaluate(
 	playerID string,
 	score model.SuspicionScore,
@@ -88,11 +105,21 @@ func (p *Policy) Evaluate(
 	}
 	level := p.levels.LevelFor(score.TotalScore)
 
-	// Review mode: only create review cases, no direct enforcement
-	if p.mode == string(ModeReview) {
+	switch Mode(p.mode) {
+	case ModeFlag:
+		if level.AtLeast(model.LevelSuspicious) {
+			return p.action(playerID, model.ActionFlag, "Score reached suspicious threshold", score, playerEvents)
+		}
+		return nil
+	case ModeReview:
+		// Review mode: only create review cases, no direct enforcement
 		if level.AtLeast(model.LevelHighRisk) {
 			return p.action(playerID, model.ActionReviewQueue, "Score exceeded review threshold", score, playerEvents)
 		}
+		return nil
+	case ModeEnforce:
+		// handled below
+	default:
 		return nil
 	}
 
