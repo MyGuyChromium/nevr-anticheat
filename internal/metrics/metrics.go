@@ -14,8 +14,9 @@ import (
 // Metrics holds all metric collectors.
 type Metrics struct {
 	// Frames
-	FramesReceived       Counter // frames present in decoded batches
-	FramesProcessed      Counter // frames accepted into the pipeline
+	FramesReceived       Counter // player-frames present in decoded batches
+	FramesProcessed      Counter // player-frames the pipeline processed (same unit as FramesReceived)
+	TicksProcessed       Counter // frame ticks (distinct frame indices) the pipeline processed
 	FramesInvalid        Counter // frames rejected by ingest or pipeline validation
 	FramesInvalidReasons LabeledCounter
 	FramesRateLimited    Counter // frames dropped by the per-player ingest rate limit

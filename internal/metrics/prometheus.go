@@ -58,7 +58,8 @@ func (pe *PrometheusExporter) Render() string {
 
 	// Frames
 	counter("nevr_ac_frames_received_total", "Frames present in decoded telemetry batches.", m.FramesReceived.Get())
-	counter("nevr_ac_frames_processed_total", "Frames accepted into the detection pipeline.", m.FramesProcessed.Get())
+	counter("nevr_ac_frames_processed_total", "Player-frames processed by the detection pipeline (same unit as frames_received).", m.FramesProcessed.Get())
+	counter("nevr_ac_ticks_processed_total", "Frame ticks (distinct frame indices, all players of a tick counted once) processed by the detection pipeline.", m.TicksProcessed.Get())
 	counter("nevr_ac_frames_invalid_total", "Frames rejected by validation.", m.FramesInvalid.Get())
 	labeled("nevr_ac_frames_invalid_reason_total", "Frames rejected by validation, by reason.", "reason", &m.FramesInvalidReasons)
 	counter("nevr_ac_frames_ratelimited_total", "Frames dropped by the per-player ingest rate limit.", m.FramesRateLimited.Get())

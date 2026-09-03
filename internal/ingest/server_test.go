@@ -22,18 +22,20 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 
 // fakeHandler records batches and control messages.
 type fakeHandler struct {
-	mu       sync.Mutex
-	batches  [][]model.PlayerTelemetryFrame
-	matchIDs []string
-	controls []model.ControlMessage
-	ignored  int // reported as Ignored on every batch
+	mu        sync.Mutex
+	batches   [][]model.PlayerTelemetryFrame
+	matchIDs  []string
+	serverIDs []string
+	controls  []model.ControlMessage
+	ignored   int // reported as Ignored on every batch
 }
 
-func (h *fakeHandler) HandleFrames(matchID string, frames []model.PlayerTelemetryFrame) FrameResult {
+func (h *fakeHandler) HandleFrames(matchID, serverID string, frames []model.PlayerTelemetryFrame) FrameResult {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.batches = append(h.batches, frames)
 	h.matchIDs = append(h.matchIDs, matchID)
+	h.serverIDs = append(h.serverIDs, serverID)
 	return FrameResult{Accepted: len(frames), Ignored: h.ignored}
 }
 

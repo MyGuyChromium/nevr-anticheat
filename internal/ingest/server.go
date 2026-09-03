@@ -88,23 +88,27 @@ func DefaultServerConfig() ServerConfig {
 	}
 }
 
-// FrameResult reports what happened to the frames of one batch.
+// FrameResult reports what happened to the frames of one batch. Every frame
+// of a batch lands in exactly one counter (contract 3).
 type FrameResult struct {
-	Accepted int // frames processed by the pipeline
-	Rejected int // frames refused by the handler (limits)
+	Accepted int // frames the store inserted (and the pipeline then processed)
+	Rejected int // frames refused (limits, or a store failure: not stored, not processed, may be re-sent)
 	Ignored  int // frames the store discarded as duplicates
 }
 
 // Handler receives validated telemetry batches and control messages.
+// serverID is the producer's provenance stamp (FrameBatch.ServerID, may be
+// empty); it is recorded on the match context, not per frame.
 type Handler interface {
-	HandleFrames(matchID string, frames []model.PlayerTelemetryFrame) FrameResult
+	HandleFrames(matchID, serverID string, frames []model.PlayerTelemetryFrame) FrameResult
 	HandleControl(msg model.ControlMessage)
 }
 
-// FrameHandler adapts a plain function to Handler (control messages are ignored).
+// FrameHandler adapts a plain function to Handler (control messages and
+// provenance are ignored).
 type FrameHandler func(matchID string, frames []model.PlayerTelemetryFrame)
 
-func (f FrameHandler) HandleFrames(matchID string, frames []model.PlayerTelemetryFrame) FrameResult {
+func (f FrameHandler) HandleFrames(matchID, _ string, frames []model.PlayerTelemetryFrame) FrameResult {
 	f(matchID, frames)
 	return FrameResult{Accepted: len(frames)}
 }
@@ -514,7 +518,7 @@ func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult
 	if len(accepted) == 0 {
 		return res
 	}
-	hr := s.handler.HandleFrames(batch.MatchID, accepted)
+	hr := s.handler.HandleFrames(batch.MatchID, batch.ServerID, accepted)
 	res.Accepted += hr.Accepted
 	res.Rejected += hr.Rejected
 	res.Ignored += hr.Ignored
