@@ -347,13 +347,13 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		}
 
 		// Parse format: "TIMESTAMP\tJSON"
-		tabIdx := strings.IndexByte(string(line), '\t')
+		tabIdx := replaySeparatorIndex(line)
 		if tabIdx < 0 {
 			diag.FramesRejected++
 			continue
 		}
 
-		sampleTime, err := ParseReplayLineTime(string(line[:tabIdx]))
+		sampleTime, err := ParseReplayLineTime(strings.TrimSpace(string(line[:tabIdx])))
 		if err != nil {
 			diag.FramesRejected++
 			diag.recordBadTimestamp()
@@ -467,4 +467,17 @@ func isZipFile(path string) (bool, error) {
 		return false, nil // not enough bytes = not a zip
 	}
 	return magic[0] == 0x50 && magic[1] == 0x4b && magic[2] == 0x03 && magic[3] == 0x04, nil
+}
+
+// replaySeparatorIndex returns the index of the byte separating the timestamp
+// prefix from the JSON payload. The reference layout uses a tab; Spark writes
+// a single space, so any whitespace run before the opening brace is accepted.
+func replaySeparatorIndex(line []byte) int {
+	if i := strings.IndexByte(string(line), '\t'); i >= 0 {
+		return i
+	}
+	if i := strings.IndexByte(string(line), '{'); i > 0 {
+		return i - 1
+	}
+	return -1
 }
