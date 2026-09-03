@@ -242,21 +242,27 @@ func (fb *FrameBuilder) FrozenAim(nFrames int) []model.PlayerTelemetryFrame {
 	return frames
 }
 
-// HandJumpMetres is HandSpeedHack's per-frame hand displacement: 4.5 m in
-// 67 ms is 67 m/s, over BIO_002's 50 m/s limit.
-const HandJumpMetres = 4.5
+// HandJumpMetres is HandSpeedHack's hand offset to either side of the
+// body: the hand alternates between +HandJumpMetres and -HandJumpMetres on
+// X, so the per-frame displacement is 4.8 m in 67 ms = 72 m/s, over
+// BIO_002's 50 m/s limit, while every sample stays within the validator's
+// MaxHandBodyDistance (3 m) of the body.
+const HandJumpMetres = 2.4
 
 // HandSpeedHack generates a slowly moving player whose right hand flips
-// HandJumpMetres to the side and back on six consecutive frames around the
-// middle of the stream (a hand-position injection). BIO_002 emits on the
-// 2nd, 4th and 6th consecutive violation frame; the pipeline merges them.
+// HandJumpMetres to alternate sides of the body on seven consecutive frames
+// around the middle of the stream (a hand-position injection), giving six
+// consecutive violation frames. BIO_002 emits on the 2nd, 4th and 6th
+// consecutive violation frame; the pipeline merges them.
 func (fb *FrameBuilder) HandSpeedHack(nFrames int) []model.PlayerTelemetryFrame {
 	frames := fb.NormalMovingPlayer(nFrames, 3.0)
 	mid := nFrames / 2
-	for i := mid; i < mid+6 && i < nFrames; i++ {
-		if (i-mid)%2 == 0 {
-			frames[i].RightHandPosition = frames[i].RightHandPosition.Add(model.Vec3{HandJumpMetres, 0, 0})
+	for i := mid; i < mid+7 && i < nFrames; i++ {
+		side := HandJumpMetres
+		if (i-mid)%2 == 1 {
+			side = -HandJumpMetres
 		}
+		frames[i].RightHandPosition = frames[i].RightHandPosition.Add(model.Vec3{side, 0, 0})
 	}
 	return frames
 }

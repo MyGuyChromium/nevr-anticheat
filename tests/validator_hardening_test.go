@@ -11,9 +11,9 @@ import (
 
 // TestValidation_PipelineCountsEveryRejection (F171): malformed frames
 // injected into a clean stream are counted by reason, sanitized frames
-// are counted separately, and the rest of the stream is processed. The
-// injected-but-accepted frames are the documented gaps of the validator
-// (negative timestamp, negative dt, zero quaternion, far hand, wild disc).
+// are counted separately, and the rest of the stream is processed. Every
+// injected frame is either rejected with a reason code or accepted with a
+// sanitization code; nothing malformed passes silently.
 func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 	frames := player1().NormalMovingPlayer(200, 4.0)
 	nan := math.NaN()
@@ -32,6 +32,8 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 		120: func(f *model.PlayerTelemetryFrame) { f.RightHandRotation = model.Quat{nan, 0, 0, 1} },
 		130: func(f *model.PlayerTelemetryFrame) { f.Disc = &model.DiscState{Position: model.Vec3{0, 0, 5000}} },
 		140: func(f *model.PlayerTelemetryFrame) { f.PlayerID = "" },
+		150: func(f *model.PlayerTelemetryFrame) { f.RightHandPosition = model.Vec3{500, 500, 500} },
+		160: func(f *model.PlayerTelemetryFrame) { f.Timestamp = math.Inf(1) },
 	}
 	for i, m := range inject {
 		m(&frames[i])
@@ -41,11 +43,12 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 		WithMatchContext(matchContextForPlayer("player1")).Run(t, frames)
 
 	wantReasons := map[string]int{
-		pipeline.ReasonInvalidPosition: 2, // NaN, Inf
-		pipeline.ReasonOutOfBounds:     1,
-		pipeline.ReasonZeroPosition:    1,
-		pipeline.ReasonDtOutOfRange:    2, // NaN timestamp, duplicated tick
-		pipeline.ReasonMissingPlayerID: 1,
+		pipeline.ReasonInvalidPosition:  2, // NaN, Inf
+		pipeline.ReasonOutOfBounds:      1,
+		pipeline.ReasonZeroPosition:     1,
+		pipeline.ReasonInvalidTimestamp: 3, // negative, NaN, +Inf
+		pipeline.ReasonDtOutOfRange:     1, // duplicated tick
+		pipeline.ReasonMissingPlayerID:  1,
 	}
 	wantInvalid := 0
 	for r, n := range wantReasons {
@@ -64,55 +67,64 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 		t.Errorf("processed %d, want %d", hr.Result.FramesProcessed, 200-wantInvalid)
 	}
 	wantSanitized := map[string]int{
-		pipeline.SanitizedHandPosition: 1,
-		pipeline.SanitizedDisc:         1,
-		pipeline.SanitizedRotation:     1,
+		pipeline.SanitizedHandPosition:   1,
+		pipeline.SanitizedFarHand:        1,
+		pipeline.SanitizedDisc:           1,
+		pipeline.SanitizedDiscOutOfRange: 1,
+		pipeline.SanitizedRotation:       1,
+		pipeline.SanitizedZeroRotation:   1,
+		pipeline.SanitizedNegativeDt:     1,
 	}
 	for s, n := range wantSanitized {
 		if hr.Result.SanitizedFrames[s] != n {
 			t.Errorf("sanitized %s: %d, want %d", s, hr.Result.SanitizedFrames[s], n)
 		}
 	}
+	if len(hr.Result.SanitizedFrames) != len(wantSanitized) {
+		t.Errorf("unexpected sanitization codes: %v", hr.Result.SanitizedFrames)
+	}
 	// Nothing malformed may surface as a detection on an otherwise clean
 	// 4 m/s player.
 	hr.AssertNoDetections()
 }
 
-// TestValidation_FarHandReachesBio002 documents the F171 gap: a single
-// frame with a hand hundreds of metres away passes both validators and
-// the extractor turns it into an impossible hand speed (~12800 m/s on the
-// way out and back). BIO_002 floors min_violation_frames at 3, so the
-// out-and-back pair from one bad sample is no longer reported; the
-// validator gap itself is still open.
-func TestValidation_FarHandReachesBio002(t *testing.T) {
+// TestValidation_FarHandIsSanitizedBeforeBio002 (F171, closed): a single
+// frame with a hand hundreds of metres away used to pass both validators
+// and the extractor turned it into a ~12800 m/s hand speed that BIO_002
+// reported. The validator now replaces any hand further than
+// MaxHandBodyDistance from the body with the zero-vector tracking-loss
+// sentinel (far_hand_position), so the extractor derives no hand speed
+// from it and BIO_002 stays silent. BIO_002 floors min_violation_frames at
+// 3, so even an unsanitized out-and-back pair from one bad sample would not
+// be reported; the validator closes the gap before that floor matters.
+func TestValidation_FarHandIsSanitizedBeforeBio002(t *testing.T) {
 	frames := player1().NormalMovingPlayer(200, 4.0)
 	frames[100].RightHandPosition = model.Vec3{500, 500, 500}
-	if invalid, _ := testutil.ValidateFrames(frames); invalid != 0 {
-		t.Fatalf("the far hand was rejected; the gap is closed, update this test and the report")
+	if invalid, reasons := testutil.ValidateFrames(frames); invalid != 0 {
+		t.Fatalf("the far hand must be sanitized, not rejected: %v", reasons)
 	}
-	fe := pipeline.NewFeatureExtractor(30)
-	mc := matchContextForPlayer("player1")
-	ps := &model.PlayerState{PlayerID: "player1"}
-	for i := 0; i <= 100; i++ {
-		fe.UpdatePlayerState(ps, &frames[i], mc)
+	hr := runOnly(t, frames, "BIO_002")
+	if hr.Result.SanitizedFrames[pipeline.SanitizedFarHand] != 1 {
+		t.Errorf("far_hand_position sanitizations %d, want 1: %v", hr.Result.SanitizedFrames[pipeline.SanitizedFarHand], hr.Result.SanitizedFrames)
 	}
-	if ps.RightHandSpeed < 10000 {
-		t.Errorf("expected a ~12800 m/s hand speed from one bad sample, got %.0f", ps.RightHandSpeed)
-	}
-	runOnly(t, frames, "BIO_002").AssertNoDetections()
+	hr.AssertNoDetections()
 }
 
-// TestValidation_NegativeTimestampIsAcceptedOffline documents the F171 gap
-// on the pipeline side: a negative timestamp is accepted (ingest rejects
-// it), the extractor sees a negative dt and derives no kinematics for that
-// frame and the next.
-func TestValidation_NegativeTimestampIsAcceptedOffline(t *testing.T) {
+// TestValidation_NegativeTimestampIsRejectedOffline (F171, closed): a
+// negative timestamp is rejected by the pipeline validator with the same
+// invalid_timestamp code the ingest guard uses, so the offline and live
+// paths agree and the extractor never sees a negative dt.
+func TestValidation_NegativeTimestampIsRejectedOffline(t *testing.T) {
 	frames := player1().NormalMovingPlayer(60, 4.0)
 	frames[30].Timestamp = -1
 	frames[30].DeltaTime = 0
-	hr := runOnly(t, frames, "MOV_001", "MOV_002")
-	if hr.Result.InvalidFrames != 0 {
-		t.Fatalf("negative timestamp rejected: %v (gap closed; update this test and the report)", hr.Result.InvalidFrameReasons)
+	hr := testutil.NewHarness(t).WithDetectors("MOV_001", "MOV_002").
+		WithMatchContext(matchContextForPlayer("player1")).Run(t, frames)
+	if hr.Result.InvalidFrames != 1 || hr.Result.InvalidFrameReasons[pipeline.ReasonInvalidTimestamp] != 1 {
+		t.Fatalf("negative timestamp: invalid %d reasons %v, want one %s", hr.Result.InvalidFrames, hr.Result.InvalidFrameReasons, pipeline.ReasonInvalidTimestamp)
+	}
+	if hr.Result.FramesProcessed != 59 {
+		t.Errorf("processed %d, want 59", hr.Result.FramesProcessed)
 	}
 	hr.AssertNoDetections()
 }

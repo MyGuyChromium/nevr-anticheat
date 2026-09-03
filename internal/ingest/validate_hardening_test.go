@@ -14,9 +14,9 @@ import (
 // and the pipeline's FrameValidator (the offline/reprocess path, and the
 // second gate on the live path).
 //
-// The two are NOT symmetric today; every asymmetry below is deliberate
-// documentation of the current behaviour (see the F171 notes in the
-// workstream report), not an endorsement.
+// The pipeline validator is the second gate on the live path, so a frame
+// only has to be caught by one of the two; every remaining asymmetry below
+// is documented in its note.
 type hardeningCase struct {
 	name          string
 	mutate        func(f *model.PlayerTelemetryFrame)
@@ -43,26 +43,27 @@ func hardeningCases() []hardeningCase {
 	return []hardeningCase{
 		{name: "clean", mutate: func(*model.PlayerTelemetryFrame) {}},
 		{name: "nan_timestamp", mutate: func(f *model.PlayerTelemetryFrame) { f.Timestamp = nan },
-			ingestReject: "invalid_timestamp", pipeReject: pipeline.ReasonDtOutOfRange},
+			ingestReject: "invalid_timestamp", pipeReject: pipeline.ReasonInvalidTimestamp},
 		{name: "inf_timestamp", mutate: func(f *model.PlayerTelemetryFrame) { f.Timestamp = inf },
-			ingestReject: "", pipeReject: pipeline.ReasonDtOutOfRange,
-			note: "ingest only checks NaN/negative; +Inf passes the ingest guard and is caught by the pipeline"},
+			ingestReject: "", pipeReject: pipeline.ReasonInvalidTimestamp,
+			note: "ingest only checks NaN/negative; +Inf passes the ingest guard and is caught by the pipeline (second gate)"},
 		{name: "negative_timestamp", mutate: func(f *model.PlayerTelemetryFrame) { f.Timestamp = -1 },
-			ingestReject: "invalid_timestamp", pipeReject: "",
-			note: "the pipeline accepts a negative timestamp (only non-finite time is rejected); offline sources are trusted"},
+			ingestReject: "invalid_timestamp", pipeReject: pipeline.ReasonInvalidTimestamp,
+			note: "a negative timestamp is rejected on both paths with the same code"},
 		{name: "zero_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = 0 },
 			note: "dt <= 0 means unknown spacing on both paths"},
 		{name: "negative_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = -5 },
-			note: "a negative DeltaTime is treated as unknown (dt <= 0), never as a rejection, on both paths"},
+			pipeSanitized: []string{pipeline.SanitizedNegativeDt},
+			note:          "a negative DeltaTime is set to 0 (unknown spacing) with a code, never rejected"},
 		{name: "nan_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = nan },
 			pipeReject: pipeline.ReasonDtOutOfRange,
-			note: "ingest does not look at DeltaTime; the pipeline rejects non-finite time"},
+			note:       "ingest does not look at DeltaTime; the pipeline rejects non-finite time"},
 		{name: "duplicate_tick_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = 0.001 },
 			pipeReject: pipeline.ReasonDtOutOfRange,
-			note: "under half the configured min_frame_dt is a duplicated tick"},
+			note:       "under half the configured min_frame_dt is a duplicated tick"},
 		{name: "clock_jump_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = 120 },
 			pipeReject: pipeline.ReasonDtOutOfRange,
-			note: "longer than MaxProducerDt (60 s) is a clock jump, not a stall"},
+			note:       "longer than MaxProducerDt (60 s) is a clock jump, not a stall"},
 		{name: "stall_dt", mutate: func(f *model.PlayerTelemetryFrame) { f.DeltaTime = 2.5 },
 			note: "a real stall is accepted; the extractor derives no kinematics across it"},
 		{name: "zero_position", mutate: func(f *model.PlayerTelemetryFrame) { f.Position = model.Vec3{} },
@@ -73,9 +74,10 @@ func hardeningCases() []hardeningCase {
 			ingestReject: "invalid_position", pipeReject: pipeline.ReasonInvalidPosition},
 		{name: "out_of_bounds_position", mutate: func(f *model.PlayerTelemetryFrame) { f.Position = model.Vec3{99999, 99999, 99999} },
 			pipeReject: pipeline.ReasonOutOfBounds,
-			note: "ingest has no arena bounds; the pipeline rejects on physics extents"},
+			note:       "ingest has no arena bounds; the pipeline rejects on physics extents"},
 		{name: "zero_quaternion", mutate: func(f *model.PlayerTelemetryFrame) { f.Rotation = model.Quat{} },
-			note: "the zero quaternion is the 'no rotation data' sentinel on both paths: accepted, not sanitized, consumers skip it"},
+			pipeSanitized: []string{pipeline.SanitizedZeroRotation},
+			note:          "the zero quaternion is the 'no rotation data' sentinel: accepted unchanged, reported with a code, consumers skip it"},
 		{name: "non_unit_quaternion", mutate: func(f *model.PlayerTelemetryFrame) { f.Rotation = model.Quat{0, 0, 0, 2} },
 			note: "|q| > 0.1 is normalized in place without a sanitization code"},
 		{name: "nan_quaternion", mutate: func(f *model.PlayerTelemetryFrame) { f.RightHandRotation = model.Quat{nan, 0, 0, 1} },
@@ -83,19 +85,23 @@ func hardeningCases() []hardeningCase {
 		{name: "nan_hand", mutate: func(f *model.PlayerTelemetryFrame) { f.LeftHandPosition = model.Vec3{nan, nan, nan} },
 			pipeSanitized: []string{pipeline.SanitizedHandPosition}},
 		{name: "far_hand", mutate: func(f *model.PlayerTelemetryFrame) { f.RightHandPosition = model.Vec3{500, 500, 500} },
-			note: "a hand 860 m from the body is accepted on both paths; the extractor derives a 12800 m/s hand speed from it (BIO_002 fires; see report)"},
+			pipeSanitized: []string{pipeline.SanitizedFarHand},
+			note:          "a hand further than MaxHandBodyDistance from the body becomes the zero-vector tracking-loss sentinel"},
 		{name: "nan_disc", mutate: func(f *model.PlayerTelemetryFrame) { f.Disc = &model.DiscState{Position: model.Vec3{nan, 0, 0}} },
 			pipeSanitized: []string{pipeline.SanitizedDisc}},
-		{name: "out_of_bounds_disc", mutate: func(f *model.PlayerTelemetryFrame) { f.Disc = &model.DiscState{Position: model.Vec3{0, 0, 5000}, Velocity: model.Vec3{0, 0, 900}} },
-			note: "disc position/velocity are not bounds-checked on either path"},
+		{name: "out_of_bounds_disc", mutate: func(f *model.PlayerTelemetryFrame) {
+			f.Disc = &model.DiscState{Position: model.Vec3{0, 0, 5000}, Velocity: model.Vec3{0, 0, 900}}
+		},
+			pipeSanitized: []string{pipeline.SanitizedDiscOutOfRange},
+			note:          "a disc outside the arena or faster than DiscSpeedSanityFactor x DiscSpeedCap is dropped from the frame"},
 		{name: "missing_player", mutate: func(f *model.PlayerTelemetryFrame) { f.PlayerID = "" },
 			ingestReject: "missing_player_id", pipeReject: pipeline.ReasonMissingPlayerID},
 		{name: "control_char_player", mutate: func(f *model.PlayerTelemetryFrame) { f.PlayerID = "p\x01" },
 			ingestReject: "invalid_player_id",
-			note: "identifier hygiene is an ingest concern only"},
+			note:         "identifier hygiene is an ingest concern only"},
 		{name: "negative_frame_index", mutate: func(f *model.PlayerTelemetryFrame) { f.FrameIndex = -3 },
 			ingestReject: "negative_frame_index",
-			note: "the pipeline indexes by frame index and accepts any integer"},
+			note:         "the pipeline indexes by frame index and accepts any integer"},
 	}
 }
 

@@ -176,13 +176,16 @@ func QuatFromDirectionVectors(forward, left, up Vec3) Quat {
 //     left . (up x forward) < 0 means the source uses left = -(up x forward)
 //     (a reflected basis) and BasisReflected is raised.
 //
-// Degenerate input (zero or collinear forward/up, NaN/Inf) returns the zero
-// quaternion together with BasisDegenerate so callers can tell "no tracking"
-// apart from a real identity pose.
+// Degenerate input (zero or collinear forward/up, NaN/Inf in forward or up)
+// returns the zero quaternion together with BasisDegenerate so callers can
+// tell "no tracking" apart from a real identity pose. A bad LEFT (zero,
+// NaN/Inf) is not degenerate: the orientation is fully defined by
+// forward/up, left is rebuilt as up x forward, and the input is flagged
+// BasisNonOrthonormal because its handedness could not be measured.
 func QuatFromDirectionVectorsChecked(forward, left, up Vec3) (Quat, BasisQuality) {
 	quality := BasisProper
 
-	if forward.HasNaN() || forward.HasInf() || up.HasNaN() || up.HasInf() || left.HasNaN() || left.HasInf() {
+	if forward.HasNaN() || forward.HasInf() || up.HasNaN() || up.HasInf() {
 		return Quat{}, BasisDegenerate
 	}
 
@@ -208,8 +211,9 @@ func QuatFromDirectionVectorsChecked(forward, left, up Vec3) (Quat, BasisQuality
 		math.Abs(forward.Dot(up)) > basisTolerance {
 		quality |= BasisNonOrthonormal
 	}
-	if lMag < 1e-9 {
-		// Missing left: orientation is still fully defined by forward/up but the
+	if lMag < 1e-9 || left.HasNaN() || left.HasInf() {
+		// Missing or non-finite left: orientation is still fully defined by
+		// forward/up (the output uses the rebuilt l = up x forward) but the
 		// handedness of the source cannot be measured.
 		quality |= BasisNonOrthonormal
 	} else {

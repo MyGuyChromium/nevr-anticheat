@@ -378,14 +378,15 @@ func (fb *FrameBuilder) MagnetismCheat(nThrows int) []model.PlayerTelemetryFrame
 }
 
 // AcceleratingDisc generates throws whose disc GAINS 6 m/s on every
-// free-flight frame (10 -> 82 m/s over 12 frames) without changing
+// free-flight frame (10 -> 70 m/s over 10 frames, under the validator's
+// 4 x DiscSpeedCap = 74.8 m/s disc sanity bound) without changing
 // direction. THROW_008 counts >= 4 speed increases above its 5 m/s
 // tolerance and fires when the track finalizes.
 func (fb *FrameBuilder) AcceleratingDisc(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {
 		specs[t] = ThrowSpec{
-			HoldFrames: 10, FlightFrames: 12, GapFrames: 6,
+			HoldFrames: 10, FlightFrames: 10, GapFrames: 6,
 			ReleaseSpeed: 10.0, DeviationDeg: 4.0, DeviationSeed: float64(t),
 			HandSpeed: 6.0, WindupBack: 0.3, SpeedGainPerFrame: 6.0,
 		}

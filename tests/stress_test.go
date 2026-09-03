@@ -111,14 +111,14 @@ func TestStress_MaliciousTelemetry(t *testing.T) {
 	frames[80].Timestamp = nan
 
 	result := h.Run(t, frames)
-	// NaN/Inf/out-of-bounds/zero positions and the NaN timestamp are
-	// rejected; the negative timestamp, negative dt and zero quaternion are
-	// accepted (documented in validator_hardening_test.go).
-	if result.Result.InvalidFrames != 5 {
-		t.Errorf("invalid frames %d, want 5: %v", result.Result.InvalidFrames, result.Result.InvalidFrameReasons)
+	// NaN/Inf/out-of-bounds/zero positions and the NaN and negative
+	// timestamps are rejected; the negative dt and zero quaternion are
+	// accepted with a sanitization code (see validator_hardening_test.go).
+	if result.Result.InvalidFrames != 6 {
+		t.Errorf("invalid frames %d, want 6: %v", result.Result.InvalidFrames, result.Result.InvalidFrameReasons)
 	}
-	if result.Result.FramesProcessed != 95 {
-		t.Errorf("processed %d, want 95", result.Result.FramesProcessed)
+	if result.Result.FramesProcessed != 94 {
+		t.Errorf("processed %d, want 94", result.Result.FramesProcessed)
 	}
 	result.AssertNoDetections()
 }

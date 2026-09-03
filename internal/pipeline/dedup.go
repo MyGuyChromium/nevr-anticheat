@@ -15,8 +15,8 @@ import (
 // incident per CausalKey.Key() (player + anomaly type). A new emission joins
 // the open incident when its frame range overlaps it or starts within
 // mergeWindow frames of its end; the incident's range is extended, the
-// highest severity (with its evidence) and confidence are kept, and
-// MergedCount is incremented. An incident is CLOSED, and emitted exactly
+// highest-severity emission is kept whole (its evidence, confidence and
+// enforcement fields, see mergeInto), and MergedCount is incremented. An incident is CLOSED, and emitted exactly
 // once, when the current frame index has moved more than mergeWindow frames
 // past its end, or on Flush at match end.
 //
@@ -108,10 +108,22 @@ func (d *Deduplicator) belongs(inc, ev *model.DetectionEvent) bool {
 		ev.FrameRangeEnd >= inc.FrameRangeStart-d.mergeWindow
 }
 
-// mergeInto extends inc with ev, keeping the strongest evidence.
+// mergeInto extends inc with ev. The strongest emission wins WHOLE: its
+// severity, confidence, evidence, AutoEnforce and EnforcementWeight travel
+// together, so the incident is always a pairing some emission actually
+// produced (the scorer multiplies severity by confidence and enforcement
+// reads AutoEnforce; mixing the peak severity of one throw with the peak
+// confidence or the auto-enforce flag of another would describe an event
+// that never happened). "Strongest" is the emission with the highest
+// severity x confidence, the product the scorer turns into points: a
+// sliding-window detector's severity peaks on a single sample while its
+// confidence grows with the window, and the emission that would score
+// highest is the best description of the incident. An exact tie keeps the
+// earlier emission.
 func mergeInto(inc, ev *model.DetectionEvent) {
-	if ev.Severity > inc.Severity {
+	if ev.Severity*ev.Confidence > inc.Severity*inc.Confidence {
 		inc.Severity = ev.Severity
+		inc.Confidence = ev.Confidence
 		inc.Evidence = ev.Evidence
 		inc.ObservedValue = ev.ObservedValue
 		inc.ExpectedRange = ev.ExpectedRange
@@ -119,9 +131,8 @@ func mergeInto(inc, ev *model.DetectionEvent) {
 		inc.Attribution = ev.Attribution
 		inc.FrameIndex = ev.FrameIndex
 		inc.Timestamp = ev.Timestamp
-	}
-	if ev.Confidence > inc.Confidence {
-		inc.Confidence = ev.Confidence
+		inc.AutoEnforce = ev.AutoEnforce
+		inc.EnforcementWeight = ev.EnforcementWeight
 	}
 	if ev.FrameRangeStart < inc.FrameRangeStart {
 		inc.FrameRangeStart = ev.FrameRangeStart

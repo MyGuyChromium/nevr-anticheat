@@ -172,6 +172,10 @@ func NewPipeline(
 	}
 	extractor := NewFeatureExtractor(cfg.Pipeline.HistoryWindow)
 	extractor.SetHighPingThreshold(cfg.Pipeline.HighPingThresholdMs)
+	// pipeline.max_frame_dt is the extractor's gap threshold (contract B):
+	// a known dt above it derives no kinematics. It is NOT a rejection
+	// bound; the validator's hard bound is MaxProducerDt.
+	extractor.SetMaxFrameDt(cfg.Pipeline.MaxFrameDt)
 	return &Pipeline{
 		detectors:     detectors,
 		scorer:        scorer,
