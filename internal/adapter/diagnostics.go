@@ -34,6 +34,9 @@ type DiagnosticReport struct {
 	FramesRejected int `json:"lines_rejected"`
 	// LinesBadTimestamp counts rejected lines whose timestamp prefix did not parse.
 	LinesBadTimestamp int `json:"lines_bad_timestamp"`
+	// SessionChanges counts session-id changes mid-file; the file holds
+	// SessionChanges+1 matches (EchoReplayParser.Matches).
+	SessionChanges int `json:"session_changes"`
 
 	// PlayerEntriesSeen counts player objects on blue/orange teams in recorded snapshots.
 	PlayerEntriesSeen int `json:"player_entries_seen"`
@@ -335,6 +338,13 @@ func (dr *DiagnosticReport) RecordMapperStats(stats MapperStats) {
 	dr.MapperStats = &s
 }
 
+// RecordSessionChange counts a session-id change mid-file (a new match).
+func (dr *DiagnosticReport) RecordSessionChange() {
+	dr.mu.Lock()
+	dr.SessionChanges++
+	dr.mu.Unlock()
+}
+
 // RecordSnapshotNoTeams counts a payload that carried no teams and was skipped.
 func (dr *DiagnosticReport) RecordSnapshotNoTeams() {
 	dr.mu.Lock()
@@ -484,6 +494,9 @@ func (dr *DiagnosticReport) FormatReport() string {
 	b.WriteString(fmt.Sprintf("Snapshots skipped (no teams):  %d\n", dr.SnapshotsNoTeams))
 	b.WriteString(fmt.Sprintf("Snapshots skipped (duplicate): %d\n", dr.SnapshotsDuplicate))
 	b.WriteString(fmt.Sprintf("Lines rejected (unparseable):  %d (bad timestamp prefix: %d)\n", dr.FramesRejected, dr.LinesBadTimestamp))
+	if dr.SessionChanges > 0 {
+		b.WriteString(fmt.Sprintf("Session id changes (matches):  %d (%d matches in file)\n", dr.SessionChanges, dr.SessionChanges+1))
+	}
 	b.WriteString(fmt.Sprintf("Player entries seen:           %d\n", dr.PlayerEntriesSeen))
 	b.WriteString(fmt.Sprintf("Spectator entries dropped:     %d\n", dr.SpectatorEntriesDropped))
 	b.WriteString(fmt.Sprintf("Player frames mapped:          %d\n", dr.FramesMapped))
@@ -518,6 +531,7 @@ func (dr *DiagnosticReport) FormatReport() string {
 			ms.BasesProper, ms.BasesReflected, ms.BasesNonOrthonormal, ms.BasesDegenerate))
 		b.WriteString(fmt.Sprintf("Hand tracking lost (poses):  %d\n", ms.HandTrackingLost))
 		b.WriteString(fmt.Sprintf("Non-monotonic sample times:  %d\n", ms.NonMonotonicSamples))
+		b.WriteString(fmt.Sprintf("Clock steps re-based:        %d\n", ms.ClockSteps))
 	}
 	b.WriteString("\n")
 
