@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -276,6 +277,122 @@ func TestDesktop_BadUploads(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("empty upload: status %d", resp.StatusCode)
+	}
+}
+
+// TestDesktop_FailureDiagnostics: a file the parser refuses comes back with
+// a diagnostic block (container, size, lines, first bytes, findings, hint)
+// that describes what was uploaded; successful and already-stored entries
+// carry none.
+func TestDesktop_FailureDiagnostics(t *testing.T) {
+	_, ts := newTestServer(t)
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	garbage := write("garbage.echoreplay", "this is not a replay\n")
+	badTime := write("badtime.echoreplay", "yesterday\t{\"sessionid\":\"X\"}\n")
+	empty := write("empty.echoreplay", "")
+	legacy := write("config.json", `{"general": {}}`)
+
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	zf, err := zw.Create("notes/readme.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = zf.Write([]byte("hello\nworld"))
+	_ = zw.Close()
+	zipped := write("zipped.echoreplay", zbuf.String())
+
+	resp, out := upload(t, ts, false, map[string]string{
+		"garbage.echoreplay": garbage, "badtime.echoreplay": badTime, "empty.echoreplay": empty,
+		"config.json": legacy, "zipped.echoreplay": zipped, "ok.echoreplay": fixturePath,
+	})
+	if resp.StatusCode != http.StatusOK || len(out.Results) != 6 {
+		t.Fatalf("status %d results %+v", resp.StatusCode, out.Results)
+	}
+	byFile := map[string]analyzeEntry{}
+	for _, r := range out.Results {
+		byFile[r.File] = r
+	}
+	if r := byFile["ok.echoreplay"]; !r.OK || r.Diagnostic != nil {
+		t.Errorf("good file %+v", r)
+	}
+
+	r := byFile["garbage.echoreplay"]
+	d := r.Diagnostic
+	if r.OK || r.Error == "" || d == nil {
+		t.Fatalf("garbage %+v", r)
+	}
+	if d.Container != "text" || d.SizeBytes != 21 || d.Lines != 1 {
+		t.Errorf("garbage container=%q size=%d lines=%d", d.Container, d.SizeBytes, d.Lines)
+	}
+	if d.HeadText != `this is not a replay\n` {
+		t.Errorf("garbage head text %q", d.HeadText)
+	}
+	if !strings.HasPrefix(d.HeadHex, "74 68 69 73 20") || !strings.HasSuffix(d.HeadHex, " 0a") {
+		t.Errorf("garbage head hex %q", d.HeadHex)
+	}
+	if len(d.Findings) != 1 || !strings.Contains(d.Findings[0], "no TAB") {
+		t.Errorf("garbage findings %q", d.Findings)
+	}
+	if !strings.Contains(d.Hint, "YYYY/MM/DD HH:MM:SS.mmm<TAB>{json}") || !strings.Contains(d.Hint, "ZIP") {
+		t.Errorf("garbage hint %q", d.Hint)
+	}
+
+	d = byFile["badtime.echoreplay"].Diagnostic
+	if d == nil || d.Container != "text" || d.Lines != 1 {
+		t.Fatalf("bad timestamp %+v", d)
+	}
+	joined := strings.Join(d.Findings, " | ")
+	if !strings.Contains(joined, `prefix "yesterday" does not parse`) || !strings.Contains(joined, `no "teams" key`) || strings.Contains(joined, "sessionid") {
+		t.Errorf("bad timestamp findings %q", d.Findings)
+	}
+
+	d = byFile["empty.echoreplay"].Diagnostic
+	if d == nil || d.Container != "empty" || d.SizeBytes != 0 || d.Lines != 0 || d.HeadText != "" || d.HeadHex != "" ||
+		len(d.Findings) != 1 || !strings.Contains(d.Findings[0], "empty") {
+		t.Errorf("empty %+v", d)
+	}
+
+	d = byFile["config.json"].Diagnostic
+	if d == nil || d.Container != "text" || d.Lines != 1 || !strings.Contains(strings.Join(d.Findings, " "), "starts with JSON") {
+		t.Errorf("legacy json %+v", d)
+	}
+
+	d = byFile["zipped.echoreplay"].Diagnostic
+	if d == nil || d.Container != "zip" || d.SizeBytes != int64(zbuf.Len()) || d.Lines != 2 ||
+		len(d.ZipEntries) != 1 || !strings.HasPrefix(d.ZipEntries[0], "notes/readme.txt (") ||
+		!strings.HasPrefix(d.HeadText, `PK\x03\x04`) || !strings.HasPrefix(d.HeadHex, "50 4b 03 04") {
+		t.Errorf("zip %+v", d)
+	}
+	if joined := strings.Join(d.Findings, " | "); !strings.Contains(joined, `entry "notes/readme.txt"`) || !strings.Contains(joined, "no TAB") {
+		t.Errorf("zip findings %q", d.Findings)
+	}
+
+	// A stored match refused without force is not a parse failure.
+	_, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
+	if len(out.Results) != 1 || !out.Results[0].AlreadyStored || out.Results[0].Diagnostic != nil {
+		t.Errorf("already stored %+v", out.Results)
+	}
+}
+
+func TestPrintableBytes(t *testing.T) {
+	got := printableBytes([]byte("a\tb\nc\r\\\x00\xff\x7f"))
+	if want := `a\tb\nc\r\\\x00\xff\x7f`; got != want {
+		t.Errorf("printableBytes = %q, want %q", got, want)
+	}
+	if got := hexBytes([]byte("0123456789abcdefg")); got != "30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66\n67" {
+		t.Errorf("hexBytes = %q", got)
+	}
+	if hexBytes(nil) != "" || printableBytes(nil) != "" {
+		t.Error("empty input")
 	}
 }
 

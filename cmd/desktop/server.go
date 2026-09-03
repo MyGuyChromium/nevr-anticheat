@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/zip"
+	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -169,30 +172,31 @@ type diagView struct {
 }
 
 type matchView struct {
-	MatchID         string         `json:"match_id"`
-	SourceFile      string         `json:"source_file"`
-	StartTime       string         `json:"start_time"`
-	DurationSeconds float64        `json:"duration_seconds"`
-	GameMode        string         `json:"game_mode"`
-	Map             string         `json:"map"`
-	IsPrivate       bool           `json:"is_private"`
-	Source          string         `json:"source"`
-	HasScore        bool           `json:"has_score"`
-	BlueScore       int            `json:"blue_score"`
-	OrangeScore     int            `json:"orange_score"`
-	FramesProcessed int            `json:"frames_processed"`
-	InvalidFrames   int            `json:"invalid_frames"`
-	PlayerFrames    int            `json:"player_frames"`
-	AnalyzedAt      string         `json:"analyzed_at"`
-	Replaced        bool           `json:"replaced"`
-	ClearedEvents   int64          `json:"cleared_events"`
-	ClearedScores   int64          `json:"cleared_scores"`
-	Telemetry       *telemetryView `json:"telemetry,omitempty"`
-	Players         []playerView   `json:"players"`
-	Events          []eventView    `json:"events"`
-	Cases           []caseView     `json:"cases"`
-	Diagnostics     *diagView      `json:"diagnostics,omitempty"`
-	Warnings        []string       `json:"warnings"`
+	MatchID         string           `json:"match_id"`
+	Levels          model.LevelTable `json:"levels"`
+	SourceFile      string           `json:"source_file"`
+	StartTime       string           `json:"start_time"`
+	DurationSeconds float64          `json:"duration_seconds"`
+	GameMode        string           `json:"game_mode"`
+	Map             string           `json:"map"`
+	IsPrivate       bool             `json:"is_private"`
+	Source          string           `json:"source"`
+	HasScore        bool             `json:"has_score"`
+	BlueScore       int              `json:"blue_score"`
+	OrangeScore     int              `json:"orange_score"`
+	FramesProcessed int              `json:"frames_processed"`
+	InvalidFrames   int              `json:"invalid_frames"`
+	PlayerFrames    int              `json:"player_frames"`
+	AnalyzedAt      string           `json:"analyzed_at"`
+	Replaced        bool             `json:"replaced"`
+	ClearedEvents   int64            `json:"cleared_events"`
+	ClearedScores   int64            `json:"cleared_scores"`
+	Telemetry       *telemetryView   `json:"telemetry,omitempty"`
+	Players         []playerView     `json:"players"`
+	Events          []eventView      `json:"events"`
+	Cases           []caseView       `json:"cases"`
+	Diagnostics     *diagView        `json:"diagnostics,omitempty"`
+	Warnings        []string         `json:"warnings"`
 }
 
 // matchData is what a match view is built from, whether the match was just
@@ -243,6 +247,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 	levels := s.engine.Levels()
 	v := matchView{
 		MatchID:         mc.MatchID,
+		Levels:          levels,
 		SourceFile:      d.sourceFile,
 		StartTime:       fmtTime(mc.StartTime),
 		DurationSeconds: mc.Duration.Seconds(),
@@ -513,12 +518,238 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 // ---- handlers --------------------------------------------------------------
 
 type analyzeEntry struct {
-	File          string     `json:"file"`
-	OK            bool       `json:"ok"`
-	Error         string     `json:"error,omitempty"`
-	AlreadyStored bool       `json:"already_stored,omitempty"`
-	MatchID       string     `json:"match_id,omitempty"`
-	Match         *matchView `json:"match,omitempty"`
+	File          string          `json:"file"`
+	OK            bool            `json:"ok"`
+	Error         string          `json:"error,omitempty"`
+	AlreadyStored bool            `json:"already_stored,omitempty"`
+	MatchID       string          `json:"match_id,omitempty"`
+	Match         *matchView      `json:"match,omitempty"`
+	Diagnostic    *fileDiagnostic `json:"diagnostic,omitempty"`
+}
+
+// fileDiagnostic describes an upload that could not be parsed, in enough
+// detail to paste to a developer: the container, the size, how many lines
+// the file holds, what its first bytes look like and what was expected.
+type fileDiagnostic struct {
+	// Container is "zip" (PK signature), "text" or "empty".
+	Container string `json:"container"`
+	SizeBytes int64  `json:"size_bytes"`
+	// Lines is the number of lines read: the file's own for text, the replay
+	// entry's for a ZIP.
+	Lines int `json:"lines"`
+	// HeadText is the first diagHeadBytes bytes with non-printables escaped
+	// (\t \n \r \\ and \xNN); HeadHex is the same bytes as hex.
+	HeadText string `json:"head_text"`
+	HeadHex  string `json:"head_hex"`
+	// ZipEntries lists the archive's entries ("name (size)"), ZIPs only.
+	ZipEntries []string `json:"zip_entries,omitempty"`
+	// Findings are plain-language observations about the first line.
+	Findings []string `json:"findings"`
+	// Hint describes the expected layout.
+	Hint string `json:"hint"`
+}
+
+const (
+	diagHeadBytes = 160
+	// diagProbeBytes bounds how much of the first line the probe reads.
+	diagProbeBytes = 1 << 20
+	// diagLineScanBytes bounds how much of a file (or ZIP entry) is read to
+	// count its lines.
+	diagLineScanBytes = adapter.DefaultMaxReplayBytes
+
+	expectedLayoutHint = "Expected layout: one snapshot per line, `YYYY/MM/DD HH:MM:SS.mmm<TAB>{json}` " +
+		"(a UTF-8 text file with one Echo VR session JSON per line, each prefixed by the recorder's " +
+		"timestamp and a tab); or a ZIP archive containing that file."
+)
+
+// diagnoseUpload inspects a file the parser refused. It never fails: what it
+// cannot read is reported as a finding.
+func diagnoseUpload(path string) *fileDiagnostic {
+	d := &fileDiagnostic{Findings: []string{}, Hint: expectedLayoutHint}
+	f, err := os.Open(path)
+	if err != nil {
+		d.Container = "unreadable"
+		d.Findings = append(d.Findings, "The uploaded file could not be opened: "+err.Error())
+		return d
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil {
+		d.SizeBytes = st.Size()
+	}
+	head := make([]byte, diagHeadBytes)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	d.HeadText, d.HeadHex = printableBytes(head), hexBytes(head)
+
+	switch {
+	case n == 0:
+		d.Container = "empty"
+		d.Findings = append(d.Findings, "The file is empty.")
+		return d
+	case bytes.HasPrefix(head, []byte("PK\x03\x04")):
+		d.Container = "zip"
+		d.diagnoseZip(path)
+		return d
+	default:
+		d.Container = "text"
+	}
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		d.Findings = append(d.Findings, "Could not re-read the file: "+err.Error())
+		return d
+	}
+	d.diagnoseText(f)
+	return d
+}
+
+// diagnoseText counts lines and checks the first non-empty line against
+// the timestamp<TAB>json layout.
+func (d *fileDiagnostic) diagnoseText(r io.Reader) {
+	br := bufio.NewReaderSize(io.LimitReader(r, diagLineScanBytes), 64<<10)
+	var first []byte
+	firstDone := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if len(chunk) > 0 {
+			d.Lines++
+			if !firstDone {
+				first = append(first, chunk...)
+				if len(first) > diagProbeBytes {
+					first = first[:diagProbeBytes]
+				}
+				if err != bufio.ErrBufferFull {
+					firstDone = true
+				}
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			d.Lines-- // the line continues in the next slice
+			continue
+		}
+		if err != nil {
+			break
+		}
+	}
+	line := bytes.TrimRight(bytes.TrimPrefix(first, []byte("\xef\xbb\xbf")), "\r\n")
+	if len(bytes.TrimSpace(line)) == 0 {
+		d.Findings = append(d.Findings, "The first line is blank.")
+		return
+	}
+	if c := line[0]; c == '{' || c == '[' {
+		d.Findings = append(d.Findings, "The file starts with JSON instead of a timestamp prefix; an .echoreplay line begins with the recorder's clock.")
+	}
+	tab := bytes.IndexByte(line, '\t')
+	if tab < 0 {
+		d.Findings = append(d.Findings, "The first line has no TAB between the timestamp and the JSON.")
+		return
+	}
+	prefix := string(line[:tab])
+	if _, err := adapter.ParseReplayLineTime(prefix); err != nil {
+		d.Findings = append(d.Findings, fmt.Sprintf("The first line's timestamp prefix %q does not parse as YYYY/MM/DD HH:MM:SS.mmm.", truncate(prefix, 40)))
+	}
+	payload := line[tab+1:]
+	if !json.Valid(payload) {
+		d.Findings = append(d.Findings, "The text after the TAB on the first line is not valid JSON.")
+		return
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &top); err != nil {
+		d.Findings = append(d.Findings, "The JSON on the first line is not an object.")
+		return
+	}
+	for _, key := range []string{"sessionid", "teams"} {
+		if _, ok := top[key]; !ok {
+			d.Findings = append(d.Findings, fmt.Sprintf("The first snapshot has no %q key.", key))
+		}
+	}
+}
+
+// diagnoseZip lists the archive and counts the lines of its first file.
+func (d *fileDiagnostic) diagnoseZip(path string) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		d.Findings = append(d.Findings, "The file starts with the ZIP signature but could not be opened as an archive: "+err.Error())
+		return
+	}
+	defer zr.Close()
+	var entry *zip.File
+	for i, zf := range zr.File {
+		if i < 10 {
+			d.ZipEntries = append(d.ZipEntries, fmt.Sprintf("%s (%s)", zf.Name, fmtBytes(int64(zf.UncompressedSize64))))
+		}
+		if entry == nil && !zf.FileInfo().IsDir() {
+			entry = zf
+		}
+	}
+	if len(zr.File) > 10 {
+		d.ZipEntries = append(d.ZipEntries, fmt.Sprintf("… %d more", len(zr.File)-10))
+	}
+	if entry == nil {
+		d.Findings = append(d.Findings, fmt.Sprintf("The archive holds no file (%d entries).", len(zr.File)))
+		return
+	}
+	rc, err := entry.Open()
+	if err != nil {
+		d.Findings = append(d.Findings, fmt.Sprintf("The archive entry %q could not be opened: %v", entry.Name, err))
+		return
+	}
+	defer rc.Close()
+	d.Findings = append(d.Findings, fmt.Sprintf("Inspected the archive entry %q.", entry.Name))
+	d.diagnoseText(rc)
+}
+
+func printableBytes(b []byte) string {
+	var sb strings.Builder
+	for _, c := range b {
+		switch {
+		case c == '\t':
+			sb.WriteString(`\t`)
+		case c == '\n':
+			sb.WriteString(`\n`)
+		case c == '\r':
+			sb.WriteString(`\r`)
+		case c == '\\':
+			sb.WriteString(`\\`)
+		case c >= 0x20 && c < 0x7f:
+			sb.WriteByte(c)
+		default:
+			fmt.Fprintf(&sb, `\x%02x`, c)
+		}
+	}
+	return sb.String()
+}
+
+// hexBytes renders b as space-separated hex, 16 bytes per line.
+func hexBytes(b []byte) string {
+	var sb strings.Builder
+	for i, c := range b {
+		if i > 0 {
+			if i%16 == 0 {
+				sb.WriteByte('\n')
+			} else {
+				sb.WriteByte(' ')
+			}
+		}
+		fmt.Fprintf(&sb, "%02x", c)
+	}
+	return sb.String()
+}
+
+func fmtBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 type analyzeResponse struct {
@@ -635,6 +866,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			entry.Error = fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", stored.MatchID)
 		case err != nil:
 			entry.Error = err.Error()
+			entry.Diagnostic = diagnoseUpload(path)
 		default:
 			mv := s.freshMatchView(res, entry.File)
 			entry.OK, entry.MatchID, entry.Match = true, mv.MatchID, &mv
