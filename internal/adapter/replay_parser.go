@@ -30,8 +30,12 @@ const (
 
 // replayLineLayouts are the accepted formats of the per-line timestamp prefix.
 var replayLineLayouts = []string{
-	"2006/01/02 15:04:05.000",
+	"2006/01/02 15:04:05.999999999", // Spark: yyyy/MM/dd HH:mm:ss.fff
+	"2006-01-02 15:04:05.999999999", // other recorders: dashes, microseconds
+	"2006-01-02T15:04:05.999999999Z07:00",
+	"2006-01-02T15:04:05.999999999",
 	"2006/01/02 15:04:05",
+	"2006-01-02 15:04:05",
 }
 
 // ParseReplayLineTime parses the 'YYYY/MM/DD HH:MM:SS.mmm' prefix of an
