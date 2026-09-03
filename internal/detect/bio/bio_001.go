@@ -99,17 +99,13 @@ func (d *Bio001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
-		if ps.IsStunned {
-			continue
-		}
-		if ps.FrameDt < 0.01 {
-			continue
-		}
-		// Post-respawn immunity: hand poses jump to the spawn pose, which
-		// looks like an instantaneous rotation. Same guard as BIO_002.
-		if ps.IsImmune {
-			getStreak(d.left, pid).reset()
-			getStreak(d.right, pid).reset()
+		// Frames the detector does not evaluate break the run on both
+		// hands: a "sustained" violation is one the detector saw on every
+		// frame in between. Post-respawn immunity additionally means hand
+		// poses jump to the spawn pose, which looks like an instantaneous
+		// rotation. Same guards as BIO_002.
+		if ps.IsStunned || ps.FrameDt < 0.01 || ps.IsImmune {
+			resetHands(d.left, d.right, pid)
 			continue
 		}
 
@@ -137,10 +133,8 @@ func (d *Bio001) checkHand(
 		s.maxObserved = rate
 	}
 
-	if rate > d.maxWristAngularVelocity {
-		s.consecutive++
-	} else {
-		s.reset()
+	s.advance(frameIdx, rate > d.maxWristAngularVelocity)
+	if s.consecutive == 0 {
 		return
 	}
 

@@ -22,7 +22,8 @@ type State002 struct {
 	minIncidents     int
 	sigmoidSteepness float64
 
-	wasStunned     map[string]bool
+	wasStunned     map[string]bool // last observed stun flag; presence = player seen
+	measuring      map[string]bool // a stun start was observed and its end is awaited
 	stunStartFrame map[string]int
 	stunStartTime  map[string]float64
 	incidents      map[string]int
@@ -52,6 +53,7 @@ func NewState002(params map[string]any) *State002 {
 
 func (d *State002) Reset() {
 	d.wasStunned = make(map[string]bool)
+	d.measuring = make(map[string]bool)
 	d.stunStartFrame = make(map[string]int)
 	d.stunStartTime = make(map[string]float64)
 	d.incidents = make(map[string]int)
@@ -79,19 +81,33 @@ func (d *State002) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
 
-		if ps.IsStunned && !d.wasStunned[pid] {
-			// Stun start
-			d.stunStartFrame[pid] = frameIdx
-			d.stunStartTime[pid] = ps.LastTimestamp
-			d.wasStunned[pid] = true
+		prevStunned, seen := d.wasStunned[pid]
+		d.wasStunned[pid] = ps.IsStunned
+		if !seen {
+			// First observation only records the flag: a player first seen
+			// already stunned (warmup completing mid-stun, detectors
+			// resuming after a non-active phase) has an unknown stun start,
+			// so its end must not be measured as a short stun. Same rule
+			// as STATE_007's stun-start transitions.
 			continue
 		}
-		if ps.IsStunned || !d.wasStunned[pid] {
+		if ps.IsStunned && !prevStunned {
+			// Stun start: a false -> true transition between two observed frames.
+			d.stunStartFrame[pid] = frameIdx
+			d.stunStartTime[pid] = ps.LastTimestamp
+			d.measuring[pid] = true
+			continue
+		}
+		if ps.IsStunned || prevStunned == ps.IsStunned {
+			continue
+		}
+		if !d.measuring[pid] {
+			// true -> false, but the start was never observed.
 			continue
 		}
 
 		// Stun end - measure the stun duration
-		d.wasStunned[pid] = false
+		d.measuring[pid] = false
 		startFrame := d.stunStartFrame[pid]
 		recoveryFrames := frameIdx - startFrame
 		recoverySeconds := ps.LastTimestamp - d.stunStartTime[pid]

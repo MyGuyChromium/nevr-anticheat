@@ -98,9 +98,10 @@ func TestBuildAppliesConfigAndStampsWeightOnEvents(t *testing.T) {
 	}
 	// The configured weight must reach the emitted event.
 	mc := &model.MatchContext{MatchID: "m", Physics: model.DefaultPhysics()}
-	ps := &model.PlayerState{PlayerID: "p1", Position: model.Vec3{1, 1.6, 1}}
+	ps := &model.PlayerState{PlayerID: "p1", Position: model.Vec3{1, 1.6, 1}, FrameDt: 0.067, LastTimestamp: 10 * 0.067}
 	m2.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 10)
 	ps.Position = model.Vec3{1, 1.6, 11}
+	ps.LastTimestamp = 11 * 0.067
 	events := m2.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 11)
 	if len(events) != 1 {
 		t.Fatalf("expected one MOV_002 event, got %d", len(events))

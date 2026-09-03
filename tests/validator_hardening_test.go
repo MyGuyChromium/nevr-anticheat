@@ -80,20 +80,26 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 
 // TestValidation_FarHandReachesBio002 documents the F171 gap: a single
 // frame with a hand hundreds of metres away passes both validators and
-// the extractor turns it into an impossible hand speed. BIO_002 needs two
-// consecutive frames, and the hand's return is the second one.
+// the extractor turns it into an impossible hand speed (~12800 m/s on the
+// way out and back). BIO_002 floors min_violation_frames at 3, so the
+// out-and-back pair from one bad sample is no longer reported; the
+// validator gap itself is still open.
 func TestValidation_FarHandReachesBio002(t *testing.T) {
 	frames := player1().NormalMovingPlayer(200, 4.0)
 	frames[100].RightHandPosition = model.Vec3{500, 500, 500}
 	if invalid, _ := testutil.ValidateFrames(frames); invalid != 0 {
 		t.Fatalf("the far hand was rejected; the gap is closed, update this test and the report")
 	}
-	hr := runOnly(t, frames, "BIO_002")
-	hr.AssertDetectorFiredN("BIO_002", 1)
-	evd := hr.Events[0].Evidence.(model.HandSpeedEvidence)
-	if evd.Speed < 10000 {
-		t.Errorf("expected a ~12800 m/s hand speed from one bad sample, got %.0f", evd.Speed)
+	fe := pipeline.NewFeatureExtractor(30)
+	mc := matchContextForPlayer("player1")
+	ps := &model.PlayerState{PlayerID: "player1"}
+	for i := 0; i <= 100; i++ {
+		fe.UpdatePlayerState(ps, &frames[i], mc)
 	}
+	if ps.RightHandSpeed < 10000 {
+		t.Errorf("expected a ~12800 m/s hand speed from one bad sample, got %.0f", ps.RightHandSpeed)
+	}
+	runOnly(t, frames, "BIO_002").AssertNoDetections()
 }
 
 // TestValidation_NegativeTimestampIsAcceptedOffline documents the F171 gap

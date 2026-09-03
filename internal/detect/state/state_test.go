@@ -71,13 +71,16 @@ func TestState001_FastPlayersAreNotExempt(t *testing.T) {
 
 // ---- STATE_002 ----
 
+// stunFor observes an unstunned frame at startFrame, a stun on the next
+// `frames` frames and the recovery frame after it, so the stun start is a
+// false -> true transition between two observed frames.
 func stunFor(d *State002, startFrame int, frames int, dtSec float64) []model.DetectionEvent {
 	mc := ctx()
 	var events []model.DetectionEvent
-	for fi := startFrame; fi <= startFrame+frames; fi++ {
+	for fi := startFrame; fi <= startFrame+frames+1; fi++ {
 		ps := active("p1", fi)
 		ps.LastTimestamp = float64(fi) * dtSec
-		ps.IsStunned = fi < startFrame+frames
+		ps.IsStunned = fi > startFrame && fi <= startFrame+frames
 		events = append(events, d.Evaluate(mc, players(ps), fi)...)
 	}
 	return events
