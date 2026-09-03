@@ -282,40 +282,65 @@ func runAnalyze(configPath, replayPath string, force bool) {
 	}
 }
 
-// analyzeReplay is the analyze command over the engine: replay.AnalyzeFile
-// parses the replay, runs the pipeline and persists telemetry, context and
-// derived outputs, and the result is printed in the order it happened. A
-// match that is already stored is reported and left untouched unless force
-// is set; with force the engine clears the previous analysis only after the
-// replay parsed completely, the pipeline ran and the source data was stored,
-// so a truncated or corrupt replay never destroys the analysis it was meant
-// to replace. Any persistence failure is returned so the command exits
-// non-zero.
+// analyzeReplay is the analyze command over the engine: replay.AnalyzeFileAll
+// parses the replay, and for every match it holds (a recording whose
+// session id changes mid-file holds two) runs the pipeline and persists
+// telemetry, context and derived outputs; the results are printed in the
+// order they happened, one summary block per match. A match that is already
+// stored is reported and left untouched unless force is set; with force the
+// engine clears the previous analysis only after the match parsed
+// completely, the pipeline ran and the source data was stored, so a
+// truncated or corrupt replay never destroys the analysis it was meant to
+// replace. A failure part-way through the file is returned after the
+// matches finished before it were printed, and any persistence failure is
+// returned, so the command exits non-zero.
 func analyzeReplay(ctx context.Context, a *app, replayPath string, force bool) error {
-	res, err := a.engine.AnalyzeFile(ctx, replayPath, force)
-	var stored *replay.MatchStoredError
-	if errors.As(err, &stored) {
-		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", stored.MatchID)
-		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
-		return nil
-	}
+	results, err := a.engine.AnalyzeFileAll(ctx, replayPath, force)
+	printAnalyzeResults(results)
 	if err != nil {
 		return err
 	}
-	printAnalyzeResult(res)
-	return res.PersistError()
+	var errs []error
+	for _, res := range results {
+		if perr := res.PersistError(); perr != nil {
+			errs = append(errs, fmt.Errorf("match %s: %w", res.MatchCtx.MatchID, perr))
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// printAnalyzeResult prints what AnalyzeFile did, in the order it happened:
-// the parse and adapter diagnostics (.echoreplay), the telemetry writes, the
-// cleared analysis (--force), then the detection summary. Storage failures
-// are not printed here: analyzeReplay returns them (AnalyzeResult.PersistError)
-// so the command fails visibly instead of warning.
+// printAnalyzeResults prints what AnalyzeFileAll did: the parse and the
+// adapter diagnostics of the file once (.echoreplay; the report covers every
+// match in it), then one block per match in file order.
+func printAnalyzeResults(results []*replay.AnalyzeResult) {
+	if len(results) == 0 {
+		return
+	}
+	if diag := results[0].Diagnostics; diag != nil {
+		// The adapter's count covers the whole file, including the matches
+		// refused as already stored (their frames are not kept).
+		fmt.Printf("Parsed %d player-frames from %s (%d lines rejected)\n", diag.FramesMapped, results[0].Path, diag.FramesRejected)
+		fmt.Print(diag.FormatReport())
+	}
+	for i, res := range results {
+		if i > 0 {
+			fmt.Println()
+		}
+		printAnalyzeResult(res)
+	}
+}
+
+// printAnalyzeResult prints what AnalyzeFileAll did for one match, in the
+// order it happened: the refusal of a stored match, or the telemetry
+// writes, the cleared analysis (--force), then the detection summary.
+// Storage failures are not printed here: analyzeReplay returns them
+// (AnalyzeResult.PersistError) so the command fails visibly instead of
+// warning.
 func printAnalyzeResult(res *replay.AnalyzeResult) {
-	if res.Diagnostics != nil {
-		fmt.Printf("Parsed %d player-frames from %s (%d lines rejected)\n",
-			res.Frames, res.Path, res.Diagnostics.FramesRejected)
-		fmt.Print(res.Diagnostics.FormatReport())
+	if res.AlreadyStored {
+		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", res.MatchCtx.MatchID)
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+		return
 	}
 	if res.TelemetryErr == nil {
 		fmt.Printf("Stored %d telemetry frames (%d already present)", res.Telemetry.Inserted, res.Telemetry.Ignored)

@@ -383,7 +383,7 @@
       <dt>Player frames rejected</dt><dd>${fmtInt(d.player_frames_rejected)}${rej ? ` (${esc(rej)})` : ''}</dd>
       <dt>Spectator entries dropped</dt><dd>${fmtInt(d.spectator_entries_dropped)}</dd>
       <dt>Players seen</dt><dd>${fmtInt(d.players_seen)}</dd>
-      ${d.session_changes ? `<dt>Session changes</dt><dd>${fmtInt(d.session_changes)} (the file holds ${fmtInt(d.session_changes + 1)} matches; the first was analyzed)</dd>` : ''}
+      ${d.session_changes ? `<dt>Session changes</dt><dd>${fmtInt(d.session_changes)} (the file holds ${fmtInt(d.session_changes + 1)} matches, each analyzed on its own; this report covers the whole file)</dd>` : ''}
       ${b ? `<dt>Pose bases</dt><dd>${fmtInt(b.proper)} proper, ${fmtInt(b.reflected)} reflected, ${fmtInt(b.non_orthonormal)} non-orthonormal, ${fmtInt(b.degenerate)} degenerate</dd>
       <dt>Hand tracking lost</dt><dd>${fmtInt(b.hand_tracking_lost)}</dd>
       <dt>Non-monotonic samples</dt><dd>${fmtInt(b.non_monotonic_samples)}</dd>
@@ -528,12 +528,24 @@
     xhr.onload = () => {
       const body = xhr.response || {};
       if (xhr.status !== 200 || !Array.isArray(body.results)) return finish(body.error || `${xhr.status} ${xhr.statusText}`);
+      // A file holds one match, or several after a rematch (res.matches);
+      // each is counted and shown on its own. A failure that stopped the
+      // file after some matches is in res.error next to them.
+      const items = (res) => (res.matches && res.matches.length ? res.matches : [res]);
+      const fileError = (res) => (res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null);
       let ok = 0, failed = 0, stored = 0;
       body.results.forEach((res, i) => {
-        if (res.ok) { ok++; setState(i, 'analyzed', 'ok'); } else { res.already_stored ? stored++ : failed++; setState(i, res.already_stored ? 'already stored' : 'failed', 'bad'); }
+        let a = 0, s = 0, f = fileError(res) ? 1 : 0;
+        items(res).forEach((m) => { if (m.ok) a++; else if (m.already_stored) s++; else f++; });
+        ok += a; stored += s; failed += f;
+        setState(i, a ? 'analyzed' : (f ? 'failed' : 'already stored'), a && !f ? 'ok' : 'bad');
       });
-      // Prepend in reverse so the first file ends up on top.
-      body.results.slice().reverse().forEach((res) => prepend(res.ok ? matchSection(res.match, 'from upload') : failCard(res)));
+      // Prepend in reverse so the first file, and its first match, end up on top.
+      body.results.slice().reverse().forEach((res) => {
+        const fe = fileError(res);
+        if (fe) prepend(failCard(fe));
+        items(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
+      });
       const parts = [`${ok} analyzed`]; if (stored) parts.push(`${stored} already stored`); if (failed) parts.push(`${failed} failed`);
       finish();
       setStatus(`Done: ${parts.join(', ')}.`, failed ? 'err' : 'ok');

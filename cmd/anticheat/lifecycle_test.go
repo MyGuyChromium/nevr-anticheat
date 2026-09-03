@@ -136,10 +136,12 @@ func TestAnalyzeReplay_ForceKeepsPreviousAnalysisOnParseFailure(t *testing.T) {
 	if after := countDerived(t, a, matchID); after != before {
 		t.Errorf("failed --force destroyed the previous analysis: %+v -> %+v", before, after)
 	}
-	// Without --force a stored match is left alone and reported as such.
+	// Without --force a stored match is left alone and reported as such;
+	// the file is still read through (a later session would be analyzed),
+	// so the corrupt line is reported too.
 	out := captureStdout(t, func() { err = analyzeReplay(ctx, a, corrupt, false) })
-	if err != nil || !strings.Contains(out, "already stored") {
-		t.Errorf("non-forced analyze of a stored match: err=%v out=%s", err, out)
+	if err == nil || !strings.Contains(err.Error(), "reading echoreplay") || !strings.Contains(out, "already stored") {
+		t.Errorf("non-forced analyze of a stored, corrupt replay: err=%v out=%s", err, out)
 	}
 	if after := countDerived(t, a, matchID); after != before {
 		t.Errorf("non-forced analyze changed the analysis: %+v -> %+v", before, after)

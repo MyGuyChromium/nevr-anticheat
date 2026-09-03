@@ -439,7 +439,7 @@ func diagnosticsView(diag *adapter.DiagnosticReport) *diagView {
 	return v
 }
 
-// freshMatchView renders what AnalyzeFile just produced.
+// freshMatchView renders what AnalyzeFileAll just produced for one match.
 func (s *server) freshMatchView(res *replay.AnalyzeResult, sourceFile string) matchView {
 	v := s.buildMatchView(matchData{
 		ctx:             res.MatchCtx,
@@ -517,6 +517,14 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 
 // ---- handlers --------------------------------------------------------------
 
+// analyzeEntry is the outcome of one uploaded file. Matches lists every
+// match the file holds, in file order (a recording holds two after a
+// rematch in the same lobby); OK, MatchID and Match mirror the first match
+// that was analyzed, or, when none was, Error, AlreadyStored and MatchID
+// mirror the first match, so a client that reads one match per file sees
+// the one that matters. A failure that stopped the file part-way is in
+// Error, after the matches finished before it; a file that yielded no match
+// at all carries the parse failure and a Diagnostic of what was uploaded.
 type analyzeEntry struct {
 	File          string          `json:"file"`
 	OK            bool            `json:"ok"`
@@ -525,6 +533,42 @@ type analyzeEntry struct {
 	MatchID       string          `json:"match_id,omitempty"`
 	Match         *matchView      `json:"match,omitempty"`
 	Diagnostic    *fileDiagnostic `json:"diagnostic,omitempty"`
+	Matches       []matchEntry    `json:"matches,omitempty"`
+}
+
+// matchEntry is the outcome of one match of an uploaded file: analyzed
+// (Match), or refused because it is already stored.
+type matchEntry struct {
+	OK            bool       `json:"ok"`
+	Error         string     `json:"error,omitempty"`
+	AlreadyStored bool       `json:"already_stored,omitempty"`
+	MatchID       string     `json:"match_id"`
+	Match         *matchView `json:"match,omitempty"`
+}
+
+// mirrorFirst fills the single-match fields from Matches (see analyzeEntry).
+func (e *analyzeEntry) mirrorFirst() {
+	for i := range e.Matches {
+		if m := &e.Matches[i]; m.OK {
+			e.OK, e.MatchID, e.Match = true, m.MatchID, m.Match
+			return
+		}
+	}
+	if len(e.Matches) > 0 {
+		m := e.Matches[0]
+		e.AlreadyStored, e.MatchID, e.Error = m.AlreadyStored, m.MatchID, m.Error
+	}
+}
+
+// matchEntry renders one AnalyzeFileAll result.
+func (s *server) matchEntry(res *replay.AnalyzeResult, sourceFile string) matchEntry {
+	if res.AlreadyStored {
+		id := res.MatchCtx.MatchID
+		return matchEntry{AlreadyStored: true, MatchID: id,
+			Error: fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", id)}
+	}
+	mv := s.freshMatchView(res, sourceFile)
+	return matchEntry{OK: true, MatchID: mv.MatchID, Match: &mv}
 }
 
 // fileDiagnostic describes an upload that could not be parsed, in enough
@@ -856,20 +900,18 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// The analysis is not tied to the request: a closed tab must not
-		// leave a half-written match behind.
-		res, err := s.engine.AnalyzeFile(context.Background(), path, force)
-		var stored *replay.MatchStoredError
-		switch {
-		case errors.As(err, &stored):
-			entry.AlreadyStored = true
-			entry.MatchID = stored.MatchID
-			entry.Error = fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", stored.MatchID)
-		case err != nil:
+		// leave a half-written match behind. Every match the file holds is
+		// analyzed and reported (a recording holds two after a rematch).
+		results, err := s.engine.AnalyzeFileAll(context.Background(), path, force)
+		for _, res := range results {
+			entry.Matches = append(entry.Matches, s.matchEntry(res, entry.File))
+		}
+		entry.mirrorFirst()
+		if err != nil {
 			entry.Error = err.Error()
-			entry.Diagnostic = diagnoseUpload(path)
-		default:
-			mv := s.freshMatchView(res, entry.File)
-			entry.OK, entry.MatchID, entry.Match = true, mv.MatchID, &mv
+			if len(results) == 0 {
+				entry.Diagnostic = diagnoseUpload(path)
+			}
 		}
 		resp.Results = append(resp.Results, entry)
 	}

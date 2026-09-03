@@ -10,7 +10,56 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
+
+// TestRunAnalyze_TwoSessions: a recording whose session id changes mid-file
+// is analyzed as two matches. The command prints the file's diagnostics
+// once and one summary block per match, stores both without any tick
+// colliding, refuses both on a re-run and replaces both with --force.
+func TestRunAnalyze_TwoSessions(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.toml")
+	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replayPath := filepath.Join(dir, "rematch.echoreplay")
+	src := filepath.Join("..", "..", "tests", "fixtures", "synthetic_session.echoreplay")
+	if _, _, err := testutil.SplitReplaySessions(src, replayPath, "SYN-FIXTURE-002", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	if !strings.Contains(out, "Parsed 480 player-frames from "+replayPath) || strings.Count(out, "Session id changes (matches):  1 (2 matches in file)") != 1 {
+		t.Errorf("file header and diagnostics should appear once:\n%s", out)
+	}
+	if strings.Count(out, "Match: ") != 2 || !strings.Contains(out, "Match: SYN-FIXTURE-001\n") || !strings.Contains(out, "Match: SYN-FIXTURE-002\n") {
+		t.Errorf("analyze output should hold one summary block per match:\n%s", out)
+	}
+	if n := strings.Count(out, "Stored 240 telemetry frames (0 already present), 60 raw ticks (0 already present)"); n != 2 {
+		t.Errorf("each match stores its own 60 ticks with nothing already present (%d blocks):\n%s", n, out)
+	}
+	if strings.Count(out, "Frames: 60 processed, 0 invalid") != 2 || strings.Contains(out, "already stored") {
+		t.Errorf("analyze output:\n%s", out)
+	}
+
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	for _, want := range []string{"Match SYN-FIXTURE-001 is already stored", "Match SYN-FIXTURE-002 is already stored"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("second analyze lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Match: ") || !strings.Contains(out, "Parsed 480 player-frames from "+replayPath) {
+		t.Errorf("second analyze without --force should refuse both matches and still report the file it read:\n%s", out)
+	}
+
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
+	if strings.Count(out, "Cleared previous analysis for") != 2 || strings.Count(out, "Match: ") != 2 ||
+		strings.Count(out, "Stored 0 telemetry frames (240 already present), 0 raw ticks (60 already present)") != 2 {
+		t.Errorf("forced analyze output:\n%s", out)
+	}
+}
 
 // captureStdout runs fn and returns what it printed to stdout.
 func captureStdout(t *testing.T, fn func()) string {

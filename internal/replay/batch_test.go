@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -16,7 +17,59 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
+
+// A recording with two sessions is two matches to batch: both are analyzed
+// and stored under their own ids on the first run, both skipped on the
+// next, both replaced with force.
+func TestBatchAnalyzer_TwoSessionReplay(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := testutil.SplitReplaySessions(syntheticReplay, filepath.Join(dir, "rematch.echoreplay"), "SYN-FIXTURE-002", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	store := testStore(t)
+	ctx := context.Background()
+	ba := NewBatchAnalyzer(emptyPipeline(), store, func() FrameParser { return NewJSONFrameParser() }, 2, quietLogger())
+	ba.SetPipelineFactory(emptyPipeline)
+
+	res, err := ba.AnalyzeDirectory(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TotalFiles != 1 || res.Processed != 2 || res.Skipped != 0 || res.Errors != 0 || res.FramesInserted != 480 || res.FramesIgnored != 0 {
+		t.Fatalf("first run: %+v (want 2 matches processed from 1 file, 480 frames)", res)
+	}
+	for i, id := range []string{"SYN-FIXTURE-001", "SYN-FIXTURE-002"} {
+		mc, err := store.GetMatchContext(ctx, id)
+		if err != nil {
+			t.Fatalf("%s: context not stored: %v", id, err)
+		}
+		if mc.Duration != 3953*time.Millisecond || mc.StartTime.Minute() != 10*i {
+			t.Errorf("%s: start %v duration %v", id, mc.StartTime, mc.Duration)
+		}
+		if n, _ := store.GetMatchTickCount(ctx, id); n != 60 {
+			t.Errorf("%s: raw ticks = %d, want 60", id, n)
+		}
+	}
+
+	res, err = ba.AnalyzeDirectory(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Processed != 0 || res.Skipped != 2 || res.Errors != 0 {
+		t.Errorf("second run: %+v (want both matches skipped)", res)
+	}
+
+	ba.SetForce(true)
+	res, err = ba.AnalyzeDirectory(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Processed != 2 || res.Skipped != 0 || res.FramesInserted != 0 || res.FramesIgnored != 480 {
+		t.Errorf("forced run: %+v", res)
+	}
+}
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 

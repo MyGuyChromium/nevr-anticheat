@@ -20,13 +20,16 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-// BatchResult holds the results of batch analysis.
+// BatchResult holds the results of batch analysis. Processed and Skipped
+// count matches, not files: an .echoreplay whose session id changes
+// mid-file (a rematch in the same lobby) holds two matches, each analyzed
+// on its own (see AnalyzeFileAll).
 type BatchResult struct {
 	TotalFiles   int `json:"total_files"`
 	IgnoredFiles int `json:"ignored_files"` // .json files that are not legacy replays (bridge dumps, exports)
-	Processed    int `json:"processed"`     // analyzed AND fully persisted
+	Processed    int `json:"processed"`     // matches analyzed AND fully persisted
 	Skipped      int `json:"skipped"`       // duplicate match in this run, or already stored (no --force)
-	Errors       int `json:"errors"`        // parse/analysis failures plus PersistFailed
+	Errors       int `json:"errors"`        // parse/analysis failures (per file) plus PersistFailed
 	// PersistFailed counts matches that were analyzed but whose telemetry,
 	// context or derived outputs could not be written (disk full, read-only
 	// or locked database, cancelled context). They are included in Errors
@@ -175,18 +178,18 @@ func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*Bat
 					return
 				default:
 				}
-				pm, skipped, err := ba.analyzeFile(ctx, p, path, seenMatches, &statsMu)
+				ready, skipped, err := ba.analyzeFile(ctx, p, path, seenMatches, &statsMu)
 				statsMu.Lock()
-				switch {
-				case err != nil:
+				if err != nil {
 					result.Errors++
 					ba.logger.Warn("replay analysis failed", "path", path, "error", err)
-				case skipped:
-					result.Skipped++
 				}
+				result.Skipped += skipped
 				statsMu.Unlock()
-				if err == nil && !skipped {
-					writeCh <- pm
+				// Matches analyzed before a failure part-way through the
+				// file are still persisted; the file counts as an error.
+				for _, pm := range ready {
+					writeCh <- *pm
 				}
 			}
 		}()
@@ -243,40 +246,40 @@ func looksLikeLegacyReplay(path string) bool {
 	return bytes.Contains(head, []byte(`"header"`)) && bytes.Contains(head, []byte(`"frames"`))
 }
 
-// analyzeFile parses and analyzes one replay. It returns skipped=true for a
-// match already handled in this run or already present in the store (unless
-// force is set). The store is only read here; writes happen in persist.
-func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, path string, seenMatches map[string]string, mu *sync.Mutex) (parsedMatch, bool, error) {
-	var pm parsedMatch
-	pm.path = path
-
+// analyzeFile parses and analyzes one replay: every match it holds, in file
+// order. It returns the matches ready to persist and the number skipped
+// (already handled in this run, or already present in the store unless
+// force is set). A failure stops the file; the matches analyzed before it
+// are still returned. The store is only read here; writes happen in persist.
+func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, path string, seenMatches map[string]string, mu *sync.Mutex) (ready []*parsedMatch, skipped int, err error) {
+	var matches []*parsedMatch
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".echoreplay" {
-		// Stream the replay: frames are accumulated once (ProcessMatch needs
-		// the whole match) and the raw payload is kept once per tick, keyed
-		// by frame index, so no second copy of the raw strings exists.
+		// Stream the replay: frames are accumulated once per match
+		// (ProcessMatch needs the whole match) and the raw payload is kept
+		// once per tick, keyed by frame index, so no second copy of the raw
+		// strings exists.
 		parser := adapter.NewEchoReplayParser()
 		if ba.physics != (model.PhysicsConstants{}) {
 			parser.SetPhysics(ba.physics)
 		}
-		pm.rawByFrame = make(map[int]string)
-		var lastSample time.Time
-		matchCtx, _, err := parser.ParseFileStream(path, func(tick *adapter.ParsedTick) error {
-			if _, seen := pm.rawByFrame[tick.FrameIndex]; !seen {
-				pm.rawByFrame[tick.FrameIndex] = tick.RawJSON
-			}
-			pm.frames = append(pm.frames, tick.Frames...)
-			lastSample = tick.SampleTime
-			return nil
-		})
+		var cur *parsedMatch
+		_, err := parseReplayMatches(parser, path,
+			func(tick *adapter.ParsedTick, first bool) error {
+				if first {
+					cur = &parsedMatch{path: path, matchCtx: tick.MatchCtx, rawByFrame: make(map[int]string)}
+					matches = append(matches, cur)
+				}
+				if _, seen := cur.rawByFrame[tick.FrameIndex]; !seen {
+					cur.rawByFrame[tick.FrameIndex] = tick.RawJSON
+				}
+				cur.frames = append(cur.frames, tick.Frames...)
+				return nil
+			},
+			func(*model.MatchContext) error { return nil })
 		if err != nil {
-			return pm, false, err
+			return nil, 0, err
 		}
-		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
-			// Match duration is the real span of the recording (first to last sample).
-			matchCtx.Duration = lastSample.Sub(matchCtx.StartTime)
-		}
-		pm.matchCtx = matchCtx
 	} else {
 		reader := NewReplayReader(path, ba.parser())
 		if ba.physics != (model.PhysicsConstants{}) {
@@ -284,37 +287,56 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 		}
 		matchCtx, frames, err := reader.ReadMatch()
 		if err != nil {
-			return pm, false, err
+			return nil, 0, err
 		}
-		pm.matchCtx, pm.frames = matchCtx, frames
-	}
-	if pm.matchCtx == nil || pm.matchCtx.MatchID == "" {
-		return pm, false, fmt.Errorf("replay has no match id")
+		matches = append(matches, &parsedMatch{path: path, matchCtx: matchCtx, frames: frames})
 	}
 
+	for _, pm := range matches {
+		if pm.matchCtx == nil || pm.matchCtx.MatchID == "" {
+			return ready, skipped, fmt.Errorf("replay has no match id")
+		}
+		skip, err := ba.prepareMatch(ctx, p, pm, seenMatches, mu)
+		if err != nil {
+			return ready, skipped, err
+		}
+		if skip {
+			skipped++
+			continue
+		}
+		ready = append(ready, pm)
+	}
+	return ready, skipped, nil
+}
+
+// prepareMatch decides one parsed match and, unless it is skipped, runs it
+// through the pipeline: a match already handled in this run or already in
+// the store (without force) is skipped; a stored match is marked for
+// replacement with force.
+func (ba *BatchAnalyzer) prepareMatch(ctx context.Context, p *pipeline.Pipeline, pm *parsedMatch, seenMatches map[string]string, mu *sync.Mutex) (bool, error) {
 	// Duplicate same-match suppression within this run.
 	mu.Lock()
 	firstFile, seen := seenMatches[pm.matchCtx.MatchID]
 	if !seen {
-		seenMatches[pm.matchCtx.MatchID] = path
+		seenMatches[pm.matchCtx.MatchID] = pm.path
 	}
 	mu.Unlock()
 	if seen {
 		ba.logger.Info("skipping duplicate match in batch",
-			"match_id", pm.matchCtx.MatchID, "skipped_file", path, "first_file", firstFile)
-		return pm, true, nil
+			"match_id", pm.matchCtx.MatchID, "skipped_file", pm.path, "first_file", firstFile)
+		return true, nil
 	}
 
 	// Already-stored suppression across runs (idempotent re-ingest).
 	exists, err := ba.store.HasMatch(ctx, pm.matchCtx.MatchID)
 	if err != nil {
-		return pm, false, fmt.Errorf("checking store: %w", err)
+		return false, fmt.Errorf("checking store: %w", err)
 	}
 	if exists {
 		if !ba.force {
 			ba.logger.Info("skipping match already in store (use --force to re-analyze)",
-				"match_id", pm.matchCtx.MatchID, "file", path)
-			return pm, true, nil
+				"match_id", pm.matchCtx.MatchID, "file", pm.path)
+			return true, nil
 		}
 		pm.replaced = true
 	}
@@ -325,10 +347,10 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 	}
 	res, err := p.ProcessMatch(ctx, pm.matchCtx, pm.frames)
 	if err != nil {
-		return pm, false, err
+		return false, err
 	}
 	pm.result = res
-	return pm, false, nil
+	return false, nil
 }
 
 // persist writes one analyzed match: source telemetry, context, then derived

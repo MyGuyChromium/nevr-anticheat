@@ -12,11 +12,114 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
+
+// TestDesktop_AnalyzeTwoSessions: a recording whose session id changes
+// mid-file comes back as one upload entry carrying both matches (the
+// single-match fields mirror the first analyzed one), both land in the
+// history, and the stored check is per match.
+func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
+	_, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	dir := t.TempDir()
+	two := filepath.Join(dir, "rematch.echoreplay")
+	if _, _, err := testutil.SplitReplaySessions(fixturePath, two, "SYN-FIXTURE-002", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, out := upload(t, ts, false, map[string]string{"rematch.echoreplay": two})
+	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
+		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
+	}
+	r := out.Results[0]
+	if !r.OK || r.Error != "" || r.AlreadyStored || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || r.Match.MatchID != "SYN-FIXTURE-001" || r.Diagnostic != nil {
+		t.Fatalf("entry %+v", r)
+	}
+	if len(r.Matches) != 2 {
+		t.Fatalf("matches %+v", r.Matches)
+	}
+	for i, m := range r.Matches {
+		id := "SYN-FIXTURE-00" + string(rune('1'+i))
+		if !m.OK || m.AlreadyStored || m.Error != "" || m.MatchID != id || m.Match == nil || m.Match.MatchID != id {
+			t.Fatalf("match %d: %+v", i, m)
+		}
+		v := m.Match
+		if v.SourceFile != "rematch.echoreplay" || v.FramesProcessed != 60 || v.PlayerFrames != 240 || len(v.Players) != 4 ||
+			v.StartTime == "" || v.DurationSeconds <= 0 || v.Replaced || len(v.Warnings) != 0 {
+			t.Errorf("match %s view %+v", id, *v)
+		}
+		if v.Telemetry == nil || *v.Telemetry != (telemetryView{FramesInserted: 240, TicksInserted: 60}) {
+			t.Errorf("match %s telemetry %+v (its ticks must not collide with the other match's)", id, v.Telemetry)
+		}
+		if v.Diagnostics == nil || v.Diagnostics.SessionChanges != 1 {
+			t.Errorf("match %s diagnostics %+v", id, v.Diagnostics)
+		}
+	}
+	if r.Matches[0].Match.StartTime == r.Matches[1].Match.StartTime {
+		t.Errorf("both matches report the same start time %q", r.Matches[0].Match.StartTime)
+	}
+
+	var hist struct {
+		Matches []matchListEntry `json:"matches"`
+	}
+	if resp := getJSON(t, base+"/api/matches", &hist); resp.StatusCode != http.StatusOK {
+		t.Fatalf("matches status %d", resp.StatusCode)
+	}
+	ids := map[string]bool{}
+	for _, m := range hist.Matches {
+		ids[m.MatchID] = true
+	}
+	if len(hist.Matches) != 2 || !ids["SYN-FIXTURE-001"] || !ids["SYN-FIXTURE-002"] {
+		t.Errorf("history %+v", hist.Matches)
+	}
+
+	// Both stored: the entry mirrors the first match's refusal.
+	resp, out = upload(t, ts, false, map[string]string{"rematch.echoreplay": two})
+	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
+		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
+	}
+	r = out.Results[0]
+	if r.OK || !r.AlreadyStored || r.MatchID != "SYN-FIXTURE-001" || !strings.Contains(r.Error, "already stored") || r.Match != nil || len(r.Matches) != 2 {
+		t.Fatalf("second upload %+v", r)
+	}
+	for i, m := range r.Matches {
+		if m.OK || !m.AlreadyStored || m.Match != nil || !strings.Contains(m.Error, "already stored") {
+			t.Errorf("second upload match %d: %+v", i, m)
+		}
+	}
+
+	// First match stored, a new second one: the entry mirrors the analyzed match.
+	mixed := filepath.Join(dir, "mixed.echoreplay")
+	if _, _, err := testutil.SplitReplaySessions(fixturePath, mixed, "SYN-FIXTURE-003", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	resp, out = upload(t, ts, false, map[string]string{"mixed.echoreplay": mixed})
+	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
+		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
+	}
+	r = out.Results[0]
+	if !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-003" || r.Match == nil || len(r.Matches) != 2 ||
+		!r.Matches[0].AlreadyStored || r.Matches[0].MatchID != "SYN-FIXTURE-001" || !r.Matches[1].OK || r.Matches[1].MatchID != "SYN-FIXTURE-003" {
+		t.Errorf("mixed upload %+v", r)
+	}
+
+	// Force: both matches of the first file replaced.
+	resp, out = upload(t, ts, true, map[string]string{"rematch.echoreplay": two})
+	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 || !out.Results[0].OK || len(out.Results[0].Matches) != 2 {
+		t.Fatalf("forced upload: status %d %+v", resp.StatusCode, out)
+	}
+	for i, m := range out.Results[0].Matches {
+		if !m.OK || m.Match == nil || !m.Match.Replaced || m.Match.Telemetry.FramesIgnored != 240 || m.Match.Telemetry.TicksIgnored != 60 {
+			t.Errorf("forced match %d: %+v", i, m)
+		}
+	}
+}
 
 const (
 	fixturePath = "../../tests/fixtures/synthetic_session.echoreplay"

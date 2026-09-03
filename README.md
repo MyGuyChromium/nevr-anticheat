@@ -53,6 +53,8 @@ go build -o nevr-compat  ./cmd/compat      # /session payload compatibility chec
 # Ingest one replay: stores telemetry + raw ticks, runs detection, stores events/scores/cases.
 ./nevr-ac analyze match.echoreplay
 # A match that is already stored is skipped; --force clears its derived outputs and re-analyses.
+# A recording whose session id changes mid-file (a rematch in the same lobby) holds two
+# matches: each is analyzed, stored and reported on its own, and the stored check is per match.
 ./nevr-ac analyze match.echoreplay --force
 
 # Ingest a directory (parallel, general.max_workers), then run cross-match aggregation.
@@ -91,7 +93,7 @@ go build -o nevr-desktop.exe ./cmd/desktop     # CGO_ENABLED=1, like every binar
 
 On start it opens the database (`nevr-anticheat.db` next to the executable, or `general.db_path` with `--config <file>`), listens on **127.0.0.1 only** at a random free port behind a random per-run token, opens that URL in the default browser and prints it (`--no-browser` only prints it, `--port` pins the port). Uploaded files are analyzed one after another through the same code as `nevr-ac analyze` (telemetry, raw ticks, detection events, scores and review cases are stored; a match that is already in the database is refused unless the **Re-analyze** box, i.e. `--force`, is ticked) and deleted afterwards. Each match card shows the roster with names, teams, frames, per-match score and level, detection counts (shadow events separately), the detections table, the review cases created, and the adapter diagnostics. The page also lists the pending single-match and cross-match cases (`nevr-ac flagged`) and the analyzed matches in the database, any of which can be re-opened. **Quit** on the page or Ctrl+C in the console stops it. Nothing is reachable from other machines and nothing but this page can reach the app.
 
-The JSON API behind the page (all under `/<token>/`): `POST api/analyze` (multipart `files[]`, optional `force=1`), `GET api/flagged`, `GET api/matches`, `GET api/match/{id}`, `GET quit`.
+The JSON API behind the page (all under `/<token>/`): `POST api/analyze` (multipart `files[]`, optional `force=1`; each `results[i]` carries the file's matches in `matches[]`, one card each, while its `ok`/`match_id`/`match` mirror the first match analyzed), `GET api/flagged`, `GET api/matches`, `GET api/match/{id}`, `GET quit`.
 
 ## Quick start: live (bridge + server)
 
