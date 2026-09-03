@@ -10,9 +10,11 @@ import (
 // enabling PAT_003 (Cross-Match Consistency) to query historical detection events
 // from the database rather than requiring in-memory state.
 //
-// History is defined exactly as the cross-match aggregator defines it:
-// non-shadow events only, excluding the meta-detectors PAT_003 and PAT_004 so a
-// meta-detector never feeds on its own (or another meta-detector's) output.
+// History is non-shadow events only, excluding the meta-detectors PAT_003 and
+// PAT_004 so a meta-detector never feeds on its own (or another meta-detector's)
+// output. This is deliberately narrower than the cross-match aggregator's
+// input (GetAllPlayerEvents), which keeps meta-detector events: the aggregator
+// scores what was emitted, the history feed must not be recursive.
 // The limit is match-aware: the most recent matchLimit matches are selected
 // first and every event of those matches is returned, so a match is never cut
 // in half by a row cap.

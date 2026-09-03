@@ -27,10 +27,24 @@ const dbTimeSQLDefault = "(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
 
 // fmtDBTime renders t in dbTimeLayout (UTC). A zero time renders as the
 // current time so that DEFAULT-style semantics are preserved by callers that
-// pass an unset timestamp.
+// pass an unset timestamp. It is for INSERT/UPDATE values only; a range
+// predicate must use fmtDBTimeSince, otherwise a zero "since" silently means
+// "from now on" and the reader returns nothing.
 func fmtDBTime(t time.Time) string {
 	if t.IsZero() {
 		t = time.Now()
+	}
+	return t.UTC().Format(dbTimeLayout)
+}
+
+// dbTimeMin sorts before every dbTimeLayout value.
+const dbTimeMin = "0000-00-00T00:00:00Z"
+
+// fmtDBTimeSince renders t for a ">= ?" predicate: a zero time means "no
+// lower bound" and renders as dbTimeMin.
+func fmtDBTimeSince(t time.Time) string {
+	if t.IsZero() {
+		return dbTimeMin
 	}
 	return t.UTC().Format(dbTimeLayout)
 }

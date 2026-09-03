@@ -14,13 +14,13 @@ import (
 )
 
 // GetDistinctPlayersWithEvents returns all distinct player IDs that have
-// non-shadow detection events stored at or after the given time.
+// non-shadow detection events stored at or after the given time (zero = all).
 func (s *Store) GetDistinctPlayersWithEvents(ctx context.Context, since time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT player_id FROM detection_events
 		 WHERE created_at >= ? AND is_shadow = 0
 		 ORDER BY player_id`,
-		fmtDBTime(since),
+		fmtDBTimeSince(since),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying players: %w", err)
@@ -39,7 +39,10 @@ func (s *Store) GetDistinctPlayersWithEvents(ctx context.Context, since time.Tim
 }
 
 // GetAllPlayerEvents returns all non-shadow detection events for a player,
-// ordered by match then frame. StoredAt carries created_at.
+// ordered by match then frame. StoredAt carries created_at. This is the
+// cross-match aggregator's input: unlike GetPlayerHistoryEvents (the PAT_003
+// history feed) it does NOT exclude the meta-detectors PAT_003/PAT_004, so
+// their events contribute to the cross-match score like any other detector.
 func (s *Store) GetAllPlayerEvents(ctx context.Context, playerID string) ([]model.DetectionEvent, error) {
 	return s.queryEvents(ctx,
 		`SELECT `+eventColumns+` FROM detection_events

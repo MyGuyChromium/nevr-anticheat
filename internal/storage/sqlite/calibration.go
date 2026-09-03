@@ -92,10 +92,26 @@ func (s *Store) detectorEventCounts(ctx context.Context, sc caseScope) (map[stri
 // ComputeCalibration joins moderator decisions made at or after `since` (zero =
 // all) to the detection events of the decided cases and tallies per-detector
 // outcomes. Results are sorted by detector ID.
+//
+// A case counts once: only its latest decision in the window is used, so a
+// re-recorded verdict (an appeal outcome, or a database written before
+// StoreModeratorDecision rejected repeat verdicts) does not count the same
+// case twice per detector.
 func (s *Store) ComputeCalibration(ctx context.Context, since time.Time) ([]DetectorCalibration, error) {
-	decisions, err := s.ListModeratorDecisions(ctx, since, 0)
+	all, err := s.ListModeratorDecisions(ctx, since, 0)
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions: %w", err)
+	}
+	// ListModeratorDecisions is newest first: the first decision seen per
+	// case is the latest one.
+	seenCase := make(map[string]bool, len(all))
+	decisions := make([]model.ModeratorDecision, 0, len(all))
+	for _, d := range all {
+		if seenCase[d.CaseID] {
+			continue
+		}
+		seenCase[d.CaseID] = true
+		decisions = append(decisions, d)
 	}
 	byDetector := make(map[string]*DetectorCalibration)
 	get := func(id string) *DetectorCalibration {
