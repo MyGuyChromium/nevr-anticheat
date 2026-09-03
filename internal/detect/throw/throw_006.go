@@ -30,6 +30,27 @@ const (
 	deflectionMinAngle  = 8.0
 )
 
+// goalCandidate is one goal a flight's alignment is measured against. The
+// goal is fixed at release and never flips mid-flight, so crossing mid-court
+// cannot fabricate an alignment improvement.
+type goalCandidate struct {
+	pos              model.Vec3
+	initialAlignment float64 // cosine similarity at first tracked frame
+	finalAlignment   float64 // cosine similarity at last tracked frame
+	set              bool    // whether initialAlignment has been set
+}
+
+func (g *goalCandidate) improvement() float64 {
+	if !g.set {
+		return 0
+	}
+	return g.finalAlignment - g.initialAlignment
+}
+
+// goalLabelUnknownSide is the CorrectionTarget label when the attacked goal
+// was not known at release and the flight was judged against both goals.
+const goalLabelUnknownSide = "side unknown, better of both goals"
+
 type trajectoryTrack struct {
 	throwerID         string
 	releaseFrame      int
@@ -44,12 +65,47 @@ type trajectoryTrack struct {
 	violationFrames   int
 	frameCount        int
 	prevVelocity      model.Vec3
-	goalPos           model.Vec3 // goal fixed at release (never flips mid-flight)
-	goalKnown         bool
-	goalLabel         string
-	initialAlignment  float64 // cosine similarity at first tracked frame
-	finalAlignment    float64 // cosine similarity at last tracked frame
-	alignmentSet      bool    // whether initialAlignment has been set
+	// goals are the candidate goals fixed at release: the attacked goal when
+	// the thrower's side is known (GoalSelectionTeam), otherwise BOTH goals,
+	// because magnetism toward either goal is suspicious and a homing throw
+	// released away from its target would otherwise be judged against the
+	// goal the release happened to point at.
+	goals     []goalCandidate
+	goalLabel string
+}
+
+// goalCandidates picks the goals a track is measured against (see
+// trajectoryTrack.goals).
+func goalCandidates(matchCtx *model.MatchContext, t *model.ThrowEvent) ([]goalCandidate, string) {
+	if t.GoalSelection == model.GoalSelectionTeam && !t.GoalPosition.IsZero() {
+		return []goalCandidate{{pos: t.GoalPosition}}, model.GoalSelectionTeam
+	}
+	if matchCtx != nil && matchCtx.Physics.GoalZ > 0 {
+		gz := matchCtx.Physics.GoalZ
+		return []goalCandidate{{pos: model.Vec3{0, 0, gz}}, {pos: model.Vec3{0, 0, -gz}}}, goalLabelUnknownSide
+	}
+	if !t.GoalPosition.IsZero() {
+		// No goal geometry on the match context: the extractor's choice is
+		// the only goal available.
+		return []goalCandidate{{pos: t.GoalPosition}}, t.GoalSelection
+	}
+	return nil, ""
+}
+
+// bestGoal returns the candidate with the largest alignment improvement
+// (nil when no candidate has been measured).
+func (tr *trajectoryTrack) bestGoal() *goalCandidate {
+	var best *goalCandidate
+	for i := range tr.goals {
+		g := &tr.goals[i]
+		if !g.set {
+			continue
+		}
+		if best == nil || g.improvement() > best.improvement() {
+			best = g
+		}
+	}
+	return best
 }
 
 // Throw006 detects disc trajectory bending after release (magnetism cheat).
@@ -65,7 +121,7 @@ type Throw006 struct {
 func NewThrow006(params map[string]any) *Throw006 {
 	return &Throw006{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_006", DetectorVersion: "1.2.0",
+			DetectorID: "THROW_006", DetectorVersion: "1.3.0",
 			DetectorName: "Trajectory Correction (Mags)", DetectorCategory: "throw",
 			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.8,
 		},
@@ -89,7 +145,7 @@ func (d *Throw006) Configure(params map[string]any) error {
 func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	disc := currentDisc(players, frameIdx)
+	disc, held := currentDisc(players, frameIdx)
 
 	// Start tracking new throws. A re-throw while a track is still open
 	// (regrab within the tracking window) finalizes the earlier track first.
@@ -110,25 +166,24 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			releaseSpeed:     t.ReleaseSpeed,
 			releasePos:       t.ReleasePosition,
 			prevVelocity:     t.ReleaseVelocity,
-			goalPos:          t.GoalPosition,
-			goalKnown:        !t.GoalPosition.IsZero(),
-			goalLabel:        t.GoalSelection,
 		}
+		track.goals, track.goalLabel = goalCandidates(matchCtx, t)
 		if disc != nil && !disc.Velocity.IsZero() {
 			track.prevVelocity = disc.Velocity
 		}
 		d.activeThrows[pid] = track
 	}
 
-	if disc == nil {
+	if disc == nil && !held {
 		return events
 	}
 
 	// Update active tracks with current disc state
 	for _, throwerID := range sortedKeys(d.activeThrows) {
 		track := d.activeThrows[throwerID]
-		// Check if disc was caught or max frames reached
-		if disc.IsHeld || frameIdx-track.releaseFrame > d.postReleaseFrames {
+		// Check if disc was caught (is_held or any fresh player's
+		// has_possession) or max frames reached.
+		if held || frameIdx-track.releaseFrame > d.postReleaseFrames {
 			ev := d.finalizeTrack(matchCtx, track, frameIdx)
 			if ev != nil {
 				events = append(events, *ev)
@@ -174,21 +229,27 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			}
 		}
 
-		// Alignment with the goal chosen at release (the goal the thrower
-		// attacks when known, else the one the release pointed at). The goal
-		// never changes during the flight, so crossing mid-court cannot
+		// Alignment with the goal(s) fixed at release (the attacked goal
+		// when the thrower's side is known, else both goals). The goals
+		// never change during the flight, so crossing mid-court cannot
 		// fabricate an alignment improvement.
-		if track.goalKnown && currSpeed > 0.1 {
-			toGoal := track.goalPos.Sub(disc.Position)
-			if toGoal.Magnitude() > 0.1 {
-				alignment := disc.Velocity.Normalized().Dot(toGoal.Normalized())
-				if !math.IsNaN(alignment) {
-					if !track.alignmentSet {
-						track.initialAlignment = alignment
-						track.alignmentSet = true
-					}
-					track.finalAlignment = alignment
+		if currSpeed > 0.1 {
+			dir := disc.Velocity.Normalized()
+			for gi := range track.goals {
+				g := &track.goals[gi]
+				toGoal := g.pos.Sub(disc.Position)
+				if toGoal.Magnitude() <= 0.1 {
+					continue
 				}
+				alignment := dir.Dot(toGoal.Normalized())
+				if math.IsNaN(alignment) {
+					continue
+				}
+				if !g.set {
+					g.initialAlignment = alignment
+					g.set = true
+				}
+				g.finalAlignment = alignment
 			}
 		}
 
@@ -213,10 +274,13 @@ func (d *Throw006) FlushTracks(matchCtx *model.MatchContext, frameIdx int) []mod
 }
 
 func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectoryTrack, frameIdx int) *model.DetectionEvent {
-	// Net alignment improvement check: detect smooth magnetism
+	// Net alignment improvement check: detect smooth magnetism. With the
+	// side unknown the better of both goals is used (magnetism toward
+	// either goal is suspicious).
 	alignmentImprovement := 0.0
-	if track.alignmentSet {
-		alignmentImprovement = track.finalAlignment - track.initialAlignment
+	goal := track.bestGoal()
+	if goal != nil {
+		alignmentImprovement = goal.improvement()
 	}
 
 	if track.violationFrames < minViolationFrames || track.frameCount < minTrackedFrames {
@@ -262,8 +326,10 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 		finalSpeed = track.velocities[n-1].Magnitude()
 	}
 	correctionTarget := ""
-	if track.goalKnown {
-		correctionTarget = fmt.Sprintf("goal z=%+.1f (%s)", track.goalPos.Z(), track.goalLabel)
+	initialAlignment, finalAlignment := 0.0, 0.0
+	if goal != nil {
+		correctionTarget = fmt.Sprintf("goal z=%+.1f (%s)", goal.pos.Z(), track.goalLabel)
+		initialAlignment, finalAlignment = goal.initialAlignment, goal.finalAlignment
 	}
 
 	ev := d.MakeEvent(matchCtx, track.throwerID, track.releaseFrame, track.releaseTimestamp, severity, confidence,
@@ -276,8 +342,8 @@ func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectory
 			ReleaseSpeed:          track.releaseSpeed,
 			FinalSpeed:            finalSpeed,
 			CorrectionTarget:      correctionTarget,
-			InitialAlignment:      track.initialAlignment,
-			FinalAlignment:        track.finalAlignment,
+			InitialAlignment:      initialAlignment,
+			FinalAlignment:        finalAlignment,
 			AlignmentImprovement:  alignmentImprovement,
 			CorrectionConfidence:  model.Clamp01(alignmentImprovement),
 			TrajectoryPoints:      track.positions,

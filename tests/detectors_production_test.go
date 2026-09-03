@@ -161,10 +161,18 @@ func TestDetector_THROW_006_TrajectoryCorrection(t *testing.T) {
 			t.Errorf("evidence %+v", ev.Evidence)
 		}
 	}
-	// Documented limitation: before the goal side is known the release is
-	// measured against the goal it points at, and a homing throw released
-	// away from its target is judged against the wrong goal.
-	runOnly(t, player1().MagnetismCheat(4), "THROW_006").AssertNoDetections()
+	// Side unknown (no SetBlueGoalSide, no score yet): the flight is judged
+	// against BOTH goals and the better alignment improvement is used, so a
+	// homing throw released away from its target still fires.
+	hr = runOnly(t, player1().MagnetismCheat(4), "THROW_006")
+	hr.AssertDetectorFiredN("THROW_006", 4)
+	hr.AssertMinSeverity("THROW_006", 0.9)
+	for _, ev := range hr.Events {
+		evd, ok := ev.Evidence.(model.TrajectoryEvidence)
+		if !ok || evd.AlignmentImprovement <= 0.7 {
+			t.Errorf("unknown-side evidence %+v", ev.Evidence)
+		}
+	}
 	// Negative: straight throws, with and without the goal side.
 	runOnly(t, player1().NormalThrowSequence(8), "THROW_006").AssertNoDetections()
 	testutil.NewHarness(t).WithDetectors("THROW_006").WithBlueGoalSide(1).

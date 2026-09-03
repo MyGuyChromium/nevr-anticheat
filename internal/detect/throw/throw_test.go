@@ -1,6 +1,7 @@
 package throw
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -164,6 +165,33 @@ func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
 	events = d.Evaluate(mc, withThrow("p1", 200, 23.0, 0), 200)
 	if len(events) != 1 || events[0].AutoEnforce {
 		t.Fatalf("23 m/s should fire without AutoEnforce: %+v", events)
+	}
+	// A suspected telemetry artifact (> 2x cap) is an observation, never
+	// auto-enforceable, even with the detector flag on.
+	events = d.Evaluate(mc, withThrow("p1", 300, 60.0, 0), 300)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed_artifact" {
+		t.Fatalf("expected an artifact event: %+v", events)
+	}
+	if events[0].AutoEnforce {
+		t.Fatal("disc_speed_artifact must never carry AutoEnforce")
+	}
+	// Cap riding (statistical, sub-cap) never carries AutoEnforce either.
+	frame := 400
+	var capEv *model.DetectionEvent
+	for i := 0; i < capRidingMinThrows && capEv == nil; i++ {
+		frame += 10
+		for _, ev := range d.Evaluate(mc, withThrow("p1", frame, 19.5, 0), frame) {
+			if ev.CausalKey.AnomalyType == "cap_riding" {
+				e := ev
+				capEv = &e
+			}
+		}
+	}
+	if capEv == nil {
+		t.Fatal("expected a cap_riding event after 8 tight sub-cap throws")
+	}
+	if capEv.AutoEnforce {
+		t.Fatal("cap_riding must never carry AutoEnforce")
 	}
 }
 
@@ -435,7 +463,7 @@ func TestCurrentDisc_Deterministic(t *testing.T) {
 	fresh.CurrentDisc = flying
 	players := map[string]*model.PlayerState{"a": stale, "b": fresh}
 	for i := 0; i < 50; i++ {
-		if got := currentDisc(players, 100); got != flying {
+		if got, held := currentDisc(players, 100); got != flying || held {
 			t.Fatalf("iteration %d: picked stale disc", i)
 		}
 	}
@@ -447,26 +475,53 @@ func TestCurrentDisc_Deterministic(t *testing.T) {
 	other := newState("a", 100)
 	other.CurrentDisc = &model.DiscState{Velocity: model.Vec3{1, 0, 0}}
 	players = map[string]*model.PlayerState{"a": other, "z": holder}
-	if got := currentDisc(players, 100); got != holder.CurrentDisc {
-		t.Fatal("possessor's copy should be preferred")
+	if got, held := currentDisc(players, 100); got != holder.CurrentDisc || !held {
+		t.Fatal("possessor's copy should be preferred and reported held")
 	}
 
 	// No possessor: first in sorted order.
 	b := newState("b", 100)
 	b.CurrentDisc = &model.DiscState{Velocity: model.Vec3{2, 0, 0}}
 	players = map[string]*model.PlayerState{"b": b, "a": other}
-	if got := currentDisc(players, 100); got != other.CurrentDisc {
-		t.Fatal("expected first sorted player's disc")
+	if got, held := currentDisc(players, 100); got != other.CurrentDisc || held {
+		t.Fatal("expected first sorted player's disc, not held")
 	}
 
 	// No player with a frame at frameIdx (hand-built states): fall back to all.
 	old := newState("q", 3)
 	old.CurrentDisc = flying
-	if got := currentDisc(map[string]*model.PlayerState{"q": old}, 100); got != flying {
+	if got, held := currentDisc(map[string]*model.PlayerState{"q": old}, 100); got != flying || held {
 		t.Fatal("fallback to non-fresh disc failed")
 	}
-	if got := currentDisc(map[string]*model.PlayerState{"q": newState("q", 100)}, 100); got != nil {
+	if got, held := currentDisc(map[string]*model.PlayerState{"q": newState("q", 100)}, 100); got != nil || held {
 		t.Fatal("nil expected with no disc")
+	}
+}
+
+func TestCurrentDisc_HeldFromHasPossessionAlone(t *testing.T) {
+	// Contract E: a producer that omits is_held still signals the catch
+	// through has_possession. The copy is shared (IsHeld=false everywhere).
+	shared := &model.DiscState{Position: model.Vec3{10, 0, 0}, Velocity: model.Vec3{1, 0, 0}, Speed: 1}
+	thrower := newState("a", 100)
+	thrower.CurrentDisc = shared
+	catcher := newState("b", 100)
+	catcher.CurrentDisc = shared
+	catcher.HasDisc = true
+	if got, held := currentDisc(map[string]*model.PlayerState{"a": thrower, "b": catcher}, 100); got != shared || !held {
+		t.Fatalf("has_possession alone must report held: got=%v held=%v", got, held)
+	}
+	// A fresh holder without a disc copy still reports held.
+	noCopy := newState("b", 100)
+	noCopy.HasDisc = true
+	if got, held := currentDisc(map[string]*model.PlayerState{"a": thrower, "b": noCopy}, 100); got != shared || !held {
+		t.Fatalf("fresh holder without a copy: got=%v held=%v", got, held)
+	}
+	// A stale holder (left the match) does not.
+	stale := newState("b", 5)
+	stale.HasDisc = true
+	stale.CurrentDisc = shared
+	if _, held := currentDisc(map[string]*model.PlayerState{"a": thrower, "b": stale}, 100); held {
+		t.Fatal("stale player's possession must not end tracks")
 	}
 }
 
@@ -572,14 +627,101 @@ func TestThrow006_GoalFixedAtReleaseNoMidCourtFlip(t *testing.T) {
 		}
 	}
 	track := d.activeThrows["p1"]
-	if track == nil || !track.alignmentSet {
-		t.Fatal("alignment should be tracked against the release goal")
+	if track == nil || len(track.goals) != 2 || track.goalLabel != goalLabelUnknownSide {
+		t.Fatalf("side unknown: both goals should be candidates, got %+v", track)
 	}
-	if imp := track.finalAlignment - track.initialAlignment; math.Abs(imp) > 0.01 {
-		t.Fatalf("straight flight crossing z=0 fabricated alignment improvement %v", imp)
+	// Both candidates stay fixed at +-GoalZ and neither sees an improvement.
+	for _, g := range track.goals {
+		if !g.set {
+			t.Fatal("alignment should be tracked against every candidate goal")
+		}
+		if imp := g.improvement(); math.Abs(imp) > 0.01 {
+			t.Fatalf("straight flight crossing z=0 fabricated alignment improvement %v against %v", imp, g.pos)
+		}
+		if math.Abs(g.pos.Z()) != goal.Z() || g.pos.X() != 0 {
+			t.Fatalf("goal changed during flight: %v", g.pos)
+		}
 	}
-	if track.goalPos != goal {
-		t.Fatalf("goal changed during flight: %v", track.goalPos)
+	if best := track.bestGoal(); best == nil || best.improvement() > 0.01 {
+		t.Fatalf("best-of-both improvement %v", best)
+	}
+}
+
+// homingFlight releases along +X rotated by releaseDeg toward -Z (so the
+// release points at the WRONG goal) and then bends the disc by degPerFrame
+// toward +Z at constant speed, integrating the position along the velocity.
+// It returns every event emitted plus the events from a final catch frame.
+func homingFlight(d *Throw006, mc *model.MatchContext, sel string, goalPos model.Vec3, frames int) []model.DetectionEvent {
+	var all []model.DetectionEvent
+	const dt = 0.25
+	release := 0
+	dir := func(deg float64) model.Vec3 {
+		a := deg * math.Pi / 180
+		return model.Vec3{12 * math.Cos(a), 0, 12 * math.Sin(a)}
+	}
+	ps := newState("p1", release)
+	te := mkThrow("p1", release, 12, 5)
+	te.ReleasePosition = model.Vec3{0, 0, 0}
+	te.ReleaseVelocity = dir(-20)
+	te.GoalPosition = goalPos
+	te.GoalSelection = sel
+	ps.LastThrow = &te
+	ps.CurrentDisc = &model.DiscState{Position: te.ReleasePosition, Velocity: te.ReleaseVelocity, Speed: 12}
+	all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, release)...)
+	pos := te.ReleasePosition
+	for j := 1; j <= frames; j++ {
+		vel := dir(-20 + 10*float64(j))
+		pos = pos.Add(vel.Scale(dt))
+		s := newState("p1", j)
+		s.CurrentDisc = &model.DiscState{Position: pos, Velocity: vel, Speed: 12}
+		all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)...)
+	}
+	held := newState("p1", frames+1)
+	held.CurrentDisc = &model.DiscState{IsHeld: true, Position: pos}
+	held.HasDisc = true
+	return append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": held}, frames+1)...)
+}
+
+func TestThrow006_UnknownSideJudgesAgainstBothGoals(t *testing.T) {
+	mc := testCtx()
+	gz := mc.Physics.GoalZ
+	wrongGoal := model.Vec3{0, 0, -gz}
+	rightGoal := model.Vec3{0, 0, gz}
+
+	// Side unknown: the extractor recorded the goal the release pointed at
+	// (-Z), but the disc homes onto +Z. Production thresholds (no
+	// override): the cumulative bend (~120 deg) stays under 130, so only
+	// the alignment gate can fire.
+	events := homingFlight(NewThrow006(nil), mc, model.GoalSelectionAngular, wrongGoal, 12)
+	if len(events) != 1 {
+		t.Fatalf("homing throw with the side unknown must fire once, got %d", len(events))
+	}
+	evd := events[0].Evidence.(model.TrajectoryEvidence)
+	if evd.AlignmentImprovement <= alignmentImprovementGate || evd.CumulativeAngleChange > 130 {
+		t.Fatalf("expected the alignment gate to carry the detection: %+v", evd)
+	}
+	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, goalLabelUnknownSide) {
+		t.Fatalf("correction target %q", evd.CorrectionTarget)
+	}
+
+	// Side known and the attacked goal is +Z: same flight, same verdict,
+	// labelled as the team goal.
+	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, rightGoal, 12)
+	if len(events) != 1 {
+		t.Fatalf("homing throw with the side known must fire once, got %d", len(events))
+	}
+	evd = events[0].Evidence.(model.TrajectoryEvidence)
+	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, model.GoalSelectionTeam) {
+		t.Fatalf("correction target %q", evd.CorrectionTarget)
+	}
+
+	// Side known and the attacked goal is -Z: the configured/learned side is
+	// kept, so a bend toward the OTHER goal is not an alignment improvement
+	// (it is still reported by the cumulative-angle gate when large enough,
+	// which this flight is not).
+	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, wrongGoal, 12)
+	if len(events) != 0 {
+		t.Fatalf("known side must not be replaced by the better goal: %+v", events)
 	}
 }
 
@@ -606,6 +748,90 @@ func TestThrow006_StaleDiscCopyIgnored(t *testing.T) {
 	}
 	if track := d.activeThrows["p1"]; track == nil || track.violationFrames != 8 {
 		t.Fatalf("track was disturbed by the stale held copy: %+v", track)
+	}
+}
+
+func TestThrow006_TrackEndsOnHasPossessionAlone(t *testing.T) {
+	// A catcher whose producer omits is_held: the shared disc copy keeps
+	// IsHeld=false and only the catcher's has_possession marks the catch.
+	// The thrower's track must end there instead of consuming the held
+	// disc's motion (a catcher turning toward the goal while holding).
+	mc := testCtx()
+	d := NewThrow006(nil)
+	ps := newState("p1", 0)
+	te := mkThrow("p1", 0, 12, 5)
+	te.ReleasePosition = model.Vec3{0, 0, 0}
+	te.ReleaseVelocity = model.Vec3{12, 0, 0}
+	te.GoalPosition = model.Vec3{0, 0, 36}
+	te.GoalSelection = "team"
+	ps.LastThrow = &te
+	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{0, 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
+	d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 0)
+	for j := 1; j <= 3; j++ {
+		s := newState("p1", j)
+		s.CurrentDisc = &model.DiscState{Position: model.Vec3{3 * float64(j), 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
+		d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)
+	}
+	// Frame 4: p2 catches (has_possession only), shared copy IsHeld=false.
+	shared := &model.DiscState{Position: model.Vec3{12, 0, 0}, Velocity: model.Vec3{1, 0, 0}, Speed: 1}
+	p1 := newState("p1", 4)
+	p1.CurrentDisc = shared
+	p2 := newState("p2", 4)
+	p2.CurrentDisc = shared
+	p2.HasDisc = true
+	d.Evaluate(mc, map[string]*model.PlayerState{"p1": p1, "p2": p2}, 4)
+	if _, open := d.activeThrows["p1"]; open {
+		t.Fatal("track still open after catch signalled only by has_possession")
+	}
+	// The held disc turning toward the goal must not produce an event.
+	for j := 5; j <= 20; j++ {
+		ang := float64(j-4) * 10 * math.Pi / 180
+		a := newState("p1", j)
+		a.CurrentDisc = shared
+		b := newState("p2", j)
+		b.HasDisc = true
+		b.CurrentDisc = &model.DiscState{Position: model.Vec3{12, 0, 0}, Velocity: model.Vec3{1 * math.Cos(ang), 0, 1 * math.Sin(ang)}, Speed: 1}
+		if ev := d.Evaluate(mc, map[string]*model.PlayerState{"p1": a, "p2": b}, j); len(ev) != 0 {
+			t.Fatalf("held-disc motion produced an event at frame %d: %+v", j, ev)
+		}
+	}
+}
+
+func TestThrow008_TrackEndsOnHasPossessionAlone(t *testing.T) {
+	mc := testCtx()
+	d := NewThrow008(nil)
+	ps := newState("p1", 0)
+	te := mkThrow("p1", 0, 8, 5)
+	ps.LastThrow = &te
+	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{5, 0, 0}, Velocity: model.Vec3{8, 0, 0}, Speed: 8}
+	d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 0)
+	for j := 1; j <= 3; j++ {
+		s := newState("p1", j)
+		s.CurrentDisc = &model.DiscState{Position: model.Vec3{5 + float64(j), 0, 0}, Velocity: model.Vec3{8, 0, 0}, Speed: 8}
+		d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)
+	}
+	// Frame 4: caught by p2, signalled by has_possession only.
+	shared := &model.DiscState{Position: model.Vec3{9, 0, 0}, Velocity: model.Vec3{8, 0, 0}, Speed: 8}
+	p1 := newState("p1", 4)
+	p1.CurrentDisc = shared
+	p2 := newState("p2", 4)
+	p2.CurrentDisc = shared
+	p2.HasDisc = true
+	d.Evaluate(mc, map[string]*model.PlayerState{"p1": p1, "p2": p2}, 4)
+	if _, open := d.activeTracks["p1"]; open {
+		t.Fatal("track still open after catch signalled only by has_possession")
+	}
+	// Speed gains of the held disc (catcher accelerating) are never judged.
+	for j := 5; j <= 15; j++ {
+		spd := 8 + float64(j)*8
+		a := newState("p1", j)
+		a.CurrentDisc = shared
+		b := newState("p2", j)
+		b.HasDisc = true
+		b.CurrentDisc = &model.DiscState{Position: model.Vec3{9, 0, 0}, Velocity: model.Vec3{spd, 0, 0}, Speed: spd}
+		if ev := d.Evaluate(mc, map[string]*model.PlayerState{"p1": a, "p2": b}, j); len(ev) != 0 {
+			t.Fatalf("held-disc speed gain produced an event at frame %d: %+v", j, ev)
+		}
 	}
 }
 
