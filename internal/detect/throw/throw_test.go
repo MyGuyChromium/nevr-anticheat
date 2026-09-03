@@ -1,6 +1,7 @@
 package throw
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -626,14 +627,101 @@ func TestThrow006_GoalFixedAtReleaseNoMidCourtFlip(t *testing.T) {
 		}
 	}
 	track := d.activeThrows["p1"]
-	if track == nil || !track.alignmentSet {
-		t.Fatal("alignment should be tracked against the release goal")
+	if track == nil || len(track.goals) != 2 || track.goalLabel != goalLabelUnknownSide {
+		t.Fatalf("side unknown: both goals should be candidates, got %+v", track)
 	}
-	if imp := track.finalAlignment - track.initialAlignment; math.Abs(imp) > 0.01 {
-		t.Fatalf("straight flight crossing z=0 fabricated alignment improvement %v", imp)
+	// Both candidates stay fixed at +-GoalZ and neither sees an improvement.
+	for _, g := range track.goals {
+		if !g.set {
+			t.Fatal("alignment should be tracked against every candidate goal")
+		}
+		if imp := g.improvement(); math.Abs(imp) > 0.01 {
+			t.Fatalf("straight flight crossing z=0 fabricated alignment improvement %v against %v", imp, g.pos)
+		}
+		if math.Abs(g.pos.Z()) != goal.Z() || g.pos.X() != 0 {
+			t.Fatalf("goal changed during flight: %v", g.pos)
+		}
 	}
-	if track.goalPos != goal {
-		t.Fatalf("goal changed during flight: %v", track.goalPos)
+	if best := track.bestGoal(); best == nil || best.improvement() > 0.01 {
+		t.Fatalf("best-of-both improvement %v", best)
+	}
+}
+
+// homingFlight releases along +X rotated by releaseDeg toward -Z (so the
+// release points at the WRONG goal) and then bends the disc by degPerFrame
+// toward +Z at constant speed, integrating the position along the velocity.
+// It returns every event emitted plus the events from a final catch frame.
+func homingFlight(d *Throw006, mc *model.MatchContext, sel string, goalPos model.Vec3, frames int) []model.DetectionEvent {
+	var all []model.DetectionEvent
+	const dt = 0.25
+	release := 0
+	dir := func(deg float64) model.Vec3 {
+		a := deg * math.Pi / 180
+		return model.Vec3{12 * math.Cos(a), 0, 12 * math.Sin(a)}
+	}
+	ps := newState("p1", release)
+	te := mkThrow("p1", release, 12, 5)
+	te.ReleasePosition = model.Vec3{0, 0, 0}
+	te.ReleaseVelocity = dir(-20)
+	te.GoalPosition = goalPos
+	te.GoalSelection = sel
+	ps.LastThrow = &te
+	ps.CurrentDisc = &model.DiscState{Position: te.ReleasePosition, Velocity: te.ReleaseVelocity, Speed: 12}
+	all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, release)...)
+	pos := te.ReleasePosition
+	for j := 1; j <= frames; j++ {
+		vel := dir(-20 + 10*float64(j))
+		pos = pos.Add(vel.Scale(dt))
+		s := newState("p1", j)
+		s.CurrentDisc = &model.DiscState{Position: pos, Velocity: vel, Speed: 12}
+		all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)...)
+	}
+	held := newState("p1", frames+1)
+	held.CurrentDisc = &model.DiscState{IsHeld: true, Position: pos}
+	held.HasDisc = true
+	return append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": held}, frames+1)...)
+}
+
+func TestThrow006_UnknownSideJudgesAgainstBothGoals(t *testing.T) {
+	mc := testCtx()
+	gz := mc.Physics.GoalZ
+	wrongGoal := model.Vec3{0, 0, -gz}
+	rightGoal := model.Vec3{0, 0, gz}
+
+	// Side unknown: the extractor recorded the goal the release pointed at
+	// (-Z), but the disc homes onto +Z. Production thresholds (no
+	// override): the cumulative bend (~120 deg) stays under 130, so only
+	// the alignment gate can fire.
+	events := homingFlight(NewThrow006(nil), mc, model.GoalSelectionAngular, wrongGoal, 12)
+	if len(events) != 1 {
+		t.Fatalf("homing throw with the side unknown must fire once, got %d", len(events))
+	}
+	evd := events[0].Evidence.(model.TrajectoryEvidence)
+	if evd.AlignmentImprovement <= alignmentImprovementGate || evd.CumulativeAngleChange > 130 {
+		t.Fatalf("expected the alignment gate to carry the detection: %+v", evd)
+	}
+	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, goalLabelUnknownSide) {
+		t.Fatalf("correction target %q", evd.CorrectionTarget)
+	}
+
+	// Side known and the attacked goal is +Z: same flight, same verdict,
+	// labelled as the team goal.
+	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, rightGoal, 12)
+	if len(events) != 1 {
+		t.Fatalf("homing throw with the side known must fire once, got %d", len(events))
+	}
+	evd = events[0].Evidence.(model.TrajectoryEvidence)
+	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, model.GoalSelectionTeam) {
+		t.Fatalf("correction target %q", evd.CorrectionTarget)
+	}
+
+	// Side known and the attacked goal is -Z: the configured/learned side is
+	// kept, so a bend toward the OTHER goal is not an alignment improvement
+	// (it is still reported by the cumulative-angle gate when large enough,
+	// which this flight is not).
+	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, wrongGoal, 12)
+	if len(events) != 0 {
+		t.Fatalf("known side must not be replaced by the better goal: %+v", events)
 	}
 }
 

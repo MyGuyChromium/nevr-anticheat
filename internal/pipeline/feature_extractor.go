@@ -28,10 +28,11 @@ const (
 	// maxTrackedDiscHistories bounds the extractor-side disc history map.
 	maxTrackedDiscHistories = 4096
 
-	// Goal selection labels recorded in ThrowEvent.GoalSelection.
-	GoalSelectionTeam    = "team"    // goal the thrower's team attacks (configured or learned)
-	GoalSelectionAngular = "angular" // goal the release velocity points at most closely
-	GoalSelectionNearest = "nearest" // nearest goal by distance (release velocity too small to aim)
+	// Goal selection labels recorded in ThrowEvent.GoalSelection (defined
+	// on the model so detectors can read them without importing pipeline).
+	GoalSelectionTeam    = model.GoalSelectionTeam
+	GoalSelectionAngular = model.GoalSelectionAngular
+	GoalSelectionNearest = model.GoalSelectionNearest
 )
 
 // discSample is one frame of disc position for the pre-release snapshots.

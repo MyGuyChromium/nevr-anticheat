@@ -1,5 +1,15 @@
 package model
 
+// Goal selection labels recorded in ThrowEvent.GoalSelection. Only
+// GoalSelectionTeam means the attacked goal is actually known; the other two
+// are guesses from the release geometry, and detectors that judge a flight
+// against a goal (THROW_006) treat them as "side unknown".
+const (
+	GoalSelectionTeam    = "team"    // goal the thrower's team attacks (configured or learned)
+	GoalSelectionAngular = "angular" // goal the release velocity points at most closely
+	GoalSelectionNearest = "nearest" // nearest goal by distance (release velocity too small to aim)
+)
+
 // ThrowEvent represents a detected throw (disc release from a player).
 type ThrowEvent struct {
 	ThrowerID   string           `json:"thrower_id"`
