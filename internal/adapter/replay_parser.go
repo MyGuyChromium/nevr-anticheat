@@ -332,6 +332,12 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 	scanner.Buffer(make([]byte, 0, initial), p.maxLineBytes)
 
 	lineNum := 0
+	firstReject := ""
+	noteReject := func(format string, a ...any) {
+		if firstReject == "" {
+			firstReject = fmt.Sprintf(format, a...)
+		}
+	}
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Bytes()
@@ -350,6 +356,7 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		tabIdx := replaySeparatorIndex(line)
 		if tabIdx < 0 {
 			diag.FramesRejected++
+			noteReject("line %d: no separator between timestamp and JSON", lineNum)
 			continue
 		}
 
@@ -357,24 +364,28 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		if err != nil {
 			diag.FramesRejected++
 			diag.recordBadTimestamp()
+			noteReject("line %d: bad timestamp prefix %q: %v", lineNum, strings.TrimSpace(string(line[:tabIdx])), err)
 			continue
 		}
 
 		jsonBytes := line[tabIdx+1:]
 		if len(jsonBytes) < 2 {
 			diag.FramesRejected++
+			noteReject("line %d: empty JSON payload", lineNum)
 			continue
 		}
 
 		var session EchoVRSessionResponse
 		if err := json.Unmarshal(jsonBytes, &session); err != nil {
 			diag.FramesRejected++
+			noteReject("line %d: JSON decode: %v", lineNum, err)
 			continue
 		}
 
 		// Skip frames with no teams/players (lobby states, errors)
 		if len(session.Teams) == 0 {
 			diag.RecordSnapshotNoTeams()
+			noteReject("line %d: snapshot has no teams (lobby or empty session)", lineNum)
 			continue
 		}
 
@@ -435,6 +446,9 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 	}
 
 	if matchCtx == nil {
+		if firstReject != "" {
+			return nil, diag, fmt.Errorf("no valid frames found in replay (%d lines read, %d rejected, %d without teams); first rejection: %s", lineNum, diag.FramesRejected, diag.SnapshotsNoTeams, firstReject)
+		}
 		return nil, diag, fmt.Errorf("no valid frames found in replay (%d lines read, %d rejected)", lineNum, diag.FramesRejected)
 	}
 
