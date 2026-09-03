@@ -3,8 +3,10 @@
 # Purpose: initial shadow-mode deployment on a single community server.
 # This file is an OVERLAY on configs/default.toml: every key not written here
 # keeps its default (physics, pipeline, scoring tiers, detector params).
-# Verify the merged result in the effective-config table both binaries log at
-# startup.
+# Verify the merged result in the effective detector table: nevr-server
+# reports it at every startup, nevr-ac only with --verbose / -v (or
+# NEVR_AC_VERBOSE=1). With log_format = "json" it is one JSON log record per
+# detector ("msg":"effective detector").
 #
 # WHAT THIS CONFIG PRODUCES
 #   Every detector below runs in mode = "shadow". Shadow events are stored in
@@ -148,7 +150,7 @@ mode               = "shadow"
 # ==============================================================================
 
 [detector.THROW_002]
-enabled = false     # UNVERIFIED: v2.0.0 single-delta approach needs real-data calibration
+enabled = false     # UNVERIFIED: v2.0.0 single-delta approach, needs real-data calibration (BROKEN mechanism removed, replacement unvalidated)
 enforcement_weight = 0.0
 mode    = "shadow"
 

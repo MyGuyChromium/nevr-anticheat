@@ -113,7 +113,7 @@ func TestOverlay_ScalarSectionsMergePerField(t *testing.T) {
 	if cfg.Pipeline.HistoryWindow != 45 {
 		t.Fatalf("history_window = %d", cfg.Pipeline.HistoryWindow)
 	}
-	if cfg.Pipeline.MaxFrameDt != 0.2 || cfg.Pipeline.CooldownFrames != 300 {
+	if cfg.Pipeline.MaxFrameDt != 0.5 || cfg.Pipeline.CooldownFrames != 300 {
 		t.Fatalf("sibling pipeline keys lost: %+v", cfg.Pipeline)
 	}
 	if cfg.Scoring.ReviewThreshold != 70 || cfg.Scoring.DecayHalfLifeHours != 168 {
@@ -134,6 +134,58 @@ func TestOverlay_ServerDurations(t *testing.T) {
 	}
 	if cfg.Server.StaleMatchAfter != 30*time.Minute || cfg.Server.Listen != ":8080" {
 		t.Fatalf("server defaults lost: %+v", cfg.Server)
+	}
+}
+
+// TestOverlay_BareNumberDurationIsRejected: BurntSushi/toml decodes an
+// integer into time.Duration as nanoseconds, so `idle_timeout = 300` used to
+// load silently as a 300 ns read deadline. It must now be a clear error, for
+// every [server] duration and for floats too.
+func TestOverlay_BareNumberDurationIsRejected(t *testing.T) {
+	for _, src := range []string{
+		"[server]\nidle_timeout = 300\n",
+		"[server]\nstale_match_after = 1800\n",
+		"[server]\npersist_interval = 120\n",
+	} {
+		_, err := load(t, src)
+		if err == nil {
+			t.Fatalf("bare-number duration loaded without error:\n%s", src)
+		}
+		if !strings.Contains(err.Error(), "duration string") || !strings.Contains(err.Error(), "nanoseconds") {
+			t.Fatalf("error does not explain the duration format: %v", err)
+		}
+	}
+	// A float never decoded into time.Duration; it stays a decode error.
+	if _, err := load(t, "[server]\nidle_timeout = 5.0\n"); err == nil {
+		t.Fatal("float duration loaded without error")
+	}
+	// A sub-second duration string is equally suspicious.
+	_, err := load(t, "[server]\nidle_timeout = \"300ns\"\n")
+	if err == nil || !strings.Contains(err.Error(), "at least 1s") {
+		t.Fatalf("sub-second duration accepted: %v", err)
+	}
+	// Hand-built configs go through Validate only.
+	cfg := DefaultConfig()
+	cfg.Server.PersistInterval = 120
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "server.persist_interval") {
+		t.Fatalf("Validate accepted a 120 ns persist_interval: %v", err)
+	}
+}
+
+// TestValidate_MaxFrameDtIsBoundedByProducerDt: max_frame_dt is the feature
+// extractor's gap threshold, so a value above the validator's hard 60 s
+// rejection bound could never be reached.
+func TestValidate_MaxFrameDtIsBoundedByProducerDt(t *testing.T) {
+	cfg := mustLoad(t, "[pipeline]\nmax_frame_dt = 60\n")
+	if cfg.Pipeline.MaxFrameDt != 60 {
+		t.Fatalf("max_frame_dt = %v", cfg.Pipeline.MaxFrameDt)
+	}
+	_, err := load(t, "[pipeline]\nmax_frame_dt = 61\n")
+	if err == nil || !strings.Contains(err.Error(), "pipeline.max_frame_dt") || !strings.Contains(err.Error(), "60") {
+		t.Fatalf("max_frame_dt above MaxProducerDt accepted: %v", err)
+	}
+	if DefaultConfig().Pipeline.MaxFrameDt != 0.5 {
+		t.Fatalf("default max_frame_dt = %v, want the extractor gap threshold 0.5", DefaultConfig().Pipeline.MaxFrameDt)
 	}
 }
 
@@ -272,15 +324,44 @@ func TestValidate_TiersMustBeMonotonic(t *testing.T) {
 	if lt := cfg.Scoring.LevelTable(); lt.HighRisk != 50 || lt.Suspicious != 40 {
 		t.Fatalf("review_threshold must win: %+v", lt)
 	}
+	// Setting both keys reports the one problem exactly once.
+	cfg = mustLoad(t, "[scoring]\nreview_threshold = 50\nhigh_risk = 70\n")
+	mismatch := 0
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "review_threshold") {
+			mismatch++
+		}
+	}
+	if mismatch != 1 {
+		t.Fatalf("review_threshold/high_risk mismatch warned %d times, want 1: %v", mismatch, cfg.Warnings)
+	}
 }
 
 func TestValidate_ReviewAndEnforceModesWarn(t *testing.T) {
 	cfg := mustLoad(t, "[detector.MOV_001]\nmode = \"review\"\n")
-	if !hasWarning(cfg, "MOV_001.mode=\"review\"") {
+	if !hasWarning(cfg, "MOV_001.mode=\"review\"") || !hasWarning(cfg, "will be SCORED") {
 		t.Fatalf("expected scored-mode warning: %v", cfg.Warnings)
 	}
 	if cfg.IsDetectorShadow("MOV_001") {
 		t.Fatal("review mode must not be shadow")
+	}
+	// shadow.shadow_detectors wins over the per-detector mode, and the
+	// warning must say so instead of promising scoring.
+	cfg = mustLoad(t, "[shadow]\nshadow_detectors = [\"MOV_001\"]\n[detector.MOV_001]\nmode = \"review\"\n")
+	if !cfg.IsDetectorShadow("MOV_001") {
+		t.Fatal("shadow_detectors must force shadow")
+	}
+	if hasWarning(cfg, "will be SCORED") || !hasWarning(cfg, "will NOT be scored") {
+		t.Fatalf("forced-shadow detector warned as scored: %v", cfg.Warnings)
+	}
+}
+
+// TestDeprecatedAutoEnforceKeyDescribesTheRealRule: the migration text must
+// not claim a per-event confidence gate that only THROW_001 applies.
+func TestDeprecatedAutoEnforceKeyDescribesTheRealRule(t *testing.T) {
+	cfg := mustLoad(t, "[scoring]\nauto_enforce_min_confidence = 0.9\n")
+	if !hasWarning(cfg, "THROW_001") || hasWarning(cfg, "confidence > 0.95") {
+		t.Fatalf("auto_enforce_min_confidence deprecation text is wrong: %v", cfg.Warnings)
 	}
 }
 

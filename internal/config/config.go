@@ -126,6 +126,15 @@ func (p PhysicsConfig) Constants() model.PhysicsConstants {
 }
 
 // PipelineConfig holds pipeline processing settings.
+//
+// MinFrameDt and MaxFrameDt are the feature extractor's time-step bounds in
+// seconds. The validator (pipeline.FrameValidator) rejects a producer frame
+// whose delta_time is below min_frame_dt/2 as dt_out_of_range; its upper
+// rejection bound is NOT max_frame_dt but the fixed pipeline.MaxProducerDt
+// (60 s, a clock jump). max_frame_dt is the extractor's gap threshold: a
+// known dt above it is a gap (raw state is updated, kinematics and histories
+// are cleared, nothing is derived across it) and it is the upper bound of the
+// dt clamp used for finite differences (FeatureExtractor.SetMaxFrameDt).
 type PipelineConfig struct {
 	HistoryWindow                 int     `toml:"history_window"`
 	MinFrameDt                    float64 `toml:"min_frame_dt"`
@@ -214,7 +223,9 @@ type ServerConfig struct {
 	MaxConnections        int    `toml:"max_connections"`
 	MaxMessageBytes       int    `toml:"max_message_bytes"`
 	MaxFrameRatePerPlayer int    `toml:"max_frame_rate_per_player"`
-	// Durations accept TOML strings such as "5m" or "30s".
+	// Durations must be TOML strings such as "5m" or "30s". A bare integer
+	// would decode as nanoseconds, so the loader rejects it (see
+	// checkDurationTypes) and Validate refuses anything below one second.
 	IdleTimeout     time.Duration `toml:"idle_timeout"`
 	StaleMatchAfter time.Duration `toml:"stale_match_after"`
 	PersistInterval time.Duration `toml:"persist_interval"`
@@ -327,6 +338,7 @@ func loadFromString(data string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	var errs []string
+	checkDurationTypes(md, &errs)
 	warnings := applyOverlay(cfg, &overlay, md, &errs)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config errors:\n  - %s", strings.Join(errs, "\n  - "))
@@ -340,6 +352,26 @@ func loadFromString(data string) (*Config, error) {
 		cfg.Warnings = warnings
 	}
 	return cfg, nil
+}
+
+// serverDurationKeys are the [server] keys decoded into time.Duration.
+var serverDurationKeys = []string{"idle_timeout", "stale_match_after", "persist_interval"}
+
+// checkDurationTypes rejects a [server] duration written as a bare number.
+// BurntSushi/toml decodes an integer into a time.Duration as NANOSECONDS, so
+// `idle_timeout = 300` (meant as 300 s) would silently become a 300 ns read
+// deadline that disconnects every producer. Only duration strings are
+// accepted; the message tells the operator how to write one.
+func checkDurationTypes(md toml.MetaData, errs *[]string) {
+	for _, key := range serverDurationKeys {
+		if !md.IsDefined("server", key) {
+			continue
+		}
+		if typ := md.Type("server", key); typ != "String" {
+			*errs = append(*errs, fmt.Sprintf("server.%s must be a duration string such as \"300s\" or \"5m\" (got a TOML %s; a bare number would be read as nanoseconds)",
+				key, strings.ToLower(typ)))
+		}
+	}
 }
 
 // applyOverlay merges the decoded file onto cfg field by field. It returns
@@ -367,11 +399,8 @@ func applyOverlay(cfg, overlay *Config, md toml.MetaData, errs *[]string) []stri
 	overlayStruct(reflect.ValueOf(&cfg.Shadow).Elem(), reflect.ValueOf(&overlay.Shadow).Elem(), md, "shadow")
 	overlayStruct(reflect.ValueOf(&cfg.Server).Elem(), reflect.ValueOf(&overlay.Server).Elem(), md, "server")
 
-	if md.IsDefined("scoring", "review_threshold") && md.IsDefined("scoring", "high_risk") &&
-		cfg.Scoring.ReviewThreshold != cfg.Scoring.HighRisk {
-		warnings = append(warnings, fmt.Sprintf("scoring.high_risk (%g) is overridden by scoring.review_threshold (%g); they are the same boundary",
-			cfg.Scoring.HighRisk, cfg.Scoring.ReviewThreshold))
-	}
+	// A review_threshold / high_risk mismatch is reported once, by
+	// ValidateWithWarnings (which also covers hand-built configs).
 
 	ids := make([]string, 0, len(overlay.Detectors))
 	for id := range overlay.Detectors {

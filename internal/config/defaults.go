@@ -30,7 +30,7 @@ func DefaultConfig() *Config {
 		Pipeline: PipelineConfig{
 			HistoryWindow:                 30,
 			MinFrameDt:                    0.01,
-			MaxFrameDt:                    0.2,
+			MaxFrameDt:                    0.5,
 			MaxEventsPerPlayerPerDetector: 100,
 			HighPingThresholdMs:           150,
 			CooldownFrames:                300,
@@ -89,7 +89,8 @@ func defaultDetectors() map[string]DetectorConfig {
 			"base_tolerance": 1.3, "ping_tolerance_scalar": 5.0, "max_speed_ratio": 3.0,
 			"sigmoid_steepness": 2.0, "cap_riding_cooldown_frames": 900,
 		}},
-		// UNVERIFIED (v2.0.0 single-delta approach): needs real-data calibration.
+		// UNVERIFIED: v2.0.0 single-delta approach, needs real-data calibration
+		// (the BROKEN multi-frame mechanism was removed in 3ab978b).
 		"THROW_002": {Enabled: false, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
 			"max_speed_delta": 22.0,
 		}},

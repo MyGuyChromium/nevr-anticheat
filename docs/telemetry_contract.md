@@ -13,7 +13,7 @@ This document is the normative JSON schema between telemetry producers (cmd/brid
 | Message format | one JSON object per WebSocket text message | undecodable JSON: message dropped, `nevr_ac_batches_malformed_total` |
 | Max message size | 65,536 bytes (`[server] max_message_bytes`, `--max-message-bytes`) | the message is **discarded and the connection stays open**; counted as one rejected frame and `nevr_ac_batches_rejected_total{reason="oversized_message"}` |
 | Max frames per batch | 100 | whole batch rejected, `nevr_ac_batches_rejected_total{reason="oversized_batch"}` |
-| Rate limit | 30 frames/s per (match, player) on a wall-clock second window (`max_frame_rate_per_player`) | excess frames are rejected, **not stored**, reported in the next `ack.rejected`, `nevr_ac_frames_ratelimited_total` |
+| Rate limit | 30 frames/s sustained per (match, player) (`max_frame_rate_per_player`), measured so that a reconnect backlog is tolerated: a producer that replays queued batches after a link hiccup loses nothing as long as the burst covers at most 10 s of frames at that rate (the limiter follows telemetry timestamps / a token bucket, not the arrival wall clock) | frames beyond the sustained rate plus burst are rejected, **not stored**, reported in the next `ack.rejected`, `nevr_ac_frames_ratelimited_total` |
 | Identifier bounds | `match_id`, `player_id` ≤ 128 bytes, no control characters | frame/batch rejected (`invalid_match_id`, `invalid_player_id`) |
 | Idle timeout | 5 min without any message (`idle_timeout`, `--idle-timeout`) | connection closed |
 | Concurrency | 100 connections, 64 live matches, 16 players per match | connection refused with `too_many_connections`; frames for a 65th match / 17th player rejected |
@@ -74,7 +74,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `match_id` | string | **yes** | ≤ 128 bytes. All frames in the batch belong to it. |
-| `server_id` | string | desired | Provenance of the data. The bridge sends `"<broadcaster_ip>:<api_port>"` (the host it polled over plaintext HTTP). |
+| `server_id` | string | desired | Provenance of the data. The bridge sends `"<broadcaster_ip>:<api_port>"` (the host it polled over plaintext HTTP). The server records it on the **match context** (`MatchContext.ServerID`, persisted with `match_contexts` and printed wherever the match context is shown, e.g. evidence reports); it is not copied onto individual frame or event rows. |
 | `timestamp` | RFC3339 string | desired | Wall-clock time the producer sampled the state. |
 | `frames` | array | **yes** | 1–100 player frames. |
 
@@ -84,9 +84,9 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 |-------|------|------|----------|-------------------------|-------|
 | `player_id` | string | — | **yes** | non-empty, ≤ 128 bytes, no control chars | Stable across sessions. The bridge/adapter emits `echovr:<userid>`. |
 | `team` | string | — | desired | `"blue"` or `"orange"` (case-insensitive); anything else is ignored | Builds `match_contexts.team_assignments` for live matches and `PlayerState.Team` (STATE_007 team filter). |
-| `frame_index` | int | — | **yes** | ≥ 0, monotonic per match | The server re-bases a batch whose lowest index is ≤ the last index it has seen (warning, `nevr_ac_frames_rebased_total`). Duplicate `(match, player, frame_index)` rows are ignored by the store and reported in `ack.ignored`. |
+| `frame_index` | int | — | **yes** | ≥ 0, monotonic per (match, player) | Restart detection is per (match, player): a player's new index ≤ that player's last stored index means the producer restarted, and the whole batch is re-based (one shared offset per match, applied to `frame_index` and `timestamp`; warning, `nevr_ac_frames_rebased_total`). A batch that repeats the match's last index for a *different* player (one player per batch, same tick) is not a restart. Duplicate `(match, player, frame_index)` rows are ignored by the store and reported in `ack.ignored`. |
 | `timestamp` | float64 | seconds | **yes** | ≥ 0, finite | Seconds since the producer's first sample of the match (the bridge stamps the real HTTP sample time). Negative or NaN → `invalid_timestamp`. |
-| `delta_time` | float64 | seconds | desired | `0` = unknown (first frame); `0 < dt < 0.005` or `dt > 0.5` → frame rejected (`dt_out_of_range`) | Seconds since **this player's** previous frame. Known values are clamped to [0.005, 0.5] for kinematics. Bounds are `pipeline.min_frame_dt / 2` and `max_frame_dt × 2.5`. |
+| `delta_time` | float64 | seconds | desired | `0` = unknown (first frame); `0 < dt < 0.005` (`pipeline.min_frame_dt / 2`) or `dt > 60` (`pipeline.MaxProducerDt`, a clock jump) → frame rejected (`dt_out_of_range`) | Seconds since **this player's** previous frame; report the real sample spacing. A long gap (stall, reconnect) is accepted: the feature extractor treats a known dt above `pipeline.max_frame_dt` (0.5 s) as a gap, updating raw state but clearing kinematics and histories, and clamps smaller known values to [0.005, `max_frame_dt`] for finite differences. `max_frame_dt` never rejects a frame. |
 | `position` | [3]float64 | metres | **yes** | not the zero vector, finite; `|X| ≤ 12.5`, `|Y| ≤ 12.5`, `|Z| ≤ 82` | Body/head centre, Y-up. Bounds are `DefaultPhysics` arena extents (15 × 15 × 154 m) plus 5 m tolerance; real data spans X ±5, Y −4..+7, Z ±77 with goals at Z ≈ ±36.078. Zero → `zero_position`, out of bounds → `out_of_arena_bounds`. |
 | `rotation` | [4]float64 | quaternion (x,y,z,w) | **yes** | unit; near-unit is normalised (`|q| > 0.1`), NaN/Inf → zeroed | Body/head orientation. |
 | `left_hand_position` | [3]float64 | metres | **yes** | finite | Left controller in arena coordinates. **Tracking loss = the zero vector** (NaN/Inf is replaced by it). |
@@ -127,7 +127,7 @@ Any message with a non-empty `type` is decoded as `model.ControlMessage`. Unknow
 |-------|------|---------|
 | `type` | string | all: `hello`, `ack`, `error`, `match_start`, `match_end` |
 | `match_id` | string | `match_start`, `match_end`, `error` |
-| `server_id` | string | `match_start`, `match_end` (producer provenance) |
+| `server_id` | string | `match_start`, `match_end` (producer provenance; `match_start` sets it on the match context) |
 | `reason` | string | `match_end` (why the producer stopped), `error` (`unauthorized`, `too_many_connections`) |
 | `auth` | string | `hello` (`"ok"`) |
 | `accepted` | int | `ack`: frames the pipeline processed since the previous ack |
@@ -184,8 +184,8 @@ The server finalizes the match: closes open dedup incidents, persists remaining 
 
 ### 3. Frame identity and ordering
 
-- `frame_index` is match-relative and monotonic. Frames are grouped by index and processed in ascending order; only indices present in a batch are visited.
-- A batch whose lowest `frame_index` is not above the highest index the server has seen for the match is **re-based** (every index shifted up) with a warning; a producer restart therefore never overwrites stored rows.
+- `frame_index` is match-relative and monotonic per (match, player). Frames are grouped by index and processed in ascending order; only indices present in a batch are visited.
+- Restart detection is **per (match, player)**: a batch in which some player's new `frame_index` is ≤ that player's last stored index is a producer restart and is **re-based** with a warning — one shared offset for the whole match is added to every `frame_index` in the batch, and `timestamp` is re-based with the same rule (offset = last timestamp + nominal dt − the batch's minimum timestamp), so a restarted producer never overwrites stored rows and its clock continues from where the match left off. A batch that merely repeats the match's last index for a player who has not sent that index yet (a producer delivering one player per batch) is **not** a restart and is stored as-is.
 - A row with an already stored `(match_id, player_id, frame_index)` is ignored by the store and reported as `ignored`.
 - `timestamp` and `delta_time` are the producer's responsibility. The bridge stamps both from the real HTTP sample time per match (`delta_time` = 0 on a player's first frame; a negative delta is reported as 0).
 

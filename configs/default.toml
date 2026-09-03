@@ -14,8 +14,10 @@
 #   Unknown keys, unknown detector IDs, unknown params and wrong value types
 #   are startup ERRORS. Keys that earlier versions documented but no code
 #   reads are dropped with a WARNING (see "Renamed and removed keys" at the
-#   end). Both binaries log the effective per-detector table at startup so you
-#   can verify an edit took effect.
+#   end). To verify an edit took effect read the effective per-detector table:
+#   nevr-server always reports it at startup; nevr-ac only with --verbose / -v
+#   or NEVR_AC_VERBOSE=1. With log_format = "json" it is one JSON log record
+#   per detector ("msg":"effective detector"); with "text" a plain block.
 #
 # UNITS
 #   Stated per key. "frames" are telemetry ticks (the bridge polls at ~15 Hz;
@@ -63,7 +65,12 @@ goal_z           = 36.078   # m, |Z| of both goal centres; confirmed from a real
 [pipeline]
 history_window                     = 30     # frames of kinematic history kept per player
 min_frame_dt                       = 0.01   # s, frames with 0 < dt < min/2 are rejected (dt_out_of_range)
-max_frame_dt                       = 0.2    # s, frames with dt > max*2.5 are rejected; dt <= 0 means unknown
+# max_frame_dt is the FEATURE EXTRACTOR's gap threshold, not a rejection bound:
+# a known dt above it is a gap (raw state updated, kinematics and histories
+# cleared, nothing derived across it) and it is the upper bound of the dt clamp
+# used for finite differences. The validator rejects a frame only when dt > 60 s
+# (pipeline.MaxProducerDt, a clock jump); dt <= 0 means unknown (first frame).
+max_frame_dt                       = 0.5    # s, gap threshold and dt clamp upper bound; must be <= 60
 max_events_per_player_per_detector = 100    # incidents kept per (player, detector) per match; later ones are dropped
 high_ping_threshold_ms             = 150    # ms, players above this get PlayerState.IsHighPing (confidence reduction)
 cooldown_frames                    = 300    # frames between scored events of the same detector for one player (jittered +-50, floor 100)
@@ -128,10 +135,13 @@ max_matches               = 64        # concurrently tracked live matches
 max_players_per_match     = 16
 max_connections           = 100       # concurrent producer connections
 max_message_bytes         = 65536     # larger WebSocket messages are discarded (connection stays open)
-max_frame_rate_per_player = 30        # frames/s per player; excess frames are rejected and not stored
-idle_timeout              = "5m"      # a producer silent this long is disconnected
-stale_match_after         = "30m"     # a live match idle this long is finalized
-persist_interval          = "2m"      # how often a live match context is re-persisted
+max_frame_rate_per_player = 30        # sustained frames/s per player; a backlog of at least 10 s of frames (a bridge replaying after a link hiccup) is accepted, only excess beyond that is rejected and not stored
+# Durations MUST be strings ("300s", "5m"). A bare number is a startup error:
+# it would be read as nanoseconds, and idle_timeout = 300 (300 ns) would
+# disconnect every producer on its first read.
+idle_timeout              = "5m"      # a producer silent this long is disconnected (>= 1s)
+stale_match_after         = "30m"     # a live match idle this long is finalized (>= 1s)
+persist_interval          = "2m"      # how often a live match context is re-persisted (>= 1s)
 
 # =============================================================================
 # Detectors
@@ -162,10 +172,11 @@ sigmoid_steepness          = 2.0
 cap_riding_cooldown_frames = 900    # frames; at most one cap-riding event per player per window (~60 s at 15 Hz)
 
 [detector.THROW_002]
-# Impossible Disc Acceleration (v2.0.0). UNVERIFIED: compares the last
-# pre-release disc speed with the release speed. Needs real-data calibration;
-# the earlier "identical pre-release velocities" finding must be re-tested now
-# that snapshots exclude the release frame.
+# Impossible Disc Acceleration. UNVERIFIED: v2.0.0 single-delta approach
+# (last pre-release disc speed vs release speed), needs real-data calibration.
+# The BROKEN multi-frame acceleration mechanism was removed in 3ab978b; the
+# replacement is unvalidated and the "identical pre-release velocities"
+# finding must be re-tested now that snapshots exclude the release frame.
 enabled            = false
 enforcement_weight = 0.7
 mode               = "shadow"
@@ -503,7 +514,7 @@ sigmoid_steepness      = 2.0
 # Renamed and removed keys (accepted with a warning, then ignored)
 # =============================================================================
 # general.mode                                     -> ignored (binary decides)
-# scoring.auto_enforce_min_confidence              -> removed (per-event rule: auto_enforce && confidence > 0.95)
+# scoring.auto_enforce_min_confidence              -> removed (THROW_001 gates auto-enforce per event on severity > 0.95, attribution >= 0.9 and a 5 m/s over-cap margin; every other detector stamps the flag whenever auto_enforce is true)
 # scoring.in_match_decay_points_per_min            -> removed (per-match score is never decayed)
 # scoring.cross_match_decay_factor                 -> removed (decay_half_life_hours)
 # scoring.clean_match_reset_count                  -> removed

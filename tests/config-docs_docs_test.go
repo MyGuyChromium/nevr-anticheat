@@ -14,6 +14,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/ingest"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 )
 
 func readRepoFile(t *testing.T, rel string) string {
@@ -74,13 +75,133 @@ func TestConfigDocs_ReadmeDetectorTable(t *testing.T) {
 			t.Errorf("catalog detector %s missing from README", desc.ID)
 		}
 	}
-	if !strings.Contains(readme, "THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified") {
-		t.Error("README must keep THROW_002 at Unverified (no status upgrades without real data)")
+}
+
+// TestConfigDocs_Throw002StatusIsAligned: THROW_002's label is "Unverified:
+// v2.0.0 single-delta approach, needs real-data calibration" (the owner's
+// choice in 3ab978b, where the BROKEN mechanism was removed). Every artifact
+// must carry that label, nothing may still call the detector BROKEN as its
+// current status, and nothing may upgrade it to a validated status.
+func TestConfigDocs_Throw002StatusIsAligned(t *testing.T) {
+	readme := readRepoFile(t, "README.md")
+	if !strings.Contains(readme, "| THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |") {
+		t.Error("README THROW_002 row must read: Unverified — v2.0.0 single-delta approach, needs real-data calibration")
+	}
+	readiness := readRepoFile(t, "docs/production_readiness.md")
+	if !strings.Contains(readiness, "| THROW_002 | **UNVERIFIED** |") {
+		t.Error("production_readiness.md must list THROW_002 as **UNVERIFIED**")
+	}
+	if strings.Contains(readiness, "| THROW_002 | **BROKEN** |") || strings.Contains(readiness, "1 broken") {
+		t.Error("production_readiness.md still carries the retired BROKEN status for THROW_002")
+	}
+	for _, must := range []string{"v2.0.0", "removed", "unvalidated"} {
+		if !strings.Contains(readiness, must) {
+			t.Errorf("production_readiness.md must say the BROKEN mechanism was %s", must)
+		}
+	}
+	for _, rel := range []string{"configs/default.toml", "configs/shadow_deploy.toml", "internal/config/defaults.go", "docs/shadow_deployment_guide.md"} {
+		src := readRepoFile(t, rel)
+		idx := strings.Index(src, "THROW_002")
+		if idx < 0 {
+			t.Errorf("%s does not mention THROW_002", rel)
+			continue
+		}
+		// The status comment sits within a few lines of the first mention
+		// (before the key in defaults.go, after the header in the TOML files).
+		window := src[max(0, idx-400):min(len(src), idx+600)]
+		if !strings.Contains(window, "UNVERIFIED") || !strings.Contains(window, "v2.0.0") || !strings.Contains(window, "real-data calibration") {
+			t.Errorf("%s: THROW_002 must be labelled UNVERIFIED (v2.0.0 single-delta approach, needs real-data calibration); got:\n%s", rel, window)
+		}
+	}
+	// The label is not an upgrade: THROW_002 ships disabled in shadow.
+	dc := config.DefaultConfig().Detectors["THROW_002"]
+	if dc.Enabled || dc.Mode != "shadow" {
+		t.Errorf("THROW_002 default config must stay disabled/shadow, got %+v", dc)
+	}
+	for _, forbidden := range []string{"THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Physics-grounded", "THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Validated"} {
+		if strings.Contains(readme, forbidden) {
+			t.Errorf("README upgrades THROW_002: %s", forbidden)
+		}
+	}
+}
+
+// TestConfigDocs_StartupTableClaims: the docs must not claim both binaries
+// print the effective table unconditionally; nevr-ac shows it only with
+// --verbose / -v / NEVR_AC_VERBOSE=1 (cmd/anticheat/main.go), nevr-server
+// always (cmd/server/main.go).
+func TestConfigDocs_StartupTableClaims(t *testing.T) {
+	mainSrc := readRepoFile(t, "cmd/anticheat/main.go")
+	if !strings.Contains(mainSrc, `"verbose"`) || !strings.Contains(mainSrc, "NEVR_AC_VERBOSE") || !strings.Contains(mainSrc, "if startupVerbose") {
+		t.Fatalf("cmd/anticheat/main.go no longer gates the table on --verbose; update this test and the docs")
+	}
+	if !strings.Contains(readRepoFile(t, "cmd/server/main.go"), "config.LogStartup(logger, cfg, os.Stderr)") {
+		t.Fatalf("cmd/server/main.go no longer reports the table unconditionally; update this test and the docs")
+	}
+	for _, rel := range []string{"README.md", "configs/default.toml", "configs/shadow_deploy.toml", "docs/shadow_deployment_guide.md", "docs/operator_checklist.md", "docs/deployment_plan.md"} {
+		src := readRepoFile(t, rel)
+		for _, stale := range []string{"Both binaries print the effective", "Both binaries log the effective", "table both binaries log"} {
+			if strings.Contains(src, stale) {
+				t.Errorf("%s still claims %q; nevr-ac prints the table only with --verbose", rel, stale)
+			}
+		}
+		if !strings.Contains(src, "--verbose") {
+			t.Errorf("%s mentions the effective table without saying nevr-ac needs --verbose", rel)
+		}
+	}
+	guide := readRepoFile(t, "docs/shadow_deployment_guide.md")
+	if !strings.Contains(guide, "./nevr-ac --verbose --config configs/shadow_deploy.toml analyze match.echoreplay") {
+		t.Error("shadow guide Step 2 must run analyze with --verbose so the table it tells the operator to check is printed")
+	}
+	checklist := readRepoFile(t, "docs/operator_checklist.md")
+	if strings.Contains(checklist, "shadow_deploy.toml version` loads") {
+		t.Error("operator_checklist.md must not claim `nevr-ac version` loads the config (it returns before any config is read)")
+	}
+	if !strings.Contains(checklist, "./nevr-ac --verbose --config configs/shadow_deploy.toml flagged") {
+		t.Error("operator_checklist.md config check must use a command that loads the config (flagged with --verbose)")
+	}
+}
+
+// TestConfigDocs_ProvenanceLivesOnMatchContext: docs must describe
+// server_id as recorded on the match context, not on every event row.
+func TestConfigDocs_ProvenanceLivesOnMatchContext(t *testing.T) {
+	for _, rel := range []string{"README.md", "docs/telemetry_contract.md", "docs/deployment_plan.md", "docs/production_readiness.md", "docs/shadow_deployment_guide.md"} {
+		src := readRepoFile(t, rel)
+		if strings.Contains(src, "`server_id` on every event tells") {
+			t.Errorf("%s claims server_id is on every event", rel)
+		}
+		if !strings.Contains(src, "match context") {
+			t.Errorf("%s must say server_id provenance lives on the match context", rel)
+		}
+	}
+}
+
+// TestConfigDocs_MaxFrameDtSemantics: pipeline.max_frame_dt is the feature
+// extractor's gap threshold (default 0.5 = pipeline.MaxFrameDt); the
+// validator's rejection bound is pipeline.MaxProducerDt (60 s). The docs
+// must say exactly that and never the old "dt > max*2.5 is rejected".
+func TestConfigDocs_MaxFrameDtSemantics(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Pipeline.MaxFrameDt != pipeline.MaxFrameDt {
+		t.Errorf("default max_frame_dt %v != pipeline.MaxFrameDt %v", cfg.Pipeline.MaxFrameDt, pipeline.MaxFrameDt)
+	}
+	if config.MaxProducerDtSeconds != pipeline.MaxProducerDt {
+		t.Errorf("config.MaxProducerDtSeconds %v != pipeline.MaxProducerDt %v", config.MaxProducerDtSeconds, pipeline.MaxProducerDt)
+	}
+	for _, rel := range []string{"configs/default.toml", "docs/telemetry_contract.md", "internal/config/config.go"} {
+		src := readRepoFile(t, rel)
+		for _, stale := range []string{"max*2.5", "max_frame_dt × 2.5", "dt > 0.5` → frame rejected"} {
+			if strings.Contains(src, stale) {
+				t.Errorf("%s still documents the old rejection bound %q", rel, stale)
+			}
+		}
+		if !strings.Contains(src, "60") || !strings.Contains(src, "gap") {
+			t.Errorf("%s must document max_frame_dt as the extractor gap threshold and 60 s as the rejection bound", rel)
+		}
 	}
 }
 
 var (
-	readmeCommand   = regexp.MustCompile(`nevr-ac(?:\s+--config\s+\S+)?\s+([a-z][a-z-]*)`)
+	readmeCommand   = regexp.MustCompile(`nevr-ac(?:\s+(?:--verbose|-v|--config\s+\S+))*\s+([a-z][a-z-]*)`)
 	dispatchCommand = regexp.MustCompile(`(?m)^\s*case "([a-z][a-z-]*)":`)
 )
 

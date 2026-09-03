@@ -55,7 +55,7 @@ var reservedParamKeys = map[string]string{
 // level and that no code path reads any more. They are accepted with a warning.
 var deprecatedTopLevelKeys = map[string]string{
 	"general.mode":                          "ignored: the binary (nevr-ac vs nevr-server) determines the mode; remove the key",
-	"scoring.auto_enforce_min_confidence":   "removed: no code path reads it (auto-enforce eligibility is per event: detector auto_enforce && confidence > 0.95)",
+	"scoring.auto_enforce_min_confidence":   "removed: no code path reads it; THROW_001 gates auto-enforce per event on severity > 0.95, attribution confidence >= 0.9 and a 5 m/s over-cap margin, every other detector stamps the flag whenever its auto_enforce is true",
 	"scoring.in_match_decay_points_per_min": "removed: the per-match scorer is never decayed; decay is applied by cross-match aggregation (decay_half_life_hours)",
 	"scoring.cross_match_decay_factor":      "removed: cross-match aggregation uses decay_half_life_hours",
 	"scoring.clean_match_reset_count":       "removed: no code path reads it",

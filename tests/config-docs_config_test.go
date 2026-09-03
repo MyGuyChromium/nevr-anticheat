@@ -232,6 +232,24 @@ func TestConfigDocs_ShadowDeployLoadsAndIsShadowOnly(t *testing.T) {
 	}
 }
 
+// TestConfigDocs_ServerDurationsRejectBareNumbers: the shipped files write
+// durations as strings; a copy that drops the quotes must fail at load with
+// an error that names the key, not silently run with nanosecond deadlines.
+func TestConfigDocs_ServerDurationsRejectBareNumbers(t *testing.T) {
+	data, err := os.ReadFile(defaultTomlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.Replace(string(data), `idle_timeout              = "5m"`, `idle_timeout              = 300`, 1)
+	if src == string(data) {
+		t.Fatal("default.toml no longer carries idle_timeout = \"5m\"; update this test")
+	}
+	_, err = config.LoadConfigFromReader(strings.NewReader(src))
+	if err == nil || !strings.Contains(err.Error(), "server.idle_timeout") {
+		t.Fatalf("idle_timeout = 300 (300 ns) must be a load error naming the key, got %v", err)
+	}
+}
+
 // TestConfigDocs_ServerDefaultsMatchIngest: the [server] section documents
 // the cmd/server flag defaults; they must agree with ingest's own defaults.
 func TestConfigDocs_ServerDefaultsMatchIngest(t *testing.T) {

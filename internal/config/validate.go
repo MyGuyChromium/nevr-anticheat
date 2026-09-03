@@ -4,9 +4,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
+
+// MaxProducerDtSeconds mirrors pipeline.MaxProducerDt (60 s), the validator's
+// hard upper bound on a producer-reported delta_time. It is duplicated here
+// because config cannot import pipeline; tests/config-docs_config_test.go
+// asserts the two never drift. pipeline.max_frame_dt above it would name a
+// gap threshold no accepted frame can reach.
+const MaxProducerDtSeconds = 60.0
+
+// MinServerDuration is the floor for the [server] durations. Anything below
+// one second is almost certainly a bare number that was meant as seconds
+// (a TOML integer decodes into time.Duration as nanoseconds).
+const MinServerDuration = time.Second
 
 // Validate checks all config values for consistency and valid ranges. It is
 // ValidateWithWarnings without the warnings.
@@ -75,6 +88,9 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 	}
 	if !(p.MaxFrameDt > p.MinFrameDt) {
 		add("pipeline.max_frame_dt (%v) must be > min_frame_dt (%v)", p.MaxFrameDt, p.MinFrameDt)
+	} else if p.MaxFrameDt > MaxProducerDtSeconds {
+		add("pipeline.max_frame_dt (%v) must be <= %v s: the validator rejects any frame whose delta_time exceeds %v s (pipeline.MaxProducerDt), so a larger gap threshold is unreachable",
+			p.MaxFrameDt, MaxProducerDtSeconds, MaxProducerDtSeconds)
 	}
 	if p.MaxEventsPerPlayerPerDetector < 1 {
 		add("pipeline.max_events_per_player_per_detector must be >= 1, got %d", p.MaxEventsPerPlayerPerDetector)
@@ -129,10 +145,12 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 	}
 
 	// --- shadow ---
+	forcedShadow := make(map[string]bool, len(cfg.Shadow.ShadowDetectors))
 	for _, id := range cfg.Shadow.ShadowDetectors {
 		if _, ok := detectorSpecs[id]; !ok {
 			add("shadow.shadow_detectors: unknown detector ID %q", id)
 		}
+		forcedShadow[id] = true
 	}
 
 	// --- server ---
@@ -155,8 +173,16 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 			add("server.%s must be >= 1, got %d", f.name, f.v)
 		}
 	}
-	if sv.IdleTimeout <= 0 || sv.StaleMatchAfter <= 0 || sv.PersistInterval <= 0 {
-		add("server.idle_timeout, stale_match_after and persist_interval must be > 0")
+	for _, f := range []struct {
+		name string
+		v    time.Duration
+	}{
+		{"idle_timeout", sv.IdleTimeout}, {"stale_match_after", sv.StaleMatchAfter}, {"persist_interval", sv.PersistInterval},
+	} {
+		if f.v < MinServerDuration {
+			add("server.%s must be a duration of at least %v, got %v (write it as a duration string such as \"300s\" or \"5m\"; a bare number is read as nanoseconds)",
+				f.name, MinServerDuration, f.v)
+		}
 	}
 	if sv.AllowUnauthenticated {
 		warn("server.allow_unauthenticated=true: the ingest endpoint will accept telemetry from any host")
@@ -176,7 +202,11 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 		switch dc.Mode {
 		case "shadow":
 		case "review", "enforce":
-			warn("detector.%s.mode=%q: only \"shadow\" changes behaviour; this detector's events will be SCORED", id, dc.Mode)
+			if forcedShadow[id] {
+				warn("detector.%s.mode=%q but shadow.shadow_detectors forces it into shadow; this detector's events will NOT be scored", id, dc.Mode)
+			} else {
+				warn("detector.%s.mode=%q: only \"shadow\" changes behaviour; this detector's events will be SCORED", id, dc.Mode)
+			}
 		case "":
 			if dc.Enabled {
 				add("detector.%s.mode must be set (shadow/review/enforce) for an enabled detector; an empty mode would score its events", id)
