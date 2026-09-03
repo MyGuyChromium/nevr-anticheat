@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -254,6 +255,9 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	if m.Replaced || len(m.Warnings) != 0 {
 		t.Errorf("replaced=%v warnings=%v", m.Replaced, m.Warnings)
 	}
+	if m.Summary == nil || m.Summary.Version != replay.SummaryVersion || m.Summary.MatchID != m.MatchID || m.Summary.Ticks != 120 || len(m.Summary.Players) != 4 {
+		t.Errorf("match summary %+v", m.Summary)
+	}
 
 	// Second upload without force: already stored.
 	resp, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
@@ -291,7 +295,8 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	}
 	if stored.MatchID != m.MatchID || len(stored.Players) != 4 || stored.PlayerFrames != 480 || stored.FramesProcessed != 120 ||
 		stored.Players[0].Name != "BlueOne" || stored.Players[0].Team != "blue" || stored.HasScore != m.HasScore ||
-		stored.BlueScore != m.BlueScore || stored.OrangeScore != m.OrangeScore || stored.Diagnostics != nil || stored.Telemetry != nil {
+		stored.BlueScore != m.BlueScore || stored.OrangeScore != m.OrangeScore || stored.Diagnostics != nil || stored.Telemetry != nil ||
+		stored.Summary == nil || stored.Summary.MatchID != m.MatchID || len(stored.Summary.Players) != 4 {
 		t.Errorf("stored view %+v", stored)
 	}
 	if resp := getJSON(t, base+"/api/match/NOPE", nil); resp.StatusCode != http.StatusNotFound {
@@ -304,6 +309,66 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	}
 	if len(flagged.SingleMatch) != 0 || len(flagged.CrossMatch) != 0 {
 		t.Errorf("flagged %+v", flagged)
+	}
+}
+
+func TestDesktop_MatchSummaryDownloads(t *testing.T) {
+	_, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	if resp, out := upload(t, ts, false, map[string]string{"fixture.echoreplay": fixturePath}); resp.StatusCode != http.StatusOK || len(out.Results) != 1 || !out.Results[0].OK {
+		t.Fatalf("upload status=%d out=%+v", resp.StatusCode, out)
+	}
+
+	resp, err := http.Get(base + "/api/match/SYN-FIXTURE-001/summary.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var summary replay.MatchSummary
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") ||
+		!strings.Contains(resp.Header.Get("Content-Disposition"), "SYN-FIXTURE-001-summary.json") || json.Unmarshal(raw, &summary) != nil {
+		t.Fatalf("JSON download: status=%d headers=%v body=%s", resp.StatusCode, resp.Header, raw)
+	}
+	if summary.MatchID != "SYN-FIXTURE-001" || summary.Ticks != 120 || len(summary.Players) != 4 {
+		t.Errorf("JSON summary %+v", summary)
+	}
+
+	resp, err = http.Get(base + "/api/match/SYN-FIXTURE-001/export.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	rows, csvErr := csv.NewReader(strings.NewReader(string(raw))).ReadAll()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/csv") ||
+		!strings.Contains(resp.Header.Get("Content-Disposition"), "SYN-FIXTURE-001-players.csv") || csvErr != nil {
+		t.Fatalf("CSV download: status=%d headers=%v parse=%v body=%s", resp.StatusCode, resp.Header, csvErr, raw)
+	}
+	if len(rows) != 5 || rows[0][0] != "player_id" || rows[1][1] != "BlueOne" {
+		t.Errorf("CSV rows %+v", rows)
+	}
+
+	for _, suffix := range []string{"summary.json", "export.csv"} {
+		if resp := getJSON(t, base+"/api/match/NOPE/"+suffix, nil); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("unknown %s status %d", suffix, resp.StatusCode)
+		}
+	}
+}
+
+func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/" + testToken + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	page := string(raw)
+	for _, marker := range []string{"Full match report", "Player statistics", "Scoring timeline", "Throw log", "Download JSON", "Export player CSV"} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("desktop page does not contain %q", marker)
+		}
 	}
 }
 
