@@ -156,11 +156,17 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 func fatalUsage(usage string) {
 	fmt.Fprintln(os.Stderr, "Usage: "+usage)
+	if dropMode {
+		pauseForEnter()
+	}
 	os.Exit(1)
 }
 
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	if dropMode {
+		pauseForEnter()
+	}
 	os.Exit(1)
 }
 
@@ -1034,4 +1040,57 @@ func runReprocessTimeRange(configPath, sinceStr, untilStr string) {
 func isEchoReplay(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".echoreplay"
+}
+
+// isDropInvocation reports whether the CLI was started with replay files or
+// folders instead of a command, e.g. by dropping files onto nevr-ac.exe.
+func isDropInvocation(args []string) bool {
+	switch args[0] {
+	case "version", "analyze", "batch", "flagged", "report", "cross-match-report",
+		"player-history", "cross-match", "reprocess-match", "reprocess-player",
+		"reprocess-timerange", "verdict", "calibration-report", "help", "-h", "--help":
+		return false
+	}
+	for _, a := range args {
+		if _, err := os.Stat(a); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// runDropMode analyzes every dropped file (analyze) or folder (batch), prints
+// the flagged summary and waits for Enter so an Explorer-launched window stays
+// open. Without --config the database is kept next to the executable so
+// results accumulate in one place regardless of where the replays live.
+func runDropMode(configPath string, paths []string) {
+	dropMode = true
+	if configPath == "" {
+		if exe, err := os.Executable(); err == nil {
+			_ = os.Chdir(filepath.Dir(exe))
+		}
+	}
+	fmt.Printf("NEVR-Anticheat %s: analyzing %d dropped item(s)\n\n", appVersion, len(paths))
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skip %s: %v\n", p, err)
+			continue
+		}
+		fmt.Printf("== %s ==\n", p)
+		if info.IsDir() {
+			runBatch(configPath, p, false)
+		} else {
+			runAnalyze(configPath, p, false)
+		}
+		fmt.Println()
+	}
+	fmt.Println("== Flagged players and pending cases ==")
+	runFlagged(configPath)
+	pauseForEnter()
+}
+
+func pauseForEnter() {
+	fmt.Fprint(os.Stderr, "\nPress Enter to close...")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
