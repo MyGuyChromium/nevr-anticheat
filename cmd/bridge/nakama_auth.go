@@ -67,6 +67,7 @@ type nakamaAuth struct {
 	token        string
 	refreshToken string
 	expiresAt    time.Time
+	lifetime     time.Duration // issue-to-expiry span of the current token (zero = unknown)
 }
 
 func newNakamaAuth(cfg *BridgeConfig, logger *slog.Logger) *nakamaAuth {
@@ -79,7 +80,7 @@ func newNakamaAuth(cfg *BridgeConfig, logger *slog.Logger) *nakamaAuth {
 	if cfg.NakamaBearerToken != "" {
 		a.token = cfg.NakamaBearerToken
 		a.refreshToken = cfg.NakamaRefreshToken
-		a.expiresAt = jwtExpiry(cfg.NakamaBearerToken)
+		a.expiresAt, a.lifetime = jwtLifetime(cfg.NakamaBearerToken, a.now())
 	}
 	return a
 }
@@ -146,12 +147,13 @@ func (a *nakamaAuth) invalidate() {
 	a.token = ""
 	a.refreshToken = ""
 	a.expiresAt = time.Time{}
+	a.lifetime = 0
 	a.mu.Unlock()
 }
 
 // needsRefreshLocked reports whether the token is within its refresh window:
-// 20% of its lifetime (at least 5s, at most 60s) before expiry. Unknown
-// expiry is treated as Nakama's 60s default.
+// refreshLeadLocked before expiry. Unknown expiry is treated as Nakama's 60s
+// default (see adoptLocked).
 func (a *nakamaAuth) needsRefreshLocked() bool {
 	if a.expiresAt.IsZero() {
 		return false
@@ -159,17 +161,36 @@ func (a *nakamaAuth) needsRefreshLocked() bool {
 	return a.now().Add(a.refreshLeadLocked()).After(a.expiresAt)
 }
 
+// Bounds of the refresh lead.
+const (
+	minRefreshLead = 5 * time.Second
+	maxRefreshLead = 60 * time.Second
+)
+
+// refreshLeadLocked is how long before expiry the session is refreshed: 20%
+// of the token's LIFETIME (issue to expiry), clamped to [5s, 60s]. The lead
+// is derived from the fixed lifetime, never from the remaining TTL: a lead of
+// "20% of what is left" can never exceed what is left, so that window would
+// only ever open through the floor (the pre-fix defect).
+//
+// The window is also widened to at least one discovery interval (bounded by
+// half the lifetime) because authorization is only consulted once per
+// discovery cycle: with a 60s token and 30s cycles, a 12s lead would be
+// checked at t=30 (too early) and t=60 (expired).
 func (a *nakamaAuth) refreshLeadLocked() time.Duration {
-	lead := 10 * time.Second
-	if !a.expiresAt.IsZero() {
-		ttl := a.expiresAt.Sub(a.now())
-		lead = ttl / 5
-		if lead < 5*time.Second {
-			lead = 5 * time.Second
-		}
-		if lead > 60*time.Second {
-			lead = 60 * time.Second
-		}
+	lifetime := a.lifetime
+	if lifetime <= 0 {
+		lifetime = 60 * time.Second // Nakama's default session.token_expiry_sec
+	}
+	lead := lifetime / 5
+	if lead < minRefreshLead {
+		lead = minRefreshLead
+	}
+	if lead > maxRefreshLead {
+		lead = maxRefreshLead
+	}
+	if iv := a.cfg.DiscoveryInterval; iv > 0 && lead < iv+minRefreshLead && lifetime/2 > lead {
+		lead = min(iv+minRefreshLead, lifetime/2)
 	}
 	return lead
 }
@@ -218,10 +239,11 @@ func (a *nakamaAuth) adoptLocked(sess *nakamaSession) {
 	if sess.RefreshToken != "" {
 		a.refreshToken = sess.RefreshToken
 	}
-	a.expiresAt = jwtExpiry(sess.Token)
+	a.expiresAt, a.lifetime = jwtLifetime(sess.Token, a.now())
 	if a.expiresAt.IsZero() {
 		// Nakama's default session.token_expiry_sec is 60s.
-		a.expiresAt = a.now().Add(60 * time.Second)
+		a.lifetime = 60 * time.Second
+		a.expiresAt = a.now().Add(a.lifetime)
 	}
 }
 
@@ -258,21 +280,52 @@ func (a *nakamaAuth) postSession(ctx context.Context, url string, body []byte) (
 // jwtExpiry extracts the exp claim from a JWT without verifying it. Returns
 // the zero time when the token is not a JWT or carries no exp.
 func jwtExpiry(token string) time.Time {
+	exp, _ := jwtTimes(token)
+	return exp
+}
+
+// jwtLifetime returns the token's expiry and its lifetime: exp-iat when the
+// token carries an iat claim, otherwise exp-now (the token was just issued).
+// Both are zero when the token is not a JWT or has no exp.
+func jwtLifetime(token string, now time.Time) (time.Time, time.Duration) {
+	exp, iat := jwtTimes(token)
+	if exp.IsZero() {
+		return time.Time{}, 0
+	}
+	issued := now
+	if !iat.IsZero() && iat.Before(exp) {
+		issued = iat
+	}
+	lifetime := exp.Sub(issued)
+	if lifetime < 0 {
+		lifetime = 0
+	}
+	return exp, lifetime
+}
+
+// jwtTimes decodes the exp and iat claims of an unverified JWT; each is the
+// zero time when absent.
+func jwtTimes(token string) (exp, iat time.Time) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return time.Time{}
+		return time.Time{}, time.Time{}
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, time.Time{}
 	}
 	var claims struct {
 		Exp float64 `json:"exp"`
+		Iat float64 `json:"iat"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
-		return time.Time{}
+		return time.Time{}, time.Time{}
 	}
-	return time.Unix(int64(claims.Exp), 0)
+	exp = time.Unix(int64(claims.Exp), 0)
+	if claims.Iat > 0 {
+		iat = time.Unix(int64(claims.Iat), 0)
+	}
+	return exp, iat
 }
 
 // nakamaBaseURL returns the configured Nakama URL without trailing slashes so
