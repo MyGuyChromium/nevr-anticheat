@@ -68,7 +68,7 @@ func (d *Throw008) Configure(params map[string]any) error {
 func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	disc := currentDisc(players, frameIdx)
+	disc, held := currentDisc(players, frameIdx)
 
 	// Start tracking on new throws; a re-throw while a track is open
 	// finalizes the earlier one first instead of dropping it.
@@ -92,7 +92,7 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 	}
 
-	if disc == nil {
+	if disc == nil && !held {
 		return events
 	}
 
@@ -104,7 +104,7 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Track disc speed during free flight. The first settleFrames frames
 		// only advance the previous-frame state so the first judged frame
 		// compares against its immediate predecessor (with bounce filtering).
-		if !disc.IsHeld && disc.Speed > 0 && framesSinceRelease > 0 {
+		if !held && disc.Speed > 0 && framesSinceRelease > 0 {
 			if framesSinceRelease >= settleFrames {
 				track.trackedFrames++
 				speedDelta := disc.Speed - track.prevDiscSpeed
@@ -135,8 +135,9 @@ func (d *Throw008) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			track.prevDiscVelocity = disc.Velocity
 		}
 
-		// Finalize on disc caught or max frames
-		if disc.IsHeld || framesSinceRelease > d.maxTrackFrames {
+		// Finalize on disc caught (is_held or any fresh player's
+		// has_possession) or max frames.
+		if held || framesSinceRelease > d.maxTrackFrames {
 			if ev := d.finalizeTrack(matchCtx, track, frameIdx); ev != nil {
 				events = append(events, *ev)
 			}

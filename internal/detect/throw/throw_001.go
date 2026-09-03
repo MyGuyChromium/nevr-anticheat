@@ -135,6 +135,10 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 				fmt.Sprintf("disc_speed: 0-%.1f m/s (cap %.1f + tolerance %.1f)", effectiveCap, matchCtx.Physics.DiscSpeedCap, d.baseTolerance+pingTolerance),
 				model.CausalKey{PlayerID: pid, FrameStart: frameIdx - 2, FrameEnd: frameIdx + 2, AnomalyType: "disc_speed_artifact"},
 			)
+			// A suspected artifact is an observation for calibration, never
+			// an enforceable finding: only the hard over-cap path below may
+			// carry AutoEnforce.
+			ev.AutoEnforce = false
 			ev.Attribution = &t.Attribution
 			events = append(events, ev)
 			continue
@@ -213,6 +217,9 @@ func (d *Throw001) checkCapRiding(matchCtx *model.MatchContext, ps *model.Player
 		fmt.Sprintf("disc_speed: variance expected near cap %.1f m/s", effectiveCap),
 		model.CausalKey{PlayerID: pid, FrameStart: hist[0].frame, FrameEnd: frameIdx, AnomalyType: "cap_riding"},
 	)
+	// Cap riding is a statistical hint on sub-cap throws; it never carries
+	// AutoEnforce regardless of the detector's auto-enforce flag.
+	ev.AutoEnforce = false
 	ev.Attribution = &t.Attribution
 	return &ev
 }

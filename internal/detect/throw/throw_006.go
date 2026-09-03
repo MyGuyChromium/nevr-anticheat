@@ -89,7 +89,7 @@ func (d *Throw006) Configure(params map[string]any) error {
 func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
 	var events []model.DetectionEvent
 
-	disc := currentDisc(players, frameIdx)
+	disc, held := currentDisc(players, frameIdx)
 
 	// Start tracking new throws. A re-throw while a track is still open
 	// (regrab within the tracking window) finalizes the earlier track first.
@@ -120,15 +120,16 @@ func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		d.activeThrows[pid] = track
 	}
 
-	if disc == nil {
+	if disc == nil && !held {
 		return events
 	}
 
 	// Update active tracks with current disc state
 	for _, throwerID := range sortedKeys(d.activeThrows) {
 		track := d.activeThrows[throwerID]
-		// Check if disc was caught or max frames reached
-		if disc.IsHeld || frameIdx-track.releaseFrame > d.postReleaseFrames {
+		// Check if disc was caught (is_held or any fresh player's
+		// has_possession) or max frames reached.
+		if held || frameIdx-track.releaseFrame > d.postReleaseFrames {
 			ev := d.finalizeTrack(matchCtx, track, frameIdx)
 			if ev != nil {
 				events = append(events, *ev)
