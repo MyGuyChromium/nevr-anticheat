@@ -212,3 +212,60 @@ func TestExportErrors(t *testing.T) {
 		t.Fatal("missing case should error")
 	}
 }
+
+func TestExportMatchPlayerCanIncludeShadowEvents(t *testing.T) {
+	regular := mkEvent("real", "MOV_001", "p", 5, 0.8)
+	shadow := mkEvent("shadow", "BIO_002", "p", 7, 0.6)
+	shadow.IsShadow = true
+	st := &fakeStore{
+		events: []model.DetectionEvent{regular, shadow, mkEvent("other", "MOV_001", "q", 5, 0.9)},
+		frames: frames(20, "p", "q"),
+	}
+	ex := NewExporter(st)
+	ex.SetWindow(1, 1)
+
+	nonShadow, err := ex.ExportForMatchPlayer(context.Background(), "m1", "p", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nonShadow.DetectionEvents) != 1 || nonShadow.DetectionEvents[0].EventID != "real" {
+		t.Fatalf("non-shadow selection = %+v", nonShadow.DetectionEvents)
+	}
+	withShadow, err := ex.ExportForMatchPlayer(context.Background(), "m1", "p", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withShadow.CaseID != "" || len(withShadow.DetectionEvents) != 2 || withShadow.Metadata["includes_shadow"] != "true" {
+		t.Fatalf("shadow selection = case %q events %d metadata %v", withShadow.CaseID, len(withShadow.DetectionEvents), withShadow.Metadata)
+	}
+	if withShadow.ExportID != "EXP-m1-p" {
+		t.Errorf("export id = %q", withShadow.ExportID)
+	}
+}
+
+func TestMarshalHTMLIsSelfContainedAndEscapesData(t *testing.T) {
+	bundle := &ReplayBundle{
+		MatchID: "m1", PlayerID: "p",
+		MatchContext: &model.MatchContext{PlayerNames: map[string]string{"p": `</script><script>alert("x")</script>`}},
+		Frames:       frames(2, "p"),
+		DetectionEvents: []model.DetectionEvent{
+			mkEvent("e1", "MOV_001", "p", 1, 0.9),
+		},
+	}
+	html, err := MarshalHTML(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(html)
+	for _, want := range []string{"<!doctype html>", "NEVR evidence review", `const bundle=`, `\u003c/script\u003e`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("HTML lacks %q", want)
+		}
+	}
+	if strings.Contains(s, `</script><script>alert`) || strings.Contains(s, "__NEVR_BUNDLE__") || strings.Contains(s, "http://") || strings.Contains(s, "https://") {
+		t.Error("HTML contains an unsafe/unresolved/external value")
+	}
+	if _, err := MarshalHTML(nil); err == nil {
+		t.Error("nil bundle accepted")
+	}
+}

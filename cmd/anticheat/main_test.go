@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -205,6 +206,15 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 		if !strings.Contains(out, "DETECTOR CALIBRATION") || !strings.Contains(out, "No moderator decisions") {
 			t.Errorf("calibration report (since %q):\n%s", since, out)
 		}
+	}
+	out = captureStdout(t, func() { runObservationReport(cfgPath, "", false) })
+	if !strings.Contains(out, "DETECTOR OBSERVATIONS") || !strings.Contains(out, "No detection events stored yet") {
+		t.Errorf("observation report:\n%s", out)
+	}
+	out = captureStdout(t, func() { runObservationReport(cfgPath, "7d", true) })
+	var observations observationReport
+	if err := json.Unmarshal([]byte(out), &observations); err != nil || observations.Since == nil || observations.Stats == nil || observations.Notice == "" {
+		t.Errorf("JSON observation report: %+v, %v; raw=%s", observations, err, out)
 	}
 	out = captureStdout(t, func() { runReprocessPlayer(cfgPath, "echovr:1001") })
 	if !strings.Contains(out, "SYN-FIXTURE-001") {

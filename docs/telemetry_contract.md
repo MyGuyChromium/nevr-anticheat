@@ -11,7 +11,7 @@ This document is the normative JSON schema between telemetry producers (cmd/brid
 | Protocol | WebSocket (`ws://` or `wss://`), endpoint `/telemetry` | — |
 | Auth | `Authorization: Bearer <token>` on the upgrade request; token = `NEVR_AC_AUTH_TOKEN` of the server | server sends `{"type":"error","reason":"unauthorized"}` and closes; counted in `nevr_ac_auth_failures_total` |
 | Message format | one JSON object per WebSocket text message | undecodable JSON: message dropped, `nevr_ac_batches_malformed_total` |
-| Max message size | 65,536 bytes (`[server] max_message_bytes`, `--max-message-bytes`) | the message is **discarded and the connection stays open**; counted as one rejected frame and `nevr_ac_batches_rejected_total{reason="oversized_message"}` |
+| Max message size | 1,048,576 bytes / 1 MiB (`[server] max_message_bytes`, `--max-message-bytes`) | sized for a 256 KiB raw `/session` document after JSON string escaping plus normalized player frames; the message is **discarded and the connection stays open** when exceeded, counted as one rejected frame and `nevr_ac_batches_rejected_total{reason="oversized_message"}` |
 | Max frames per batch | 100 | whole batch rejected, `nevr_ac_batches_rejected_total{reason="oversized_batch"}` |
 | Rate limit | 30 frames/s sustained per (match, player) (`max_frame_rate_per_player`), measured so that a reconnect backlog is tolerated: a producer that replays queued batches after a link hiccup loses nothing as long as the burst covers at most 10 s of frames at that rate (the limiter follows telemetry timestamps / a token bucket, not the arrival wall clock) | frames beyond the sustained rate plus burst are rejected, **not stored**, reported in the next `ack.rejected`, `nevr_ac_frames_ratelimited_total` |
 | Identifier bounds | `match_id`, `player_id` ≤ 128 bytes, no control characters | frame/batch rejected (`invalid_match_id`, `invalid_player_id`) |
@@ -34,6 +34,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
   "match_id": "string (required, Nakama match id or replay session id)",
   "server_id": "string (required; the bridge sends \"<broadcaster_ip>:<api_port>\")",
   "timestamp": "2026-09-02T17:30:22Z",
+  "raw_json": "{\"sessionid\":\"...\",\"game_status\":\"playing\",\"teams\":[...]}",
   "frames": [
     {
       "player_id": "echovr:PLR-001",
@@ -76,6 +77,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `match_id` | string | **yes** | ≤ 128 bytes. All frames in the batch belong to it. |
 | `server_id` | string | desired | Provenance of the data. The bridge sends `"<broadcaster_ip>:<api_port>"` (the host it polled over plaintext HTTP). The server records it on the **match context** (`MatchContext.ServerID`, persisted with `match_contexts` and printed wherever the match context is shown, e.g. evidence reports); it is not copied onto individual frame or event rows. |
 | `timestamp` | RFC3339 string | desired | Wall-clock time the producer sampled the state. |
+| `raw_json` | string containing JSON | bridge: **yes**; other producers: optional | Exact `/session` response bytes that produced the normalized frames, including whitespace and fields the current mapper does not know. The server validates the inner JSON and stores it once in `match_ticks`. When present, every frame in the batch must have the same `frame_index`; invalid, empty-frame or multi-index raw batches are rejected as a unit. |
 | `frames` | array | **yes** | 1–100 player frames. |
 
 #### Player frame fields

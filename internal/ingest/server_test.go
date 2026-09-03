@@ -30,6 +30,23 @@ type fakeHandler struct {
 	ignored   int // reported as Ignored on every batch
 }
 
+// rawFakeHandler records the optional raw telemetry extension in addition to
+// the normalized frames used by legacy Handler implementations.
+type rawFakeHandler struct {
+	fakeHandler
+	rawJSON []string
+}
+
+func (h *rawFakeHandler) HandleFramesWithRaw(matchID, serverID string, frames []model.PlayerTelemetryFrame, rawJSON string) FrameResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.batches = append(h.batches, frames)
+	h.matchIDs = append(h.matchIDs, matchID)
+	h.serverIDs = append(h.serverIDs, serverID)
+	h.rawJSON = append(h.rawJSON, rawJSON)
+	return FrameResult{Accepted: len(frames), Ignored: h.ignored}
+}
+
 func (h *fakeHandler) HandleFrames(matchID, serverID string, frames []model.PlayerTelemetryFrame) FrameResult {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -198,6 +215,70 @@ func TestServer_HelloAckAndControlDispatch(t *testing.T) {
 	}
 	if h.frameCount() != 3 {
 		t.Errorf("frames forwarded=%d", h.frameCount())
+	}
+}
+
+func TestServer_ForwardsExactRawTick(t *testing.T) {
+	h := &rawFakeHandler{}
+	_, url, _ := startServer(t, testServerConfig(), h)
+	conn := dial(t, url, "secret-token")
+	if _, err := recvControl(t, conn, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	rawTick := "{\n  \"sessionid\": \"raw-1\", \"future_field\": [1, 2, 3]\n}"
+	sendJSON(t, conn, FrameBatch{
+		MatchID:  "M1",
+		ServerID: "srv",
+		Frames:   []model.PlayerTelemetryFrame{goodFrame("P1", 7), goodFrame("P2", 7)},
+		RawJSON:  rawTick,
+	})
+	ack := waitAck(t, conn)
+	if ack.Accepted != 2 || ack.Rejected != 0 {
+		t.Fatalf("ack=%+v want accepted=2", ack)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.rawJSON) != 1 || h.rawJSON[0] != rawTick {
+		t.Fatalf("raw payloads=%q, want exact source bytes", h.rawJSON)
+	}
+}
+
+func TestServer_RejectsInvalidOrAmbiguousRawTick(t *testing.T) {
+	h := &rawFakeHandler{}
+	_, url, _ := startServer(t, testServerConfig(), h)
+	conn := dial(t, url, "secret-token")
+	if _, err := recvControl(t, conn, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []FrameBatch{
+		{MatchID: "M1", Frames: []model.PlayerTelemetryFrame{goodFrame("P1", 0)}, RawJSON: "{"},
+		{MatchID: "M1", RawJSON: `{}`},
+		{MatchID: "M1", Frames: []model.PlayerTelemetryFrame{goodFrame("P1", 1), goodFrame("P2", 2)}, RawJSON: `{}`},
+	}
+	for _, batch := range tests {
+		sendJSON(t, conn, batch)
+	}
+	ack := waitAck(t, conn)
+	if ack.Accepted != 0 || ack.Rejected != 4 {
+		t.Fatalf("ack=%+v want rejected=4", ack)
+	}
+	if h.frameCount() != 0 {
+		t.Fatalf("invalid raw batches reached handler: %d frames", h.frameCount())
+	}
+
+	// The extension is optional: an older Handler still accepts a valid batch
+	// containing raw_json and receives its normalized frames.
+	legacy := &fakeHandler{}
+	_, legacyURL, _ := startServer(t, testServerConfig(), legacy)
+	legacyConn := dial(t, legacyURL, "secret-token")
+	if _, err := recvControl(t, legacyConn, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, legacyConn, FrameBatch{MatchID: "M2", Frames: []model.PlayerTelemetryFrame{goodFrame("P1", 0)}, RawJSON: `{}`})
+	if got := waitAck(t, legacyConn); got.Accepted != 1 || legacy.frameCount() != 1 {
+		t.Fatalf("legacy handler compatibility: ack=%+v frames=%d", got, legacy.frameCount())
 	}
 }
 

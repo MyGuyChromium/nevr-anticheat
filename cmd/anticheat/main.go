@@ -80,6 +80,37 @@ func main() {
 			fatalUsage("anticheat report <case-id>")
 		}
 		runReport(*configPath, sub[0])
+	case "evidence-export":
+		fs := flag.NewFlagSet("evidence-export", flag.ExitOnError)
+		matchID := fs.String("match", "", "Export detections for this match instead of a review case")
+		playerID := fs.String("player", "", "Player ID for --match")
+		includeShadow := fs.Bool("include-shadow", false, "Include shadow events (match/player exports only)")
+		before := fs.Int("before", 45, "Frames to include before each detection")
+		after := fs.Int("after", 45, "Frames to include after each detection")
+		format := fs.String("format", "auto", "Output format: auto, html, or json")
+		force := fs.Bool("force", false, "Replace an existing output file")
+		pos := parseSub(fs, sub)
+		opts := evidenceExportOptions{
+			matchID: *matchID, playerID: *playerID, includeShadow: *includeShadow,
+			before: *before, after: *after, format: *format, force: *force,
+		}
+		if *matchID != "" {
+			if len(pos) != 1 || *playerID == "" {
+				fatalUsage("anticheat evidence-export --match <match-id> --player <player-id> <output.html|json> [--include-shadow]")
+			}
+			opts.outputPath = pos[0]
+		} else {
+			if len(pos) != 2 {
+				fatalUsage("anticheat evidence-export <case-id> <output.html|json>")
+			}
+			opts.caseID, opts.outputPath = pos[0], pos[1]
+		}
+		runEvidenceExport(*configPath, opts)
+	case "backup":
+		if len(sub) != 1 {
+			fatalUsage("anticheat backup <output.db>")
+		}
+		runBackup(*configPath, sub[0])
 	case "player-history":
 		if len(sub) < 1 {
 			fatalUsage("anticheat player-history <player-id>")
@@ -124,6 +155,14 @@ func main() {
 		since := fs.String("since", "", "Only decisions newer than this window (e.g. 30d, 12h); default: all")
 		parseSub(fs, sub)
 		runCalibrationReport(*configPath, *since)
+	case "observation-report":
+		fs := flag.NewFlagSet("observation-report", flag.ExitOnError)
+		since := fs.String("since", "", "Only matches newer than this window (e.g. 30d, 12h); default: all")
+		asJSON := fs.Bool("json", false, "Print machine-readable JSON")
+		if pos := parseSub(fs, sub); len(pos) != 0 {
+			fatalUsage("anticheat observation-report [--since 30d] [--json]")
+		}
+		runObservationReport(*configPath, *since, *asJSON)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		printUsage()
@@ -179,6 +218,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  batch <dir> [--force]      Batch analyze replays (stores telemetry + results; skips stored matches)")
 	fmt.Fprintln(os.Stderr, "  flagged                    List pending review cases")
 	fmt.Fprintln(os.Stderr, "  report <case-id>           Human-readable single-match case report with evidence")
+	fmt.Fprintln(os.Stderr, "  evidence-export <case-id> <output.html|json>")
+	fmt.Fprintln(os.Stderr, "                             Export an offline visual review bundle")
+	fmt.Fprintln(os.Stderr, "  evidence-export --match <id> --player <id> <output> [--include-shadow]")
+	fmt.Fprintln(os.Stderr, "                             Export match/player evidence without a scored case")
+	fmt.Fprintln(os.Stderr, "  backup <output.db>         Create and verify a consistent SQLite snapshot")
 	fmt.Fprintln(os.Stderr, "  player-history <id>        Show cross-match history for a player (from DB)")
 	fmt.Fprintln(os.Stderr, "  cross-match                Run cross-match aggregation on stored data")
 	fmt.Fprintln(os.Stderr, "  cross-match-report <id>    Inspect a cross-match review case with per-match evidence")
@@ -189,6 +233,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "                             Record a moderator decision (verdict: "+strings.Join(sqlite.ValidVerdicts(), "|")+")")
 	fmt.Fprintln(os.Stderr, "  calibration-report [--since 30d]")
 	fmt.Fprintln(os.Stderr, "                             Per-detector confirmed/false-positive counts from moderator decisions")
+	fmt.Fprintln(os.Stderr, "  observation-report [--since 30d] [--json]")
+	fmt.Fprintln(os.Stderr, "                             Versioned shadow/scored event rates and evidence quality")
 	fmt.Fprintln(os.Stderr, "  version                    Print version")
 }
 
@@ -474,6 +520,148 @@ func runReport(configPath, caseID string) {
 	}
 	printEvidenceSection(events)
 	printDecisions(a, caseID)
+}
+
+type evidenceExportOptions struct {
+	caseID        string
+	matchID       string
+	playerID      string
+	outputPath    string
+	format        string
+	includeShadow bool
+	before        int
+	after         int
+	force         bool
+}
+
+func runEvidenceExport(configPath string, opts evidenceExportOptions) {
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	bundle, abs, err := exportEvidence(context.Background(), a, opts)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
+	fmt.Printf("Exported %d detection event(s), %d clip(s), and %d player-frame(s) to %s\n",
+		len(bundle.DetectionEvents), len(bundle.Clips), len(bundle.Frames), abs)
+}
+
+func exportEvidence(ctx context.Context, a *app, opts evidenceExportOptions) (*evidence.ReplayBundle, string, error) {
+	if opts.before < 0 || opts.after < 0 || opts.before > 900 || opts.after > 900 {
+		return nil, "", fmt.Errorf("evidence frame window must be between 0 and 900 frames per side")
+	}
+	if strings.TrimSpace(opts.outputPath) == "" {
+		return nil, "", fmt.Errorf("evidence output path is required")
+	}
+	if opts.caseID != "" && (opts.matchID != "" || opts.playerID != "") {
+		return nil, "", fmt.Errorf("choose a review case or a match/player, not both")
+	}
+	if opts.includeShadow && opts.caseID != "" {
+		return nil, "", fmt.Errorf("--include-shadow is available only with --match and --player")
+	}
+
+	exporter := evidence.NewExporter(a.store)
+	exporter.SetWindow(opts.before, opts.after)
+	var (
+		bundle *evidence.ReplayBundle
+		err    error
+	)
+	if opts.caseID != "" {
+		bundle, err = exporter.ExportForCase(ctx, opts.caseID, nil)
+	} else {
+		bundle, err = exporter.ExportForMatchPlayer(ctx, opts.matchID, opts.playerID, opts.includeShadow, nil)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	format := strings.ToLower(strings.TrimSpace(opts.format))
+	if format == "" || format == "auto" {
+		switch strings.ToLower(filepath.Ext(opts.outputPath)) {
+		case ".html", ".htm":
+			format = "html"
+		case ".json":
+			format = "json"
+		default:
+			return nil, "", fmt.Errorf("cannot infer evidence format from %q; use --format html or --format json", opts.outputPath)
+		}
+	}
+	var data []byte
+	if format == "html" {
+		data, err = evidence.MarshalHTML(bundle)
+	} else if format == "json" {
+		data, err = evidence.MarshalBundle(bundle)
+	} else {
+		return nil, "", fmt.Errorf("unsupported evidence format %q (want html or json)", format)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	abs, err := writeEvidenceFile(opts.outputPath, data, opts.force)
+	if err != nil {
+		return nil, "", err
+	}
+	return bundle, abs, nil
+}
+
+func writeEvidenceFile(path string, data []byte, force bool) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving evidence output: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return "", fmt.Errorf("creating evidence output directory: %w", err)
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	f, err := os.OpenFile(abs, flags, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("evidence output already exists: %s (use --force to replace it)", abs)
+		}
+		return "", fmt.Errorf("creating evidence output: %w", err)
+	}
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(abs)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return "", fmt.Errorf("writing evidence output: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("syncing evidence output: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("closing evidence output: %w", err)
+	}
+	ok = true
+	return abs, nil
+}
+
+func runBackup(configPath, outputPath string) {
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	abs, err := filepath.Abs(outputPath)
+	if err != nil {
+		fatal("Error: resolving backup path: %v", err)
+	}
+	if err := a.store.Backup(context.Background(), abs); err != nil {
+		fatal("Error: %v", err)
+	}
+	if err := os.Chmod(abs, 0o600); err != nil {
+		fatal("Backup was created but its permissions could not be restricted: %v", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		fatal("Backup was created but could not be inspected: %v", err)
+	}
+	fmt.Printf("Created verified database backup: %s (%d bytes)\n", abs, info.Size())
 }
 
 // printEvidenceSection prints every stored event with its typed evidence so a
@@ -844,6 +1032,70 @@ func runCalibrationReport(configPath, sinceSpec string) {
 	fmt.Println()
 	fmt.Println("  Counts are per decided case in which the detector fired (shadow events included).")
 	fmt.Println("  Explicit --detector feedback overrides the case verdict for that detector.")
+}
+
+type observationReport struct {
+	GeneratedAt time.Time                         `json:"generated_at"`
+	Since       *time.Time                        `json:"since,omitempty"`
+	Stats       []sqlite.DetectorObservationStats `json:"stats"`
+	Notice      string                            `json:"notice"`
+}
+
+func runObservationReport(configPath, sinceSpec string, asJSON bool) {
+	var since time.Time
+	if sinceSpec != "" {
+		window, err := parseWindow(sinceSpec)
+		if err != nil {
+			fatal("Error: %v", err)
+		}
+		since = time.Now().Add(-window)
+	}
+	a := mustOpen(configPath)
+	defer a.store.Close()
+	stats, err := a.store.ComputeObservationStats(context.Background(), since)
+	if err != nil {
+		fatal("Error: %v", err)
+	}
+	if stats == nil {
+		stats = []sqlite.DetectorObservationStats{}
+	}
+	const notice = "Observation counts are not detector validation; thresholds require labeled real telemetry and moderator verdicts."
+	if asJSON {
+		report := observationReport{GeneratedAt: time.Now().UTC(), Stats: stats, Notice: notice}
+		if !since.IsZero() {
+			u := since.UTC()
+			report.Since = &u
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fatal("Error encoding observation report: %v", err)
+		}
+		return
+	}
+
+	fmt.Println("================================================================================")
+	if since.IsZero() {
+		fmt.Println("DETECTOR OBSERVATIONS (all stored events; split by detector version)")
+	} else {
+		fmt.Printf("DETECTOR OBSERVATIONS (matches since %s; split by detector version)\n", since.UTC().Format(time.RFC3339))
+	}
+	fmt.Println("================================================================================")
+	if len(stats) == 0 {
+		fmt.Println("  No detection events stored yet. Shadow deployment data will appear here.")
+		fmt.Println()
+		fmt.Println("  " + notice)
+		return
+	}
+	fmt.Printf("  %-12s %-8s %7s %7s %7s %7s %7s %8s %8s %8s %8s\n",
+		"DETECTOR", "VERSION", "EVENTS", "SHADOW", "SCORED", "MATCHES", "PLAYERS", "MAX/MATCH", "SEV P95", "CONF AVG", "CONF P05")
+	for _, s := range stats {
+		fmt.Printf("  %-12s %-8s %7d %7d %7d %7d %7d %8d %8.2f %8.2f %8.2f\n",
+			s.DetectorID, s.DetectorVersion, s.Events, s.ShadowEvents, s.ScoredEvents,
+			s.Matches, s.Players, s.MaxEventsMatch, s.P95Severity, s.MeanConfidence, s.P05Confidence)
+	}
+	fmt.Println()
+	fmt.Println("  " + notice)
 }
 
 // reprocessMatchFromDB loads telemetry from the database and re-runs the

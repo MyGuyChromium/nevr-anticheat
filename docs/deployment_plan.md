@@ -8,7 +8,11 @@ Every stage below uses only features that exist in the binaries today. Where the
 - Cases: single-match `RC-<match>-<player>` cases for match scores ≥ `review_threshold` (60), cross-match `XM-<player>` cases for decayed scores ≥ 60 across ≥ 3 matches (`nevr-ac cross-match`).
 - Moderator tools: `flagged`, `report`, `cross-match-report`, `player-history`, `verdict` (with per-detector feedback), `calibration-report`.
 - Reprocessing: `reprocess-match`, `reprocess-player`, `reprocess-timerange` (half-open on match time) replace derived outputs from stored telemetry under any config.
-- Not implemented / not wired: automatic enforcement (`enforce.Engine` exists but no binary constructs it), replay-bundle export to moderators (`evidence.Exporter` exists but has no CLI command), hot config reload, per-server dashboards.
+- Evidence export: `nevr-ac evidence-export` writes either the archival JSON bundle or a self-contained offline HTML reviewer with a top-down X/Z replay, event navigation, hand/disc state and typed evidence. Case exports contain scored events; `--match ... --player ... --include-shadow` supports pre-promotion review.
+- Observation dashboard: `nevr-ac observation-report` and the desktop app report event volume, shadow/scored counts, match/player spread and confidence/severity tails separately for every detector version. These are calibration inputs, never validation claims.
+- Database preservation: `nevr-ac backup <output.db>` makes a consistent SQLite snapshot, verifies it, and refuses to replace an existing snapshot.
+- Raw-source preservation: `.echoreplay` imports and the current live bridge store the original session JSON once per tick in `match_ticks`, alongside normalized `telemetry_frames`, so future mapper changes and disputed detections can be re-examined.
+- Not implemented / not wired: automatic enforcement (`enforce.Engine` exists but no binary constructs it), hot config reload, per-server dashboards.
 
 ## Rollout stages
 
@@ -79,7 +83,7 @@ Every stage below uses only features that exist in the binaries today. Where the
 
 ## Phase 1: data collection (stages 1–2)
 
-Every shadow match stores all telemetry (`telemetry_frames`, `match_ticks`), the match context and every detector's events with typed evidence. Per-player summaries (max/avg speed, throw speeds, hand speeds, wrist rates) are recomputable from the telemetry by reprocessing; nothing further needs to be collected.
+Every shadow match from `.echoreplay` or the current bridge stores normalized telemetry (`telemetry_frames`), exact source JSON once per tick (`match_ticks`), the match context and every detector's events with typed evidence. Per-player summaries (max/avg speed, throw speeds, hand speeds, wrist rates) are recomputable from the telemetry by reprocessing; nothing further needs to be collected. Legacy/custom WebSocket producers should add `raw_json` to reach the same standard.
 
 Sample size targets: minimum 500 matches before any threshold change, 5,000 for a threshold anyone will defend, 50,000+ throws for the throw detectors.
 
@@ -122,6 +126,8 @@ stored events across ≥ 3 matches → cross-match decayed score ≥ 60 → XM-<
     ↓
 nevr-ac flagged                     list pending cases
 nevr-ac report <RC-id>              evidence summary, every stored event with typed evidence, prior decisions
+nevr-ac evidence-export <RC-id> review.html
+                                     offline frame-by-frame visual evidence artifact
 nevr-ac cross-match-report <XM-id>  per-match evidence
 nevr-ac player-history <player>     capped, decayed history
     ↓
@@ -140,7 +146,7 @@ Case statuses: `pending`, `assigned`, `in_review`, `decided`, `appealed`, `close
 2. Every stored detection event for the player in the match: detector, version, frame range, timestamp, severity, confidence, weight, observed vs expected, causal key, typed evidence JSON.
 3. Prior decisions on the case.
 
-Replay clips around an event are **not** exported yet (`evidence.Exporter` has no CLI); moderators work from the evidence JSON and, where needed, the raw ticks in `match_ticks`.
+`evidence-export` includes a configurable frame window around each event (`--before` / `--after`, 45 frames per side by default), every player in those windows, match provenance, score metadata and typed evidence. HTML exports are fully offline and make no network requests. JSON exports preserve the same bundle for tooling. Both formats contain player identifiers and must be stored with the same access controls as the database.
 
 ## Verdicts
 

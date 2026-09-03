@@ -115,19 +115,63 @@ func (e *Exporter) ExportForCase(
 	if rc.MatchID == "" {
 		return nil, fmt.Errorf("evidence: review case %s has no match_id", caseID)
 	}
+	return e.export(ctx, exportRequest{
+		caseID: caseID, matchID: rc.MatchID, playerID: rc.PlayerID,
+		metadata: map[string]string{
+			"severity":           rc.Severity,
+			"recommended_action": rc.RecommendedAction,
+			"level":              rc.Level,
+			"threshold_version":  rc.ThresholdVersion,
+		},
+	}, frames)
+}
 
-	all, err := e.store.GetMatchEvents(ctx, rc.MatchID)
+// ExportForMatchPlayer creates a bundle without requiring a scored review
+// case. This is the shadow-deployment path: includeShadow lets an operator
+// inspect observation-only detections before any detector is promoted to
+// scoring. It deliberately still requires at least one event so an export
+// can never look like evidence when it contains no anomaly to review.
+func (e *Exporter) ExportForMatchPlayer(
+	ctx context.Context,
+	matchID, playerID string,
+	includeShadow bool,
+	frames []model.PlayerTelemetryFrame,
+) (*ReplayBundle, error) {
+	if matchID == "" || playerID == "" {
+		return nil, fmt.Errorf("evidence: match_id and player_id are required")
+	}
+	return e.export(ctx, exportRequest{
+		matchID: matchID, playerID: playerID, includeShadow: includeShadow,
+		metadata: map[string]string{"source": "match_player"},
+	}, frames)
+}
+
+type exportRequest struct {
+	caseID        string
+	matchID       string
+	playerID      string
+	includeShadow bool
+	metadata      map[string]string
+}
+
+func (e *Exporter) export(ctx context.Context, req exportRequest, frames []model.PlayerTelemetryFrame) (*ReplayBundle, error) {
+
+	all, err := e.store.GetMatchEvents(ctx, req.matchID)
 	if err != nil {
 		return nil, fmt.Errorf("getting match events: %w", err)
 	}
 	var events []model.DetectionEvent
 	for _, ev := range all {
-		if ev.PlayerID == rc.PlayerID && !ev.IsShadow {
+		if ev.PlayerID == req.playerID && (req.includeShadow || !ev.IsShadow) {
 			events = append(events, ev)
 		}
 	}
 	if len(events) == 0 {
-		return nil, fmt.Errorf("%w (case %s, player %s, match %s)", ErrNoEvents, caseID, rc.PlayerID, rc.MatchID)
+		selection := "non-shadow"
+		if req.includeShadow {
+			selection = "shadow and non-shadow"
+		}
+		return nil, fmt.Errorf("%w (%s events, case %s, player %s, match %s)", ErrNoEvents, selection, req.caseID, req.playerID, req.matchID)
 	}
 	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].FrameIndex != events[j].FrameIndex {
@@ -137,7 +181,7 @@ func (e *Exporter) ExportForCase(
 	})
 
 	if frames == nil {
-		frames, err = e.store.GetMatchFrames(ctx, rc.MatchID)
+		frames, err = e.store.GetMatchFrames(ctx, req.matchID)
 		if err != nil {
 			return nil, fmt.Errorf("getting match frames: %w", err)
 		}
@@ -159,7 +203,10 @@ func (e *Exporter) ExportForCase(
 	union := make(map[frameKey]model.PlayerTelemetryFrame)
 	for _, ev := range events {
 		lo, hi := ev.FrameRangeStart, ev.FrameRangeEnd
-		if hi < lo {
+		// Old rows and hand-built integrations may not have populated a
+		// causal range. A range that does not contain the event's own frame
+		// cannot be a useful locator, so center the clip on FrameIndex.
+		if hi < lo || ev.FrameIndex < lo || ev.FrameIndex > hi {
 			lo, hi = ev.FrameIndex, ev.FrameIndex
 		}
 		start := lo - e.framesBefore
@@ -184,7 +231,7 @@ func (e *Exporter) ExportForCase(
 		clips = append(clips, clip)
 	}
 	if len(union) == 0 {
-		return nil, fmt.Errorf("%w (case %s, match %s, %d events)", ErrNoFrames, caseID, rc.MatchID, len(events))
+		return nil, fmt.Errorf("%w (case %s, match %s, %d events)", ErrNoFrames, req.caseID, req.matchID, len(events))
 	}
 	// The bundle's frame window is the actual span of all clips, not the
 	// first clip's start and the last clip's end: clips are in event order,
@@ -209,29 +256,34 @@ func (e *Exporter) ExportForCase(
 		return unionFrames[i].PlayerID < unionFrames[j].PlayerID
 	})
 
+	exportKey := req.caseID
+	if exportKey == "" {
+		exportKey = req.matchID + "-" + req.playerID
+	}
+	metadata := make(map[string]string, len(req.metadata)+8)
+	for k, v := range req.metadata {
+		metadata[k] = v
+	}
+	metadata["frame_window"] = fmt.Sprintf("%d-%d", windowStart, windowEnd)
+	metadata["clip_count"] = fmt.Sprintf("%d", len(clips))
+	metadata["frames_before"] = fmt.Sprintf("%d", e.framesBefore)
+	metadata["frames_after"] = fmt.Sprintf("%d", e.framesAfter)
+	metadata["includes_shadow"] = fmt.Sprintf("%t", req.includeShadow)
+
 	bundle := &ReplayBundle{
-		ExportID:        fmt.Sprintf("EXP-%s", caseID),
+		ExportID:        fmt.Sprintf("EXP-%s", exportKey),
 		ExportedAt:      e.now(),
-		CaseID:          caseID,
-		MatchID:         rc.MatchID,
-		PlayerID:        rc.PlayerID,
+		CaseID:          req.caseID,
+		MatchID:         req.matchID,
+		PlayerID:        req.playerID,
 		DetectionEvents: events,
 		Clips:           clips,
 		Frames:          unionFrames,
-		Metadata: map[string]string{
-			"severity":           rc.Severity,
-			"recommended_action": rc.RecommendedAction,
-			"level":              rc.Level,
-			"threshold_version":  rc.ThresholdVersion,
-			"frame_window":       fmt.Sprintf("%d-%d", windowStart, windowEnd),
-			"clip_count":         fmt.Sprintf("%d", len(clips)),
-			"frames_before":      fmt.Sprintf("%d", e.framesBefore),
-			"frames_after":       fmt.Sprintf("%d", e.framesAfter),
-		},
+		Metadata:        metadata,
 	}
 
 	if mcs, ok := e.store.(MatchContextStore); ok {
-		if mc, err := mcs.GetMatchContext(ctx, rc.MatchID); err == nil && mc != nil {
+		if mc, err := mcs.GetMatchContext(ctx, req.matchID); err == nil && mc != nil {
 			bundle.MatchContext = mc
 			if sid := MatchServerID(mc); sid != "" {
 				bundle.Metadata["server_id"] = sid
@@ -241,7 +293,7 @@ func (e *Exporter) ExportForCase(
 
 	// The stored score is a display-only snapshot; omit it rather than embed
 	// a zero value when none exists.
-	if score, err := e.store.GetPlayerScore(ctx, rc.PlayerID); err == nil {
+	if score, err := e.store.GetPlayerScore(ctx, req.playerID); err == nil {
 		bundle.SuspicionScore = &score
 	} else {
 		bundle.Metadata["suspicion_score"] = "unavailable"

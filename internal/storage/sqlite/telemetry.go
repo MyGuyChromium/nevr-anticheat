@@ -23,10 +23,10 @@ import (
 //	match_ticks.raw_json: The original, unmodified profiler/API session payload,
 //	    stored ONCE per (match_id, frame_index) — never once per player row.
 //	    Populated when the source provides richer data than the normalized frame
-//	    (.echoreplay ingestion: EchoVRSessionResponse JSON with stats, goal
-//	    events, player level, ...). Absent for legacy JSON and live WebSocket
-//	    ingestion, which carry no raw payload. Absent means "not available from
-//	    this source", never "bug / not wired".
+//	    (.echoreplay ingestion and current bridge live ingestion:
+//	    EchoVRSessionResponse JSON with stats, goal events, player level, ...).
+//	    Legacy JSON and older/custom WebSocket producers may omit it. Absent
+//	    means "not available from this source", never "bug / not wired".
 //
 // RawJSON on a row is the raw payload for that row's frame_index; rows of the
 // same tick may all carry it (it is de-duplicated on write) or only one may.

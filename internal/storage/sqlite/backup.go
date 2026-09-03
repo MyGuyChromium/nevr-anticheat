@@ -1,0 +1,69 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// ErrBackupExists is returned instead of overwriting an existing backup.
+// Backups are evidence-preservation artifacts; silent replacement would make
+// it impossible to prove which database snapshot was reviewed.
+var ErrBackupExists = errors.New("sqlite: backup destination already exists")
+
+// Backup writes a transactionally consistent, compact copy of the live
+// database using SQLite's VACUUM INTO operation. It includes committed WAL
+// content and does not require stopping ingestion, although SQLite serializes
+// the operation on this store's single connection. The destination must not
+// already exist.
+func (s *Store) Backup(ctx context.Context, destination string) (err error) {
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return fmt.Errorf("sqlite: backup destination is required")
+	}
+	abs, err := filepath.Abs(destination)
+	if err != nil {
+		return fmt.Errorf("sqlite: resolving backup destination: %w", err)
+	}
+	if info, statErr := os.Stat(abs); statErr == nil {
+		return fmt.Errorf("%w: %s (%d bytes)", ErrBackupExists, abs, info.Size())
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("sqlite: checking backup destination: %w", statErr)
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return fmt.Errorf("sqlite: creating backup directory: %w", err)
+	}
+
+	// VACUUM INTO accepts a bound filename expression. Binding instead of
+	// interpolating keeps paths containing quotes from becoming SQL.
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, abs); err != nil {
+		_ = os.Remove(abs) // only a partial file can exist: pre-existence was refused
+		return fmt.Errorf("sqlite: creating backup: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(abs)
+		}
+	}()
+
+	// Verify the copy independently before reporting success. This is a read-
+	// only connection and does not run migrations or mutate the snapshot.
+	dsn := "file:" + filepath.ToSlash(abs) + "?mode=ro&_busy_timeout=5000"
+	copyDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return fmt.Errorf("sqlite: opening backup for verification: %w", err)
+	}
+	defer copyDB.Close()
+	var result string
+	if err := copyDB.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&result); err != nil {
+		return fmt.Errorf("sqlite: verifying backup: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("sqlite: backup integrity check returned %q", result)
+	}
+	return nil
+}
