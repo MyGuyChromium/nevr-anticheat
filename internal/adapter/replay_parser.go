@@ -22,7 +22,10 @@ const (
 	// 10-40 KB; 8 MB leaves room for recorders that embed extra payloads.
 	DefaultMaxLineBytes = 8 * 1024 * 1024
 	// DefaultMaxReplayBytes bounds the uncompressed size read from a ZIP entry.
-	DefaultMaxReplayBytes int64 = 500 * 1024 * 1024
+	// It is a ZIP-bomb guard, not a memory bound: ParseFileStream reads one
+	// line at a time. Real Spark recordings of a full Echo Arena match unpack
+	// to 0.5-1 GB, so the guard sits well above that.
+	DefaultMaxReplayBytes int64 = 8 * 1024 * 1024 * 1024
 )
 
 // replayLineLayouts are the accepted formats of the per-line timestamp prefix.
@@ -127,6 +130,13 @@ func (p *EchoReplayParser) SetPhysics(phys model.PhysicsConstants) { p.mapper.Se
 // (see Mapper.SetDedupeIdentical). Off by default: recorded lines are trusted
 // as distinct samples unless the operator opts in.
 func (p *EchoReplayParser) SetDedupeIdentical(enabled bool) { p.mapper.SetDedupeIdentical(enabled) }
+
+// SetMaxReplayBytes overrides the uncompressed-size guard for ZIP entries.
+func (p *EchoReplayParser) SetMaxReplayBytes(n int64) {
+	if n > 0 {
+		p.maxReplayBytes = n
+	}
+}
 
 // SetMaxLineBytes overrides the per-line size cap.
 func (p *EchoReplayParser) SetMaxLineBytes(n int) {
