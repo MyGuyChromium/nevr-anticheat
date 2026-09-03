@@ -13,11 +13,15 @@ type MatchContext struct {
 	Duration        time.Duration     `json:"duration"`
 	PlayerIDs       []string          `json:"player_ids"`
 	TeamAssignments map[string]string `json:"team_assignments"`
-	TickRate        float64           `json:"tick_rate"`
-	Source          string            `json:"source"`
-	ReplayFile      string            `json:"replay_file,omitempty"`
-	ServerRegion    string            `json:"server_region,omitempty"`
-	Physics         PhysicsConstants  `json:"physics"`
+	// PlayerNames maps a player ID to the display name the source reported
+	// (the /session "name" field). Informational only: detectors and storage
+	// key everything by PlayerID. Empty for sources that carry no names.
+	PlayerNames  map[string]string `json:"player_names,omitempty"`
+	TickRate     float64           `json:"tick_rate"`
+	Source       string            `json:"source"`
+	ReplayFile   string            `json:"replay_file,omitempty"`
+	ServerRegion string            `json:"server_region,omitempty"`
+	Physics      PhysicsConstants  `json:"physics"`
 }
 
 // IsActivePhase returns true if the game phase is active gameplay.

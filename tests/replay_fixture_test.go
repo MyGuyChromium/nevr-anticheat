@@ -42,6 +42,9 @@ func TestReplayFixture_ParserAndPipeline(t *testing.T) {
 	if mc.TeamAssignments["echovr:1001"] != "blue" || mc.TeamAssignments["echovr:2001"] != "orange" {
 		t.Errorf("teams %v", mc.TeamAssignments)
 	}
+	if len(mc.PlayerNames) != 4 || mc.PlayerNames["echovr:1001"] != "BlueOne" {
+		t.Errorf("names %v", mc.PlayerNames)
+	}
 	if _, ok := mc.TeamAssignments["echovr:3001"]; ok {
 		t.Error("spectator was rostered")
 	}

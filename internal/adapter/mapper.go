@@ -455,16 +455,23 @@ func (m *Mapper) mapMatchContext(raw *EchoVRSessionResponse, result *MappingResu
 				mc.PlayerIDs = append(mc.PlayerIDs, pid)
 			}
 			mc.TeamAssignments[pid] = teamName
+			if p.Name != "" {
+				if mc.PlayerNames == nil {
+					mc.PlayerNames = make(map[string]string)
+				}
+				mc.PlayerNames[pid] = p.Name
+			}
 		}
 	}
 
 	return mc
 }
 
-// MergeMatchContext folds the roster and team assignments of src into dst
-// (union of players, latest team wins) without touching dst's identity
-// fields. Replay and live producers use it so late joiners and mid-match team
-// changes reach the persisted context instead of only the first snapshot.
+// MergeMatchContext folds the roster, team assignments and display names of
+// src into dst (union of players, latest team and name win) without touching
+// dst's identity fields. Replay and live producers use it so late joiners and
+// mid-match team changes reach the persisted context instead of only the
+// first snapshot.
 func MergeMatchContext(dst, src *model.MatchContext) {
 	if dst == nil || src == nil {
 		return
@@ -483,6 +490,12 @@ func MergeMatchContext(dst, src *model.MatchContext) {
 		}
 		if team, ok := src.TeamAssignments[pid]; ok && team != "" {
 			dst.TeamAssignments[pid] = team
+		}
+		if name, ok := src.PlayerNames[pid]; ok && name != "" {
+			if dst.PlayerNames == nil {
+				dst.PlayerNames = make(map[string]string)
+			}
+			dst.PlayerNames[pid] = name
 		}
 	}
 }

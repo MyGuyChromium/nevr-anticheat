@@ -401,13 +401,17 @@ func TestMapper_SetPhysics(t *testing.T) {
 // F98: MergeMatchContext unions rosters and takes the latest team.
 func TestMergeMatchContext(t *testing.T) {
 	dst := &model.MatchContext{MatchID: "m", PlayerIDs: []string{"a"}, TeamAssignments: map[string]string{"a": "blue"}}
-	src := &model.MatchContext{MatchID: "m", PlayerIDs: []string{"a", "b"}, TeamAssignments: map[string]string{"a": "orange", "b": "orange"}}
+	src := &model.MatchContext{MatchID: "m", PlayerIDs: []string{"a", "b"}, TeamAssignments: map[string]string{"a": "orange", "b": "orange"},
+		PlayerNames: map[string]string{"b": "Bee"}}
 	MergeMatchContext(dst, src)
 	if len(dst.PlayerIDs) != 2 || dst.PlayerIDs[1] != "b" {
 		t.Errorf("roster = %v", dst.PlayerIDs)
 	}
 	if dst.TeamAssignments["a"] != "orange" || dst.TeamAssignments["b"] != "orange" {
 		t.Errorf("teams = %v", dst.TeamAssignments)
+	}
+	if len(dst.PlayerNames) != 1 || dst.PlayerNames["b"] != "Bee" {
+		t.Errorf("names = %v", dst.PlayerNames)
 	}
 	MergeMatchContext(dst, src) // idempotent
 	if len(dst.PlayerIDs) != 2 {
