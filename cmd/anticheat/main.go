@@ -327,7 +327,32 @@ func printAnalyzeResult(res *replay.AnalyzeResult) {
 	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d\nDuration: %v\n",
 		result.MatchID, result.FramesProcessed, result.InvalidFrames,
 		len(result.DetectionEvents), res.Stored.EventsStored, res.Stored.CasesStored, result.Duration)
+	printCountMap("Invalid frames by reason", result.InvalidFrameReasons)
+	printCountMap("Sanitized frames by reason", result.SanitizedFrames)
 	printPlayerScores(result.PlayerScores)
+}
+
+// printCountMap prints a reason -> count map sorted by count, largest first.
+func printCountMap(title string, m map[string]int) {
+	if len(m) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	fmt.Printf("%s:
+", title)
+	for _, k := range keys {
+		fmt.Printf("  %-32s %d
+", k, m[k])
+	}
 }
 
 func runBatch(configPath, dir string, force bool) {
