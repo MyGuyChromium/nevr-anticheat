@@ -61,7 +61,7 @@ type Throw001 struct {
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.1.0",
+			DetectorID: "THROW_001", DetectorVersion: "1.2.0",
 			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
@@ -110,12 +110,20 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		pingTolerance := (ps.EstimatedPingMs / 1000.0) * d.pingToleranceScalar
 		effectiveCap := matchCtx.Physics.DiscSpeedCap + d.baseTolerance + pingTolerance
 		speedExcess := t.ReleaseSpeed - effectiveCap
-		handSpeed := math.Max(t.HandSpeed, 0.01)
+		handSpeed := t.HandSpeed
+		if t.HandKinematicsValid {
+			handSpeed = math.Max(handSpeed, 0.01)
+		}
 
 		evidence := model.ThrowEvidence{
 			ReleaseVelocity: t.ReleaseVelocity, ReleaseSpeed: t.ReleaseSpeed,
 			ReleasePosition: t.ReleasePosition, HandVelocity: t.HandVelocity,
-			HandSpeed: t.HandSpeed, EffectiveCap: effectiveCap, PingMs: ps.EstimatedPingMs,
+			HandSpeed: t.HandSpeed, HandRelativeVelocity: t.HandRelativeVelocity,
+			HandRelativeSpeed:         t.HandRelativeSpeed,
+			HandKinematicsValid:       t.HandKinematicsValid,
+			HandAttributionConfidence: t.HandAttributionConfidence,
+			HandAttributionAnchor:     t.HandAttributionAnchor,
+			EffectiveCap:              effectiveCap, PingMs: ps.EstimatedPingMs,
 		}
 
 		// Suspected artifact: > 2x the physics cap. Reported separately at
@@ -124,7 +132,9 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			d.artifactCounts[pid]++
 			evidence.ArtifactSuspected = true
 			evidence.ArtifactCount = d.artifactCounts[pid]
-			evidence.SpeedRatio = t.ReleaseSpeed / handSpeed
+			if t.HandKinematicsValid {
+				evidence.SpeedRatio = t.ReleaseSpeed / handSpeed
+			}
 			confidence := artifactSeverity
 			if t.Attribution.Confidence > 0 {
 				confidence *= t.Attribution.Confidence
@@ -155,11 +165,14 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Over the effective cap. The hand-speed ratio is only meaningful
 		// here: a slow throw with a tiny wrist flick has a huge but legitimate
 		// ratio.
-		speedRatio := t.ReleaseSpeed / handSpeed
+		speedRatio := 0.0
 		severity := model.SigmoidConfidence(t.ReleaseSpeed, effectiveCap, d.sigmoidSteepness)
-		if speedRatio > d.maxSpeedRatio {
-			ratioSev := model.SigmoidConfidence(speedRatio, d.maxSpeedRatio, 1.0)
-			severity = math.Max(severity, ratioSev)
+		if t.HandKinematicsValid {
+			speedRatio = t.ReleaseSpeed / handSpeed
+			if speedRatio > d.maxSpeedRatio {
+				ratioSev := model.SigmoidConfidence(speedRatio, d.maxSpeedRatio, 1.0)
+				severity = math.Max(severity, ratioSev)
+			}
 		}
 		confidence := severity
 		if t.Attribution.Confidence > 0 {
@@ -167,8 +180,12 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		evidence.SpeedRatio = speedRatio
 
+		observed := fmt.Sprintf("disc_speed: %.1f m/s (hand ratio unavailable)", t.ReleaseSpeed)
+		if t.HandKinematicsValid {
+			observed = fmt.Sprintf("disc_speed: %.1f m/s (ratio: %.1f)", t.ReleaseSpeed, speedRatio)
+		}
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence, evidence,
-			fmt.Sprintf("disc_speed: %.1f m/s (ratio: %.1f)", t.ReleaseSpeed, speedRatio),
+			observed,
 			fmt.Sprintf("disc_speed: 0-%.1f m/s (cap %.1f + tolerance %.1f)", effectiveCap, matchCtx.Physics.DiscSpeedCap, d.baseTolerance+pingTolerance),
 			model.CausalKey{PlayerID: pid, FrameStart: frameIdx - 2, FrameEnd: frameIdx + 2, AnomalyType: "disc_speed"},
 		)

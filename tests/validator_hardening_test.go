@@ -34,6 +34,8 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 		140: func(f *model.PlayerTelemetryFrame) { f.PlayerID = "" },
 		150: func(f *model.PlayerTelemetryFrame) { f.RightHandPosition = model.Vec3{500, 500, 500} },
 		160: func(f *model.PlayerTelemetryFrame) { f.Timestamp = math.Inf(1) },
+		170: func(f *model.PlayerTelemetryFrame) { f.EstimatedPingMs = math.NaN() },
+		180: func(f *model.PlayerTelemetryFrame) { f.EstimatedPingMs = 5000 },
 	}
 	for i, m := range inject {
 		m(&frames[i])
@@ -74,6 +76,7 @@ func TestValidation_PipelineCountsEveryRejection(t *testing.T) {
 		pipeline.SanitizedRotation:       1,
 		pipeline.SanitizedZeroRotation:   1,
 		pipeline.SanitizedNegativeDt:     1,
+		pipeline.SanitizedPing:           2,
 	}
 	for s, n := range wantSanitized {
 		if hr.Result.SanitizedFrames[s] != n {

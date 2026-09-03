@@ -9,10 +9,10 @@ type PlayerState struct {
 	Team     string `json:"team"`
 
 	// Current frame state
-	Position  Vec3 `json:"position"`
-	Rotation  Quat `json:"rotation"`
-	LeftHand  Vec3 `json:"left_hand"`
-	RightHand Vec3 `json:"right_hand"`
+	Position     Vec3 `json:"position"`
+	Rotation     Quat `json:"rotation"`
+	LeftHand     Vec3 `json:"left_hand"`
+	RightHand    Vec3 `json:"right_hand"`
 	LeftHandRot  Quat `json:"left_hand_rot"`
 	RightHandRot Quat `json:"right_hand_rot"`
 
@@ -23,31 +23,39 @@ type PlayerState struct {
 	AccelerationMagnitude float64 `json:"acceleration_magnitude"`
 
 	// Hand kinematics
-	LeftHandVelocity  Vec3    `json:"left_hand_velocity"`
-	RightHandVelocity Vec3    `json:"right_hand_velocity"`
-	LeftHandSpeed     float64 `json:"left_hand_speed"`
-	RightHandSpeed    float64 `json:"right_hand_speed"`
-	LeftWristAngularRate  float64 `json:"left_wrist_angular_rate"`
-	RightWristAngularRate float64 `json:"right_wrist_angular_rate"`
+	// LeftHandVelocity/RightHandVelocity are world-space velocities. The
+	// relative variants subtract body translation and describe controller
+	// motion relative to the player; biomechanical limits must use those so
+	// fast legal body movement is not counted again as impossible arm motion.
+	LeftHandVelocity          Vec3    `json:"left_hand_velocity"`
+	RightHandVelocity         Vec3    `json:"right_hand_velocity"`
+	LeftHandSpeed             float64 `json:"left_hand_speed"`
+	RightHandSpeed            float64 `json:"right_hand_speed"`
+	LeftHandRelativeVelocity  Vec3    `json:"left_hand_relative_velocity"`
+	RightHandRelativeVelocity Vec3    `json:"right_hand_relative_velocity"`
+	LeftHandRelativeSpeed     float64 `json:"left_hand_relative_speed"`
+	RightHandRelativeSpeed    float64 `json:"right_hand_relative_speed"`
+	LeftWristAngularRate      float64 `json:"left_wrist_angular_rate"`
+	RightWristAngularRate     float64 `json:"right_wrist_angular_rate"`
 
 	// Game state
-	IsStunned          bool    `json:"is_stunned"`
-	StunStartFrame     int     `json:"stun_start_frame,omitempty"`
-	StunEndTime        float64 `json:"stun_end_time,omitempty"`
-	HasDisc            bool    `json:"has_disc"`
-	PossessionStartFrame int   `json:"possession_start_frame,omitempty"`
+	IsStunned            bool    `json:"is_stunned"`
+	StunStartFrame       int     `json:"stun_start_frame,omitempty"`
+	StunEndTime          float64 `json:"stun_end_time,omitempty"`
+	HasDisc              bool    `json:"has_disc"`
+	PossessionStartFrame int     `json:"possession_start_frame,omitempty"`
 	PossessionStartTime  float64 `json:"possession_start_time,omitempty"`
-	IsBoosting         bool    `json:"is_boosting"`
-	ShieldActive       bool    `json:"shield_active"`
-	ShieldStartFrame   int     `json:"shield_start_frame,omitempty"`
-	IsImmune           bool    `json:"is_immune"`
-	IsInvulnerable     bool    `json:"is_invulnerable"`
+	IsBoosting           bool    `json:"is_boosting"`
+	ShieldActive         bool    `json:"shield_active"`
+	ShieldStartFrame     int     `json:"shield_start_frame,omitempty"`
+	IsImmune             bool    `json:"is_immune"`
+	IsInvulnerable       bool    `json:"is_invulnerable"`
 
 	// Timing
-	LastFrameIdx   int     `json:"last_frame_idx"`
-	LastTimestamp   float64 `json:"last_timestamp"`
-	FrameDt        float64 `json:"frame_dt"`
-	FrameCount     int     `json:"frame_count"`
+	LastFrameIdx  int     `json:"last_frame_idx"`
+	LastTimestamp float64 `json:"last_timestamp"`
+	FrameDt       float64 `json:"frame_dt"`
+	FrameCount    int     `json:"frame_count"`
 
 	// History buffers (sliding window)
 	PositionHistory     []Vec3    `json:"-"`
@@ -97,8 +105,8 @@ type PlayerState struct {
 	LastShieldOffFrame int `json:"-"`
 
 	// Stun tracking
-	WasStunned      bool `json:"-"`
-	StunRecoveries  int  `json:"-"`
+	WasStunned     bool `json:"-"`
+	StunRecoveries int  `json:"-"`
 }
 
 const DefaultHistoryWindow = 30

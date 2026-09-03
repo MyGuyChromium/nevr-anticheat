@@ -749,6 +749,51 @@ func TestPat004_IgnoresShadowEvents(t *testing.T) {
 	}
 }
 
+func TestPat004_IgnoresEventsRejectedByScorer(t *testing.T) {
+	cfg := testConfig("enforce")
+	var dets []detect.Detector
+	for _, spec := range []struct {
+		id       string
+		category string
+		severity float64
+	}{
+		{"FAKE_MOV", "movement", 0.9},
+		{"FAKE_THROW", "throw", 0.9},
+		// High confidence but zero severity: it is valid review evidence, yet
+		// contributes no score and must not become a PAT_004 category.
+		{"FAKE_BIO", "bio", 0},
+	} {
+		rec := newRecorder(spec.id, spec.category, 0)
+		severity := spec.severity
+		rec.emit = func(mc *model.MatchContext, ps *model.PlayerState, fi int) *model.DetectionEvent {
+			if fi != 0 {
+				return nil
+			}
+			return rec.event(mc, ps.PlayerID, fi, severity, 0.95, spec.id)
+		}
+		dets = append(dets, rec)
+	}
+	dets = append(dets, pattern.NewPat004(cfg.GetDetectorConfig("PAT_004").Params))
+	p, _ := newPipeline(cfg, dets)
+
+	frames := make([]model.PlayerTelemetryFrame, 80)
+	for i := range frames {
+		frames[i] = cleanFrame("P1", i)
+	}
+	res, err := p.ProcessMatch(context.Background(), matchCtx("P1"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range res.DetectionEvents {
+		if ev.DetectorID == "PAT_004" {
+			t.Fatal("PAT_004 used an event that the scorer rejected")
+		}
+	}
+	if got := res.PlayerScores["P1"].EventCount; got != 2 {
+		t.Fatalf("scored event count = %d, want 2", got)
+	}
+}
+
 // TestInvalidFrameReasons covers F155.
 func TestInvalidFrameReasons(t *testing.T) {
 	cfg := testConfig("enforce")
@@ -776,6 +821,37 @@ func TestInvalidFrameReasons(t *testing.T) {
 	}
 	if res.InvalidFramesByPlayer["P2"] != 10 {
 		t.Errorf("by player=%v", res.InvalidFramesByPlayer)
+	}
+}
+
+func TestValidatorSanitizesPingBeforeDetectorUse(t *testing.T) {
+	v := NewFrameValidator(testConfig("enforce"))
+	mc := matchCtx("P1")
+
+	for _, tc := range []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"negative", -25, 0},
+		{"nan", math.NaN(), 0},
+		{"infinite", math.Inf(1), 0},
+		{"over_contract_cap", 5000, MaxEstimatedPingMs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFrame("P1", 0)
+			f.EstimatedPingMs = tc.in
+			codes, err := v.Validate(&f, mc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.EstimatedPingMs != tc.want {
+				t.Fatalf("ping = %v, want %v", f.EstimatedPingMs, tc.want)
+			}
+			if len(codes) != 1 || codes[0] != SanitizedPing {
+				t.Fatalf("sanitization codes = %v, want [%s]", codes, SanitizedPing)
+			}
+		})
 	}
 }
 

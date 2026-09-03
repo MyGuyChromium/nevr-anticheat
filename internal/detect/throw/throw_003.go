@@ -28,7 +28,7 @@ type Throw003 struct {
 func NewThrow003(params map[string]any) *Throw003 {
 	return &Throw003{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_003", DetectorVersion: "1.1.0",
+			DetectorID: "THROW_003", DetectorVersion: "1.2.0",
 			DetectorName: "Unnatural Release Angle", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
 		},
@@ -54,6 +54,9 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t == nil {
 			continue
 		}
+		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
+			continue
+		}
 		if t.HandSpeed < d.minHandSpeed || t.ReleaseSpeed < d.minThrowSpeed {
 			continue
 		}
@@ -74,12 +77,19 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t.Attribution.Confidence > 0 {
 			confidence *= t.Attribution.Confidence
 		}
+		if t.HandAttributionConfidence > 0 {
+			confidence *= t.HandAttributionConfidence
+		}
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence,
 			model.ReleaseAngleEvidence{
 				ReleaseAngle: t.ReleaseAngle, HandVelocity: t.HandVelocity,
-				DiscVelocity: t.ReleaseVelocity, HandSpeed: t.HandSpeed,
-				DiscSpeed: t.ReleaseSpeed, WristOrientation: t.WristOrientation,
-				ThrowingHand: t.ThrowingHand,
+				HandRelativeVelocity: t.HandRelativeVelocity,
+				DiscVelocity:         t.ReleaseVelocity, HandSpeed: t.HandSpeed,
+				HandRelativeSpeed: t.HandRelativeSpeed,
+				DiscSpeed:         t.ReleaseSpeed, WristOrientation: t.WristOrientation,
+				ThrowingHand:              t.ThrowingHand,
+				HandAttributionConfidence: t.HandAttributionConfidence,
+				HandAttributionAnchor:     t.HandAttributionAnchor,
 			},
 			fmt.Sprintf("release_angle: %.1f deg (body %.1f m/s, hand %.1f m/s)", t.ReleaseAngle, bodySpeed, t.HandSpeed),
 			fmt.Sprintf("release_angle: < %.1f deg", d.maxAngleDev),

@@ -148,8 +148,8 @@ var detectorSpecs = map[string]DetectorSpec{
 		}},
 	"BIO_002": {ID: "BIO_002", Name: "Impossible Hand Speed", Category: "bio",
 		Params: []ParamSpec{
-			f("max_hand_speed", 50.0, "m/s", "hand speed above which a frame violates"),
-			i("min_violation_frames", 2, "frames", "consecutive violating frames before an event (floored at 1)"),
+			f("max_hand_speed", 50.0, "m/s", "player-relative hand speed above which a frame violates"),
+			i("min_violation_frames", 2, "frames", "consecutive violating frames before an event (floored at 3 in code)"),
 			f("sigmoid_steepness", 8.5, "", sigmoidDoc),
 		}},
 	"BIO_003": {ID: "BIO_003", Name: "Zero Hand Jitter", Category: "bio",

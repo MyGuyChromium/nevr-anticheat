@@ -29,22 +29,23 @@ func newState(pid string, frameIdx int) *model.PlayerState {
 
 func mkThrow(pid string, frameIdx int, speed, angle float64) model.ThrowEvent {
 	return model.ThrowEvent{
-		ThrowerID:          pid,
-		Attribution:        model.ThrowAttribution{PlayerID: pid, Confidence: 0.9, Method: "possession_track"},
-		FrameIndex:         frameIdx,
-		Timestamp:          float64(frameIdx) * 0.067,
-		ReleasePosition:    model.Vec3{5, 0, 0},
-		ReleaseVelocity:    model.Vec3{speed, 0, 0},
-		ReleaseSpeed:       speed,
-		ThrowingHand:       "right",
-		HandPosition:       model.Vec3{5.3, 0.3, 0},
-		HandVelocity:       model.Vec3{speed * 0.5, 0, 0},
-		HandSpeed:          speed * 0.5,
-		WristOrientation:   model.QuatIdentity(),
-		PlayerPosition:     model.Vec3{5, 0, 0},
-		HandToDiscDistance: 0.3,
-		ReleaseAngle:       angle,
-		PossessionDuration: 1.0,
+		ThrowerID:           pid,
+		Attribution:         model.ThrowAttribution{PlayerID: pid, Confidence: 0.9, Method: "possession_track"},
+		FrameIndex:          frameIdx,
+		Timestamp:           float64(frameIdx) * 0.067,
+		ReleasePosition:     model.Vec3{5, 0, 0},
+		ReleaseVelocity:     model.Vec3{speed, 0, 0},
+		ReleaseSpeed:        speed,
+		ThrowingHand:        "right",
+		HandPosition:        model.Vec3{5.3, 0.3, 0},
+		HandVelocity:        model.Vec3{speed * 0.5, 0, 0},
+		HandSpeed:           speed * 0.5,
+		HandKinematicsValid: true,
+		WristOrientation:    model.QuatIdentity(),
+		PlayerPosition:      model.Vec3{5, 0, 0},
+		HandToDiscDistance:  0.3,
+		ReleaseAngle:        angle,
+		PossessionDuration:  1.0,
 	}
 }
 
@@ -75,6 +76,27 @@ func TestThrow001_OverCapFiresAtReplayRate(t *testing.T) {
 	}
 	if ev.DetectorVersion != d.Version() || ev.EnforcementWeight != d.Weight {
 		t.Fatalf("event must carry the detector's version/weight")
+	}
+}
+
+func TestThrow001_MissingHandKinematicsCannotInflateSpeedRatio(t *testing.T) {
+	d := NewThrow001(nil)
+	mc := testCtx()
+	players := withThrow("p1", 100, 20.1, 0)
+	players["p1"].LastThrow.ThrowingHand = "unknown"
+	players["p1"].LastThrow.HandSpeed = 0
+	players["p1"].LastThrow.HandKinematicsValid = false
+
+	events := d.Evaluate(mc, players, 100)
+	if len(events) != 1 {
+		t.Fatalf("expected one slightly-over-cap event, got %d", len(events))
+	}
+	if events[0].Severity >= 0.7 {
+		t.Fatalf("missing hand data inflated severity through a fake ratio: %.3f", events[0].Severity)
+	}
+	evidence := events[0].Evidence.(model.ThrowEvidence)
+	if evidence.SpeedRatio != 0 || evidence.HandKinematicsValid {
+		t.Fatalf("missing hand data produced ratio evidence: %+v", evidence)
 	}
 }
 
@@ -260,6 +282,20 @@ func TestThrow003_BodyMotionGuard(t *testing.T) {
 	ev := d.Evaluate(mc, players, 100)
 	if len(ev) != 1 || !near(ev[0].Confidence, events[0].Confidence*0.5, 1e-9) {
 		t.Fatalf("expected confidence halved at body/hand = 0.5, got %+v", ev)
+	}
+
+	// New reconstructed events mark a geometrically ambiguous left/right
+	// choice explicitly; hand-dependent evidence must not use an arbitrary tie.
+	players["p1"].LastThrow.PlayerVelocity = model.Vec3{}
+	players["p1"].LastThrow.HandTracked = true
+	players["p1"].LastThrow.HandAttributionConfidence = 0
+	if ev := d.Evaluate(mc, players, 100); len(ev) != 0 {
+		t.Fatal("ambiguous throwing-hand attribution must suppress release-angle evidence")
+	}
+	players["p1"].LastThrow.HandAttributionConfidence = 0.5
+	ev = d.Evaluate(mc, players, 100)
+	if len(ev) != 1 || !near(ev[0].Confidence, events[0].Confidence*0.5, 1e-9) {
+		t.Fatalf("hand-attribution confidence was not propagated: %+v", ev)
 	}
 }
 

@@ -13,8 +13,8 @@ import (
 // SpeedHackFrames generates a player sustaining hackSpeed (with the normal
 // +-20 % modulation) along Z. With hackSpeed >= 70 the 30-frame median
 // exceeds MOV_001's 55 m/s max_legitimate_speed on every full window.
-// Hands follow the body, so BIO_002 (hand speed > 50 m/s) also fires on a
-// real speed hack; tests isolate the detector under test.
+// Hands follow the body, so their player-relative speed stays normal and
+// BIO_002 does not duplicate MOV_001's body-movement evidence.
 func (fb *FrameBuilder) SpeedHackFrames(nFrames int, hackSpeed float64) []model.PlayerTelemetryFrame {
 	return fb.NormalMovingPlayer(nFrames, hackSpeed)
 }
@@ -253,7 +253,7 @@ const HandJumpMetres = 2.4
 // HandJumpMetres to alternate sides of the body on seven consecutive frames
 // around the middle of the stream (a hand-position injection), giving six
 // consecutive violation frames. BIO_002 emits on the 2nd, 4th and 6th
-// consecutive violation frame; the pipeline merges them.
+// consecutive violation frames; the pipeline merges them.
 func (fb *FrameBuilder) HandSpeedHack(nFrames int) []model.PlayerTelemetryFrame {
 	frames := fb.NormalMovingPlayer(nFrames, 3.0)
 	mid := nFrames / 2

@@ -37,7 +37,7 @@ func NewPat002(params map[string]any) *Pat002 {
 	d := &Pat002{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "PAT_002",
-			DetectorVersion:  "2.1.0",
+			DetectorVersion:  "2.2.0",
 			DetectorName:     "Identical Release Points",
 			DetectorCategory: "pattern",
 			Inputs:           []string{"throw_event", "hand_tracking", "head_position"},
@@ -76,11 +76,10 @@ func (d *Pat002) releasePoint(ps *model.PlayerState) (model.Vec3, bool) {
 		if d.minReleaseSpeed > 0 && t.ReleaseSpeed < d.minReleaseSpeed {
 			return model.Vec3{}, false
 		}
-		if !t.HandPosition.IsZero() {
-			handPos = t.HandPosition
-		} else if t.ThrowingHand == "left" {
-			handPos = ps.LeftHand
+		if t.ThrowingHand == "unknown" || t.HandPosition.IsZero() || (t.HandTracked && t.HandAttributionConfidence == 0) {
+			return model.Vec3{}, false
 		}
+		handPos = t.HandPosition
 		if !t.PlayerPosition.IsZero() {
 			bodyPos = t.PlayerPosition
 		}

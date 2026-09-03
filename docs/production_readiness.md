@@ -55,7 +55,7 @@
 | THROW_007 | **STUB** | N/A | N/A | Evaluate() returns nil; no telemetry for penalty fields |
 | THROW_008 | **UNVERIFIED** | Yes (observation only) | After calibration | Tight tolerance; arena geometry may cause speed bumps. Uses game `DistanceFromThrower` when present. |
 | BIO_001 | **UNVERIFIED** | Yes (rotation-format probe) | No | Rotation convention UNCONFIRMED. **Saturation:** the wrist-rate metric is bounded by π/dt = 46.9 rad/s at 15 Hz, so the 50 rad/s threshold is unreachable on bridge data (`Bio001.Reachable(0.067) == false`). Any event on 15 Hz data means the rotation pipeline is broken. |
-| BIO_002 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | 50 m/s is 4× the human limit; hand positions generally available |
+| BIO_002 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | Uses controller speed relative to player translation, so body movement does not duplicate MOV_001 evidence; 50 m/s is 4× the human limit; hand positions generally available |
 | BIO_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Controller jitter baseline unknown; resting controllers trigger zero-jitter (activity gate mitigates) |
 | BIO_004 | **UNVERIFIED** | Yes (rotation-format probe) | After calibration | Same rotation dependency as BIO_001 + wobble baseline unknown |
 | MOV_001 | **PHYSICS_GROUNDED** | Yes | Not until threshold validated | Median filter + 30-frame window; 55 m/s is generous; burst branch tied to `physics.max_player_speed` |

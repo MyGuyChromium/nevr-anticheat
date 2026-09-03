@@ -135,6 +135,27 @@ func TestShadowEventsNeverScore(t *testing.T) {
 	}
 }
 
+func TestIngestEventWithResultReportsOnlyPositiveContributions(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxContribPerDetectorPerMatch = 1
+	s := NewSuspicionScorer(cfg)
+
+	if _, accepted := s.IngestEventWithResult(ev("MOV_001", "p", 0, 1, 1, 1)); !accepted {
+		t.Fatal("positive first event was not accepted")
+	}
+	if _, accepted := s.IngestEventWithResult(ev("MOV_001", "p", 1000, 1, 1, 1)); accepted {
+		t.Fatal("event beyond the per-detector cap reported accepted")
+	}
+	if _, accepted := s.IngestEventWithResult(ev("BIO_002", "p", 2000, 1, 1, 0)); accepted {
+		t.Fatal("zero-weight event reported accepted")
+	}
+	shadow := ev("STATE_001", "p", 3000, 1, 1, 1)
+	shadow.IsShadow = true
+	if _, accepted := s.IngestEventWithResult(shadow); accepted {
+		t.Fatal("shadow event reported accepted")
+	}
+}
+
 func TestCorrelationBonusIdempotent(t *testing.T) {
 	s := NewSuspicionScorer(testConfig())
 	s.IngestEvent(ev("MOV_001", "p", 0, 0.5, 0.5, 0.6))    // 15 -> 15

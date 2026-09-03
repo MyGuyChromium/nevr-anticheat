@@ -133,7 +133,8 @@ func TestBio002_SeverityJustAboveLimitIsNotZero(t *testing.T) {
 	var events []model.DetectionEvent
 	for fi := 0; fi < 8; fi++ {
 		ps := active("p1", fi)
-		ps.LeftHandSpeed = 55 // 10% over 50 m/s
+		ps.LeftHandSpeed = 60
+		ps.LeftHandRelativeSpeed = 55 // 10% over 50 m/s
 		events = append(events, d.Evaluate(mc, players(ps), fi)...)
 	}
 	if len(events) < 2 {
@@ -157,8 +158,27 @@ func TestBio002_LegitHandSpeedSilent(t *testing.T) {
 		ps := active("p1", fi)
 		ps.LeftHandSpeed = 12
 		ps.RightHandSpeed = 9
+		ps.LeftHandRelativeSpeed = 10
+		ps.RightHandRelativeSpeed = 7
 		if ev := d.Evaluate(mc, players(ps), fi); len(ev) != 0 {
 			t.Fatalf("legit hand speed fired at frame %d", fi)
+		}
+	}
+}
+
+func TestBio002_WorldTranslationIsNotBiomechanicalEvidence(t *testing.T) {
+	d := NewBio002(nil)
+	mc := ctx()
+	for fi := 0; fi < 12; fi++ {
+		ps := active("p1", fi)
+		ps.Speed = 75
+		ps.LeftHandSpeed = 75
+		ps.RightHandSpeed = 75
+		// Both controllers are stationary relative to the player.
+		ps.LeftHandRelativeSpeed = 0
+		ps.RightHandRelativeSpeed = 0
+		if ev := d.Evaluate(mc, players(ps), fi); len(ev) != 0 {
+			t.Fatalf("body translation produced BIO_002 at frame %d", fi)
 		}
 	}
 }
