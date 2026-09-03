@@ -22,11 +22,17 @@ import (
 
 // BatchResult holds the results of batch analysis.
 type BatchResult struct {
-	TotalFiles     int           `json:"total_files"`
-	IgnoredFiles   int           `json:"ignored_files"` // .json files that are not legacy replays (bridge dumps, exports)
-	Processed      int           `json:"processed"`
-	Skipped        int           `json:"skipped"` // duplicate match in this run, or already stored (no --force)
-	Errors         int           `json:"errors"`
+	TotalFiles   int `json:"total_files"`
+	IgnoredFiles int `json:"ignored_files"` // .json files that are not legacy replays (bridge dumps, exports)
+	Processed    int `json:"processed"`     // analyzed AND fully persisted
+	Skipped      int `json:"skipped"`       // duplicate match in this run, or already stored (no --force)
+	Errors       int `json:"errors"`        // parse/analysis failures plus PersistFailed
+	// PersistFailed counts matches that were analyzed but whose telemetry,
+	// context or derived outputs could not be written (disk full, read-only
+	// or locked database, cancelled context). They are included in Errors
+	// and excluded from Processed so a run that stored nothing never reports
+	// success.
+	PersistFailed  int           `json:"persist_failed"`
 	FlaggedPlayers []string      `json:"flagged_players"`
 	FramesInserted int           `json:"frames_inserted"`
 	FramesIgnored  int           `json:"frames_ignored"`
@@ -144,7 +150,13 @@ func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*Bat
 	go func() {
 		defer writerWg.Done()
 		for pm := range writeCh {
-			ba.persist(ctx, pm, result, &statsMu)
+			if err := ba.persist(ctx, pm, result, &statsMu); err != nil {
+				ba.logger.Error("failed to persist match", "match_id", pm.matchCtx.MatchID, "path", pm.path, "error", err)
+				statsMu.Lock()
+				result.Errors++
+				result.PersistFailed++
+				statsMu.Unlock()
+			}
 		}
 	}()
 
@@ -321,41 +333,56 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 
 // persist writes one analyzed match: source telemetry, context, then derived
 // events and per-match score snapshots. Runs only on the writer goroutine.
-func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *BatchResult, mu *sync.Mutex) {
+// Any store failure is returned (and the match is not counted as processed):
+// a silent failure here would let `batch` report success for a run that
+// stored nothing. Telemetry and context are written before the derived
+// outputs, so a failure part-way leaves source data that reprocess-match can
+// analyze again; the partial match is still reported as failed.
+func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *BatchResult, mu *sync.Mutex) error {
 	matchID := pm.matchCtx.MatchID
 	source := "initial"
 	if pm.replaced {
 		source = "reprocess"
-		if ev, sc, err := ba.store.DeleteMatchAnalysis(ctx, matchID); err != nil {
-			ba.logger.Warn("failed to clear previous analysis", "match_id", matchID, "error", err)
-		} else if ev > 0 || sc > 0 {
-			ba.logger.Info("replaced previous analysis", "match_id", matchID, "events_deleted", ev, "scores_deleted", sc)
-		}
 	}
 
 	tel, err := ba.store.StoreTelemetryFramesWithRaw(ctx, matchID, pm.frames, pm.rawByFrame)
 	if err != nil {
-		ba.logger.Warn("failed to store telemetry", "match_id", matchID, "error", err)
+		return fmt.Errorf("storing telemetry: %w", err)
 	}
 	if err := ba.store.StoreMatchContext(ctx, pm.matchCtx, len(pm.frames)); err != nil {
-		ba.logger.Warn("failed to store match context", "match_id", matchID, "error", err)
+		return fmt.Errorf("storing match context: %w", err)
+	}
+	if pm.replaced {
+		// The previous derived outputs are only cleared once the replacement
+		// is fully analyzed and its source data is stored, immediately before
+		// the new outputs are written.
+		ev, sc, err := ba.store.DeleteMatchAnalysis(ctx, matchID)
+		if err != nil {
+			return fmt.Errorf("clearing previous analysis: %w", err)
+		}
+		if ev > 0 || sc > 0 {
+			ba.logger.Info("replaced previous analysis", "match_id", matchID, "events_deleted", ev, "scores_deleted", sc)
+		}
 	}
 	opts := ba.opts
 	if opts.Logger == nil {
 		opts.Logger = ba.logger
 	}
 	stored, err := StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source, opts)
-	if err != nil {
-		ba.logger.Warn("failed to store analysis", "match_id", matchID, "error", err)
-	}
 
 	mu.Lock()
-	result.Processed++
 	result.FramesInserted += tel.Inserted
 	result.FramesIgnored += tel.Ignored
 	result.EventsStored += stored.EventsStored
-	result.FlaggedPlayers = append(result.FlaggedPlayers, stored.FlaggedPlayers...)
+	if err == nil {
+		result.Processed++
+		result.FlaggedPlayers = append(result.FlaggedPlayers, stored.FlaggedPlayers...)
+	}
 	mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("storing analysis: %w", err)
+	}
+	return nil
 }
 
 // StoredAnalysis reports what StoreMatchAnalysis wrote.
@@ -363,6 +390,7 @@ type StoredAnalysis struct {
 	EventsStored   int
 	ScoresStored   int
 	CasesStored    int
+	CasesClosed    int      // stale pending cases of this match closed (see sqlite.CloseStaleReviewCases)
 	FlaggedPlayers []string // sorted
 }
 
@@ -385,6 +413,13 @@ type AnalysisOptions struct {
 // review.CreateCasesFromResult (also written to result.ReviewCases).
 // Telemetry and context are stored by the caller. Players are processed in
 // sorted order for reproducibility.
+//
+// Cases are upserted under their deterministic ids, so a re-analysis
+// refreshes the cases of players still flagged and keeps any moderator
+// status. Pending cases of this match whose player is no longer flagged are
+// then closed with a close_reason (never deleted) so `flagged` and
+// calibration do not carry a case whose events no longer exist; a later
+// analysis that flags the player again reopens the case.
 //
 // Score snapshots are only written for players that actually scored
 // (TotalScore > 0 with at least one event), matching the live path: a
@@ -426,7 +461,18 @@ func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *mode
 	}
 	sort.Strings(out.FlaggedPlayers)
 	if caseErr != nil {
+		// A case that failed to store keeps its old row; closing it as stale
+		// would hide the failure, so leave every case alone.
 		return out, fmt.Errorf("storing review cases: %w", caseErr)
+	}
+	closed, err := store.CloseStaleReviewCases(ctx, matchCtx.MatchID, out.FlaggedPlayers,
+		fmt.Sprintf("player no longer reaches the review tier after %s analysis", source))
+	if err != nil {
+		return out, fmt.Errorf("closing stale review cases: %w", err)
+	}
+	out.CasesClosed = int(closed)
+	if closed > 0 {
+		logger.Info("closed stale review cases", "match_id", matchCtx.MatchID, "closed", closed, "source", source)
 	}
 	return out, nil
 }
