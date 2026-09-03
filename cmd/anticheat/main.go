@@ -24,6 +24,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/review"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -308,20 +309,32 @@ const rawTickFlushEvery = 500
 func runAnalyze(configPath, replayPath string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
-	ctx := context.Background()
+	if err := analyzeReplay(context.Background(), a, replayPath, force); err != nil {
+		fatal("Error: %v", err)
+	}
+}
 
+// analyzeReplay parses one replay, runs the pipeline and persists telemetry,
+// context and derived outputs. A match that is already stored is left
+// untouched unless force is set; with force the previous analysis is cleared
+// only after the replay has parsed completely and the pipeline has run,
+// immediately before the new outputs are written, so a truncated or corrupt
+// replay (or a pipeline failure) never destroys the analysis it was meant to
+// replace. Any persistence failure is returned so the command exits non-zero.
+func analyzeReplay(ctx context.Context, a *app, replayPath string, force bool) error {
 	// Auto-detect format: .echoreplay (NDJSON/ZIP) vs legacy JSON replay
 	var matchCtx *model.MatchContext
 	var frames []model.PlayerTelemetryFrame
 	var err error
 	source := "initial"
+	replace := false
 	var tel sqlite.TelemetryStoreResult // accumulated telemetry writes
 	rawStored := false
 
-	// prepareMatch runs once the match id is known (first tick for a
-	// streamed .echoreplay, after reading for a legacy replay): skip a stored
-	// match unless --force, in which case the previous analysis is cleared.
-	prepareMatch := func(matchID string) error {
+	// checkMatch runs once the match id is known (first tick for a streamed
+	// .echoreplay, after reading for a legacy replay): a stored match is
+	// skipped unless --force, in which case it is marked for replacement.
+	checkMatch := func(matchID string) error {
 		exists, err := a.store.HasMatch(ctx, matchID)
 		if err != nil {
 			return err
@@ -333,11 +346,12 @@ func runAnalyze(configPath, replayPath string, force bool) {
 			return errMatchAlreadyStored
 		}
 		source = "reprocess"
-		ev, sc, err := a.store.DeleteMatchAnalysis(ctx, matchID)
-		if err != nil {
-			return fmt.Errorf("clearing previous analysis: %w", err)
-		}
-		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n", matchID, ev, sc)
+		replace = true
+		return nil
+	}
+	alreadyStored := func(matchID string) error {
+		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", matchID)
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
 		return nil
 	}
 
@@ -345,7 +359,9 @@ func runAnalyze(configPath, replayPath string, force bool) {
 		// Stream the replay so the raw profiler payloads are written to
 		// match_ticks (once per frame index) in bounded chunks instead of
 		// being held for the whole file. Frames are still accumulated once:
-		// ProcessMatch needs the complete match.
+		// ProcessMatch needs the complete match. match_ticks is source data
+		// with ignore-on-conflict semantics, so writing it before the parse
+		// is known to succeed is harmless.
 		parser := adapter.NewEchoReplayParser()
 		parser.SetPhysics(a.physics())
 		matchID := ""
@@ -371,7 +387,7 @@ func runAnalyze(configPath, replayPath string, force bool) {
 				if matchID == "" {
 					return errors.New("replay has no match id")
 				}
-				if err := prepareMatch(matchID); err != nil {
+				if err := checkMatch(matchID); err != nil {
 					return err
 				}
 			}
@@ -386,15 +402,13 @@ func runAnalyze(configPath, replayPath string, force bool) {
 			return nil
 		})
 		if errors.Is(err, errMatchAlreadyStored) {
-			fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", matchID)
-			fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
-			return
+			return alreadyStored(matchID)
 		}
 		if err != nil {
-			fatal("Error reading echoreplay: %v", err)
+			return fmt.Errorf("reading echoreplay: %w", err)
 		}
 		if err := flush(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to store raw ticks: %v\n", err)
+			return fmt.Errorf("storing raw ticks: %w", err)
 		}
 		matchCtx = mc
 		if matchCtx != nil && matchCtx.Duration == 0 && !lastSample.IsZero() && !matchCtx.StartTime.IsZero() {
@@ -409,55 +423,62 @@ func runAnalyze(configPath, replayPath string, force bool) {
 		reader.SetPhysics(a.physics())
 		matchCtx, frames, err = reader.ReadMatch()
 		if err != nil {
-			fatal("Error reading replay: %v", err)
+			return fmt.Errorf("reading replay: %w", err)
 		}
 		if matchCtx.MatchID == "" {
-			fatal("Error: replay has no match id")
+			return errors.New("replay has no match id")
 		}
-		if err := prepareMatch(matchCtx.MatchID); errors.Is(err, errMatchAlreadyStored) {
-			fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", matchCtx.MatchID)
-			fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
-			return
+		if err := checkMatch(matchCtx.MatchID); errors.Is(err, errMatchAlreadyStored) {
+			return alreadyStored(matchCtx.MatchID)
 		} else if err != nil {
-			fatal("Error: %v", err)
+			return err
 		}
 	}
 	if matchCtx == nil || matchCtx.MatchID == "" {
-		fatal("Error: replay has no match id")
+		return errors.New("replay has no match id")
 	}
 
 	p := a.newPipeline()
 	result, err := p.ProcessMatch(ctx, matchCtx, frames)
 	if err != nil {
-		fatal("Error: %v", err)
+		return err
 	}
 
 	// Persist telemetry and match context so reprocessing doesn't need replay
 	// files (the raw profiler JSON of an .echoreplay was streamed to
 	// match_ticks during parsing).
-	fr, storeErr := a.store.StoreTelemetryFramesWithRaw(ctx, matchCtx.MatchID, frames, nil)
-	if storeErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to store telemetry: %v\n", storeErr)
-	} else {
-		tel.Inserted, tel.Ignored = fr.Inserted, fr.Ignored
-		fmt.Printf("Stored %d telemetry frames (%d already present)", tel.Inserted, tel.Ignored)
-		if rawStored {
-			fmt.Printf(", %d raw ticks (%d already present)", tel.TicksInserted, tel.TicksIgnored)
-		}
-		fmt.Println()
-	}
-	if err := a.store.StoreMatchContext(ctx, matchCtx, len(frames)); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to store match context: %v\n", err)
-	}
-	stored, err := replay.StoreMatchAnalysis(ctx, a.store, matchCtx, result, source, a.analysisOptions())
+	fr, err := a.store.StoreTelemetryFramesWithRaw(ctx, matchCtx.MatchID, frames, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return fmt.Errorf("storing telemetry: %w", err)
 	}
+	tel.Inserted, tel.Ignored = fr.Inserted, fr.Ignored
+	fmt.Printf("Stored %d telemetry frames (%d already present)", tel.Inserted, tel.Ignored)
+	if rawStored {
+		fmt.Printf(", %d raw ticks (%d already present)", tel.TicksInserted, tel.TicksIgnored)
+	}
+	fmt.Println()
+	if err := a.store.StoreMatchContext(ctx, matchCtx, len(frames)); err != nil {
+		return fmt.Errorf("storing match context: %w", err)
+	}
+	if replace {
+		// The replay parsed and the pipeline ran: now, and only now, the
+		// previous derived outputs are replaced.
+		ev, sc, err := a.store.DeleteMatchAnalysis(ctx, matchCtx.MatchID)
+		if err != nil {
+			return fmt.Errorf("clearing previous analysis: %w", err)
+		}
+		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n", matchCtx.MatchID, ev, sc)
+	}
+	stored, storeErr := replay.StoreMatchAnalysis(ctx, a.store, matchCtx, result, source, a.analysisOptions())
 
-	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d\nDuration: %v\n",
+	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d (%d stale closed)\nDuration: %v\n",
 		result.MatchID, result.FramesProcessed, result.InvalidFrames,
-		len(result.DetectionEvents), stored.EventsStored, stored.CasesStored, result.Duration)
+		len(result.DetectionEvents), stored.EventsStored, stored.CasesStored, stored.CasesClosed, result.Duration)
 	printPlayerScores(result.PlayerScores)
+	if storeErr != nil {
+		return fmt.Errorf("storing analysis: %w", storeErr)
+	}
+	return nil
 }
 
 func runBatch(configPath, dir string, force bool) {
@@ -479,12 +500,17 @@ func runBatch(configPath, dir string, force bool) {
 		result.Processed, result.TotalFiles, result.Skipped, result.Errors, result.IgnoredFiles, result.Duration)
 	fmt.Printf("Stored: %d telemetry frames (%d already present), %d detection events, %d players flagged\n",
 		result.FramesInserted, result.FramesIgnored, result.EventsStored, len(result.FlaggedPlayers))
+	if result.PersistFailed > 0 {
+		fmt.Fprintf(os.Stderr, "Error: %d analyzed match(es) could not be persisted (see log); the store may be read-only, locked or full\n",
+			result.PersistFailed)
+	}
 
 	// Post-batch cross-match aggregation: compute cumulative scores across all matches
 	fmt.Println("\nRunning cross-match aggregation...")
 	aggregated, cases := runCrossMatchAggregation(a)
 	fmt.Printf("Cross-match: %d players aggregated, %d review cases\n", aggregated, cases)
 	if result.Errors > 0 {
+		fmt.Fprintf(os.Stderr, "Batch finished with %d error(s)\n", result.Errors)
 		os.Exit(1)
 	}
 }
@@ -822,13 +848,43 @@ func runVerdict(configPath, caseID, verdict, by, notes, action string, detectorS
 		DecidedAt:        time.Now(),
 		DetectorFeedback: feedback,
 	}
-	if err := a.store.StoreModeratorDecision(context.Background(), d); err != nil {
+	rc, err := recordVerdict(context.Background(), a, d)
+	if err != nil {
 		fatal("Error: %v", err)
 	}
-	fmt.Printf("Recorded %s for case %s by %s (case status -> decided)\n", d.Verdict, caseID, by)
+	fmt.Printf("Recorded %s for case %s by %s (case status -> %s)\n", d.Verdict, caseID, by, rc.Status)
 	for _, fb := range feedback {
 		fmt.Printf("  %-12s %s\n", fb.DetectorID, fb.Correct)
 	}
+}
+
+// recordVerdict records a moderator decision through review.Queue.Decide so
+// the case lifecycle applies: a case that is already decided or closed is
+// refused instead of receiving a second decision that calibration would count
+// as another reviewed case. Cross-match cases (XM-<player>) are not in the
+// queue's case table; they are decided directly through the store, which
+// applies the same decided/closed guard.
+func recordVerdict(ctx context.Context, a *app, d model.ModeratorDecision) (model.ReviewCase, error) {
+	q := review.NewQueue(a.store, logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat))
+	q.SetLevels(a.levels())
+	rc, err := q.Decide(ctx, d)
+	if err == nil {
+		return rc, nil
+	}
+	if errors.Is(err, review.ErrInvalidTransition) {
+		return rc, fmt.Errorf("case %s is %s and cannot receive another verdict (an appeal must reopen it first)", d.CaseID, rc.Status)
+	}
+	// Not a single-match case: try the cross-match table.
+	if xm, xmErr := a.store.GetCrossMatchReviewCase(ctx, d.CaseID); xmErr == nil {
+		if sErr := a.store.StoreModeratorDecision(ctx, d); sErr != nil {
+			if errors.Is(sErr, sqlite.ErrCaseNotDecidable) {
+				return rc, fmt.Errorf("case %s is %s and cannot receive another verdict", d.CaseID, xm.Status)
+			}
+			return rc, sErr
+		}
+		return model.ReviewCase{CaseID: xm.CaseID, PlayerID: xm.PlayerID, Status: model.CaseStatusDecided}, nil
+	}
+	return rc, err
 }
 
 // parseWindow parses "30d", "12h", "90m" or any time.ParseDuration string.
@@ -887,10 +943,13 @@ func runCalibrationReport(configPath, sinceSpec string) {
 	fmt.Println("  Explicit --detector feedback overrides the case verdict for that detector.")
 }
 
-// reprocessMatchFromDB loads telemetry from the database and re-runs the detection pipeline.
-// It deletes existing detection events and per-match score snapshots for this
-// match first so reprocessing is idempotent (review cases are upserted under
-// their deterministic ids and keep any moderator status).
+// reprocessMatchFromDB loads telemetry from the database and re-runs the
+// detection pipeline. The previous detection events and per-match score
+// snapshots are deleted only after the pipeline has run, immediately before
+// the new outputs are stored, so a pipeline failure leaves the old analysis
+// in place. Review cases are upserted under their deterministic ids and keep
+// any moderator status; pending cases of players the new run no longer flags
+// are closed as stale (replay.StoreMatchAnalysis).
 func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, matchID string) (*pipeline.MatchResult, error) {
 	store := a.store
 	matchCtx, err := store.GetMatchContext(ctx, matchID)
@@ -910,6 +969,11 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 		return nil, fmt.Errorf("no telemetry frames stored for match %s", matchID)
 	}
 
+	result, err := p.ProcessMatch(ctx, matchCtx, frames)
+	if err != nil {
+		return nil, err
+	}
+
 	deletedEvents, deletedScores, err := store.DeleteMatchAnalysis(ctx, matchID)
 	if err != nil {
 		return nil, fmt.Errorf("clearing old analysis: %w", err)
@@ -917,13 +981,12 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 	if deletedEvents > 0 || deletedScores > 0 {
 		fmt.Printf("  Cleared %d old events and %d score snapshots for match %s\n", deletedEvents, deletedScores, matchID)
 	}
-
-	result, err := p.ProcessMatch(ctx, matchCtx, frames)
+	stored, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions())
 	if err != nil {
 		return nil, err
 	}
-	if _, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions()); err != nil {
-		return nil, err
+	if stored.CasesClosed > 0 {
+		fmt.Printf("  Closed %d stale review case(s) for match %s\n", stored.CasesClosed, matchID)
 	}
 	return result, nil
 }
