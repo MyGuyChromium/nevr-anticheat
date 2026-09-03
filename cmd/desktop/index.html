@@ -238,6 +238,173 @@
     *, ::before, ::after { transition: none !important; animation: none !important; }
     .bar.wait > i { width: 100%; opacity: .45; }
   }
+
+  /* Sharplink-inspired operations console: disciplined navy, electric blue,
+     oversized type and visible system state, without external assets. */
+  :root {
+    color-scheme: dark;
+    --bg: #050b13; --ink: #f3f6fb; --ink-2: #c1ccda; --muted: #77869a;
+    --line: rgba(168, 190, 220, .14); --line-2: rgba(168, 190, 220, .28);
+    --accent: #0e76ff; --accent-ink: #ffffff; --accent-bg: rgba(14, 118, 255, .13);
+    --blue: #4d9bff; --blue-bg: rgba(14, 118, 255, .15);
+    --orange: #ff9b59; --orange-bg: rgba(255, 126, 45, .14);
+    --ok: #53e3a6; --ok-bg: rgba(45, 204, 143, .12);
+    --warn: #ffd36a; --warn-bg: rgba(255, 199, 74, .12);
+    --hot: #ff9158; --hot-bg: rgba(255, 116, 52, .13);
+    --bad: #ff6b76; --bad-bg: rgba(255, 76, 91, .12);
+    --neutral-bg: rgba(170, 191, 219, .08); --code-bg: rgba(3, 8, 15, .68); --sk: rgba(156, 181, 213, .09);
+    --panel: rgba(10, 20, 34, .86); --panel-solid: #0b1625;
+  }
+  html { background: var(--bg); scroll-behavior: smooth; }
+  body {
+    min-height: 100vh; overflow-x: hidden;
+    background:
+      radial-gradient(circle at 78% 6%, rgba(14,118,255,.23), transparent 32rem),
+      radial-gradient(circle at 15% 48%, rgba(9,67,143,.13), transparent 28rem),
+      linear-gradient(180deg, #050b13 0%, #07111e 52%, #050b13 100%);
+    color: var(--ink); font-family: Arial, "Segoe UI", sans-serif;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .25;
+    background-image: linear-gradient(rgba(132,167,207,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(132,167,207,.08) 1px, transparent 1px);
+    background-size: 64px 64px; mask-image: linear-gradient(to bottom, #000, transparent 78%);
+  }
+  .wrap { width: min(100%, 1440px); max-width: none; margin: 0 auto; padding-inline: clamp(24px, 4vw, 64px); }
+  a { color: #76b3ff; text-decoration-thickness: 1px; }
+  code { background: rgba(120,158,205,.1); border: 1px solid rgba(148,181,220,.12); padding: 2px 5px; border-radius: 0; }
+  :focus-visible { outline-color: #62a8ff; outline-offset: 4px; border-radius: 0; }
+
+  .top {
+    position: sticky; top: 0; z-index: 40; border-bottom: 1px solid var(--line);
+    background: rgba(5,11,19,.82); backdrop-filter: blur(20px) saturate(135%);
+  }
+  .top .wrap { min-height: 78px; height: auto; gap: 28px; }
+  .brand-lockup { display: flex; align-items: center; gap: 14px; }
+  .brand-glyph { position: relative; display: grid; place-items: center; width: 34px; height: 34px; transform: skewY(-10deg); }
+  .brand-glyph i { position: absolute; width: 23px; height: 7px; border: 2px solid #fff; transform: rotate(-30deg); }
+  .brand-glyph i:nth-child(1) { translate: 0 -8px; border-color: var(--accent); }
+  .brand-glyph i:nth-child(2) { translate: 0 0; }
+  .brand-glyph i:nth-child(3) { translate: 0 8px; opacity: .52; }
+  .wordmark { font-size: 17px; font-weight: 800; letter-spacing: -.035em; line-height: 1; }
+  .wordmark span { color: var(--accent); font-weight: 800; padding-inline: 3px; }
+  .tagline { display: block; margin-top: 6px; color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+  .connection { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line); font: 9px/1 var(--mono); letter-spacing: .11em; color: var(--muted); }
+  .connection i, .console-top b i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 16px var(--ok); }
+  .connection b { color: var(--ok); }
+  .connection.offline i { background: var(--bad); box-shadow: 0 0 16px var(--bad); }
+  .connection.offline b { color: var(--bad); }
+
+  .btn {
+    border: 1px solid var(--line-2); border-radius: 0; padding: 9px 14px; background: rgba(9,19,33,.72);
+    color: var(--ink); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase;
+    transition: border-color .18s, background .18s, color .18s, transform .18s;
+  }
+  .btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; transform: translateY(-1px); text-decoration: none; }
+  .btn-text { color: #73b1ff; background: transparent; border-color: transparent; }
+  .btn-text:hover { background: transparent; color: #fff; border-color: transparent; }
+  .btn-sm { font-size: 9px; padding: 6px 9px; }
+  .quit-btn span { color: var(--accent); margin-left: 8px; }
+
+  .offline-banner { position: sticky; top: 78px; z-index: 39; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px clamp(24px, 4vw, 64px); background: #7e1827; border-bottom: 1px solid #ff7281; box-shadow: 0 14px 40px rgba(0,0,0,.35); }
+  .offline-banner[hidden] { display: none; }
+  .offline-banner div { display: flex; gap: 14px; align-items: baseline; }
+  .offline-banner strong { text-transform: uppercase; letter-spacing: .06em; }
+  .offline-banner span { color: #ffdbe0; }
+  .offline-banner code { color: #fff; }
+
+  main { padding: 0 0 120px; }
+  .block { padding: clamp(58px, 8vw, 104px) 0; border-top: 1px solid var(--line); }
+  .block:first-child { padding-top: clamp(52px, 7vw, 96px); }
+  .section-kicker { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; color: #9eb1c8; font: 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .section-kicker::after { content: ""; width: 72px; height: 1px; background: var(--accent); opacity: .7; }
+  .section-kicker span { color: var(--accent); }
+  h2 { margin-bottom: 30px; font-size: clamp(30px, 4vw, 54px); line-height: .96; font-weight: 500; letter-spacing: -.055em; }
+  h3 { color: #94a5bb; }
+
+  .hero { min-height: calc(100vh - 78px); display: flex; flex-direction: column; justify-content: center; }
+  .hero-grid { display: grid; grid-template-columns: minmax(0,.92fr) minmax(480px,1.08fr); align-items: stretch; gap: clamp(42px, 7vw, 112px); }
+  .hero-copy { align-self: center; }
+  .hero-copy h2 { margin: 0; font-size: clamp(56px, 7vw, 108px); line-height: .84; letter-spacing: -.075em; font-weight: 500; }
+  .hero-copy h2 span { color: #7091ba; }
+  .hero-deck { max-width: 580px; margin: 36px 0 0; color: #b3c0d1; font-size: clamp(17px, 1.5vw, 22px); line-height: 1.4; letter-spacing: -.02em; }
+  .protocol-grid { display: grid; grid-template-columns: repeat(3,1fr); max-width: 620px; margin-top: 52px; border-top: 1px solid var(--line); }
+  .protocol-grid div { padding: 18px 14px 0 0; border-right: 1px solid var(--line); }
+  .protocol-grid div + div { padding-left: 18px; }
+  .protocol-grid b { display: block; color: #fff; font: 18px/1 var(--mono); letter-spacing: -.04em; }
+  .protocol-grid span { display: block; margin-top: 8px; color: var(--muted); font: 9px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+
+  .upload-console { position: relative; padding: clamp(18px, 2.5vw, 34px); border: 1px solid rgba(118,174,244,.3); background: linear-gradient(145deg,rgba(13,29,50,.95),rgba(5,13,23,.92)); box-shadow: 0 36px 100px rgba(0,0,0,.44), inset 0 1px 0 rgba(255,255,255,.03); }
+  .upload-console::before { content: ""; position: absolute; inset: -1px; pointer-events: none; background: linear-gradient(115deg,rgba(14,118,255,.25),transparent 35%); opacity: .5; }
+  .console-top { position: relative; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; color: var(--muted); font: 9px/1 var(--mono); letter-spacing: .15em; }
+  .console-top b { display: flex; align-items: center; gap: 7px; color: var(--ok); font-weight: 600; }
+  .drop { position: relative; min-height: 280px; padding: 34px; border: 1px dashed rgba(123,169,226,.36); border-radius: 0; background: rgba(3,9,17,.48); text-align: left; justify-content: flex-end; overflow: hidden; }
+  .drop::before { content: "DROP ZONE"; position: absolute; top: 20px; left: 22px; color: rgba(147,177,214,.36); font: 9px/1 var(--mono); letter-spacing: .18em; }
+  .drop::after { content: ""; position: absolute; width: 230px; height: 230px; right: -85px; top: -80px; border: 1px solid rgba(49,132,237,.32); border-radius: 50%; box-shadow: 0 0 0 35px rgba(49,132,237,.04), 0 0 0 70px rgba(49,132,237,.025); }
+  .drop:hover { border-color: var(--accent); background: rgba(9,31,59,.62); }
+  .drop.over { border-style: solid; border-color: #67aaff; background: rgba(14,118,255,.14); }
+  .drop-mark { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 25px; background: var(--accent); color: #fff; font-size: 25px; }
+  .drop .lead { font-size: clamp(21px, 2.2vw, 31px); font-weight: 500; letter-spacing: -.035em; }
+  .drop .sub { margin-top: 11px; color: #8394aa; font: 11px/1.5 var(--mono); letter-spacing: .03em; }
+  .drop .sub a { color: #87bcff; }
+  .drop.busy { justify-content: flex-start; }
+  .drop.busy::after { opacity: .25; }
+  .controls { position: relative; margin-top: 20px; }
+  .check input { width: 17px; height: 17px; border-radius: 0; }
+  .check label { font-size: 12px; letter-spacing: .02em; }
+  .help { max-width: 48ch; color: #718197; font-size: 11px; }
+  .status { position: relative; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); font: 10px/1.5 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+
+  .panel { min-height: 108px; overflow-x: auto; padding: 22px; border: 1px solid var(--line); background: linear-gradient(145deg,rgba(11,24,41,.88),rgba(7,15,26,.8)); }
+  .panel.status { padding: 20px; }
+  .empty { color: #718197; }
+  table { font-size: 12px; }
+  th, td { padding: 12px 18px 12px 0; border-bottom-color: rgba(158,184,216,.1); }
+  thead th { top: 0; color: #73849a; background: var(--panel-solid); border-bottom-color: rgba(146,183,230,.24); font-family: var(--mono); font-size: 9px; letter-spacing: .11em; }
+  tbody tr { transition: background .15s; }
+  tbody tr:hover { background: rgba(14,118,255,.055); }
+  .tag, .lvl, .team { border-radius: 0; border: 1px solid currentColor; background: transparent; font-family: var(--mono); font-size: 9px; letter-spacing: .08em; }
+  .bar { border-radius: 0; }
+
+  .match, .fail { margin-top: 18px; padding: 26px; border: 1px solid var(--line); background: rgba(8,18,31,.76); }
+  .match:first-child, .fail:first-child { border-top: 1px solid var(--line); }
+  .match > summary { gap: 18px; }
+  .mtitle { font-size: 21px; }
+  .score .pts { font: 30px/1 var(--mono); }
+  .notice { background: var(--warn-bg); padding: 10px 14px; }
+  .team-card { border-radius: 0; padding: 20px; background: rgba(5,13,23,.58); }
+  .team-card.blue { border-top-width: 1px; box-shadow: inset 0 3px 0 var(--blue); }
+  .team-card.orange { border-top-width: 1px; box-shadow: inset 0 3px 0 var(--orange); }
+  .report-actions .btn { background: rgba(8,19,33,.8); }
+  pre { border: 1px solid var(--line); border-radius: 0; }
+  .flash { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { box-shadow: 0 0 0 1px var(--accent), 0 0 50px var(--accent-bg); } to { box-shadow: none; } }
+  .skeleton .sk { border-radius: 0; background: linear-gradient(90deg,var(--sk),rgba(119,157,203,.17),var(--sk)); background-size: 220% 100%; animation: shimmer 1.6s linear infinite; }
+  @keyframes shimmer { to { background-position: -220% 0; } }
+  .stopped { min-height: calc(100vh - 78px); display: grid; place-content: center; text-align: center; }
+
+  @media (max-width: 1060px) {
+    .hero { min-height: auto; }
+    .hero-grid { grid-template-columns: 1fr; }
+    .hero-copy h2 { font-size: clamp(60px, 12vw, 100px); }
+    .hero-deck { max-width: 720px; }
+    .upload-console { max-width: 780px; }
+  }
+  @media (max-width: 720px) {
+    .top .wrap { min-height: 68px; }
+    .tagline, .connection span { display: none; }
+    .connection { padding: 7px; }
+    .quit-btn { padding: 8px 10px; }
+    .offline-banner { top: 68px; align-items: flex-start; }
+    .offline-banner div { display: grid; gap: 5px; }
+    .hero-copy h2 { font-size: clamp(48px, 16vw, 76px); }
+    .protocol-grid { grid-template-columns: 1fr; }
+    .protocol-grid div { padding: 14px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+    .protocol-grid div + div { padding-left: 0; }
+    .upload-console { padding: 15px; }
+    .drop { min-height: 240px; padding: 24px; }
+    .panel { padding: 14px; }
+    .match, .fail { padding: 18px; }
+  }
   @media print {
     body { background: #fff; color: #000; font-size: 11px; }
     .top .btn, .upload, .btn, .status, .tog { display: none !important; }
@@ -250,49 +417,75 @@
 <body>
 <header class="top">
   <div class="wrap">
-    <h1 class="wordmark">NEVR<span>-</span>Anticheat</h1>
-    <span class="tagline">Offline replay analysis. Local only, on 127.0.0.1.</span>
+    <div class="brand-lockup">
+      <span class="brand-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div><h1 class="wordmark">NEVR<span>/</span>ANTICHEAT</h1><span class="tagline">Replay intelligence console</span></div>
+    </div>
     <span class="spacer"></span>
-    <button id="quit" class="btn" title="Stop the desktop app">Quit</button>
+    <div id="connection" class="connection online" role="status"><i></i><span>LOCAL ENGINE</span><b>ONLINE</b></div>
+    <button id="quit" class="btn quit-btn" title="Stop the desktop app">Quit session <span aria-hidden="true">↗</span></button>
   </div>
 </header>
+<div id="offline-banner" class="offline-banner" hidden>
+  <div><strong>Analysis engine disconnected.</strong><span>This browser tab is no longer connected to its local NEVR process. Relaunch <code>nevr-desktop.exe</code>, then use the new window it opens.</span></div>
+  <button id="retry" class="btn">Retry connection</button>
+</div>
 <main class="wrap">
-  <section class="block upload" aria-labelledby="h-upload">
-    <h2 id="h-upload">Analyze replays</h2>
-    <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
-      <input id="files" type="file" multiple accept=".echoreplay,.json">
-      <div id="drop-idle">
-        <div class="lead">Drop <code>.echoreplay</code> files here, or <a href="#" id="pick">choose files</a></div>
-        <div class="sub" id="drop-sub">Each file is stored in the database and run through every detector, exactly like <code>nevr-ac analyze</code>.</div>
-      </div>
-    </div>
-    <div class="controls">
-      <div class="check">
-        <input type="checkbox" id="force">
-        <div>
-          <label for="force">Re-analyze matches that are already stored</label>
-          <p class="help">Equivalent to <code>--force</code>: a match already in the database is analyzed again and its detection events and scores are replaced. Otherwise a stored match is skipped.</p>
+  <section class="block upload hero" aria-labelledby="h-upload">
+    <div class="section-kicker"><span>01</span> Replay intelligence</div>
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <h2 id="h-upload">Every movement.<br><span>Under review.</span></h2>
+        <p class="hero-deck">Turn an Echo VR recording into a defensible, frame-level investigation—locally, privately, and without automatic punishment.</p>
+        <div class="protocol-grid" aria-label="Analysis guarantees">
+          <div><b>29</b><span>detectors observed</span></div>
+          <div><b>0</b><span>automatic actions</span></div>
+          <div><b>127.0.0.1</b><span>local-only surface</span></div>
         </div>
       </div>
-      <button id="clear" class="btn btn-text" hidden>Clear results</button>
+      <div class="upload-console">
+        <div class="console-top"><span>LOCAL ANALYSIS PORT</span><b><i></i> READY</b></div>
+        <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
+          <input id="files" type="file" multiple accept=".echoreplay,.json">
+          <div id="drop-idle">
+            <span class="drop-mark" aria-hidden="true">↗</span>
+            <div class="lead">Drop <code>.echoreplay</code> files</div>
+            <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · up to 200 MB per batch</div>
+          </div>
+        </div>
+        <div class="controls">
+          <div class="check">
+            <input type="checkbox" id="force">
+            <div>
+              <label for="force">Re-analyze stored matches</label>
+              <p class="help">Replaces earlier derived events and scores. Source telemetry remains preserved.</p>
+            </div>
+          </div>
+          <button id="clear" class="btn btn-text" hidden>Clear results</button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Engine ready. Waiting for a replay.</p>
+      </div>
     </div>
-    <p id="status" class="status" role="status" aria-live="polite">Waiting for files.</p>
   </section>
 
   <section id="results-block" class="block" aria-labelledby="h-results" hidden>
+    <div class="section-kicker"><span>02</span> Investigation output</div>
     <h2 id="h-results">Results</h2>
     <div id="results"></div>
   </section>
 
   <section class="block" aria-labelledby="h-flagged">
+    <div class="section-kicker"><span>03</span> Human review queue</div>
     <h2 id="h-flagged">Flagged players</h2>
     <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-observations">
+    <div class="section-kicker"><span>04</span> Calibration signals</div>
     <h2 id="h-observations">Detector observations</h2>
     <div id="observations" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div><div class="sk" style="width:54%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-history">
+    <div class="section-kicker"><span>05</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
   </section>
@@ -302,6 +495,14 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
+  let intentionallyStopped = false;
+  function setConnectionState(online) {
+    const el = $('connection');
+    el.classList.toggle('online', online);
+    el.classList.toggle('offline', !online);
+    el.querySelector('b').textContent = online ? 'ONLINE' : 'OFFLINE';
+    $('offline-banner').hidden = online;
+  }
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const intFmt = new Intl.NumberFormat();
@@ -352,10 +553,26 @@
 
   const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
   async function getJSON(url) {
-    const r = await fetch(url, { cache: 'no-store' });
+    let r;
+    try {
+      r = await fetch(url, { cache: 'no-store' });
+    } catch (_) {
+      setConnectionState(false);
+      throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
+    }
+    setConnectionState(true);
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
     return body;
+  }
+  async function probeConnection() {
+    if (intentionallyStopped) return;
+    try {
+      await fetch('', { method: 'HEAD', cache: 'no-store' });
+      setConnectionState(true);
+    } catch (_) {
+      setConnectionState(false);
+    }
   }
 
   // ---- match sections ------------------------------------------------------
@@ -625,8 +842,9 @@
       if (err) setStatus(`Upload failed: ${err}`, 'err');
       refreshPanels();
     };
-    xhr.onerror = () => finish('the app did not answer (is it still running?)');
+    xhr.onerror = () => { setConnectionState(false); finish('the local engine disconnected. Relaunch nevr-desktop.exe and use its new window.'); };
     xhr.onload = () => {
+      setConnectionState(true);
       const body = xhr.response || {};
       if (xhr.status !== 200 || !Array.isArray(body.results)) return finish(body.error || `${xhr.status} ${xhr.statusText}`);
       // A file holds one match, or several after a rematch (res.matches);
@@ -669,7 +887,7 @@
   });
 
   // ---- panels ---------------------------------------------------------------
-  function panelError(el, what, e) { el.className = 'status err'; el.textContent = `Could not load ${what}: ${e.message}`; }
+  function panelError(el, what, e) { el.className = 'panel status err'; el.textContent = `Could not load ${what}: ${e.message}`; }
   async function loadFlagged() {
     const el = $('flagged');
     try {
@@ -757,9 +975,15 @@
 
   $('quit').addEventListener('click', async () => {
     if (!confirm('Stop the NEVR-Anticheat desktop app?')) return;
+    intentionallyStopped = true;
     try { await fetch('quit'); } catch (_) {}
     document.querySelector('main').innerHTML = '<section class="stopped"><h2>NEVR-Anticheat has stopped.</h2><p class="muted">You can close this tab.</p></section>';
     $('quit').disabled = true;
+  });
+  $('retry').addEventListener('click', () => {
+    $('retry').disabled = true;
+    refreshPanels();
+    setTimeout(() => { $('retry').disabled = false; }, 800);
   });
 
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
@@ -767,6 +991,7 @@
 
   function refreshPanels() { loadFlagged(); loadObservations(); loadHistory(); }
   refreshPanels();
+  setInterval(probeConnection, 5000);
 })();
 </script>
 </body>
