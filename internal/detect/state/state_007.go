@@ -260,9 +260,15 @@ func (d *State007) evaluatePunch(matchCtx *model.MatchContext, p pendingPunch, v
 		"incident_count":          float64(d.incidents[p.pid]),
 		"excess":                  excess,
 		"punch_frame":             float64(p.frame),
+		"resolved_frame":          float64(frameIdx),
 	}
 
-	ev := d.MakeEvent(matchCtx, p.pid, frameIdx, p.timestamp,
+	// The event belongs to the PUNCH frame: FrameIndex and Timestamp are
+	// both taken from the frame on which the stat incremented, so frame-
+	// and time-indexed consumers agree. Attribution may complete up to
+	// attribution_window_frames later; that frame is the causal range end
+	// and resolved_frame.
+	ev := d.MakeEvent(matchCtx, p.pid, p.frame, p.timestamp,
 		severity, confidence,
 		model.StateEvidence{
 			DetectorSpecific: "punch_range",

@@ -206,6 +206,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Position = model.Vec3{0, 1.6, 0}
+				ps.LastTimestamp = 49 * 0.067 // MOV_002 compares on elapsed telemetry time
 				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 49)
 				return d
 			}(),
@@ -213,6 +214,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.Position = model.Vec3{10, 1.6, 0} // 10m teleport (cheat range, under 12m game-event guard)
+				ps.LastTimestamp = 50 * 0.067
 				return mc, map[string]*model.PlayerState{"p1": ps}, 50
 			},
 			wantEvents: true,
@@ -552,16 +554,20 @@ func TestDetectors(t *testing.T) {
 			name:     "BIO_002/clear_violation",
 			category: "clear_violation",
 			detector: func() detect.Detector {
-				// BIO_002 requires minViolationFrames(2) consecutive frames above threshold(50 m/s).
+				// BIO_002 requires min_violation_frames consecutive frames above
+				// threshold (50 m/s); the code floors it at 3 (a one-frame glitch
+				// is an out-and-back pair). Pre-seed two frames, fire on the third.
 				d := bio.NewBio002(nil)
 				dc := cfg.GetDetectorConfig("BIO_002")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
-				ps := testutil.NewPlayerState("p1")
-				ps.FrameDt = 0.067
-				ps.RightHandSpeed = 150.0 // impossibly fast hand
-				ps.LeftHandSpeed = 5.0
-				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 99)
+				for fi := 98; fi <= 99; fi++ {
+					ps := testutil.NewPlayerState("p1")
+					ps.FrameDt = 0.067
+					ps.RightHandSpeed = 150.0 // impossibly fast hand
+					ps.LeftHandSpeed = 5.0
+					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
+				}
 				return d
 			}(),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
@@ -755,6 +761,10 @@ func TestDetectors(t *testing.T) {
 				dc := cfg.GetDetectorConfig("STATE_002")
 				_ = d.Configure(dc.Params)
 				mc := testutil.NewMatchContext()
+				// An unstunned observation first: STATE_002 only measures a
+				// stun whose start it saw as a false -> true transition.
+				ps0 := testutil.NewPlayerState("p1")
+				d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps0}, 9)
 				// First short stun: frames 10-14 (5 frames, way under 30)
 				for i := 10; i < 15; i++ {
 					ps := testutil.NewPlayerState("p1")

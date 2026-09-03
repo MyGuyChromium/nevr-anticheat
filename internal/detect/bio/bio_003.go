@@ -26,8 +26,8 @@ type Bio003 struct {
 	leftHandRelHistory   map[string][]model.Vec3
 	rightHandRelHistory  map[string][]model.Vec3
 	activeHistory        map[string][]bool
-	consecutiveZeroLeft  map[string]int
-	consecutiveZeroRight map[string]int
+	consecutiveZeroLeft  map[string]*windowRun
+	consecutiveZeroRight map[string]*windowRun
 }
 
 // NewBio003 creates a new BIO_003 Zero Hand Jitter detector.
@@ -51,8 +51,8 @@ func NewBio003(params map[string]any) *Bio003 {
 		leftHandRelHistory:    make(map[string][]model.Vec3),
 		rightHandRelHistory:   make(map[string][]model.Vec3),
 		activeHistory:         make(map[string][]bool),
-		consecutiveZeroLeft:   make(map[string]int),
-		consecutiveZeroRight:  make(map[string]int),
+		consecutiveZeroLeft:   make(map[string]*windowRun),
+		consecutiveZeroRight:  make(map[string]*windowRun),
 	}
 	d.sanitize()
 	return d
@@ -74,8 +74,8 @@ func (d *Bio003) Reset() {
 	d.leftHandRelHistory = make(map[string][]model.Vec3)
 	d.rightHandRelHistory = make(map[string][]model.Vec3)
 	d.activeHistory = make(map[string][]bool)
-	d.consecutiveZeroLeft = make(map[string]int)
-	d.consecutiveZeroRight = make(map[string]int)
+	d.consecutiveZeroLeft = make(map[string]*windowRun)
+	d.consecutiveZeroRight = make(map[string]*windowRun)
 }
 
 func (d *Bio003) Configure(params map[string]any) error {
@@ -97,14 +97,14 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// A zero hand vector is tracking loss, not a hand at the arena
 		// origin: drop that hand's window rather than measuring it.
 		if ps.LeftHand.IsZero() {
-			d.leftHandRelHistory[pid] = nil
+			d.dropHand(pid, "left")
 		} else {
 			leftHist := d.leftHandRelHistory[pid]
 			model.PushVec3History(&leftHist, ps.LeftHand.Sub(ps.Position), d.jitterWindowFrames)
 			d.leftHandRelHistory[pid] = leftHist
 		}
 		if ps.RightHand.IsZero() {
-			d.rightHandRelHistory[pid] = nil
+			d.dropHand(pid, "right")
 		} else {
 			rightHist := d.rightHandRelHistory[pid]
 			model.PushVec3History(&rightHist, ps.RightHand.Sub(ps.Position), d.jitterWindowFrames)
@@ -119,6 +119,10 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		d.activeHistory[pid] = actHist
 		activeInWindow := countTrue(actHist)
 		if activeInWindow < d.minActiveFrames {
+			// Gate closed: nothing is measured, so no window counted while
+			// it stays closed can be "consecutive" with an earlier one.
+			getRun(d.consecutiveZeroLeft, pid).reset()
+			getRun(d.consecutiveZeroRight, pid).reset()
 			continue
 		}
 
@@ -147,19 +151,15 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 			// Track consecutive windows of zero jitter per hand.
 			// A single zero-jitter window is normal (coasting). Multiple
-			// consecutive windows indicate synthetic/bot input.
-			consecutiveMap := d.consecutiveZeroLeft
+			// consecutive windows indicate synthetic/bot input. windowRun
+			// restarts the count unless this window ends exactly one
+			// window after the last counted one (see common.go).
+			run := getRun(d.consecutiveZeroLeft, pid)
 			if h.name == "right" {
-				consecutiveMap = d.consecutiveZeroRight
+				run = getRun(d.consecutiveZeroRight, pid)
 			}
 
-			if variance < d.maxJitterVariance {
-				consecutiveMap[pid]++
-			} else {
-				consecutiveMap[pid] = 0
-			}
-
-			if consecutiveMap[pid] < d.minConsecutiveWindows {
+			if run.add(frameIdx, d.jitterWindowFrames, variance < d.maxJitterVariance) < d.minConsecutiveWindows {
 				// Start a fresh window for this hand, but don't fire
 				d.clearHand(pid, h.name)
 				continue
@@ -191,7 +191,7 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			events = append(events, ev)
 
 			// Reset after firing
-			consecutiveMap[pid] = 0
+			run.reset()
 			d.clearHand(pid, h.name)
 		}
 	}
@@ -199,10 +199,22 @@ func (d *Bio003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 	return events
 }
 
+// clearHand starts a fresh window for one hand (the run continues if the
+// next full window ends exactly one window later).
 func (d *Bio003) clearHand(pid, hand string) {
 	if hand == "left" {
 		d.leftHandRelHistory[pid] = nil
 	} else {
 		d.rightHandRelHistory[pid] = nil
+	}
+}
+
+// dropHand discards one hand's window for tracking loss and breaks its run.
+func (d *Bio003) dropHand(pid, hand string) {
+	d.clearHand(pid, hand)
+	if hand == "left" {
+		getRun(d.consecutiveZeroLeft, pid).reset()
+	} else {
+		getRun(d.consecutiveZeroRight, pid).reset()
 	}
 }

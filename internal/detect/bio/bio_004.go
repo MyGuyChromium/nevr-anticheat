@@ -21,8 +21,8 @@ type Bio004 struct {
 	leftHandRotHistory   map[string][]model.Quat
 	rightHandRotHistory  map[string][]model.Quat
 	activeHistory        map[string][]bool
-	consecutiveZeroLeft  map[string]int
-	consecutiveZeroRight map[string]int
+	consecutiveZeroLeft  map[string]*windowRun
+	consecutiveZeroRight map[string]*windowRun
 }
 
 // NewBio004 creates a new BIO_004 Zero Aim Wobble detector.
@@ -46,8 +46,8 @@ func NewBio004(params map[string]any) *Bio004 {
 		leftHandRotHistory:    make(map[string][]model.Quat),
 		rightHandRotHistory:   make(map[string][]model.Quat),
 		activeHistory:         make(map[string][]bool),
-		consecutiveZeroLeft:   make(map[string]int),
-		consecutiveZeroRight:  make(map[string]int),
+		consecutiveZeroLeft:   make(map[string]*windowRun),
+		consecutiveZeroRight:  make(map[string]*windowRun),
 	}
 	d.sanitize()
 	return d
@@ -69,8 +69,8 @@ func (d *Bio004) Reset() {
 	d.leftHandRotHistory = make(map[string][]model.Quat)
 	d.rightHandRotHistory = make(map[string][]model.Quat)
 	d.activeHistory = make(map[string][]bool)
-	d.consecutiveZeroLeft = make(map[string]int)
-	d.consecutiveZeroRight = make(map[string]int)
+	d.consecutiveZeroLeft = make(map[string]*windowRun)
+	d.consecutiveZeroRight = make(map[string]*windowRun)
 }
 
 func (d *Bio004) Configure(params map[string]any) error {
@@ -92,14 +92,14 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// A non-unit hand rotation means no rotation data for that hand
 		// this frame; break that hand's window instead of measuring it.
 		if !ps.LeftHandRot.IsUnit() {
-			d.leftHandRotHistory[pid] = nil
+			d.dropHand(pid, "left")
 		} else {
 			leftHist := d.leftHandRotHistory[pid]
 			model.PushQuatHistory(&leftHist, ps.LeftHandRot, d.wobbleWindowFrames)
 			d.leftHandRotHistory[pid] = leftHist
 		}
 		if !ps.RightHandRot.IsUnit() {
-			d.rightHandRotHistory[pid] = nil
+			d.dropHand(pid, "right")
 		} else {
 			rightHist := d.rightHandRotHistory[pid]
 			model.PushQuatHistory(&rightHist, ps.RightHandRot, d.wobbleWindowFrames)
@@ -114,6 +114,10 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		d.activeHistory[pid] = actHist
 		activeInWindow := countTrue(actHist)
 		if activeInWindow < d.minActiveFrames {
+			// Gate closed: nothing is measured, so no window counted while
+			// it stays closed can be "consecutive" with an earlier one.
+			getRun(d.consecutiveZeroLeft, pid).reset()
+			getRun(d.consecutiveZeroRight, pid).reset()
 			continue
 		}
 
@@ -139,18 +143,15 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 				continue
 			}
 
-			consecutiveMap := d.consecutiveZeroLeft
+			// Consecutive zero-wobble windows per hand; windowRun restarts
+			// the count unless this window ends exactly one window after
+			// the last counted one (see common.go).
+			run := getRun(d.consecutiveZeroLeft, pid)
 			if h.name == "right" {
-				consecutiveMap = d.consecutiveZeroRight
+				run = getRun(d.consecutiveZeroRight, pid)
 			}
 
-			if variance < d.maxWobbleVariance {
-				consecutiveMap[pid]++
-			} else {
-				consecutiveMap[pid] = 0
-			}
-
-			if consecutiveMap[pid] < d.minConsecutiveWindows {
+			if run.add(frameIdx, d.wobbleWindowFrames, variance < d.maxWobbleVariance) < d.minConsecutiveWindows {
 				d.clearHand(pid, h.name)
 				continue
 			}
@@ -180,7 +181,7 @@ func (d *Bio004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			)
 			events = append(events, ev)
 
-			consecutiveMap[pid] = 0
+			run.reset()
 			d.clearHand(pid, h.name)
 		}
 	}
@@ -193,5 +194,16 @@ func (d *Bio004) clearHand(pid, hand string) {
 		d.leftHandRotHistory[pid] = nil
 	} else {
 		d.rightHandRotHistory[pid] = nil
+	}
+}
+
+// dropHand discards one hand's window for missing rotation data and breaks
+// its run.
+func (d *Bio004) dropHand(pid, hand string) {
+	d.clearHand(pid, hand)
+	if hand == "left" {
+		getRun(d.consecutiveZeroLeft, pid).reset()
+	} else {
+		getRun(d.consecutiveZeroRight, pid).reset()
 	}
 }

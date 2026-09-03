@@ -7,7 +7,18 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+// minSustainedHandFrames is the floor applied to min_violation_frames.
+// A single-frame body glitch (interpolation artifact, one bad sample) moves
+// the hands out and back, which is exactly two consecutive over-limit hand
+// speeds; three consecutive frames (~0.2 s at 15 Hz) is the shortest run
+// that cannot be produced by one bad sample. Same floor as BIO_001.
+const minSustainedHandFrames = 3
+
 // Bio002 detects impossible hand speeds (BIO_002).
+//
+// "Consecutive" is by frame index: a stunned, immune, unknown-dt or stale
+// frame breaks the run (see streak.advance), so an event's ConsecutiveFrames
+// and causal range always describe a contiguous run the detector saw.
 type Bio002 struct {
 	detect.BaseDetector
 	maxHandSpeed       float64
@@ -32,15 +43,19 @@ func NewBio002(params map[string]any) *Bio002 {
 			IsAutoEnforce:    false,
 		},
 		maxHandSpeed:       detect.GetFloat(params, "max_hand_speed", 50.0),
-		minViolationFrames: detect.GetInt(params, "min_violation_frames", 2),
+		minViolationFrames: detect.GetInt(params, "min_violation_frames", minSustainedHandFrames),
 		sigmoidSteepness:   detect.GetFloat(params, "sigmoid_steepness", 8.5),
 		left:               make(map[string]*streak),
 		right:              make(map[string]*streak),
 	}
-	if d.minViolationFrames < 1 {
-		d.minViolationFrames = 1
-	}
+	d.applyFloor()
 	return d
+}
+
+func (d *Bio002) applyFloor() {
+	if d.minViolationFrames < minSustainedHandFrames {
+		d.minViolationFrames = minSustainedHandFrames
+	}
 }
 
 func (d *Bio002) Reset() {
@@ -52,9 +67,7 @@ func (d *Bio002) Configure(params map[string]any) error {
 	d.maxHandSpeed = detect.GetFloat(params, "max_hand_speed", d.maxHandSpeed)
 	d.minViolationFrames = detect.GetInt(params, "min_violation_frames", d.minViolationFrames)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
-	if d.minViolationFrames < 1 {
-		d.minViolationFrames = 1
-	}
+	d.applyFloor()
 	return nil
 }
 
@@ -63,16 +76,11 @@ func (d *Bio002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
-		if ps.IsStunned {
-			continue
-		}
-		if ps.FrameDt < 0.01 {
-			continue
-		}
-		// Skip players with post-respawn immunity — hand positions jump during respawn
-		if ps.IsImmune {
-			getStreak(d.left, pid).reset()
-			getStreak(d.right, pid).reset()
+		// Frames the detector does not evaluate break the run on both
+		// hands. Post-respawn immunity additionally means hand positions
+		// jump to the spawn pose.
+		if ps.IsStunned || ps.FrameDt < 0.01 || ps.IsImmune {
+			resetHands(d.left, d.right, pid)
 			continue
 		}
 
@@ -92,10 +100,8 @@ func (d *Bio002) checkHand(
 	frameIdx int,
 	events *[]model.DetectionEvent,
 ) {
-	if speed > d.maxHandSpeed {
-		s.consecutive++
-	} else {
-		s.reset()
+	s.advance(frameIdx, speed > d.maxHandSpeed)
+	if s.consecutive == 0 {
 		return
 	}
 

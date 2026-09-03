@@ -24,6 +24,17 @@ import (
 // Multi-player suppression counts DISTINCT teleporting players inside
 // cluster_window: a round reset moves everyone, a hack moves one player,
 // so one player teleporting repeatedly never suppresses itself.
+//
+// Gaps are judged on TELEMETRY TIME, not frame indices. The bridge assigns
+// frame indices one per successful sample regardless of elapsed time, so a
+// 2 s broadcaster stall arrives as index+1 with a 2 s timestamp delta: the
+// player is legitimately ~10 m further along and the feature extractor has
+// already cleared kinematics for that frame. A displacement is therefore
+// only compared when the elapsed time since this detector last saw the
+// player is known (FrameDt > 0, timestamps advancing) and at most
+// max_gap_seconds (default 0.5 s, the extractor's own finite-difference
+// limit), and the expected travel is prevVelocity * elapsed. max_frame_gap
+// remains as a second guard for producers whose indices do skip.
 type Mov002 struct {
 	detect.BaseDetector
 	teleportThreshold      float64
@@ -34,12 +45,14 @@ type Mov002 struct {
 	clusterWindow          int     // frames to look back for multi-player teleport clustering
 	goalCooldownFrames     int     // frames to suppress after a score change (goal reset)
 	maxDisplacement        float64 // displacements above this are treated as game-event resets
+	maxGapSeconds          float64 // elapsed telemetry time above which a displacement is a gap, not a jump
 
 	minIncidents int // require multiple teleport incidents before flagging
 
 	prevPosition      map[string]model.Vec3
 	prevVelocity      map[string]model.Vec3
 	prevFrame         map[string]int
+	prevTimestamp     map[string]float64
 	playerIncidents   map[string]int // per-player teleport incident count
 	recentTeleporters map[string]int // pid -> last frame it was a teleport candidate
 	scoreSeen         bool
@@ -47,6 +60,10 @@ type Mov002 struct {
 	lastScoreOrange   int
 	goalCooldownUntil int // suppress teleport detection until this frame
 }
+
+// defaultMaxGapSeconds mirrors pipeline.MaxFrameDt: the longest sample
+// interval over which the feature extractor derives kinematics.
+const defaultMaxGapSeconds = 0.5
 
 // NewMov002 creates a new MOV_002 Teleportation detector.
 func NewMov002(params map[string]any) *Mov002 {
@@ -69,6 +86,7 @@ func NewMov002(params map[string]any) *Mov002 {
 		clusterWindow:          detect.GetInt(params, "cluster_window", 60),
 		goalCooldownFrames:     detect.GetInt(params, "goal_cooldown_frames", 150),
 		maxDisplacement:        detect.GetFloat(params, "max_displacement", 12.0),
+		maxGapSeconds:          detect.GetFloat(params, "max_gap_seconds", defaultMaxGapSeconds),
 		minIncidents:           detect.GetInt(params, "min_incidents", 5),
 	}
 	d.Reset()
@@ -83,12 +101,16 @@ func (d *Mov002) sanitize() {
 	if d.minIncidents < 1 {
 		d.minIncidents = 1
 	}
+	if d.maxGapSeconds <= 0 {
+		d.maxGapSeconds = defaultMaxGapSeconds
+	}
 }
 
 func (d *Mov002) Reset() {
 	d.prevPosition = make(map[string]model.Vec3)
 	d.prevVelocity = make(map[string]model.Vec3)
 	d.prevFrame = make(map[string]int)
+	d.prevTimestamp = make(map[string]float64)
 	d.playerIncidents = make(map[string]int)
 	d.recentTeleporters = make(map[string]int)
 	d.scoreSeen = false
@@ -106,6 +128,7 @@ func (d *Mov002) Configure(params map[string]any) error {
 	d.clusterWindow = detect.GetInt(params, "cluster_window", d.clusterWindow)
 	d.goalCooldownFrames = detect.GetInt(params, "goal_cooldown_frames", d.goalCooldownFrames)
 	d.maxDisplacement = detect.GetFloat(params, "max_displacement", d.maxDisplacement)
+	d.maxGapSeconds = detect.GetFloat(params, "max_gap_seconds", d.maxGapSeconds)
 	d.minIncidents = detect.GetInt(params, "min_incidents", d.minIncidents)
 	d.sanitize()
 	return nil
@@ -164,6 +187,7 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			d.prevPosition[ps.PlayerID] = ps.Position
 			d.prevVelocity[ps.PlayerID] = ps.Velocity
 			d.prevFrame[ps.PlayerID] = frameIdx
+			d.prevTimestamp[ps.PlayerID] = ps.LastTimestamp
 		}
 		return nil
 	}
@@ -189,10 +213,12 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		prevPos, hasPrev := d.prevPosition[pid]
 		prevVel := d.prevVelocity[pid]
 		prevF := d.prevFrame[pid]
+		prevTS := d.prevTimestamp[pid]
 
 		d.prevPosition[pid] = ps.Position
 		d.prevVelocity[pid] = ps.Velocity
 		d.prevFrame[pid] = frameIdx
+		d.prevTimestamp[pid] = ps.LastTimestamp
 
 		if !hasPrev {
 			continue
@@ -201,6 +227,16 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// Skip large frame gaps (respawns, reconnects)
 		frameGap := frameIdx - prevF
 		if frameGap > d.maxFrameGap {
+			continue
+		}
+
+		// Skip frames whose elapsed time is unknown or too long for a
+		// finite difference (see the type comment): FrameDt == 0 means the
+		// extractor had no usable dt for this frame, and a telemetry-time
+		// gap above max_gap_seconds is a stall, not a jump, however the
+		// producer numbered its frames.
+		elapsed := ps.LastTimestamp - prevTS
+		if ps.FrameDt <= 0 || elapsed <= 0 || elapsed > d.maxGapSeconds {
 			continue
 		}
 
@@ -218,12 +254,11 @@ func (d *Mov002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		delta := ps.Position.Sub(prevPos)
 		actualDist := delta.Magnitude()
 
-		// Expected delta based on previous velocity and frame dt
-		dt := ps.FrameDt
-		if dt <= 0 {
-			dt = 1.0 / 60.0
-		}
-		expectedDelta := prevVel.Scale(dt * float64(frameGap))
+		// Expected travel: the previous velocity carried over the elapsed
+		// telemetry time (not dt * frame gap, which assumes one index per
+		// nominal tick).
+		dt := elapsed
+		expectedDelta := prevVel.Scale(elapsed)
 		expectedDist := expectedDelta.Magnitude()
 
 		// Game-event guard: see the type comment for why this cap exists

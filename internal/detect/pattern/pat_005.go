@@ -25,6 +25,7 @@ type Pat005 struct {
 
 	consecutiveFrames map[string]int
 	lastEmitAt        map[string]int
+	lastFrame         map[string]int // frame index of the last counted sample
 }
 
 // NewPat005 creates a new PAT_005 Playspace Abuse detector.
@@ -58,6 +59,7 @@ func (d *Pat005) sanitize() {
 func (d *Pat005) Reset() {
 	d.consecutiveFrames = make(map[string]int)
 	d.lastEmitAt = make(map[string]int)
+	d.lastFrame = make(map[string]int)
 }
 
 func (d *Pat005) Configure(params map[string]any) error {
@@ -80,6 +82,16 @@ func (d *Pat005) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			d.lastEmitAt[pid] = 0
 			continue
 		}
+
+		// "Consecutive" is by frame index: a frame the detector did not
+		// count (stale player, rejected frame) breaks the run, so
+		// consecutive_frames and sustained_seconds describe a contiguous
+		// run and never bridge a gap.
+		if d.consecutiveFrames[pid] > 0 && frameIdx != d.lastFrame[pid]+1 {
+			d.consecutiveFrames[pid] = 0
+			d.lastEmitAt[pid] = 0
+		}
+		d.lastFrame[pid] = frameIdx
 
 		// Compute max hand-to-head distance (use position as head proxy)
 		leftDist := ps.LeftHand.Distance(ps.Position)

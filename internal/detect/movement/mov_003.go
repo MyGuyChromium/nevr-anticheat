@@ -32,6 +32,7 @@ type Mov003 struct {
 	collisionRadius     float64
 
 	prevVelocity  map[string]model.Vec3
+	prevFrame     map[string]int // frame at which prevVelocity was observed
 	lastStunFrame map[string]int
 	pending       map[string]*pendingReversal
 }
@@ -81,6 +82,7 @@ func (d *Mov003) sanitize() {
 
 func (d *Mov003) Reset() {
 	d.prevVelocity = make(map[string]model.Vec3)
+	d.prevFrame = make(map[string]int)
 	d.lastStunFrame = make(map[string]int)
 	d.pending = make(map[string]*pendingReversal)
 }
@@ -130,9 +132,21 @@ func (d *Mov003) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		}
 
 		prevVel, hasPrev := d.prevVelocity[pid]
+		prevF := d.prevFrame[pid]
 		d.prevVelocity[pid] = ps.Velocity
+		d.prevFrame[pid] = frameIdx
 
 		if !hasPrev {
+			continue
+		}
+		// The reversal test compares CONSECUTIVE frames. After a gap
+		// (validator rejection, missed poll, reconnect) the previous
+		// velocity is arbitrarily old and a normal turn-around executed in
+		// between would read as an instantaneous flip; just refresh and
+		// wait for the next contiguous pair, mirroring the confirmation
+		// run's own contiguity check.
+		if frameIdx != prevF+1 {
+			delete(d.pending, pid)
 			continue
 		}
 

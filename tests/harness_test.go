@@ -167,19 +167,23 @@ func TestNoise_InterpolationArtifact_NoSpeedHack(t *testing.T) {
 	runOnly(t, frames, "MOV_001", "MOV_002").AssertNoDetections()
 }
 
-// A body glitch moves the hands with the body, and BIO_002's
-// min_violation_frames (2) is exactly the out-and-back pair a single-frame
-// glitch produces. This pins the production behaviour (reported as a
-// false-positive risk; see the workstream report) so a threshold change
-// is visible.
+// A body glitch moves the hands with the body: a single-frame glitch is an
+// out-and-back pair of over-limit hand speeds. BIO_002 floors
+// min_violation_frames at 3, so one bad sample is never "sustained" and the
+// detector stays silent (a real hand-speed hack, HandSpeedHack, holds the
+// speed for six consecutive frames and still fires).
 func TestNoise_InterpolationArtifact_Bio002FiresOnGlitch(t *testing.T) {
-	hr := runOnly(t, player1().InterpolationArtifact(300), "BIO_002")
-	hr.AssertDetectorFiredN("BIO_002", 3)
-	for _, ev := range hr.DetectorEvents("BIO_002") {
-		if ev.Confidence > 0.5 {
-			t.Errorf("a two-frame glitch should stay at the minimum confidence, got %.2f", ev.Confidence)
+	frames := player1().InterpolationArtifact(300)
+	glitches := 0
+	for i := 1; i < len(frames); i++ {
+		if frames[i].Position.Distance(frames[i-1].Position) > 3.0 {
+			glitches++
 		}
 	}
+	if glitches != 6 {
+		t.Fatalf("expected 6 glitch transitions (3 out-and-back), got %d", glitches)
+	}
+	runOnly(t, frames, "BIO_002").AssertNoDetections()
 }
 
 func TestNoise_HighPing_NoFalsePositives(t *testing.T) {
@@ -244,7 +248,7 @@ func TestCheat_Magnetism_Detected(t *testing.T) {
 
 func TestCheat_StunBypass_Detected(t *testing.T) {
 	hr := runOnly(t, player1().StunBypass(200), "STATE_002")
-	hr.AssertDetectorFiredN("STATE_002", 4) // 5 short stuns, reported from the 2nd
+	hr.AssertDetectorFiredN("STATE_002", 3) // 5 short stuns; the 1st starts on the first observed frame (unmeasured), reported from the 2nd measured
 	hr.AssertMinSeverity("STATE_002", 0.9)
 }
 

@@ -21,7 +21,8 @@ import (
 type State004 struct {
 	detect.BaseDetector
 	maxImmuneFrames          int
-	escalationIntervalFrames int
+	escalationIntervalCfg    int // raw escalation_interval_frames; 0 = derive from max_immune_frames
+	escalationIntervalFrames int // effective interval, recomputed by sanitize()
 	sigmoidSteepness         float64
 
 	immuneFrames map[string]int
@@ -41,19 +42,24 @@ func NewState004(params map[string]any) *State004 {
 			Weight:           0.9,
 			IsAutoEnforce:    false,
 		},
-		maxImmuneFrames:          detect.GetIntAlias(params, 225, "max_immune_frames", "immunity_threshold_frames"),
-		escalationIntervalFrames: detect.GetInt(params, "escalation_interval_frames", 0),
-		sigmoidSteepness:         detect.GetFloat(params, "sigmoid_steepness", 8.0),
+		maxImmuneFrames:       detect.GetIntAlias(params, 225, "max_immune_frames", "immunity_threshold_frames"),
+		escalationIntervalCfg: detect.GetInt(params, "escalation_interval_frames", 0),
+		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 8.0),
 	}
 	d.Reset()
 	d.sanitize()
 	return d
 }
 
+// sanitize derives the effective escalation interval from the RAW
+// configured value every time, so a later Configure({max_immune_frames})
+// re-derives the "0 = max_immune_frames/2" default instead of keeping the
+// interval computed from the previous limit.
 func (d *State004) sanitize() {
 	if d.maxImmuneFrames < 1 {
 		d.maxImmuneFrames = 1
 	}
+	d.escalationIntervalFrames = d.escalationIntervalCfg
 	if d.escalationIntervalFrames <= 0 {
 		d.escalationIntervalFrames = d.maxImmuneFrames / 2
 	}
@@ -69,7 +75,7 @@ func (d *State004) Reset() {
 
 func (d *State004) Configure(params map[string]any) error {
 	d.maxImmuneFrames = detect.GetIntAlias(params, d.maxImmuneFrames, "max_immune_frames", "immunity_threshold_frames")
-	d.escalationIntervalFrames = detect.GetInt(params, "escalation_interval_frames", d.escalationIntervalFrames)
+	d.escalationIntervalCfg = detect.GetInt(params, "escalation_interval_frames", d.escalationIntervalCfg)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
 	d.sanitize()
 	return nil

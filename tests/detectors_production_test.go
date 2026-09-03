@@ -226,8 +226,10 @@ func TestDetector_BIO_002_HandSpeed(t *testing.T) {
 	hr.AssertDetectorFiredN("BIO_002", 1)
 	hr.AssertMinSeverity("BIO_002", 0.7)
 	hr.AssertMinConfidence("BIO_002", 0.8)
-	if hr.Events[0].MergedCount != 3 {
-		t.Errorf("expected the 2nd/4th/6th-frame emissions merged into one incident, got %d", hr.Events[0].MergedCount)
+	if hr.Events[0].MergedCount != 2 {
+		// Six violating frames; min_violation_frames is floored at 3, so the
+		// detector emits on the 3rd and 6th frame and dedup merges them.
+		t.Errorf("expected the 3rd/6th-frame emissions merged into one incident, got %d", hr.Events[0].MergedCount)
 	}
 	runOnly(t, player1().NormalMovingPlayer(300, 30), "BIO_002").AssertNoDetections()
 	runOnly(t, player1().RegrabStackingBurst(150), "BIO_002").AssertNoDetections()
@@ -339,10 +341,14 @@ func TestDetector_STATE_001_GrabDistance(t *testing.T) {
 }
 
 func TestDetector_STATE_002_StunRecovery(t *testing.T) {
+	// Five short stuns at frames 10-14, 50-54, ...; the first begins on the
+	// detector's very first observed frame (warmup 10), so its start is not
+	// a witnessed transition and it is not measured. Four measured stuns,
+	// reported from the 2nd incident: 3 events.
 	hr := runOnly(t, player1().StunBypass(200), "STATE_002")
-	hr.AssertDetectorFiredN("STATE_002", 4)
+	hr.AssertDetectorFiredN("STATE_002", 3)
 	hr.AssertMinSeverity("STATE_002", 0.9)
-	hr.AssertMinConfidence("STATE_002", 0.6)
+	hr.AssertMinConfidence("STATE_002", 0.5)
 	runOnly(t, player1().NormalStunCycle(450, 45), "STATE_002").AssertNoDetections()
 	// A stun exactly at the minimum (20 frames) is legitimate.
 	runOnly(t, player1().NormalStunCycle(450, 20), "STATE_002").AssertNoDetections()

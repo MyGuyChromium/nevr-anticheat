@@ -41,11 +41,34 @@ func logRatioSeverity(threshold, variance, decades float64) float64 {
 // streak tracks one hand's run of consecutive violation frames and when it
 // last produced an event, so confidence can keep growing while the run
 // continues instead of being zeroed at every emission.
+//
+// "Consecutive" means consecutive FRAME INDICES: the run is broken by any
+// frame the detector did not count for this hand — a stunned or immune
+// frame, a frame with unknown dt, or a frame on which the player was stale
+// (rejected by the validator, absent from the tick). Without that, three
+// isolated samples seconds apart would be reported as one sustained run
+// whose causal range points at frames that never violated.
 type streak struct {
 	consecutive int
 	lastEmitAt  int // consecutive count at the last emission; 0 = none yet
+	lastFrame   int // frame index of the last counted sample (valid when consecutive > 0)
 	stats       model.WelfordAccumulator
 	maxObserved float64
+}
+
+// advance counts one evaluated sample at frameIdx. A run that does not
+// continue on frameIdx == lastFrame+1 is restarted, so a violating sample
+// after a skipped frame starts a fresh run of length 1.
+func (s *streak) advance(frameIdx int, violating bool) {
+	if s.consecutive > 0 && frameIdx != s.lastFrame+1 {
+		s.reset()
+	}
+	if violating {
+		s.consecutive++
+		s.lastFrame = frameIdx
+	} else {
+		s.reset()
+	}
 }
 
 // shouldEmit reports whether the streak has reached the minimum length and
@@ -64,6 +87,13 @@ func (s *streak) shouldEmit(minFrames int) bool {
 func (s *streak) reset() {
 	s.consecutive = 0
 	s.lastEmitAt = 0
+}
+
+// resetHands breaks both hands' runs for a player on a frame the detector
+// does not evaluate (stunned, immune, unknown dt).
+func resetHands(left, right map[string]*streak, pid string) {
+	getStreak(left, pid).reset()
+	getStreak(right, pid).reset()
 }
 
 func getStreak(m map[string]*streak, pid string) *streak {
@@ -92,4 +122,46 @@ func countTrue(hist []bool) int {
 		}
 	}
 	return n
+}
+
+// windowRun counts consecutive zero-jitter windows for one hand. Windows are
+// consecutive only when the next full window ends exactly windowFrames after
+// the previous counted one: any interruption — the activity gate closing,
+// a tracking-loss drop, a stale frame — leaves a longer distance and the
+// count restarts, so a coasting window at t=0 and another minutes later can
+// never add up to "multiple consecutive windows".
+type windowRun struct {
+	count   int
+	lastEnd int // frame index at which the last counted window ended
+	counted bool
+}
+
+// add registers a full window ending at frameIdx and returns the run
+// length; zero says whether this window was under the jitter threshold.
+func (r *windowRun) add(frameIdx, windowFrames int, zero bool) int {
+	if r.counted && frameIdx-r.lastEnd != windowFrames {
+		r.count = 0
+	}
+	r.counted = true
+	r.lastEnd = frameIdx
+	if zero {
+		r.count++
+	} else {
+		r.count = 0
+	}
+	return r.count
+}
+
+func (r *windowRun) reset() {
+	r.count = 0
+	r.counted = false
+}
+
+func getRun(m map[string]*windowRun, pid string) *windowRun {
+	r, ok := m[pid]
+	if !ok {
+		r = &windowRun{}
+		m[pid] = r
+	}
+	return r
 }
