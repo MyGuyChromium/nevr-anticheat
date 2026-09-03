@@ -40,6 +40,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 )
 
 // Mode represents enforcement operation modes.
@@ -233,14 +234,19 @@ func (e *Engine) decide(
 		}
 	}
 
-	// Collect non-shadow events for this player
+	// Collect non-shadow events for this player. Meta-detectors (PAT_003,
+	// PAT_004) are derived from other detectors' events and do not add an
+	// independent category for the multi-category gates, exactly as in the
+	// scorer's correlation bonus.
 	var playerEvents []model.DetectionEvent
 	categories := make(map[string]bool)
 	var totalConf float64
 	for _, ev := range events {
 		if ev.PlayerID == playerID && !ev.IsShadow {
 			playerEvents = append(playerEvents, ev)
-			categories[detectorCategory(ev.DetectorID)] = true
+			if !scoring.IsMetaDetector(ev.DetectorID) {
+				categories[detectorCategory(ev.DetectorID)] = true
+			}
 			totalConf += ev.Confidence
 		}
 	}
