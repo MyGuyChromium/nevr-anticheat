@@ -55,6 +55,8 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -172,31 +174,32 @@ type diagView struct {
 }
 
 type matchView struct {
-	MatchID         string           `json:"match_id"`
-	Levels          model.LevelTable `json:"levels"`
-	SourceFile      string           `json:"source_file"`
-	StartTime       string           `json:"start_time"`
-	DurationSeconds float64          `json:"duration_seconds"`
-	GameMode        string           `json:"game_mode"`
-	Map             string           `json:"map"`
-	IsPrivate       bool             `json:"is_private"`
-	Source          string           `json:"source"`
-	HasScore        bool             `json:"has_score"`
-	BlueScore       int              `json:"blue_score"`
-	OrangeScore     int              `json:"orange_score"`
-	FramesProcessed int              `json:"frames_processed"`
-	InvalidFrames   int              `json:"invalid_frames"`
-	PlayerFrames    int              `json:"player_frames"`
-	AnalyzedAt      string           `json:"analyzed_at"`
-	Replaced        bool             `json:"replaced"`
-	ClearedEvents   int64            `json:"cleared_events"`
-	ClearedScores   int64            `json:"cleared_scores"`
-	Telemetry       *telemetryView   `json:"telemetry,omitempty"`
-	Players         []playerView     `json:"players"`
-	Events          []eventView      `json:"events"`
-	Cases           []caseView       `json:"cases"`
-	Diagnostics     *diagView        `json:"diagnostics,omitempty"`
-	Warnings        []string         `json:"warnings"`
+	MatchID         string               `json:"match_id"`
+	Levels          model.LevelTable     `json:"levels"`
+	SourceFile      string               `json:"source_file"`
+	StartTime       string               `json:"start_time"`
+	DurationSeconds float64              `json:"duration_seconds"`
+	GameMode        string               `json:"game_mode"`
+	Map             string               `json:"map"`
+	IsPrivate       bool                 `json:"is_private"`
+	Source          string               `json:"source"`
+	HasScore        bool                 `json:"has_score"`
+	BlueScore       int                  `json:"blue_score"`
+	OrangeScore     int                  `json:"orange_score"`
+	FramesProcessed int                  `json:"frames_processed"`
+	InvalidFrames   int                  `json:"invalid_frames"`
+	PlayerFrames    int                  `json:"player_frames"`
+	AnalyzedAt      string               `json:"analyzed_at"`
+	Replaced        bool                 `json:"replaced"`
+	ClearedEvents   int64                `json:"cleared_events"`
+	ClearedScores   int64                `json:"cleared_scores"`
+	Telemetry       *telemetryView       `json:"telemetry,omitempty"`
+	Players         []playerView         `json:"players"`
+	Events          []eventView          `json:"events"`
+	Cases           []caseView           `json:"cases"`
+	Diagnostics     *diagView            `json:"diagnostics,omitempty"`
+	Warnings        []string             `json:"warnings"`
+	Summary         *replay.MatchSummary `json:"summary,omitempty"`
 }
 
 // matchData is what a match view is built from, whether the match was just
@@ -466,6 +469,7 @@ func (s *server) freshMatchView(res *replay.AnalyzeResult, sourceFile string) ma
 	if w := res.Warnings(); len(w) > 0 {
 		v.Warnings = w
 	}
+	v.Summary = res.MatchSummary
 	return v
 }
 
@@ -500,7 +504,7 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 	if err != nil {
 		return matchView{}, err
 	}
-	return s.buildMatchView(matchData{
+	mv := s.buildMatchView(matchData{
 		ctx:             sm.Context,
 		sourceFile:      filepath.Base(sm.Context.ReplayFile),
 		analyzedAt:      sm.IngestedAt,
@@ -512,7 +516,9 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 		hasScore:        hasScore,
 		blue:            blue,
 		orange:          orange,
-	}), nil
+	})
+	mv.Summary = s.loadSummary(ctx, sm.Context, scores, events)
+	return mv, nil
 }
 
 // ---- handlers --------------------------------------------------------------
@@ -1075,4 +1081,61 @@ func (s *server) handleMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, mv)
+}
+
+// loadSummary returns the stored (or lazily rebuilt) match summary with the
+// current suspicion verdicts applied, or nil when none can be produced.
+func (s *server) loadSummary(ctx context.Context, mc *model.MatchContext, scores map[string]model.SuspicionScore, events []model.DetectionEvent) *replay.MatchSummary {
+	sum, err := s.engine.LoadMatchSummary(ctx, mc, scores, events)
+	if err != nil {
+		return nil
+	}
+	return sum
+}
+
+// summaryFor loads the match view and returns its summary, writing the
+// error response itself when there is none.
+func (s *server) summaryFor(w http.ResponseWriter, r *http.Request) (*replay.MatchSummary, string, bool) {
+	id := r.PathValue("id")
+	mv, err := s.storedMatchView(r.Context(), id)
+	if errors.Is(err, sqlite.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no stored match %q", id)
+		return nil, id, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading match %s: %v", id, err)
+		return nil, id, false
+	}
+	if mv.Summary == nil {
+		writeError(w, http.StatusNotFound, "no summary for match %q (no raw ticks stored)", id)
+		return nil, id, false
+	}
+	return mv.Summary, id, true
+}
+
+func (s *server) handleSummaryJSON(w http.ResponseWriter, r *http.Request) {
+	sum, id, ok := s.summaryFor(w, r)
+	if !ok {
+		return
+	}
+	doc, err := json.MarshalIndent(sum, "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encoding summary: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-summary.json"))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(doc)
+}
+
+func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
+	sum, id, ok := s.summaryFor(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(sum.PlayersCSV())
 }

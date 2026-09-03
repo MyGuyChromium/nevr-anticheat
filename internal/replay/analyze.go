@@ -2,6 +2,7 @@ package replay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -225,6 +226,12 @@ type AnalyzeResult struct {
 	RawStored bool
 	// Summary is what the parsed frames showed.
 	Summary FrameSummary
+	// MatchSummary is the moderator-facing match summary (final player
+	// stats, scoring timeline, throw log, suspicion) built from the parsed
+	// snapshots; nil for legacy JSON replays or refused matches.
+	MatchSummary *MatchSummary
+	// SummaryErr is a non-fatal failure to persist MatchSummary.
+	SummaryErr error
 	// AdditionalMatches is set by AnalyzeFile only: the results of the
 	// further matches a multi-session recording holds, in file order.
 	// AnalyzeFileAll returns every match in one slice instead.
@@ -414,6 +421,8 @@ type matchRun struct {
 	pending map[int]string
 	source  string // "initial", or "reprocess" when replacing a stored match
 	replace bool
+	summary *SummaryBuilder
+	start   time.Time // first sample time, the zero of the summary's clock
 }
 
 // begin starts a match once its id is known: a stored match is refused
@@ -425,6 +434,7 @@ func (a *fileAnalysis) begin(mc *model.MatchContext) (*matchRun, error) {
 		res:     &AnalyzeResult{Path: a.path, MatchCtx: mc},
 		pending: make(map[int]string),
 		source:  "initial",
+		summary: NewSummaryBuilder(mc),
 	}
 	exists, err := a.store.HasMatch(a.ctx, mc.MatchID)
 	if err != nil {
@@ -452,6 +462,12 @@ func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
 		r.pending[tick.FrameIndex] = tick.RawJSON
 	}
 	r.frames = append(r.frames, tick.Frames...)
+	if tick.Session != nil && r.summary != nil {
+		if r.start.IsZero() {
+			r.start = tick.SampleTime
+		}
+		r.summary.Add(tick.Session, tick.FrameIndex, tick.SampleTime.Sub(r.start).Seconds())
+	}
 	if len(r.pending) >= rawTickFlushEvery {
 		return r.flush(a)
 	}
@@ -531,6 +547,18 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		res.Replaced, res.ClearedEvents, res.ClearedScores = true, ev, sc
 	}
 	res.Stored, res.AnalysisErr = StoreMatchAnalysis(ctx, store, res.MatchCtx, result, run.source, a.opts.Analysis)
+	if run.summary != nil {
+		sum := run.summary.Finish()
+		sum.ApplySuspicion(res.MatchCtx, result.PlayerScores, result.DetectionEvents, a.opts.Analysis.Levels)
+		res.MatchSummary = sum
+		if res.AnalysisErr == nil {
+			if doc, err := json.Marshal(sum); err != nil {
+				res.SummaryErr = err
+			} else if err := store.StoreMatchSummaryJSON(ctx, sum.Meta(), doc); err != nil {
+				res.SummaryErr = err
+			}
+		}
+	}
 	return nil
 }
 
