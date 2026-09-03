@@ -162,6 +162,14 @@ Telemetry is never pruned automatically; `nevr-server` prunes detection events a
 
 Key conclusions that still hold: THROW_001's over-cap events (22–96 m/s against a ~20 m/s effective cap) are genuinely impossible *if the velocity is real*; the 2×-cap artifacts are now visible rather than hidden so that question can be answered. One match (`6BEF4CA8`) produced ~90 % of all events; a broader sample is required.
 
+## 6b. Real-data run (2026-09-03)
+
+Three community recordings from 2024 (a non-Spark recorder: dashed, microsecond timestamps) and the owner's Spark library (`C:\Spark Replays`, ~250 files, ZIPs of NDJSON unpacking to 0.5–1 GB) exposed three parser gaps, all fixed: Spark's `timestamp<TAB>session<TAB>bones` line layout (the bones document is now split off), the 500 MB uncompressed-size guard (now 8 GB), and the single accepted timestamp layout (now slashes or dashes, any fraction length, ISO).
+
+Measured geometry (150k player frames): players span X ±16 m, Y −9..+9.5 m, Z ±78 m (spawn areas beyond the ±40 m play volume); the disc stays within X ±16, Y ±10, Z ±40 with goals at Z ≈ ±36; hand-to-body distance p99.9 = 1.08 m. `DefaultPhysics` arena width/height were corrected from 15/15 m to 32/20 m; before that the validator rejected 11–46% of legitimate frames as `out_of_arena_bounds`, afterwards 0–1 frame per match.
+
+Detector output on those three matches (all shadow): BIO_002 fired twice on two-frame hand-speed spikes of 422 and 145 m/s (tracking glitches; the 3-frame sustained floor removes them), STATE_001 fired three times on grabs at 4.7–6.2 m (lag-compensation candidates; first calibration points), no throw or movement detector fired on legitimate play. This does not validate any detector; it is the first false-positive baseline.
+
 ## 7. Decisions pending (owner)
 
 Collected from the quality-pass fixer reports. Each has a conservative default in place.
