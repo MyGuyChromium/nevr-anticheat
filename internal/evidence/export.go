@@ -26,6 +26,14 @@ type ExportStore interface {
 	GetPlayerScore(ctx context.Context, playerID string) (model.SuspicionScore, error)
 }
 
+// MatchContextStore is optionally implemented by an ExportStore (as by
+// *sqlite.Store). When available, the exporter attaches the stored match
+// context to the bundle so it carries the match's provenance (server_id,
+// source, map/mode) alongside the clips.
+type MatchContextStore interface {
+	GetMatchContext(ctx context.Context, matchID string) (*model.MatchContext, error)
+}
+
 // EventClip is the telemetry window around one detection event. It contains
 // frames for EVERY player in the match (so a reviewer can see the disc and
 // opponents), sorted by frame index then player ID.
@@ -178,6 +186,18 @@ func (e *Exporter) ExportForCase(
 	if len(union) == 0 {
 		return nil, fmt.Errorf("%w (case %s, match %s, %d events)", ErrNoFrames, caseID, rc.MatchID, len(events))
 	}
+	// The bundle's frame window is the actual span of all clips, not the
+	// first clip's start and the last clip's end: clips are in event order,
+	// and an event with a long frame range can extend past later events.
+	windowStart, windowEnd := clips[0].WindowStart, clips[0].WindowEnd
+	for _, c := range clips[1:] {
+		if c.WindowStart < windowStart {
+			windowStart = c.WindowStart
+		}
+		if c.WindowEnd > windowEnd {
+			windowEnd = c.WindowEnd
+		}
+	}
 	unionFrames := make([]model.PlayerTelemetryFrame, 0, len(union))
 	for _, f := range union {
 		unionFrames = append(unionFrames, f)
@@ -203,11 +223,20 @@ func (e *Exporter) ExportForCase(
 			"recommended_action": rc.RecommendedAction,
 			"level":              rc.Level,
 			"threshold_version":  rc.ThresholdVersion,
-			"frame_window":       fmt.Sprintf("%d-%d", clips[0].WindowStart, clips[len(clips)-1].WindowEnd),
+			"frame_window":       fmt.Sprintf("%d-%d", windowStart, windowEnd),
 			"clip_count":         fmt.Sprintf("%d", len(clips)),
 			"frames_before":      fmt.Sprintf("%d", e.framesBefore),
 			"frames_after":       fmt.Sprintf("%d", e.framesAfter),
 		},
+	}
+
+	if mcs, ok := e.store.(MatchContextStore); ok {
+		if mc, err := mcs.GetMatchContext(ctx, rc.MatchID); err == nil && mc != nil {
+			bundle.MatchContext = mc
+			if sid := MatchServerID(mc); sid != "" {
+				bundle.Metadata["server_id"] = sid
+			}
+		}
 	}
 
 	// The stored score is a display-only snapshot; omit it rather than embed
