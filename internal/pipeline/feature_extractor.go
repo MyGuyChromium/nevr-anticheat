@@ -11,6 +11,12 @@ const (
 	// A known dt is clamped into this range; a dt <= 0 (first frame,
 	// duplicate or out-of-order timestamp) is unknown and no kinematics are
 	// derived for that frame. Nothing here assumes a fixed tick rate.
+	//
+	// MaxFrameDt is also the extractor's GAP threshold: a dt above it is too
+	// long for finite differences, so kinematics and the throw state machine
+	// skip that frame. It is the default for SetMaxFrameDt (config key
+	// pipeline.max_frame_dt); the validator's hard rejection bound is the
+	// separate MaxProducerDt.
 	MinFrameDt = 0.005
 	MaxFrameDt = 0.5
 
@@ -39,8 +45,9 @@ const (
 // PlayerState has no disc position history, so the extractor keeps one here,
 // pushed in lockstep with PlayerState.DiscVelocityHistory.
 type discSample struct {
-	pos     model.Vec3
-	missing bool
+	pos      model.Vec3
+	missing  bool
+	frameIdx int // frame index of the sample (histories are per frame SEEN)
 }
 
 // goalSides records which goal the blue team scores into for one match.
@@ -54,6 +61,7 @@ type goalSides struct {
 type FeatureExtractor struct {
 	historyWindow       int
 	highPingThresholdMs float64
+	maxFrameDt          float64 // gap threshold and dt clamp upper bound (s)
 
 	// configuredBlueSign: +1 blue attacks +Z, -1 blue attacks -Z, 0 unknown.
 	// When unknown the side is learned from score increments (see
@@ -72,8 +80,30 @@ func NewFeatureExtractor(historyWindow int) *FeatureExtractor {
 	return &FeatureExtractor{
 		historyWindow:       historyWindow,
 		highPingThresholdMs: DefaultHighPingThresholdMs,
+		maxFrameDt:          MaxFrameDt,
 		discHistory:         make(map[string][]discSample),
 	}
+}
+
+// SetMaxFrameDt sets the gap threshold in seconds (config key
+// pipeline.max_frame_dt): a frame whose real spacing from the player's
+// previous frame exceeds it updates raw state but derives no kinematics and
+// is never a throw release; known spacings are clamped to at most this
+// value. Values that are not finite or not above MinFrameDt restore the
+// default MaxFrameDt.
+func (fe *FeatureExtractor) SetMaxFrameDt(seconds float64) {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= MinFrameDt {
+		seconds = MaxFrameDt
+	}
+	fe.maxFrameDt = seconds
+}
+
+// MaxFrameDtSeconds returns the current gap threshold in seconds.
+func (fe *FeatureExtractor) MaxFrameDtSeconds() float64 {
+	if fe.maxFrameDt <= 0 {
+		return MaxFrameDt
+	}
+	return fe.maxFrameDt
 }
 
 // SetHighPingThreshold sets the ping (ms) above which IsHighPing is set.
@@ -186,14 +216,15 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 
 	// Time step. dt <= 0 (first frame, duplicate or out-of-order timestamp)
 	// is unknown: FrameDt is 0 and no kinematics are derived. A gap longer
-	// than MaxFrameDt is too long for finite differences; the frame still
-	// updates raw state but kinematics are skipped.
+	// than the configured max frame dt is too long for finite differences;
+	// the frame still updates raw state but kinematics are skipped.
+	maxDt := fe.MaxFrameDtSeconds()
 	rawDt := frame.Timestamp - prevTimestamp
 	dtKnown := !firstFrame && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
-	largeGap := dtKnown && rawDt > MaxFrameDt
+	largeGap := dtKnown && rawDt > maxDt
 	dt := 0.0
 	if dtKnown {
-		dt = model.Clamp(rawDt, MinFrameDt, MaxFrameDt)
+		dt = model.Clamp(rawDt, MinFrameDt, maxDt)
 	}
 	ps.FrameDt = dt
 
@@ -278,7 +309,14 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// A 1-frame possession glitch (API reporting error) would otherwise attribute
 	// the current disc flight velocity as a "throw" to this player — a false positive.
 	// Possession released outside active play (round-end disc reset) is not a throw.
-	if prevHasDisc && !ps.HasDisc && !firstFrame && matchCtx.IsActivePhase(frame.GamePhase) {
+	// A release first seen after a gap (dt unknown, or longer than the max
+	// frame dt) is not a measured release either: the disc velocity on that
+	// frame is mid-flight state, the hand kinematics were cleared and the
+	// pre-release snapshots predate the gap, so every consumer (release
+	// speed, signature, spread, trajectory anchor) would be fed the wrong
+	// moment. Such a release is skipped, consistent with "gap = no
+	// kinematics"; the next possession starts a fresh track.
+	if prevHasDisc && !ps.HasDisc && !firstFrame && dtKnown && !largeGap && matchCtx.IsActivePhase(frame.GamePhase) {
 		possessionFrames := frame.FrameIndex - ps.PossessionStartFrame
 		if possessionFrames >= 2 {
 			fe.detectThrow(ps, frame, matchCtx, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
@@ -294,7 +332,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	model.PushQuatHistory(&ps.LeftHandRotHistory, ps.LeftHandRot, fe.historyWindow)
 	model.PushQuatHistory(&ps.RightHandRotHistory, ps.RightHandRot, fe.historyWindow)
 	model.PushFloat64History(&ps.TimestampHistory, frame.Timestamp, fe.historyWindow)
-	fe.pushDiscHistory(ps, frame.Disc)
+	fe.pushDiscHistory(ps, frame.Disc, frame.FrameIndex)
 
 	// Possession start tracking
 	if !prevHasDisc && ps.HasDisc {
@@ -340,14 +378,14 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 }
 
 // pushDiscHistory advances the disc velocity history on PlayerState and the
-// extractor-side disc position history. A frame without disc state pushes a
-// zero placeholder (flagged missing) so both stay index-aligned with
-// PositionHistory.
-func (fe *FeatureExtractor) pushDiscHistory(ps *model.PlayerState, disc *model.DiscState) {
-	sample := discSample{missing: true}
+// extractor-side disc position history (which also records the frame index
+// of every sample). A frame without disc state pushes a zero placeholder
+// (flagged missing) so both stay index-aligned with PositionHistory.
+func (fe *FeatureExtractor) pushDiscHistory(ps *model.PlayerState, disc *model.DiscState, frameIdx int) {
+	sample := discSample{missing: true, frameIdx: frameIdx}
 	vel := model.Vec3{}
 	if disc != nil {
-		sample = discSample{pos: disc.Position}
+		sample = discSample{pos: disc.Position, frameIdx: frameIdx}
 		vel = disc.Velocity
 	}
 	model.PushVec3History(&ps.DiscVelocityHistory, vel, fe.historyWindow)
@@ -471,13 +509,20 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 	}
 	discHist := fe.discHistory[ps.PlayerID]
 
+	maxDt := fe.MaxFrameDtSeconds()
 	snaps := make([]model.ThrowFrameSnapshot, 0, n)
 	for i := histLen - n; i < histLen; i++ {
 		snap := model.ThrowFrameSnapshot{
-			// Histories hold one entry per frame seen for this player; with
-			// consecutive frames entry histLen-1 is frame N-1.
+			// Histories hold one entry per frame SEEN for this player (a
+			// rejected frame or a missed poll leaves a hole), so the label
+			// comes from the recorded frame index of the sample; the
+			// consecutive-frames arithmetic is only the fallback when the
+			// extractor-side history was evicted.
 			FrameIndex:     frame.FrameIndex - (histLen - i),
 			PlayerPosition: ps.PositionHistory[i],
+		}
+		if di := tailIndex(len(discHist), histLen, i); di >= 0 {
+			snap.FrameIndex = discHist[di].frameIdx
 		}
 		ti := tailIndex(len(ps.TimestampHistory), histLen, i)
 		if ti >= 0 {
@@ -487,8 +532,8 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 			snap.HandPosition = handHist[hi]
 			if hi > 0 && ti > 0 && !handHist[hi].IsZero() && !handHist[hi-1].IsZero() {
 				hdt := ps.TimestampHistory[ti] - ps.TimestampHistory[ti-1]
-				if hdt > 0 {
-					snap.HandVelocity = handHist[hi].Sub(handHist[hi-1]).Scale(1.0 / model.Clamp(hdt, MinFrameDt, MaxFrameDt))
+				if hdt > 0 && hdt <= maxDt {
+					snap.HandVelocity = handHist[hi].Sub(handHist[hi-1]).Scale(1.0 / model.Clamp(hdt, MinFrameDt, maxDt))
 				}
 			}
 		}
