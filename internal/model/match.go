@@ -77,8 +77,12 @@ func DefaultPhysics() PhysicsConstants {
 		// CONFIRMED from real replay: Z range is [-77, +77], X range is [-5, +5], Y range is [-4, +7].
 		// Arena is elongated on Z axis. Goals at Z ≈ ±36.
 		ArenaLength: 154.0, // Z axis (was 80 — confirmed wrong from real data)
-		ArenaWidth:  15.0,  // X axis
-		ArenaHeight: 15.0,  // Y axis
+		// MEASURED 2026-09-03 on three real recordings (150k player frames):
+		// players span X in [-16, +16] and Y in [-9, +9.5]; the disc stays
+		// within X ±16, Y ±10, Z ±40. The previous 15 m width (bound ±12.5)
+		// rejected up to 46% of legitimate frames as out_of_arena_bounds.
+		ArenaWidth:  32.0, // X axis
+		ArenaHeight: 20.0, // Y axis
 		GoalRadius:  1.0,
 		GoalZ:       36.078, // confirmed observation (disc Z at a scored goal)
 	}

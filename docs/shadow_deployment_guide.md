@@ -60,7 +60,7 @@ go build -o nevr-compat ./cmd/compat
 ```bash
 curl http://<broadcaster>:6721/session > first_session.json
 ./nevr-compat first_session.json            # field-by-field mapping report
-./nevr-compat --strict first_session.json   # strict bounds: |X| <= 12.5, |Y| <= 12.5, |Z| <= 82, ping <= 1000
+./nevr-compat --strict first_session.json   # strict bounds: |X| <= 21, |Y| <= 15, |Z| <= 82, ping <= 1000
 # For a recorded replay:
 ./nevr-compat --replay --max-frames 500 match.echoreplay
 ```
