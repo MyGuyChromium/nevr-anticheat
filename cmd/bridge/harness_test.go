@@ -208,6 +208,7 @@ type fakeAnticheat struct {
 
 	// behaviour knobs (set before the bridge connects)
 	expectToken string // reject connections whose bearer token differs
+	refuseWith  string // send this error reason instead of hello (e.g. too_many_connections)
 	noHello     bool   // never send hello (pre-protocol server)
 	noAck       bool   // accept frames but never ack them
 	rejectAll   bool   // ack every batch as rejected
@@ -228,6 +229,10 @@ func startFakeAnticheat(t *testing.T) *fakeAnticheat {
 
 		if fa.expectToken != "" && conn.Request().Header.Get("Authorization") != "Bearer "+fa.expectToken {
 			_ = websocket.JSON.Send(conn, model.ControlMessage{Type: model.ControlError, Reason: "unauthorized"})
+			return
+		}
+		if fa.refuseWith != "" {
+			_ = websocket.JSON.Send(conn, model.ControlMessage{Type: model.ControlError, Reason: fa.refuseWith})
 			return
 		}
 		if !fa.noHello {
