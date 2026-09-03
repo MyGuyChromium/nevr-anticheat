@@ -189,6 +189,41 @@ func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
 	}
 }
 
+func TestMatchManager_PreservesLiveRawTicksAcrossRebase(t *testing.T) {
+	mm, store, _ := newTestManager(t)
+	ctx := context.Background()
+
+	firstRaw := "{\n  \"sessionid\": \"M1\", \"tick\": 1\n}"
+	res := mm.HandleFramesWithRaw("M1", "srv", []model.PlayerTelemetryFrame{
+		goodFrame("P1", 0), goodFrame("P2", 0),
+	}, firstRaw)
+	if res.Accepted != 2 || res.Rejected != 0 {
+		t.Fatalf("first batch: %+v", res)
+	}
+	ticks, err := store.GetMatchRawTicks(ctx, "M1", 0, 0)
+	if err != nil || ticks[0] != firstRaw {
+		t.Fatalf("first raw tick=%q err=%v", ticks[0], err)
+	}
+
+	secondRaw := `{"sessionid":"M1","tick":"producer-restarted"}`
+	res = mm.HandleFramesWithRaw("M1", "srv", []model.PlayerTelemetryFrame{
+		goodFrame("P1", 0), goodFrame("P2", 0),
+	}, secondRaw)
+	if res.Accepted != 2 || res.Rejected != 0 {
+		t.Fatalf("rebased batch: %+v", res)
+	}
+	ticks, err = store.GetMatchRawTicks(ctx, "M1", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticks[0] != firstRaw || ticks[1] != secondRaw {
+		t.Fatalf("raw ticks after rebase=%v", ticks)
+	}
+	if n := countRows(t, store, `SELECT COUNT(*) FROM match_ticks WHERE match_id = ?`, "M1"); n != 2 {
+		t.Fatalf("match_ticks rows=%d want 2", n)
+	}
+}
+
 // TestMatchManager_Caps covers contract 11 (match cap) and the player cap.
 func TestMatchManager_Caps(t *testing.T) {
 	mm, _, _ := newTestManager(t)

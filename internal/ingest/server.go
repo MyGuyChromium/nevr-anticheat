@@ -25,8 +25,9 @@
 //	                    "ignored":K} periodically (counts since the previous
 //	                    ack), {"type":"error","reason":"unauthorized"} followed
 //	                    by close when authentication fails.
-//	producer -> server: FrameBatch, {"type":"match_start",...} when a poller
-//	                    starts, {"type":"match_end",...} when it stops.
+//	producer -> server: FrameBatch (optionally including exact source raw_json),
+//	                    {"type":"match_start",...} when a poller starts,
+//	                    {"type":"match_end",...} when it stops.
 //
 // Unknown control types are logged and ignored.
 package ingest
@@ -60,7 +61,7 @@ var ErrAuthTokenRequired = errors.New("ingest: refusing to start without an auth
 type ServerConfig struct {
 	ListenAddr              string        // e.g., ":8080"
 	MaxConnectionsPerServer int           // max concurrent game server connections
-	MaxFrameSize            int           // max bytes per WebSocket message (default 64KB)
+	MaxFrameSize            int           // max bytes per WebSocket message (default 1 MiB)
 	MaxFrameRatePerPlayer   int           // max frames/sec per player (default 30)
 	MaxFramesPerBatch       int           // max frames in one FrameBatch (default 100)
 	MaxPlayersPerMatch      int           // max players per match (default 16), enforced by MatchManager
@@ -77,7 +78,7 @@ func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
 		ListenAddr:              ":8080",
 		MaxConnectionsPerServer: 100,
-		MaxFrameSize:            65536,
+		MaxFrameSize:            1024 * 1024,
 		MaxFrameRatePerPlayer:   30,
 		MaxFramesPerBatch:       100,
 		MaxPlayersPerMatch:      16,
@@ -102,6 +103,13 @@ type FrameResult struct {
 type Handler interface {
 	HandleFrames(matchID, serverID string, frames []model.PlayerTelemetryFrame) FrameResult
 	HandleControl(msg model.ControlMessage)
+}
+
+// RawFrameHandler is the optional extension implemented by MatchManager.
+// Other Handler implementations remain wire-compatible and simply receive
+// normalized frames. rawJSON is the exact broadcaster response for a batch.
+type RawFrameHandler interface {
+	HandleFramesWithRaw(matchID, serverID string, frames []model.PlayerTelemetryFrame, rawJSON string) FrameResult
 }
 
 // FrameHandler adapts a plain function to Handler (control messages and
@@ -481,6 +489,35 @@ func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult
 		s.logger.Warn("oversized batch rejected", "match", batch.MatchID, "frames", len(batch.Frames))
 		return FrameResult{Rejected: len(batch.Frames)}
 	}
+	if batch.RawJSON != "" {
+		if len(batch.Frames) == 0 {
+			s.FramesRejected.Add(1)
+			if s.metrics != nil {
+				s.metrics.BatchesRejected.Inc("raw_tick_without_frames")
+				s.metrics.FramesInvalid.Inc()
+			}
+			return FrameResult{Rejected: 1}
+		}
+		if !json.Valid([]byte(batch.RawJSON)) {
+			s.FramesRejected.Add(int64(len(batch.Frames)))
+			if s.metrics != nil {
+				s.metrics.BatchesRejected.Inc("invalid_raw_json")
+				s.metrics.FramesInvalid.Add(int64(len(batch.Frames)))
+			}
+			return FrameResult{Rejected: len(batch.Frames)}
+		}
+		firstIndex := batch.Frames[0].FrameIndex
+		for _, frame := range batch.Frames[1:] {
+			if frame.FrameIndex != firstIndex {
+				s.FramesRejected.Add(int64(len(batch.Frames)))
+				if s.metrics != nil {
+					s.metrics.BatchesRejected.Inc("ambiguous_raw_tick")
+					s.metrics.FramesInvalid.Add(int64(len(batch.Frames)))
+				}
+				return FrameResult{Rejected: len(batch.Frames)}
+			}
+		}
+	}
 
 	// Validate, then rate limit (invalid frames must not consume budget).
 	var accepted []model.PlayerTelemetryFrame
@@ -518,7 +555,12 @@ func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult
 	if len(accepted) == 0 {
 		return res
 	}
-	hr := s.handler.HandleFrames(batch.MatchID, batch.ServerID, accepted)
+	var hr FrameResult
+	if rawHandler, ok := s.handler.(RawFrameHandler); ok {
+		hr = rawHandler.HandleFramesWithRaw(batch.MatchID, batch.ServerID, accepted, batch.RawJSON)
+	} else {
+		hr = s.handler.HandleFrames(batch.MatchID, batch.ServerID, accepted)
+	}
 	res.Accepted += hr.Accepted
 	res.Rejected += hr.Rejected
 	res.Ignored += hr.Ignored
@@ -630,6 +672,7 @@ type FrameBatch struct {
 	ServerID  string                       `json:"server_id"`
 	Timestamp time.Time                    `json:"timestamp"`
 	Frames    []model.PlayerTelemetryFrame `json:"frames"`
+	RawJSON   string                       `json:"raw_json,omitempty"`
 }
 
 // IngestError is a fast-validation failure with a stable reason code.

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
@@ -313,7 +315,7 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 }
 
 func TestDesktop_MatchSummaryDownloads(t *testing.T) {
-	_, ts := newTestServer(t)
+	s, ts := newTestServer(t)
 	base := ts.URL + "/" + testToken
 	if resp, out := upload(t, ts, false, map[string]string{"fixture.echoreplay": fixturePath}); resp.StatusCode != http.StatusOK || len(out.Results) != 1 || !out.Results[0].OK {
 		t.Fatalf("upload status=%d out=%+v", resp.StatusCode, out)
@@ -349,7 +351,53 @@ func TestDesktop_MatchSummaryDownloads(t *testing.T) {
 		t.Errorf("CSV rows %+v", rows)
 	}
 
-	for _, suffix := range []string{"summary.json", "export.csv"} {
+	// Seed one observation so both the match/player (including shadow) and
+	// scored-case visual evidence routes can be exercised. Default analysis
+	// correctly produces no detections for the clean fixture.
+	ev := model.DetectionEvent{
+		EventID: "desktop-evidence", DetectorID: "MOV_001", DetectorVersion: "1.0.0",
+		MatchID: "SYN-FIXTURE-001", PlayerID: "echovr:1001", FrameIndex: 10,
+		FrameRangeStart: 9, FrameRangeEnd: 11, Timestamp: 10.0 / 15,
+		Severity: 0.8, Confidence: 0.9, EnforcementWeight: 0.8,
+		ObservedValue: "test movement", ExpectedRange: "normal movement",
+		CausalKey: model.CausalKey{PlayerID: "echovr:1001", FrameStart: 9, FrameEnd: 11, AnomalyType: "speed"},
+	}
+	if _, err := s.engine.Store().StoreDetectionEvents(context.Background(), []model.DetectionEvent{ev}, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	var observations struct {
+		Stats  []sqlite.DetectorObservationStats `json:"stats"`
+		Notice string                            `json:"notice"`
+	}
+	if resp := getJSON(t, base+"/api/observations", &observations); resp.StatusCode != http.StatusOK ||
+		len(observations.Stats) != 1 || observations.Stats[0].DetectorID != "MOV_001" || observations.Notice == "" {
+		t.Fatalf("observations: status=%d body=%+v", resp.StatusCode, observations)
+	}
+	caseID := "RC-SYN-FIXTURE-001-echovr:1001"
+	if err := s.engine.Store().StoreReviewCase(context.Background(), model.ReviewCase{
+		CaseID: caseID, MatchID: ev.MatchID, PlayerID: ev.PlayerID, SuspicionScore: 70,
+		Status: model.CaseStatusPending, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		base + "/api/match/SYN-FIXTURE-001/evidence/echovr:1001",
+		base + "/api/case/" + caseID + "/evidence",
+	} {
+		resp, err = http.Get(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
+			!strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'none'") ||
+			!strings.Contains(string(raw), "NEVR evidence review") || !strings.Contains(string(raw), "desktop-evidence") {
+			t.Fatalf("evidence page %s: status=%d headers=%v body=%s", path, resp.StatusCode, resp.Header, raw)
+		}
+	}
+
+	for _, suffix := range []string{"summary.json", "export.csv", "evidence/player"} {
 		if resp := getJSON(t, base+"/api/match/NOPE/"+suffix, nil); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("unknown %s status %d", suffix, resp.StatusCode)
 		}
@@ -365,7 +413,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Full match report", "Player statistics", "Scoring timeline", "Throw log", "Download JSON", "Export player CSV"} {
+	for _, marker := range []string{"Full match report", "Player statistics", "Scoring timeline", "Throw log", "Download JSON", "Export player CSV", "Review replay", "Detector observations"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
@@ -376,7 +424,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 // anything else is 404.
 func TestDesktop_TokenRequired(t *testing.T) {
 	_, ts := newTestServer(t)
-	for _, path := range []string{"/", "/api/flagged", "/api/matches", "/quit", "/wrongtoken/api/flagged", "/" + testToken + "/nope"} {
+	for _, path := range []string{"/", "/api/flagged", "/api/observations", "/api/matches", "/quit", "/wrongtoken/api/flagged", "/" + testToken + "/nope"} {
 		if resp := getJSON(t, ts.URL+path, nil); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET %s: status %d, want 404", path, resp.StatusCode)
 		}

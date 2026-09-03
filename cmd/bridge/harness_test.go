@@ -454,8 +454,22 @@ func TestProbeEndToEnd(t *testing.T) {
 	}
 }
 
+func TestProbeRejectsOversizedSessionInsteadOfStoringTruncatedRaw(t *testing.T) {
+	fb := newFakeBroadcaster(t, strings.Repeat(" ", maxSessionBody)+`{}`, 200)
+	fb.static = true
+	nakama := startFakeNakama(t, matchesFor(fb.port(t), "match-alpha"))
+	cfg := testConfig(nakama.URL, fb.port(t))
+
+	err := doProbe(context.Background(), cfg, &bridgeStats{startTime: time.Now(), mode: "probe"}, testLogger())
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized /session error = %v", err)
+	}
+}
+
 func TestOnceEndToEnd(t *testing.T) {
-	fb := newFakeBroadcaster(t, fakeSessionJSON("sess-1", "playing", 3), 200)
+	rawSession := fakeSessionJSON("sess-1", "playing", 3)
+	fb := newFakeBroadcaster(t, rawSession, 200)
+	fb.static = true
 	nakama := startFakeNakama(t, matchesFor(fb.port(t), "match-1"))
 	fa := startFakeAnticheat(t)
 
@@ -483,6 +497,12 @@ func TestOnceEndToEnd(t *testing.T) {
 	}
 	if len(batch.Frames) != 3 {
 		t.Errorf("batch frames = %d, want 3", len(batch.Frames))
+	}
+	if batch.RawJSON != rawSession {
+		t.Error("batch did not preserve the exact broadcaster response")
+	}
+	if !json.Valid([]byte(batch.RawJSON)) {
+		t.Error("batch raw_json is not valid JSON")
 	}
 	wantServer := fmt.Sprintf("127.0.0.1:%d", fb.port(t))
 	if batch.ServerID != wantServer {
@@ -1080,7 +1100,8 @@ func TestContinuousMode_RealSampleTiming(t *testing.T) {
 
 // Identical snapshots are not forwarded as new frames.
 func TestContinuousMode_DedupsUnchangedSnapshots(t *testing.T) {
-	fb := newFakeBroadcaster(t, fakeSessionJSON("sess-1", "playing", 2), 200)
+	rawSession := fakeSessionJSON("sess-1", "playing", 2)
+	fb := newFakeBroadcaster(t, rawSession, 200)
 	fb.static = true
 	nakama := startFakeNakama(t, matchesFor(fb.port(t), "dup"))
 	fa := startFakeAnticheat(t)
@@ -1099,6 +1120,9 @@ func TestContinuousMode_DedupsUnchangedSnapshots(t *testing.T) {
 	}
 	if stats.PollsDuplicate.Load() < 10 {
 		t.Errorf("duplicate polls = %d", stats.PollsDuplicate.Load())
+	}
+	if batch := fa.lastBatch(); batch == nil || batch.RawJSON != rawSession {
+		t.Error("continuous mode did not preserve the exact broadcaster response")
 	}
 }
 

@@ -288,6 +288,10 @@
     <h2 id="h-flagged">Flagged players</h2>
     <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
   </section>
+  <section class="block" aria-labelledby="h-observations">
+    <h2 id="h-observations">Detector observations</h2>
+    <div id="observations" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div><div class="sk" style="width:54%"></div></div>
+  </section>
   <section class="block" aria-labelledby="h-history">
     <h2 id="h-history">History</h2>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
@@ -364,11 +368,12 @@
     const cap = Math.max((m.levels && m.levels.action_worthy) || 0, ...m.players.map((p) => p.score || 0), 1);
     const rows = m.players.slice().sort((a, b) => (b.score || 0) - (a.score || 0));
     return `<table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th><th class="num">Score</th><th>Level</th>
-      <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th></tr></thead><tbody>` +
+      <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th><th>Evidence</th></tr></thead><tbody>` +
       rows.map((p) => `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${fmtInt(p.frames)}</td>
         <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${badge(p.level)}</td>
         <td class="num">${fmtInt(p.detections)}</td><td class="num dim">${fmtInt(p.shadow_detections)}</td>
-        <td>${p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>'}</td></tr>`).join('') + '</tbody></table>';
+        <td>${p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>'}</td>
+        <td>${p.detections + p.shadow_detections > 0 ? `<a class="btn btn-sm" target="_blank" rel="noopener" href="api/match/${encodeURIComponent(m.match_id)}/evidence/${encodeURIComponent(p.player_id)}">Review replay</a>` : '<span class="muted">—</span>'}</td></tr>`).join('') + '</tbody></table>';
   }
 
   const person = (name, id) => name || id ? who(name, id) : '<span class="muted">—</span>';
@@ -463,7 +468,7 @@
     if (!m.cases.length) return '<p class="empty">No review case was created: no player reached the review threshold.</p>';
     return '<ul class="cases">' + m.cases.map((c) => `<li>${badge(c.level)}<span>${who(c.player_name, c.player_id)}</span>
       <span class="num">score ${fmtNum(c.suspicion_score)}</span><span class="act">${esc(lvlName(c.recommended_action))} · ${esc(c.status)}</span>
-      <span class="case mono">${esc(c.case_id)}</span></li>`).join('') + '</ul>';
+      <span class="case mono">${esc(c.case_id)}</span><a class="btn btn-sm" target="_blank" rel="noopener" href="api/case/${encodeURIComponent(c.case_id)}/evidence">Review replay</a></li>`).join('') + '</ul>';
   }
 
   function diagBlock(m) {
@@ -688,6 +693,21 @@
     } catch (e) { panelError(el, 'the flagged cases', e); }
   }
 
+  async function loadObservations() {
+    const el = $('observations');
+    try {
+      const o = await getJSON('api/observations');
+      el.className = ''; el.removeAttribute('aria-busy');
+      if (!o.stats.length) {
+        el.innerHTML = '<p class="empty">No detection events are stored yet. Versioned shadow-event rates and evidence quality will appear here after analysis.</p>';
+        return;
+      }
+      el.innerHTML = `<table><thead><tr><th>Detector</th><th>Version</th><th class="num">Events</th><th class="num">Shadow</th><th class="num">Matches</th><th class="num">Players</th><th class="num">Max / match</th><th class="num">Severity p95</th><th class="num">Confidence avg / p05</th></tr></thead><tbody>` +
+        o.stats.map((s) => `<tr><td class="mono">${esc(s.detector_id)}</td><td class="mono dim">${esc(s.detector_version)}</td><td class="num">${fmtInt(s.events)}</td><td class="num dim">${fmtInt(s.shadow_events)}</td><td class="num">${fmtInt(s.matches)}</td><td class="num">${fmtInt(s.players)}</td><td class="num">${fmtInt(s.max_events_per_match)}</td><td class="num">${fmtNum(s.p95_severity, 2)}</td><td class="num">${fmtNum(s.mean_confidence, 2)} <span class="muted">/ ${fmtNum(s.p05_confidence, 2)}</span></td></tr>`).join('') +
+        `</tbody></table><p class="summary-note warning">${esc(o.notice)}</p>`;
+    } catch (e) { panelError(el, 'the detector observations', e); }
+  }
+
   async function loadHistory() {
     const el = $('history');
     try {
@@ -745,7 +765,7 @@
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
 
-  function refreshPanels() { loadFlagged(); loadHistory(); }
+  function refreshPanels() { loadFlagged(); loadObservations(); loadHistory(); }
   refreshPanels();
 })();
 </script>

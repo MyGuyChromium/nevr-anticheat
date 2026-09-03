@@ -100,6 +100,7 @@ In shadow mode `enforcement_weight` has **no effect**: shadow events are never s
 | **Stun count granularity.** STATE_007 needs per-frame `stuns` increments. | STATE_007 may be dead on live data. | **HIGH** |
 | **Replay format.** The `.echoreplay` parser exists (`internal/adapter/replay_parser.go`): NDJSON lines of `timestamp\tJSON`, optionally inside a ZIP, streamed per tick. It is what `analyze`/`batch` use. The `internal/replay` `FrameParser` interface and its JSON parser remain for legacy JSON replays only. | None for offline mode; comments that still mention protobuf are stale. | **LOW** |
 | **Live path statefulness.** The pipeline keeps per-player state across batches (`SetSkipReset`), so inline detection works even with one frame per batch. Inline results are `analysis_source = initial`; reprocessing stays canonical. | None; earlier revisions of this document called inline detection non-functional. | **LOW** |
+| **Live raw-source preservation.** The current bridge sends the exact `/session` response with each normalized tick; ingestion validates it and atomically writes it once to `match_ticks`. Legacy/custom WebSocket producers can omit it. | Current bridge matches can be re-examined after mapper/schema changes; older/custom live data may have only normalized frames. | **LOW** — resolved for current bridge |
 | **Trust boundary.** Everything the bridge forwards was pulled over plaintext HTTP from whatever host the Nakama match label advertises. Every batch/control message carries `server_id = "<ip>:<port>"`, which the server records on the match context (`MatchContext.ServerID`, persisted with `match_contexts`, shown in evidence reports); `--broadcaster-allowlist` restricts polling to known hosts. There is no authentication of the broadcaster itself. | A hostile or misconfigured broadcaster can inject arbitrary telemetry (and therefore detection events) for real player IDs. | **HIGH** — always run with an allowlist; treat evidence from a match whose context carries an unknown `server_id` as untrusted |
 
 ## 4. Producers
@@ -107,7 +108,7 @@ In shadow mode `enforcement_weight` has **no effect**: shadow events are never s
 | Producer | Status |
 |----------|--------|
 | **EchoReplayParser** (`internal/adapter`) | DONE. NDJSON/ZIP `.echoreplay`, real line timestamps, spectators dropped, team names mapped, one disc per tick, diagnostics report (`nevr-compat --replay`). |
-| **Live bridge** (`cmd/bridge`) | DONE. Nakama device-auth discovery, `/session` polling with real sample times (`MapSessionAt`), per-match monotonic frame epochs, hello/ack protocol, bounded send queue, `match_start`/`match_end` with team rosters, `--probe`/`--once` validation modes, `--broadcaster-allowlist`. |
+| **Live bridge** (`cmd/bridge`) | DONE. Nakama device-auth discovery, `/session` polling with real sample times (`MapSessionAt`), exact raw response forwarding, per-match monotonic frame epochs, hello/ack protocol, bounded send queue, `match_start`/`match_end` with team rosters, `--probe`/`--once` validation modes, `--broadcaster-allowlist`. |
 | **Legacy JSON replay reader** (`internal/replay`) | Kept for the old JSON layout; physics from `DefaultPhysics`. |
 
 Unknown mapping points that only real data can settle: hand-basis handedness, disc velocity while held, whether `possession` is ever true for more than one player, whether `stuns` updates per frame, whether `is_boosting`/`shield_active`/`is_immune` exist anywhere.
@@ -133,7 +134,7 @@ The test suite passes on synthetic telemetry (`internal/testutil/synthetic.go`: 
 THROW_004, PAT_001, PAT_002 and MOV_003 pass their tests because the tests avoid triggering them on legitimate data. **They will false-positive on real skilled players.** Keep them disabled until calibrated on thousands of real matches.
 
 ### Moderator misuse
-Scores are evidence pointers, not verdicts. The single-match and cross-match cases put the evidence in front of a moderator; `verdict` records the decision and `calibration-report` turns decisions into per-detector precision. **A moderator who acts on a score alone defeats the false-positive prevention design.** No automatic action exists: `enforce.Engine` and `enforce.Policy` are implemented but not wired into any binary.
+Scores are evidence pointers, not verdicts. The single-match and cross-match cases put the evidence in front of a moderator; `evidence-export` produces a self-contained frame-by-frame visual review artifact, `verdict` records the decision and `calibration-report` turns decisions into per-detector precision. **A moderator who acts on a score alone defeats the false-positive prevention design.** No automatic action exists: `enforce.Engine` and `enforce.Policy` are implemented but not wired into any binary.
 
 ### Single point of failure: feature extractor
 All 29 detectors depend on the feature extractor. A single bug in velocity or throw derivation silently breaks everything downstream. There is no independent cross-validation of derived features.
@@ -142,7 +143,7 @@ All 29 detectors depend on the feature extractor. A single bug in velocity or th
 The BROKEN multi-frame mechanism is gone; the v2.0.0 replacement (last pre-release speed vs release speed) is untested on real data, hence UNVERIFIED and disabled. It stays that way until a real replay shows the pre-release snapshot carries a genuine, non-identical disc velocity and `max_speed_delta` is calibrated on it.
 
 ### Storage growth
-Telemetry is never pruned automatically; `nevr-server` prunes detection events after 90 days and score snapshots after 30 days. Raw `.echoreplay` ticks are stored once per tick in `match_ticks`. Budget disk accordingly.
+Telemetry is never pruned automatically; `nevr-server` prunes detection events after 90 days and score snapshots after 30 days. Raw `.echoreplay` and current live-bridge ticks are stored once per tick in `match_ticks`. Budget disk accordingly.
 
 ## 6. Calibration Findings from Real Data (historical)
 

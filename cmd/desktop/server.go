@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
@@ -53,10 +54,13 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
+	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/evidence/{player}", s.handleMatchEvidence)
+	s.mux.HandleFunc("GET "+p+"/api/case/{id}/evidence", s.handleCaseEvidence)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -1012,6 +1016,21 @@ func (s *server) handleFlagged(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *server) handleObservations(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.engine.Store().ComputeObservationStats(r.Context(), time.Time{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading detector observations: %v", err)
+		return
+	}
+	if stats == nil {
+		stats = []sqlite.DetectorObservationStats{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stats":  stats,
+		"notice": "Observation counts are not detector validation; thresholds require labeled real telemetry and moderator verdicts.",
+	})
+}
+
 type rosterEntry struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
@@ -1138,4 +1157,47 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(sum.PlayersCSV())
+}
+
+func (s *server) handleMatchEvidence(w http.ResponseWriter, r *http.Request) {
+	exporter := evidence.NewExporter(s.engine.Store())
+	bundle, err := exporter.ExportForMatchPlayer(r.Context(), r.PathValue("id"), r.PathValue("player"), true, nil)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, evidence.ErrNoEvents) || errors.Is(err, evidence.ErrNoFrames) || errors.Is(err, sqlite.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "building evidence review: %v", err)
+		return
+	}
+	s.writeEvidenceHTML(w, bundle)
+}
+
+func (s *server) handleCaseEvidence(w http.ResponseWriter, r *http.Request) {
+	exporter := evidence.NewExporter(s.engine.Store())
+	bundle, err := exporter.ExportForCase(r.Context(), r.PathValue("id"), nil)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, evidence.ErrNoEvents) || errors.Is(err, evidence.ErrNoFrames) || errors.Is(err, sqlite.ErrNotFound) || strings.Contains(err.Error(), "no rows") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "building evidence review: %v", err)
+		return
+	}
+	s.writeEvidenceHTML(w, bundle)
+}
+
+func (s *server) writeEvidenceHTML(w http.ResponseWriter, bundle *evidence.ReplayBundle) {
+	doc, err := evidence.MarshalHTML(bundle)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encoding evidence review: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="nevr-evidence.html"`)
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(doc)
 }

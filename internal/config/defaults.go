@@ -65,7 +65,7 @@ func DefaultConfig() *Config {
 			MaxMatches:            64,
 			MaxPlayersPerMatch:    16,
 			MaxConnections:        100,
-			MaxMessageBytes:       65536,
+			MaxMessageBytes:       1024 * 1024,
 			MaxFrameRatePerPlayer: 30,
 			IdleTimeout:           5 * time.Minute,
 			StaleMatchAfter:       30 * time.Minute,

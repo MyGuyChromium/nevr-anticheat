@@ -258,7 +258,7 @@ func (p *matchPoller) fetch(ctx context.Context) (pollOutcome, []byte, int, erro
 		return pollTransportErr, nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxSessionBody))
+	body, readErr := readSessionBody(resp.Body)
 	if readErr != nil {
 		return pollBadBody, nil, resp.StatusCode, readErr
 	}
@@ -266,6 +266,20 @@ func (p *matchPoller) fetch(ctx context.Context) (pollOutcome, []byte, int, erro
 		return pollNon200, body, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return pollOK, body, resp.StatusCode, nil
+}
+
+// readSessionBody enforces the limit without silently treating a truncated
+// prefix as the exact broadcaster response. The extra byte distinguishes an
+// exactly-at-limit document from an oversized one.
+func readSessionBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxSessionBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxSessionBody {
+		return nil, fmt.Errorf("/session response exceeds %d-byte limit", maxSessionBody)
+	}
+	return body, nil
 }
 
 // shouldLogFailure throttles repeated failure warnings: 1, 5, 15, 30, then
@@ -484,6 +498,7 @@ func (p *matchPoller) poll(ctx context.Context) (bool, stopReason) {
 		ServerID:  p.serverID(),
 		Timestamp: sampleAt,
 		Frames:    frames,
+		RawJSON:   string(body),
 	}
 
 	if p.sender == nil {

@@ -134,7 +134,7 @@ allow_unauthenticated     = false     # true (or NEVR_AC_ALLOW_UNAUTH=1) runs an
 max_matches               = 64        # concurrently tracked live matches
 max_players_per_match     = 16
 max_connections           = 100       # concurrent producer connections
-max_message_bytes         = 65536     # larger WebSocket messages are discarded (connection stays open)
+max_message_bytes         = 1048576   # carries a bounded raw /session snapshot plus normalized frames; larger messages are discarded
 max_frame_rate_per_player = 30        # sustained frames/s per player; a backlog of at least 10 s of frames (a bridge replaying after a link hiccup) is accepted, only excess beyond that is rejected and not stored
 # Durations MUST be strings ("300s", "5m"). A bare number is a startup error:
 # it would be read as nanoseconds, and idle_timeout = 300 (300 ns) would

@@ -30,7 +30,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -363,30 +362,33 @@ func filterMatches(matches []DiscoveredMatch, cfg *BridgeConfig, stats *bridgeSt
 
 // fetchAndMap does a single /session fetch + mapping for one match. Returns the
 // parsed session, roster, mapping result (frames already spectator-filtered and
-// stamped with the real sample time) and any error. Used by probe and once modes.
+// stamped with the real sample time), exact response body and any error. Used by probe and once modes.
 // If cfg.DumpDir is set, saves raw response and mapped batch to disk.
-func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*adapter.EchoVRSessionResponse, sessionRoster, *adapter.MappingResult, error) {
+func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*adapter.EchoVRSessionResponse, sessionRoster, *adapter.MappingResult, []byte, error) {
 	sessionURL := fmt.Sprintf("http://%s:%d/session", m.BroadcasterIP, cfg.APIPort)
 	logger.Info("fetching broadcaster session", "url", sessionURL)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(sessionURL)
 	if err != nil {
-		return nil, sessionRoster{}, nil, fmt.Errorf("/session not reachable at %s: %w", sessionURL, err)
+		return nil, sessionRoster{}, nil, nil, fmt.Errorf("/session not reachable at %s: %w", sessionURL, err)
 	}
 	defer resp.Body.Close()
 	sampleAt := time.Now()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxSessionBody))
+	body, readErr := readSessionBody(resp.Body)
+	if readErr != nil {
+		return nil, sessionRoster{}, nil, nil, fmt.Errorf("reading /session response: %w", readErr)
+	}
 	if resp.StatusCode != 200 {
-		return nil, sessionRoster{}, nil, fmt.Errorf("/session returned HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, sessionRoster{}, nil, nil, fmt.Errorf("/session returned HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
 
 	dumpRaw(cfg.DumpDir, dumpFilename(m.MatchID, "session_raw.json"), body, logger)
 
 	var session adapter.EchoVRSessionResponse
 	if err := json.Unmarshal(body, &session); err != nil {
-		return nil, sessionRoster{}, nil, fmt.Errorf("invalid JSON from /session: %w (preview: %s)", err, truncate(string(body), 200))
+		return nil, sessionRoster{}, nil, nil, fmt.Errorf("invalid JSON from /session: %w (preview: %s)", err, truncate(string(body), 200))
 	}
 
 	roster := buildRoster(&session)
@@ -409,7 +411,7 @@ func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*ad
 
 	dumpJSON(cfg.DumpDir, dumpFilename(m.MatchID, "mapped_frames.json"), result.Frames, logger)
 
-	return &session, roster, result, nil
+	return &session, roster, result, body, nil
 }
 
 // logResultBlock logs a structured result summary for probe/once modes.
@@ -500,7 +502,7 @@ func doProbe(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger 
 	m := selectMatch(matches)
 	logger.Info("selected match", "match_id", m.MatchID, "reason", "deterministic (match_id ascending)")
 
-	session, roster, result, err := fetchAndMap(m, cfg, logger)
+	session, roster, result, _, err := fetchAndMap(m, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("broadcaster fetch/map failed: %w", err)
 	}
@@ -533,7 +535,7 @@ func doOnce(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *
 	m := selectMatch(matches)
 	logger.Info("selected match", "match_id", m.MatchID, "reason", "deterministic (match_id ascending)")
 
-	session, roster, result, err := fetchAndMap(m, cfg, logger)
+	session, roster, result, rawBody, err := fetchAndMap(m, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("fetch/map failed: %w", err)
 	}
@@ -573,6 +575,7 @@ func doOnce(ctx context.Context, cfg *BridgeConfig, stats *bridgeStats, logger *
 		ServerID:  serverID,
 		Timestamp: time.Now(),
 		Frames:    result.Frames,
+		RawJSON:   string(rawBody),
 	}
 
 	sender, err := newWSSender(cfg, stats, logger)
@@ -869,6 +872,10 @@ type FrameBatch struct {
 	ServerID  string                       `json:"server_id"`
 	Timestamp time.Time                    `json:"timestamp"`
 	Frames    []model.PlayerTelemetryFrame `json:"frames"`
+	// RawJSON is the exact /session response that produced Frames. It is a
+	// string (rather than json.RawMessage) so WebSocket encoding/decoding
+	// preserves the original bytes, including unknown telemetry fields.
+	RawJSON string `json:"raw_json,omitempty"`
 }
 
 // DiscoveredMatch holds info about an active match from Nakama.

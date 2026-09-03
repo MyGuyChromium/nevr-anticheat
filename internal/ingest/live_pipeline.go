@@ -230,6 +230,14 @@ func (match *LiveMatch) nominalDt() float64 {
 // HandleFrames processes a batch of frames for a match. serverID is the
 // batch's provenance stamp (may be empty).
 func (mm *MatchManager) HandleFrames(matchID, serverID string, frames []model.PlayerTelemetryFrame) FrameResult {
+	return mm.HandleFramesWithRaw(matchID, serverID, frames, "")
+}
+
+// HandleFramesWithRaw processes normalized frames and preserves the exact
+// broadcaster payload once for their tick. Existing producers may omit rawJSON;
+// bridge producers send it so future schema changes and disputed detections can
+// be investigated without relying only on derived frames.
+func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []model.PlayerTelemetryFrame, rawJSON string) FrameResult {
 	if len(frames) == 0 {
 		return FrameResult{}
 	}
@@ -318,7 +326,11 @@ func (mm *MatchManager) HandleFrames(matchID, serverID string, frames []model.Pl
 	// could not write is not processed either: inline results must never
 	// exist for frames the store does not hold, and the frame bookkeeping
 	// stays where it was so the producer can re-send the batch unchanged.
-	stored, storeErr := mm.store.StoreTelemetryFrames(ctx, matchID, frames)
+	var rawByFrame map[int]string
+	if rawJSON != "" {
+		rawByFrame = map[int]string{frames[0].FrameIndex: rawJSON}
+	}
+	storeResult, storeErr := mm.store.StoreTelemetryFramesWithRaw(ctx, matchID, frames, rawByFrame)
 	if storeErr != nil {
 		mm.logger.Warn("failed to store telemetry; batch not processed", "match", matchID, "frames", len(frames), "error", storeErr)
 		if mm.metrics != nil {
@@ -327,9 +339,9 @@ func (mm *MatchManager) HandleFrames(matchID, serverID string, frames []model.Pl
 		res.Rejected += len(frames)
 		return res
 	}
-	match.RowsStored += stored
-	res.Accepted += stored
-	if ignored := len(frames) - stored; ignored > 0 {
+	match.RowsStored += storeResult.Inserted
+	res.Accepted += storeResult.Inserted
+	if ignored := len(frames) - storeResult.Inserted; ignored > 0 {
 		res.Ignored += ignored
 		if mm.metrics != nil {
 			mm.metrics.FramesIgnored.Add(int64(ignored))

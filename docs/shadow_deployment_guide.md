@@ -218,7 +218,7 @@ Metrics that matter (all exist on `/metrics`):
 
 ### Matches 6–10: baseline collection
 
-Use the stored evidence, not scores: `evidence_json` carries the measured values (release speed, hand speed, stun seconds, ...). Export per detector with `sqlite3 -json nevr-ac-shadow.db "SELECT detector_id, player_id, observed_value, evidence_json FROM detection_events WHERE detector_id = 'THROW_001';"` and build distributions. Bimodal release-speed distributions suggest a cheater in the sample; > 50 % of hand speeds above 12 m/s suggests a coordinate/scale problem.
+Use the stored evidence, not scores: `evidence_json` carries the measured values (release speed, hand speed, stun seconds, ...). Export per detector with `sqlite3 -json nevr-ac-shadow.db "SELECT detector_id, player_id, observed_value, evidence_json FROM detection_events WHERE detector_id = 'THROW_001';"` and build distributions. For a visual spot check, run `./nevr-ac --config configs/shadow_deploy.toml evidence-export --match <match-id> --player <player-id> review.html --include-shadow`; the standalone page shows the event windows, every player, tracked hands and disc. Bimodal release-speed distributions suggest a cheater in the sample; > 50 % of hand speeds above 12 m/s suggests a coordinate/scale problem.
 
 ## Immediate stop conditions
 
@@ -236,7 +236,7 @@ Use the stored evidence, not scores: `evidence_json` carries the measured values
 ## Promotion loop: how a detector leaves shadow
 
 1. Collect ≥ 10 matches in shadow. Review the `detection_events` samples for the candidate detector.
-2. **Copy the database** (`cp nevr-ac-shadow.db calib.db`) and write a calibration overlay that scores only the candidate:
+2. **Back up the database** (`./nevr-ac --config configs/shadow_deploy.toml backup calib.db`) and write a calibration overlay that points at `calib.db` and scores only the candidate. This uses SQLite's consistent snapshot operation, includes committed WAL content, verifies the copy, and refuses to overwrite an earlier calibration artifact:
 
    ```toml
    [general]
@@ -247,6 +247,6 @@ Use the stored evidence, not scores: `evidence_json` carries the measured values
 
    Load it *on top of* the shadow file by merging the two files into one (the loader reads a single file); the overlay semantics make that a copy of `shadow_deploy.toml` plus these lines.
 3. Reprocess the collected matches with it: `./nevr-ac --config calib.toml reprocess-timerange 2026-09-01T00:00:00Z 2026-10-01T00:00:00Z` (half-open on match time). This **replaces** the events of those matches in `calib.db`; the candidate's events are now scored, players at or above `review_threshold` (60) get `RC-<match>-<player>` cases, and `cross-match` builds `XM-<player>` cases.
-4. Moderators review: `./nevr-ac --config calib.toml flagged`, `report <case-id>`, then `verdict <case-id> confirmed_cheat|false_positive|inconclusive|needs_more_data --by <mod> --detector THROW_001=yes|no`.
+4. Moderators review: `./nevr-ac --config calib.toml flagged`, `report <case-id>`, `evidence-export <case-id> review.html`, then `verdict <case-id> confirmed_cheat|false_positive|inconclusive|needs_more_data --by <mod> --detector THROW_001=yes|no`.
 5. `./nevr-ac --config calib.toml calibration-report` shows per-detector confirmed / false-positive counts and precision. Promote a detector to `mode = "review"` in the live config only when its precision is acceptable over a meaningful number of decided cases; demote (`mode = "shadow"`) at the first confirmed false positive.
 6. Restart `nevr-server` after every config change (there is no hot reload). The effective detector table it reports at startup (`"msg":"effective detector"` records in `server.log`) is the confirmation; for an offline `nevr-ac` run add `--verbose` to see the same table.

@@ -32,15 +32,18 @@ Two processes make a live deployment: `nevr-server` (ingestion + storage) and `n
 
 ## After match 1
 
+- [ ] Preserve a verified snapshot before analysis: `./nevr-ac --config configs/shadow_deploy.toml backup backups/after-match-1.db` (choose a new filename each time; existing backups are never overwritten).
 - [ ] Bridge log has `match_end` with reason `post_match_detected` (or the server finalized after 30 min idle).
 - [ ] Events exist, all shadow: `sqlite3 nevr-ac-shadow.db "SELECT is_shadow, COUNT(*) FROM detection_events GROUP BY is_shadow;"` — only `1|N`.
 - [ ] Per-detector counts: `sqlite3 nevr-ac-shadow.db "SELECT detector_id, COUNT(*) FROM detection_events GROUP BY detector_id;"` — no detector > 50.
+- [ ] For each player with events, export a visual spot check: `./nevr-ac --config configs/shadow_deploy.toml evidence-export --match <match-id> --player <player-id> review.html --include-shadow`.
 - [ ] **BIO_001 must be 0** on bridge data: `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events WHERE detector_id='BIO_001';"` — if > 0, disable BIO_001 and BIO_004 and restart.
 - [ ] Severities finite: `sqlite3 nevr-ac-shadow.db "SELECT detector_id, MAX(severity), MAX(confidence) FROM detection_events GROUP BY detector_id;"` — all within 0–1.
 - [ ] No auto-enforce: `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM detection_events WHERE auto_enforce=1;"` — 0.
 - [ ] No scores / cases (shadow never scores): `sqlite3 nevr-ac-shadow.db "SELECT COUNT(*) FROM suspicion_scores; SELECT COUNT(*) FROM review_cases; SELECT COUNT(*) FROM cross_match_review_cases;"` — 0, 0, 0.
 - [ ] Match context stored: `sqlite3 nevr-ac-shadow.db "SELECT match_id, match_start_time, frame_count FROM match_contexts;"` — start time set (UTC RFC3339 `Z`).
 - [ ] Telemetry stored: `sqlite3 nevr-ac-shadow.db "SELECT match_id, COUNT(*) FROM telemetry_frames GROUP BY match_id;"` — roughly 15 × players × seconds.
+- [ ] Exact live ticks stored: `sqlite3 nevr-ac-shadow.db "SELECT match_id, COUNT(*) FROM match_ticks GROUP BY match_id;"` — roughly 15 × seconds for current bridge traffic; 0 means an outdated/custom producer omitted `raw_json`.
 - [ ] DB size: `ls -lh nevr-ac-shadow.db*` (WAL sidecars included) — telemetry for one match is a few MB.
 
 ## After match 5
@@ -54,7 +57,7 @@ Two processes make a live deployment: `nevr-server` (ingestion + storage) and `n
 
 - [ ] All checks above.
 - [ ] DB size and memory: `ls -lh nevr-ac-shadow.db*`; `ps -o rss= -p $(pgrep nevr-server)` < 500 MB.
-- [ ] Copy the database and start the promotion loop in `docs/shadow_deployment_guide.md` (reprocess with a review-mode overlay on the copy, `flagged`, `report`, `verdict`, `calibration-report`).
+- [ ] Create a verified database backup and start the promotion loop in `docs/shadow_deployment_guide.md` (reprocess with a review-mode overlay on the copy, `flagged`, `report`, `evidence-export`, `verdict`, `calibration-report`).
 
 ## STOP conditions (shut down immediately)
 
@@ -77,7 +80,7 @@ Stop the bridge first so the server receives `match_end` and finalizes cleanly; 
 
 ## After shutdown
 
-- [ ] Copy `nevr-ac-shadow.db` (after a clean server shutdown the WAL is checkpointed) for offline analysis.
+- [ ] Run `./nevr-ac --config configs/shadow_deploy.toml backup backups/shutdown-<date>.db` for a consistent, integrity-checked offline copy. Do not copy only the `.db` file from a running WAL database.
 - [ ] Review the detection event distribution per detector and per player.
 - [ ] Compare known-cheater matches against known-clean matches using `evidence_json`.
 - [ ] Document every suspected false positive with detector ID, `event_id` and the evidence, then feed it through the promotion loop (`verdict --detector ID=no`).
