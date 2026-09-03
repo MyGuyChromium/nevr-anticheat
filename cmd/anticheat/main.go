@@ -347,11 +347,9 @@ func printCountMap(title string, m map[string]int) {
 		}
 		return keys[i] < keys[j]
 	})
-	fmt.Printf("%s:
-", title)
+	fmt.Printf("%s:\n", title)
 	for _, k := range keys {
-		fmt.Printf("  %-32s %d
-", k, m[k])
+		fmt.Printf("  %-32s %d\n", k, m[k])
 	}
 }
 
