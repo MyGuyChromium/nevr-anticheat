@@ -276,7 +276,7 @@ func TestConfigDocs_ContractFieldsExist(t *testing.T) {
 			t.Errorf("telemetry_contract.md documents field `%s`, which no wire struct decodes", m[1])
 		}
 	}
-	for _, must := range []string{"`possessor_id`", "`is_held`", "`holder_id`", "`team`", "12.5", "82"} {
+	for _, must := range []string{"`possessor_id`", "`is_held`", "`holder_id`", "`team`", "21", "82"} {
 		if !strings.Contains(src, must) {
 			t.Errorf("telemetry_contract.md must mention %s", must)
 		}
