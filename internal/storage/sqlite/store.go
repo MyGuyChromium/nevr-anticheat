@@ -906,16 +906,23 @@ func (s *Store) GetCaseDecisions(ctx context.Context, caseID string) ([]model.Mo
 // Match summaries and enforcement
 // ---------------------------------------------------------------------------
 
-// StoreMatchSummary persists a match summary.
+// StoreMatchSummary persists the live pipeline's end-of-match summary in the
+// legacy columns of match_summaries. An existing row is updated in place and
+// keeps its summary_json (the offline document, see StoreMatchSummaryJSON).
 func (s *Store) StoreMatchSummary(ctx context.Context, summary model.MatchSummary) error {
 	flaggedJSON, err := json.Marshal(summary.FlaggedPlayers)
 	if err != nil {
 		return fmt.Errorf("marshal flagged players: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO match_summaries (match_id, map_name, game_mode, is_ranked, start_time,
+		`INSERT INTO match_summaries (match_id, map_name, game_mode, is_ranked, start_time,
 			duration_seconds, frame_count, total_detections, flagged_players, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(match_id) DO UPDATE SET
+			map_name = excluded.map_name, game_mode = excluded.game_mode, is_ranked = excluded.is_ranked,
+			start_time = excluded.start_time, duration_seconds = excluded.duration_seconds,
+			frame_count = excluded.frame_count, total_detections = excluded.total_detections,
+			flagged_players = excluded.flagged_players, created_at = excluded.created_at`,
 		summary.MatchID, summary.Map, summary.GameMode, summary.IsRanked,
 		fmtDBTimeOrEmpty(summary.StartTime), summary.Duration.Seconds(),
 		summary.FrameCount, summary.TotalDetectionEvents, string(flaggedJSON), fmtDBTime(time.Now()),

@@ -669,6 +669,16 @@ func (m *Mapper) convertHand(h *EchoVRHand, warnings *[]MappingWarning, field, w
 	return q
 }
 
+// PlayerIDOf is the player id the mapper keys everything by ("echovr:<userid>",
+// or "name:<name>" for a player without a user id), for consumers that read
+// the decoded session directly (ParsedTick.Session).
+func PlayerIDOf(p *EchoVRPlayer) string { return playerID(*p) }
+
+// MappedTeamName resolves an Echo VR team entry to "blue"/"orange" exactly
+// as the mapper does (see mappedTeamName); ok is false for spectators and
+// any other team.
+func MappedTeamName(name string, idx int) (team string, ok bool) { return mappedTeamName(name, idx) }
+
 // playerID creates a stable player identifier from Echo VR player data.
 // Uses UserID (numeric Oculus ID) which survives name changes.
 func playerID(p EchoVRPlayer) string {

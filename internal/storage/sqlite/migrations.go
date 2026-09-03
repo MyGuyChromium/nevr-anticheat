@@ -355,6 +355,10 @@ var migrations = []MigrationVersion{
 		CREATE INDEX IF NOT EXISTS idx_cases_threshold ON review_cases(threshold_version);
 		` + normalizeTimestampSQL("schema_migrations", "applied_at"),
 	},
+	{
+		Version: 12, Description: "match_summaries.summary_json: the offline match summary document (scoreboard, goals, throws)",
+		SQL:     `ALTER TABLE match_summaries ADD COLUMN summary_json TEXT;`,
+	},
 }
 
 // normalizeTimestampSQL rewrites every legacy value of one timestamp column

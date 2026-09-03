@@ -100,6 +100,14 @@ type EchoVRPlayer struct {
 	Possession   bool `json:"possession"`   // CONFIRMED: player holds the disc
 	Blocking     bool `json:"blocking"`     // CONFIRMED: shield/block active
 
+	// CONFIRMED from a real Spark recording: what each hand holds, "none",
+	// "disc" (both hands report "disc" while the player carries it), "geo"
+	// (arena geometry) or another player's number. Unlike Possession, which
+	// stays true for the last carrier until someone else grabs the disc,
+	// these drop to "none" at the release, so they mark the throw.
+	HoldingLeft  string `json:"holding_left"`  // CONFIRMED
+	HoldingRight string `json:"holding_right"` // CONFIRMED
+
 	// CONFIRMED: ping field exists in Echo VR API
 	Ping int `json:"ping"` // CONFIRMED: player ping in ms
 
@@ -153,13 +161,49 @@ type EchoVRTeamStats struct {
 
 // EchoVRLastScore contains info about the last goal scored.
 type EchoVRLastScore struct {
-	DiscSpeed      float64 `json:"disc_speed"`      // LIKELY: disc speed at goal
-	Team           string  `json:"team"`            // LIKELY: scoring team
-	GoalType       string  `json:"goal_type"`       // LIKELY: "INSIDE SHOT", "OUTSIDE SHOT", etc.
-	PointAmount    int     `json:"point_amount"`    // LIKELY: 2 or 3
-	DistanceThrown float64 `json:"distance_thrown"` // LIKELY
-	PersonScored   string  `json:"person_scored"`   // LIKELY: player name
-	AssistedBy     string  `json:"assisted_by"`     // LIKELY
+	DiscSpeed      float64 `json:"disc_speed"`      // CONFIRMED from a real replay: disc speed at goal (m/s)
+	Team           string  `json:"team"`            // CONFIRMED: "blue" / "orange"
+	GoalType       string  `json:"goal_type"`       // CONFIRMED: "INSIDE SHOT", "LONG SHOT", ...
+	PointAmount    int     `json:"point_amount"`    // CONFIRMED: 2 or 3
+	DistanceThrown float64 `json:"distance_thrown"` // CONFIRMED: metres
+	PersonScored   string  `json:"person_scored"`   // CONFIRMED: player name, "[INVALID]" once the player left
+	AssistedBy     string  `json:"assisted_by"`     // LIKELY: community docs spell the assist this way
+	AssistScored   string  `json:"assist_scored"`   // CONFIRMED: the real API's spelling ("[INVALID]" when none)
+}
+
+// invalidName is what the API reports for a player it can no longer name.
+const invalidName = "[INVALID]"
+
+// cleanName returns name, or "" when it is empty or the API's "[INVALID]".
+func cleanName(name string) string {
+	if name == invalidName {
+		return ""
+	}
+	return name
+}
+
+// Scorer returns the scorer's name, "" when unknown.
+func (ls *EchoVRLastScore) Scorer() string { return cleanName(ls.PersonScored) }
+
+// Assist returns the assisting player's name under either spelling, "" when
+// the goal was unassisted or the API reported "[INVALID]".
+func (ls *EchoVRLastScore) Assist() string {
+	if n := cleanName(ls.AssistScored); n != "" {
+		return n
+	}
+	return cleanName(ls.AssistedBy)
+}
+
+// HoldsDisc reports whether either hand carries the disc (see HoldingLeft).
+func (p *EchoVRPlayer) HoldsDisc() bool {
+	return p.HoldingLeft == "disc" || p.HoldingRight == "disc"
+}
+
+// HasHoldingFields reports whether the snapshot carries the holding_left /
+// holding_right fields at all (they are absent from some synthetic or older
+// sources, whose only release signal is the Possession boolean).
+func (p *EchoVRPlayer) HasHoldingFields() bool {
+	return p.HoldingLeft != "" || p.HoldingRight != ""
 }
 
 // Note: Top-level "possession" is a [2]int array (team_idx, player_idx).

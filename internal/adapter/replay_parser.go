@@ -89,6 +89,10 @@ type ParsedTick struct {
 	Frames []model.PlayerTelemetryFrame
 	// RawJSON is the original session payload of the line.
 	RawJSON string
+	// Session is the decoded payload (the same document RawJSON holds), so
+	// consumers that need the per-player stats, the last goal or the disc
+	// need not decode it again. It is not shared between ticks.
+	Session *EchoVRSessionResponse
 }
 
 // EchoReplayParser reads .echoreplay files.
@@ -438,6 +442,7 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 			SampleTime: sampleTime,
 			Frames:     result.Frames,
 			RawJSON:    string(jsonBytes),
+			Session:    &session,
 		}
 		pendingNewMatch = false
 		if err := fn(tick); err != nil {
