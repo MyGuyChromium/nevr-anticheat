@@ -26,6 +26,15 @@ type ThrowEvent struct {
 	HandPosition Vec3    `json:"hand_position"`
 	HandVelocity Vec3    `json:"hand_velocity"`
 	HandSpeed    float64 `json:"hand_speed"`
+	// HandRelativeVelocity removes player translation from HandVelocity.
+	// HandAttributionConfidence describes only the left/right hand choice;
+	// Attribution.Confidence independently describes the thrower identity.
+	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`
+	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
+	HandTracked               bool    `json:"hand_tracked"`
+	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
+	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
+	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
 
 	WristOrientation     Quat    `json:"wrist_orientation"`
 	WristAngularVelocity float64 `json:"wrist_angular_velocity"`
@@ -33,6 +42,9 @@ type ThrowEvent struct {
 	PlayerPosition Vec3 `json:"player_position"`
 	PlayerVelocity Vec3 `json:"player_velocity"`
 
+	// HandToDiscDistance is measured against HandAttributionAnchor. Normally
+	// that is the held disc position from the frame immediately before release;
+	// the current free-disc position is only a lower-quality fallback.
 	HandToDiscDistance float64 `json:"hand_to_disc_distance"`
 	// ReleaseAngle is the world-frame angle (degrees) between the throwing
 	// hand's velocity and the disc's release velocity. Because both vectors

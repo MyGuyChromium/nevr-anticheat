@@ -14,7 +14,10 @@ import (
 // that cannot be produced by one bad sample. Same floor as BIO_001.
 const minSustainedHandFrames = 3
 
-// Bio002 detects impossible hand speeds (BIO_002).
+// Bio002 detects impossible controller speeds relative to player translation
+// (BIO_002). World-space hand velocity includes the player's own movement; a
+// fast legal boost or a movement cheat must not also become independent
+// biomechanical evidence merely because the hands moved with the body.
 //
 // "Consecutive" is by frame index: a stunned, immune, unknown-dt or stale
 // frame breaks the run (see streak.advance), so an event's ConsecutiveFrames
@@ -34,7 +37,7 @@ func NewBio002(params map[string]any) *Bio002 {
 	d := &Bio002{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "BIO_002",
-			DetectorVersion:  "2.1.0",
+			DetectorVersion:  "2.2.0",
 			DetectorName:     "Impossible Hand Speed",
 			DetectorCategory: "bio",
 			Inputs:           []string{"hand_tracking"},
@@ -84,8 +87,8 @@ func (d *Bio002) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			continue
 		}
 
-		d.checkHand(matchCtx, ps, pid, "left", ps.LeftHandSpeed, getStreak(d.left, pid), frameIdx, &events)
-		d.checkHand(matchCtx, ps, pid, "right", ps.RightHandSpeed, getStreak(d.right, pid), frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "left", ps.LeftHandRelativeSpeed, ps.LeftHandSpeed, getStreak(d.left, pid), frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "right", ps.RightHandRelativeSpeed, ps.RightHandSpeed, getStreak(d.right, pid), frameIdx, &events)
 	}
 
 	return events
@@ -95,7 +98,7 @@ func (d *Bio002) checkHand(
 	matchCtx *model.MatchContext,
 	ps *model.PlayerState,
 	pid, handName string,
-	speed float64,
+	speed, worldSpeed float64,
 	s *streak,
 	frameIdx int,
 	events *[]model.DetectionEvent,
@@ -124,14 +127,16 @@ func (d *Bio002) checkHand(
 		model.HandSpeedEvidence{
 			Hand:              handName,
 			Speed:             speed,
+			WorldSpeed:        worldSpeed,
+			ReferenceFrame:    "player_relative",
 			ConsecutiveFrames: consecutive,
 			FrameDt:           ps.FrameDt,
 			PhysicalLimit:     d.maxHandSpeed,
 			PlayerSpeed:       ps.Speed,
 			SpeedRatio:        speedRatio,
 		},
-		fmt.Sprintf("hand_speed: %.1f m/s (%s, %d frames)", speed, handName, consecutive),
-		fmt.Sprintf("hand_speed: 0-%.1f m/s", d.maxHandSpeed),
+		fmt.Sprintf("relative_hand_speed: %.1f m/s (%s, world %.1f m/s, %d frames)", speed, handName, worldSpeed, consecutive),
+		fmt.Sprintf("relative_hand_speed: 0-%.1f m/s", d.maxHandSpeed),
 		model.CausalKey{
 			PlayerID:    pid,
 			FrameStart:  frameIdx - consecutive + 1,

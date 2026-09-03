@@ -263,13 +263,14 @@ min_violation_frames       = 3      # frames; the code floors this at 3
 sigmoid_steepness          = 8.5
 
 [detector.BIO_002]
-# Impossible Hand Speed. PHYSICS_GROUNDED: 50 m/s is ~4x the human limit.
+# Impossible Hand Speed. PHYSICS_GROUNDED: the player-relative controller
+# speed removes body translation; 50 m/s is ~4x the human limit.
 enabled            = true
 enforcement_weight = 0.6
 mode               = "shadow"
 [detector.BIO_002.params]
-max_hand_speed       = 50.0   # m/s
-min_violation_frames = 2      # frames (floor 1)
+max_hand_speed       = 50.0   # m/s relative to player translation
+min_violation_frames = 2      # frames; the code floors this at 3
 sigmoid_steepness    = 8.5
 
 [detector.BIO_003]

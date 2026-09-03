@@ -461,16 +461,17 @@ func (p *Pipeline) emit(events []model.DetectionEvent, result *MatchResult) {
 		result.EventsRateLimitedByKey[key] += n
 	}
 	for _, ev := range kept {
-		p.scorer.IngestEvent(ev)
+		_, scored := p.scorer.IngestEventWithResult(ev)
 		result.DetectionEvents = append(result.DetectionEvents, ev)
 
-		if ev.IsShadow {
+		if ev.IsShadow || !scored {
 			continue
 		}
 
 		// Feed PAT_004 (composite multi-cheat) only with events that are
-		// non-shadow, deduplicated and not rate limited, so a composite flag
-		// can never be built from detections that are never scored.
+		// non-shadow, deduplicated, not rate limited and actually accepted by
+		// the scorer (positive weight/severity/confidence, outside cooldown and
+		// cap), so a composite flag can never be built from unscored evidence.
 		if ev.Confidence >= pat004MinConfidence && ev.DetectorID != "PAT_004" {
 			category := p.detectorCategory(ev.DetectorID)
 			for _, det := range p.detectors {

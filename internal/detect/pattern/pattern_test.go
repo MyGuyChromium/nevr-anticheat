@@ -127,6 +127,27 @@ func TestPat002_LeftHandedThrowerNotFlaggedByIdleRightHand(t *testing.T) {
 	}
 }
 
+func TestPat002_UnknownThrowingHandIsNotSampled(t *testing.T) {
+	d := NewPat002(map[string]any{"min_throw_count": 3})
+	mc := ctx()
+	for i := 0; i < 10; i++ {
+		fi := i * 30
+		ps := active("p1", fi)
+		ps.ThrowCount = i + 1
+		ps.LastThrow = &model.ThrowEvent{
+			ThrowingHand:   "unknown",
+			PlayerPosition: ps.Position,
+			ReleaseSpeed:   12,
+		}
+		if ev := d.Evaluate(mc, players(ps), fi); len(ev) != 0 {
+			t.Fatalf("unknown hand produced release-point evidence at throw %d", i+1)
+		}
+	}
+	if got := len(d.releasePositions["p1"]); got != 0 {
+		t.Fatalf("sampled %d unknown-hand release positions", got)
+	}
+}
+
 func TestPat002_BodyFrameReleasePointFiresWhenFacingChanges(t *testing.T) {
 	// The shipped min_throw_count is 12; 8 keeps the ten-throw schedule
 	// below firing exactly once.

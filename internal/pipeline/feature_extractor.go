@@ -250,16 +250,24 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		if !prevLeftHand.IsZero() && !frame.LeftHandPosition.IsZero() {
 			ps.LeftHandVelocity = frame.LeftHandPosition.Sub(prevLeftHand).Scale(1.0 / dt)
 			ps.LeftHandSpeed = ps.LeftHandVelocity.Magnitude()
+			ps.LeftHandRelativeVelocity = ps.LeftHandVelocity.Sub(ps.Velocity)
+			ps.LeftHandRelativeSpeed = ps.LeftHandRelativeVelocity.Magnitude()
 		} else {
 			ps.LeftHandVelocity = model.Vec3{}
 			ps.LeftHandSpeed = 0
+			ps.LeftHandRelativeVelocity = model.Vec3{}
+			ps.LeftHandRelativeSpeed = 0
 		}
 		if !prevRightHand.IsZero() && !frame.RightHandPosition.IsZero() {
 			ps.RightHandVelocity = frame.RightHandPosition.Sub(prevRightHand).Scale(1.0 / dt)
 			ps.RightHandSpeed = ps.RightHandVelocity.Magnitude()
+			ps.RightHandRelativeVelocity = ps.RightHandVelocity.Sub(ps.Velocity)
+			ps.RightHandRelativeSpeed = ps.RightHandRelativeVelocity.Magnitude()
 		} else {
 			ps.RightHandVelocity = model.Vec3{}
 			ps.RightHandSpeed = 0
+			ps.RightHandRelativeVelocity = model.Vec3{}
+			ps.RightHandRelativeSpeed = 0
 		}
 
 		// Wrist angular rates — quaternion angular distance / dt
@@ -276,8 +284,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 
 		// Update Welford accumulators
 		ps.SpeedStats.Update(ps.Speed)
-		ps.LeftHandSpeedStats.Update(ps.LeftHandSpeed)
-		ps.RightHandSpeedStats.Update(ps.RightHandSpeed)
+		ps.LeftHandSpeedStats.Update(ps.LeftHandRelativeSpeed)
+		ps.RightHandSpeedStats.Update(ps.RightHandRelativeSpeed)
 	} else {
 		// No valid finite difference for this frame: clear derived kinematics
 		// so detectors and histories never consume values from before a gap,
@@ -290,6 +298,10 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.RightHandVelocity = model.Vec3{}
 		ps.LeftHandSpeed = 0
 		ps.RightHandSpeed = 0
+		ps.LeftHandRelativeVelocity = model.Vec3{}
+		ps.RightHandRelativeVelocity = model.Vec3{}
+		ps.LeftHandRelativeSpeed = 0
+		ps.RightHandRelativeSpeed = 0
 		ps.LeftWristAngularRate = 0
 		ps.RightWristAngularRate = 0
 	}
@@ -501,9 +513,13 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 	if n <= 0 {
 		return nil
 	}
-	handHist := ps.RightHandHistory
-	rotHist := ps.RightHandRotHistory
-	if throwingHand == "left" {
+	var handHist []model.Vec3
+	var rotHist []model.Quat
+	switch throwingHand {
+	case "right":
+		handHist = ps.RightHandHistory
+		rotHist = ps.RightHandRotHistory
+	case "left":
 		handHist = ps.LeftHandHistory
 		rotHist = ps.LeftHandRotHistory
 	}
@@ -556,6 +572,49 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 	return snaps
 }
 
+// throwHandAnchor returns the best observed disc position for choosing the
+// throwing hand. Possession transitions are first observed after the disc has
+// become free, so the current disc may already be more than a metre from the
+// releasing hand. The prior held-frame position is the correctly aligned
+// anchor when available.
+func (fe *FeatureExtractor) throwHandAnchor(playerID string, releasePos model.Vec3) (model.Vec3, string, float64) {
+	hist := fe.discHistory[playerID]
+	if len(hist) > 0 {
+		last := hist[len(hist)-1]
+		if !last.missing {
+			return last.pos, "previous_held_disc", 1.0
+		}
+	}
+	return releasePos, "current_free_disc", 0.5
+}
+
+// selectThrowingHand chooses only among tracked hands. Confidence is a
+// transparent geometry-quality score: 1 means one hand is at the anchor and
+// the other is far away, 0 means the two tracked hands are equally close.
+// With only one tracked hand there is no safe way to know whether it or the
+// missing hand released the disc, so the result stays unknown.
+func selectThrowingHand(left, right, anchor model.Vec3, anchorQuality float64) (string, model.Vec3, float64, float64) {
+	leftTracked := !left.IsZero()
+	rightTracked := !right.IsZero()
+	switch {
+	case leftTracked && rightTracked:
+		leftDist := left.Distance(anchor)
+		rightDist := right.Distance(anchor)
+		maxDist := math.Max(leftDist, rightDist)
+		confidence := 0.0
+		if maxDist > 0 {
+			confidence = math.Abs(leftDist-rightDist) / maxDist
+		}
+		confidence = model.Clamp01(confidence * anchorQuality)
+		if leftDist < rightDist {
+			return "left", left, leftDist, confidence
+		}
+		return "right", right, rightDist, confidence
+	default:
+		return "unknown", model.Vec3{}, 0, 0
+	}
+}
+
 // detectThrow fires when a player releases the disc.
 func (fe *FeatureExtractor) detectThrow(
 	ps *model.PlayerState,
@@ -583,27 +642,36 @@ func (fe *FeatureExtractor) detectThrow(
 		return
 	}
 
-	// Determine throwing hand: which hand was closer to the disc at release
-	leftDist := prevLeftHand.Distance(releasePos)
-	rightDist := prevRightHand.Distance(releasePos)
+	// Choose the hand against the prior held-disc position when possible.
+	// Never treat the zero-vector tracking-loss sentinel as a real hand.
+	handAnchor, handAnchorName, anchorQuality := fe.throwHandAnchor(ps.PlayerID, releasePos)
+	throwingHand, handPos, handToDiscDist, handAttributionConfidence :=
+		selectThrowingHand(prevLeftHand, prevRightHand, handAnchor, anchorQuality)
 
-	throwingHand := "right"
-	handPos := prevRightHand
-	handVel := ps.RightHandVelocity
-	handSpeed := ps.RightHandSpeed
-	wristRot := prevRightHandRot
-	wristAngVel := ps.RightWristAngularRate
-
-	if leftDist < rightDist {
-		throwingHand = "left"
-		handPos = prevLeftHand
+	var handVel, handRelativeVel model.Vec3
+	var handSpeed, handRelativeSpeed, wristAngVel float64
+	var wristRot model.Quat
+	handKinematicsValid := false
+	switch throwingHand {
+	case "left":
 		handVel = ps.LeftHandVelocity
 		handSpeed = ps.LeftHandSpeed
+		handRelativeVel = ps.LeftHandRelativeVelocity
+		handRelativeSpeed = ps.LeftHandRelativeSpeed
 		wristRot = prevLeftHandRot
 		wristAngVel = ps.LeftWristAngularRate
+		handKinematicsValid = !frame.LeftHandPosition.IsZero()
+	case "right":
+		handVel = ps.RightHandVelocity
+		handSpeed = ps.RightHandSpeed
+		handRelativeVel = ps.RightHandRelativeVelocity
+		handRelativeSpeed = ps.RightHandRelativeSpeed
+		wristRot = prevRightHandRot
+		wristAngVel = ps.RightWristAngularRate
+		handKinematicsValid = !frame.RightHandPosition.IsZero()
+	default:
+		handAnchorName = "none"
 	}
-
-	handToDiscDist := handPos.Distance(releasePos)
 
 	// Release angle: world-frame angle between hand velocity and disc velocity
 	releaseAngle := 0.0
@@ -640,27 +708,33 @@ func (fe *FeatureExtractor) detectThrow(
 			PlayerID: ps.PlayerID, Confidence: 0.9,
 			Method: "possession_track", LookbackDepth: 1,
 		},
-		FrameIndex:           frame.FrameIndex,
-		Timestamp:            frame.Timestamp,
-		ReleasePosition:      releasePos,
-		ReleaseVelocity:      releaseVel,
-		ReleaseSpeed:         releaseSpeed,
-		ThrowingHand:         throwingHand,
-		HandPosition:         handPos,
-		HandVelocity:         handVel,
-		HandSpeed:            handSpeed,
-		WristOrientation:     wristRot,
-		WristAngularVelocity: wristAngVel,
-		PlayerPosition:       ps.Position,
-		PlayerVelocity:       ps.Velocity,
-		HandToDiscDistance:   handToDiscDist,
-		ReleaseAngle:         releaseAngle,
-		GoalPosition:         goalPos,
-		GoalSelection:        goalSelection,
-		TargetPosition:       targetPos,
-		TargetDeviation:      targetDev,
-		PossessionDuration:   possessionDuration,
-		PreReleaseFrames:     preRelease,
+		FrameIndex:                frame.FrameIndex,
+		Timestamp:                 frame.Timestamp,
+		ReleasePosition:           releasePos,
+		ReleaseVelocity:           releaseVel,
+		ReleaseSpeed:              releaseSpeed,
+		ThrowingHand:              throwingHand,
+		HandPosition:              handPos,
+		HandVelocity:              handVel,
+		HandSpeed:                 handSpeed,
+		HandRelativeVelocity:      handRelativeVel,
+		HandRelativeSpeed:         handRelativeSpeed,
+		HandTracked:               throwingHand != "unknown",
+		HandKinematicsValid:       handKinematicsValid,
+		HandAttributionConfidence: handAttributionConfidence,
+		HandAttributionAnchor:     handAnchorName,
+		WristOrientation:          wristRot,
+		WristAngularVelocity:      wristAngVel,
+		PlayerPosition:            ps.Position,
+		PlayerVelocity:            ps.Velocity,
+		HandToDiscDistance:        handToDiscDist,
+		ReleaseAngle:              releaseAngle,
+		GoalPosition:              goalPos,
+		GoalSelection:             goalSelection,
+		TargetPosition:            targetPos,
+		TargetDeviation:           targetDev,
+		PossessionDuration:        possessionDuration,
+		PreReleaseFrames:          preRelease,
 	}
 
 	ps.LastThrow = &throw

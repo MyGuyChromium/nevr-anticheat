@@ -2,14 +2,19 @@ package model
 
 // ThrowEvidence contains evidence from throw-speed related detectors.
 type ThrowEvidence struct {
-	ReleaseVelocity Vec3    `json:"release_velocity"`
-	ReleaseSpeed    float64 `json:"release_speed"`
-	ReleasePosition Vec3    `json:"release_position"`
-	HandVelocity    Vec3    `json:"hand_velocity"`
-	HandSpeed       float64 `json:"hand_speed"`
-	SpeedRatio      float64 `json:"speed_ratio"`
-	EffectiveCap    float64 `json:"effective_cap"`
-	PingMs          float64 `json:"ping_ms"`
+	ReleaseVelocity           Vec3    `json:"release_velocity"`
+	ReleaseSpeed              float64 `json:"release_speed"`
+	ReleasePosition           Vec3    `json:"release_position"`
+	HandVelocity              Vec3    `json:"hand_velocity"`
+	HandSpeed                 float64 `json:"hand_speed"`
+	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`
+	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
+	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
+	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
+	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
+	SpeedRatio                float64 `json:"speed_ratio"`
+	EffectiveCap              float64 `json:"effective_cap"`
+	PingMs                    float64 `json:"ping_ms"`
 	// ArtifactSuspected marks releases faster than twice the physics cap.
 	// Such values may be telemetry timing artifacts or blatant injection; they
 	// are reported at low severity and kept out of the cap-riding statistic
@@ -32,13 +37,17 @@ func (DiscAccelerationEvidence) EvidenceType() string { return "disc_acceleratio
 
 // ReleaseAngleEvidence for THROW_003.
 type ReleaseAngleEvidence struct {
-	ReleaseAngle     float64 `json:"release_angle"`
-	HandVelocity     Vec3    `json:"hand_velocity"`
-	DiscVelocity     Vec3    `json:"disc_velocity"`
-	HandSpeed        float64 `json:"hand_speed"`
-	DiscSpeed        float64 `json:"disc_speed"`
-	WristOrientation Quat    `json:"wrist_orientation"`
-	ThrowingHand     string  `json:"throwing_hand"`
+	ReleaseAngle              float64 `json:"release_angle"`
+	HandVelocity              Vec3    `json:"hand_velocity"`
+	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`
+	DiscVelocity              Vec3    `json:"disc_velocity"`
+	HandSpeed                 float64 `json:"hand_speed"`
+	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
+	DiscSpeed                 float64 `json:"disc_speed"`
+	WristOrientation          Quat    `json:"wrist_orientation"`
+	ThrowingHand              string  `json:"throwing_hand"`
+	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
+	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
 }
 
 func (ReleaseAngleEvidence) EvidenceType() string { return "release_angle" }
@@ -141,8 +150,12 @@ func (WristRotationEvidence) EvidenceType() string { return "wrist_rotation" }
 
 // HandSpeedEvidence for BIO_002.
 type HandSpeedEvidence struct {
-	Hand              string  `json:"hand"`
+	Hand string `json:"hand"`
+	// Speed is controller speed relative to player translation, the quantity
+	// compared with PhysicalLimit. WorldSpeed is retained as reviewer context.
 	Speed             float64 `json:"speed"`
+	WorldSpeed        float64 `json:"world_speed"`
+	ReferenceFrame    string  `json:"reference_frame"`
 	ConsecutiveFrames int     `json:"consecutive_frames"`
 	FrameDt           float64 `json:"frame_dt"`
 	PhysicalLimit     float64 `json:"physical_limit"`

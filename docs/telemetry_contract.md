@@ -99,7 +99,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `is_immune` | bool | — | optional | — | STATE_004; unconfirmed in every known source. |
 | `has_possession` | bool | — | **yes** | — | A `true → false` transition is a throw (see §4). |
 | `disc` | object | — | desired | see below | Omit only when the disc is unknown; every throw/disc detector needs it. |
-| `estimated_ping_ms` | float64 | ms | desired | `[0, 1000]` in `nevr-compat --strict`; not rejected at ingest | Values above `pipeline.high_ping_threshold_ms` (150) set `IsHighPing`. Absent/0 = strictest tolerance. |
+| `estimated_ping_ms` | float64 | ms | desired | `[0, 1000]`; invalid/negative becomes 0, values above 1000 are clamped (`invalid_ping`) | Values above `pipeline.high_ping_threshold_ms` (150) set `IsHighPing`. Absent/0 = strictest tolerance. |
 | `game_phase` | string | — | desired | see §5 | Absent/empty = active play. |
 | `blue_score` | int | points | desired | ≥ 0 | MOV_002 goal cooldown and goal-side learning. |
 | `orange_score` | int | points | desired | ≥ 0 | |
@@ -212,6 +212,11 @@ The same transition written with the alias:
 ```
 
 Possession drops during a non-active phase (round reset, pre/post match) are not throws.
+The throwing hand is selected against the disc position from frame N (the last
+held sample), not the already-moving free disc in frame N+1. If either prior
+hand position is missing, the thrower can still be possession-attributed but
+the left/right hand choice remains `unknown`; hand-dependent detectors do not
+invent a hand.
 
 ### 5. Game phase values
 
@@ -231,7 +236,7 @@ Frame N: `"is_stunned": false`. Frame N+1: `"is_stunned": true` (player stunned)
 
 ### 7. Hand tracking loss
 
-Send the zero vector for a lost hand position and the zero quaternion `[0,0,0,0]` for a lost hand rotation. The adapter does exactly this when a `/session` hand pose has any zero direction vector or a degenerate basis (`MapperStats.HandTrackingLost`). Consumers skip zero hands: BIO_001/BIO_004 break their windows, BIO_003 drops that hand's window, PAT_005 skips the frame, THROW_003 needs a valid throwing hand. NaN/Inf hand data received on the wire is converted to the same sentinels by the pipeline validator (`nan_hand_position`, `invalid_rotation`).
+Send the zero vector for a lost hand position and the zero quaternion `[0,0,0,0]` for a lost hand rotation. The adapter does exactly this when a `/session` hand pose has any zero direction vector or a degenerate basis (`MapperStats.HandTrackingLost`). Consumers skip zero hands: BIO_001/BIO_004 break their windows, BIO_003 drops that hand's window, PAT_005 skips the frame, and a release with either prior hand position unavailable records `throwing_hand = "unknown"` so THROW_003/THROW_004/PAT_002 skip its hand-dependent evidence. NaN/Inf hand data received on the wire is converted to the same sentinels by the pipeline validator (`nan_hand_position`, `invalid_rotation`).
 
 ### 8. Graceful degradation
 

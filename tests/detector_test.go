@@ -284,10 +284,9 @@ func TestDetectors(t *testing.T) {
 		},
 
 		// ---- THROW_002: Release Acceleration ----
-		// NOTE: THROW_002 is BROKEN on real data (pre-release frames have identical
-		// disc velocities). These tests use synthetic data with varying velocities
-		// and verify the detector LOGIC works, not that it produces correct results
-		// on real telemetry.
+		// NOTE: THROW_002 is UNVERIFIED on real data. The former broken
+		// multi-frame mechanism was replaced; these tests verify the replacement's
+		// logic, not that the threshold is calibrated for real telemetry.
 		{
 			name:     "THROW_002/clean_pass",
 			category: "clean_pass",
@@ -546,6 +545,8 @@ func TestDetectors(t *testing.T) {
 				ps.FrameDt = 0.067
 				ps.LeftHandSpeed = 8.0   // normal hand speed
 				ps.RightHandSpeed = 12.0 // fast but human-possible
+				ps.LeftHandRelativeSpeed = 7.0
+				ps.RightHandRelativeSpeed = 10.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
 			wantEvents: false,
@@ -565,6 +566,7 @@ func TestDetectors(t *testing.T) {
 					ps := testutil.NewPlayerState("p1")
 					ps.FrameDt = 0.067
 					ps.RightHandSpeed = 150.0 // impossibly fast hand
+					ps.RightHandRelativeSpeed = 150.0
 					ps.LeftHandSpeed = 5.0
 					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, fi)
 				}
@@ -575,6 +577,7 @@ func TestDetectors(t *testing.T) {
 				ps := testutil.NewPlayerState("p1")
 				ps.FrameDt = 0.067
 				ps.RightHandSpeed = 150.0 // second consecutive frame
+				ps.RightHandRelativeSpeed = 150.0
 				ps.LeftHandSpeed = 5.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},

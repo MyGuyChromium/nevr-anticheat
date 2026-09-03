@@ -53,6 +53,10 @@ const (
 	// moving faster than DiscSpeedSanityFactor x DiscSpeedCap was dropped
 	// from the frame.
 	SanitizedDiscOutOfRange = "disc_out_of_range"
+	// SanitizedPing: a non-finite/negative ping was replaced with 0 (unknown),
+	// or a value above MaxEstimatedPingMs was clamped. This prevents malformed
+	// latency from creating NaN evidence or unbounded detector tolerances.
+	SanitizedPing = "invalid_ping"
 )
 
 // ValidationError describes why a frame was rejected.
@@ -91,6 +95,10 @@ const MaxHandBodyDistance = 3.0
 // well below this; a disc reported at more than 4x the cap is corrupt data
 // and is dropped from the frame rather than fed to the throw detectors.
 const DiscSpeedSanityFactor = 4.0
+
+// MaxEstimatedPingMs is the largest latency accepted as detector context.
+// It matches the strict compatibility validator's public wire-contract cap.
+const MaxEstimatedPingMs = 1000.0
 
 // FrameValidator checks telemetry frames for validity.
 type FrameValidator struct {
@@ -202,6 +210,15 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 	}
 	if handFar {
 		sanitized = append(sanitized, SanitizedFarHand)
+	}
+	// Ping adjusts detector tolerances and confidence, so it must be finite
+	// and bounded even when a producer bypasses nevr-compat --strict.
+	if math.IsNaN(frame.EstimatedPingMs) || math.IsInf(frame.EstimatedPingMs, 0) || frame.EstimatedPingMs < 0 {
+		frame.EstimatedPingMs = 0
+		sanitized = append(sanitized, SanitizedPing)
+	} else if frame.EstimatedPingMs > MaxEstimatedPingMs {
+		frame.EstimatedPingMs = MaxEstimatedPingMs
+		sanitized = append(sanitized, SanitizedPing)
 	}
 	// Disc state: drop it rather than the whole frame when it is not finite
 	// or not physically plausible.

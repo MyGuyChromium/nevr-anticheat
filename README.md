@@ -159,7 +159,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | THROW_007 | Penalty Field Tampering | throw | 0.6 | **STUB** — no penalty field telemetry |
 | THROW_008 | Speed-Distance Anomaly | throw | 0.5 | Unverified — needs arena physics data |
 | BIO_001 | Impossible Wrist Rotation | bio | 0.6 | Unverified — rotation convention unconfirmed; unreachable at 15 Hz |
-| BIO_002 | Impossible Hand Speed | bio | 0.6 | Physics-grounded (50 m/s = 4x human limit) |
+| BIO_002 | Impossible Hand Speed | bio | 0.6 | Physics-grounded (player-relative; 50 m/s = 4x human limit) |
 | BIO_003 | Zero Hand Jitter | bio | 0.5 | Unverified — controller jitter baseline unknown |
 | BIO_004 | Zero Aim Wobble | bio | 0.5 | Unverified — rotation variance baseline unknown |
 | MOV_001 | Impossible Player Speed | movement | 0.7 | Physics-grounded |

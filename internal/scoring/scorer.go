@@ -188,12 +188,22 @@ func (s *SuspicionScorer) recompute(sc *model.SuspicionScore) {
 // IngestEvent processes a detection event and updates the player's score.
 // The returned value is a deep copy and never aliases scorer state.
 func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.SuspicionScore {
+	score, _ := s.IngestEventWithResult(event)
+	return score
+}
+
+// IngestEventWithResult is IngestEvent plus an accepted flag. accepted is
+// true only when the event made a positive contribution after shadow,
+// cooldown, per-detector-cap and zero-contribution gates. Pipeline consumers
+// use it to ensure derived signals such as PAT_004 are built only from
+// evidence that actually entered the score.
+func (s *SuspicionScorer) IngestEventWithResult(event model.DetectionEvent) (model.SuspicionScore, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	sc := s.getOrCreate(event.PlayerID)
 	if event.IsShadow {
-		return sc.Clone()
+		return sc.Clone(), false
 	}
 
 	// Cooldown: suppress duplicate events within N frames (jittered to prevent score engineering)
@@ -205,7 +215,7 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 	}
 	if lastFrame, ok := sc.LastEventFrames[cooldownKey]; ok {
 		if event.FrameIndex-lastFrame < effectiveCooldown {
-			return sc.Clone()
+			return sc.Clone(), false
 		}
 	}
 
@@ -213,7 +223,7 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 	// detector does not keep resetting its own cooldown window).
 	if s.config.MaxContribPerDetectorPerMatch > 0 &&
 		sc.DetectorCounts[event.DetectorID] >= s.config.MaxContribPerDetectorPerMatch {
-		return sc.Clone()
+		return sc.Clone(), false
 	}
 	sc.LastEventFrames[cooldownKey] = event.FrameIndex
 
@@ -230,7 +240,7 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 		// bonus), diminish later events in its category, count toward the
 		// per-detector cap, or mark the match as one with detections. The
 		// cooldown frame recorded above still applies.
-		return sc.Clone()
+		return sc.Clone(), false
 	}
 
 	// Same-category diminishing returns
@@ -271,7 +281,7 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 	s.recompute(sc)
 	sc.SnapshotTime = s.now()
 
-	return sc.Clone()
+	return sc.Clone(), true
 }
 
 // GetScore returns a deep copy of the current score for a player.

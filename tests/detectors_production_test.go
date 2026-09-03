@@ -107,7 +107,9 @@ func TestDetector_THROW_003_UnnaturalReleaseAngle(t *testing.T) {
 	hr := runOnly(t, player1().ReverseHandThrows(4), "THROW_003")
 	hr.AssertDetectorFiredN("THROW_003", 4)
 	hr.AssertMinSeverity("THROW_003", 0.5)
-	hr.AssertMinConfidence("THROW_003", 0.45)
+	// Hand-choice ambiguity reduces confidence independently of thrower
+	// attribution; this synthetic geometry remains comfortably above 0.35.
+	hr.AssertMinConfidence("THROW_003", 0.35)
 	for _, ev := range hr.Events {
 		evd, ok := ev.Evidence.(model.ReleaseAngleEvidence)
 		if !ok || evd.ReleaseAngle <= 177.0 {
@@ -232,6 +234,9 @@ func TestDetector_BIO_002_HandSpeed(t *testing.T) {
 		t.Errorf("expected the 3rd/6th-frame emissions merged into one incident, got %d", hr.Events[0].MergedCount)
 	}
 	runOnly(t, player1().NormalMovingPlayer(300, 30), "BIO_002").AssertNoDetections()
+	// Hands following even an impossible body-speed stream are movement
+	// evidence, not independent biomechanics evidence.
+	runOnly(t, player1().SpeedHackFrames(150, 80), "BIO_002").AssertNoDetections()
 	runOnly(t, player1().RegrabStackingBurst(150), "BIO_002").AssertNoDetections()
 	runOnly(t, player1().EliteThrowSequence(6), "BIO_002").AssertNoDetections()
 }

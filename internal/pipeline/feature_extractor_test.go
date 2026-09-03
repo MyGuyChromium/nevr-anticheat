@@ -148,6 +148,27 @@ func TestExtractor_NoFixedTickRateAssumption(t *testing.T) {
 	}
 }
 
+func TestExtractor_SeparatesWorldAndPlayerRelativeHandSpeed(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+
+	f0 := feFrame("p1", 0, 0, model.Vec3{1, 1, 0})
+	fe.UpdatePlayerState(ps, &f0, mc)
+	f1 := feFrame("p1", 1, 0.1, model.Vec3{2, 1, 0})
+	fe.UpdatePlayerState(ps, &f1, mc)
+	if !approx(ps.LeftHandSpeed, 10, 1e-9) || !approx(ps.LeftHandRelativeSpeed, 0, 1e-9) {
+		t.Fatalf("hand following body: world=%v relative=%v, want 10/0", ps.LeftHandSpeed, ps.LeftHandRelativeSpeed)
+	}
+
+	f2 := feFrame("p1", 2, 0.2, model.Vec3{3, 1, 0})
+	f2.RightHandPosition[0] += 1 // another 10 m/s relative to the body
+	fe.UpdatePlayerState(ps, &f2, mc)
+	if !approx(ps.RightHandSpeed, 20, 1e-9) || !approx(ps.RightHandRelativeSpeed, 10, 1e-9) {
+		t.Fatalf("independent hand motion: world=%v relative=%v, want 20/10", ps.RightHandSpeed, ps.RightHandRelativeSpeed)
+	}
+}
+
 func TestExtractor_HighPingThreshold(t *testing.T) {
 	fe := NewFeatureExtractor(30)
 	mc := feTestCtx()
@@ -224,6 +245,74 @@ func TestExtractor_ThrowSnapshotsExcludeReleaseFrame(t *testing.T) {
 	}
 	if delta := th.ReleaseSpeed - last.DiscVelocity.Magnitude(); !approx(delta, 15-9, 1e-9) {
 		t.Fatalf("THROW_002 delta should be release - frame N-1 = 6, got %v", delta)
+	}
+}
+
+func TestExtractor_ThrowingHandUsesPriorHeldDiscAnchor(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	pos := model.Vec3{1, 1, 0}
+	var previousLeft model.Vec3
+	for i := 0; i < 3; i++ {
+		f := feFrame("p1", i, float64(i)*0.067, pos)
+		f.HasPossession = true
+		f.Disc = &model.DiscState{Position: f.RightHandPosition, IsHeld: true, PossessorID: "p1"}
+		previousLeft = f.LeftHandPosition
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+	// The first free-disc sample is deliberately nearer the left hand. The
+	// last held-disc sample still proves that the right hand released it.
+	release := feFrame("p1", 3, 3*0.067, pos)
+	release.Disc = &model.DiscState{Position: previousLeft, Velocity: model.Vec3{0, 0, 12}, Speed: 12}
+	fe.UpdatePlayerState(ps, &release, mc)
+	got := ps.LastThrow
+	if got == nil {
+		t.Fatal("release was not reconstructed")
+	}
+	if got.ThrowingHand != "right" || got.HandAttributionAnchor != "previous_held_disc" {
+		t.Fatalf("hand=%q anchor=%q, want right/previous_held_disc", got.ThrowingHand, got.HandAttributionAnchor)
+	}
+	if got.HandToDiscDistance > 1e-9 || got.HandAttributionConfidence < 0.9 {
+		t.Fatalf("aligned hand evidence distance=%v confidence=%v", got.HandToDiscDistance, got.HandAttributionConfidence)
+	}
+}
+
+func TestExtractor_MissingHandsRemainUnknownOnThrow(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	pos := model.Vec3{1, 1, 0}
+	for i := 0; i < 3; i++ {
+		f := feFrame("p1", i, float64(i)*0.067, pos)
+		f.LeftHandPosition = model.Vec3{}
+		f.RightHandPosition = model.Vec3{}
+		f.HasPossession = true
+		f.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+	release := feFrame("p1", 3, 3*0.067, pos)
+	release.LeftHandPosition = model.Vec3{}
+	release.RightHandPosition = model.Vec3{}
+	release.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0, 0, 0.2}), Velocity: model.Vec3{0, 0, 12}, Speed: 12}
+	fe.UpdatePlayerState(ps, &release, mc)
+	got := ps.LastThrow
+	if got == nil || got.ThrowingHand != "unknown" || got.HandTracked || got.HandAttributionConfidence != 0 {
+		t.Fatalf("missing tracking fabricated a throwing hand: %+v", got)
+	}
+	for _, snap := range got.PreReleaseFrames {
+		if !snap.HandPosition.IsZero() || !snap.HandVelocity.IsZero() {
+			t.Fatalf("unknown-hand snapshot contains fabricated hand evidence: %+v", snap)
+		}
+	}
+}
+
+func TestSelectThrowingHand_OneTrackedHandIsStillAmbiguous(t *testing.T) {
+	hand, _, _, confidence := selectThrowingHand(
+		model.Vec3{1, 1, 1}, model.Vec3{}, model.Vec3{1, 1, 1}, 1,
+	)
+	if hand != "unknown" || confidence != 0 {
+		t.Fatalf("one tracked hand cannot exclude the missing hand: hand=%q confidence=%v", hand, confidence)
 	}
 }
 

@@ -49,7 +49,7 @@ type Throw004 struct {
 func NewThrow004(params map[string]any) *Throw004 {
 	return &Throw004{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_004", DetectorVersion: "1.1.0",
+			DetectorID: "THROW_004", DetectorVersion: "1.2.0",
 			DetectorName: "Repeated Release Signatures", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.6,
 		},
@@ -87,6 +87,11 @@ func (d *Throw004) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		ps := players[pid]
 		t := throwAt(ps, frameIdx)
 		if t == nil {
+			continue
+		}
+		// A release with no tracked throwing hand has no hand signature; do
+		// not replace those missing dimensions with zero-valued evidence.
+		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
 			continue
 		}
 		sig := d.buildSignature(t)
