@@ -306,9 +306,16 @@ func (p *matchPoller) recordFailure(outcome pollOutcome, status int, err error, 
 		giveUpReason = stopBroadcasterUnreachable
 	}
 	if p.state == stateActive {
-		p.logger.Error("broadcaster failing for consecutive polls; backing off to idle polling",
+		// Back off, but keep the announced match open: 30 failed polls is
+		// ~2s at the active rate, and a broadcaster that is restarting or
+		// briefly unreachable comes back with the same session. Announcing
+		// match_end here would make the ingest finalize the live match
+		// (scores persisted, review cases created, player state discarded)
+		// and the recovery would then be scored as a second fragment.
+		// match_end is announced only when the poller gives up
+		// (--idle-give-up elapsed) or is cancelled (match left Nakama).
+		p.logger.Error("broadcaster failing for consecutive polls; backing off to idle polling (match stays open)",
 			"consecutive_errors", n, "idle_interval", p.idleInterval(), "give_up_after", p.idleGiveUp())
-		p.endMatch(string(giveUpReason))
 		p.enterIdle(target, now)
 		return true, ""
 	}
@@ -354,12 +361,13 @@ func (p *matchPoller) poll(ctx context.Context) (bool, stopReason) {
 	}
 
 	// Identity cross-check: the polled instance must be the Nakama match.
-	if !sessionMatchesMatchID(session.SessionID, p.match) {
+	// "off" means do not compare at all: no counter, no log line.
+	mode := p.cfg.SessionCheck
+	if mode == "" {
+		mode = sessionCheckStrict
+	}
+	if mode != sessionCheckOff && !sessionMatchesMatchID(session.SessionID, p.match) {
 		p.stats.SessionMismatches.Add(1)
-		mode := p.cfg.SessionCheck
-		if mode == "" {
-			mode = sessionCheckStrict
-		}
 		if !p.mismatchLogged {
 			p.mismatchLogged = true
 			p.logger.Error("/session sessionid does not match the Nakama match id — this broadcaster endpoint may belong to another game-server instance",
@@ -374,10 +382,20 @@ func (p *matchPoller) poll(ctx context.Context) (bool, stopReason) {
 	// post_match: announce the end once and idle until the lobby starts a
 	// new game (new sessionid) or leaves Nakama.
 	if session.GameStatus == "post_match" {
-		if p.state != stateIdlePostMatch {
+		switch p.state {
+		case stateIdlePostMatch:
+		case stateActive:
 			p.logger.Info("post_match detected; idling until the lobby starts a new game", "session_id", session.SessionID)
 			p.endMatch(string(stopPostMatch))
 			p.enterIdle(stateIdlePostMatch, sampleAt)
+		default:
+			// Already idle (error/unreachable): keep the idle clock running so
+			// a lobby flapping between failures and a stuck post_match still
+			// hits --idle-give-up, and do not count another idle transition.
+			p.logger.Info("post_match detected while idle; idle clock keeps running",
+				"from_state", p.state.String(), "session_id", session.SessionID, "idle_for", sampleAt.Sub(p.idleSince).Round(time.Second))
+			p.endMatch(string(stopPostMatch))
+			p.setState(stateIdlePostMatch)
 		}
 		p.terminalSess = session.SessionID
 		p.epoch.setSession(session.SessionID)

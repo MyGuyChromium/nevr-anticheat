@@ -10,6 +10,18 @@ import (
 
 // FormatReport generates a human-readable moderator report.
 func FormatReport(rc model.ReviewCase) string {
+	return FormatReportWithContext(rc, nil)
+}
+
+// FormatReportWithContext is FormatReport with the match context the case
+// was built from, when the caller has it (nil is allowed). The context adds
+// provenance to the player summary: the telemetry source and, when the
+// ingest server recorded one, the server the match came from.
+func FormatReportWithContext(rc model.ReviewCase, mc *model.MatchContext) string {
+	return formatReport(rc, mc, MatchServerID(mc))
+}
+
+func formatReport(rc model.ReviewCase, mc *model.MatchContext, serverID string) string {
 	var b strings.Builder
 
 	b.WriteString("================================================================================\n")
@@ -19,6 +31,12 @@ func FormatReport(rc model.ReviewCase) string {
 	b.WriteString("PLAYER SUMMARY\n")
 	b.WriteString(fmt.Sprintf("  Player ID:      %s\n", rc.PlayerID))
 	b.WriteString(fmt.Sprintf("  Match ID:       %s\n", rc.MatchID))
+	if serverID != "" {
+		b.WriteString(fmt.Sprintf("  Server:         %s\n", serverID))
+	}
+	if mc != nil && mc.Source != "" {
+		b.WriteString(fmt.Sprintf("  Source:         %s\n", mc.Source))
+	}
 	if !rc.TimestampStart.IsZero() {
 		b.WriteString(fmt.Sprintf("  Match start:    %s\n", rc.TimestampStart.UTC().Format("2006-01-02 15:04:05Z")))
 	}

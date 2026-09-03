@@ -17,13 +17,20 @@ func TestWinsorizeNeverPanics(t *testing.T) {
 		}
 	}
 	got := Winsorize(data, 0.1, 0.9)
-	// loIdx=1 -> 2, hiIdx=9 -> 100 ; 1 clamps to 2, nothing exceeds 100
-	if got[0] != 2 || got[9] != 100 {
+	// Interpolated P10 = 1.9 and P90 = 18.1 (same definition as
+	// ComputeBaseline): the bottom value is raised and the 100 outlier is
+	// clamped down, which is what winsorizing the top 10% means.
+	if !near(got[0], 1.9) || !near(got[9], 18.1) || got[1] != 2 || got[8] != 9 {
 		t.Fatalf("winsorized: %v", got)
 	}
-	got = Winsorize(data, 0, 0.5) // hiIdx=5 -> 6
-	if got[9] != 6 || got[0] != 1 {
+	got = Winsorize(data, 0, 0.5) // P50 = 5.5
+	if !near(got[9], 5.5) || got[0] != 1 || got[4] != 5 {
 		t.Fatalf("upper clamp wrong: %v", got)
+	}
+	// Input order is preserved and the outlier is clamped wherever it sits.
+	got = Winsorize([]float64{100, 9, 8, 7, 6, 5, 4, 3, 2, 1}, 0.1, 0.9)
+	if !near(got[0], 18.1) || !near(got[9], 1.9) {
+		t.Fatalf("input order not preserved: %v", got)
 	}
 	if out := Winsorize(nil, 0, 1); out != nil {
 		t.Fatal("nil in, nil out")
@@ -32,6 +39,8 @@ func TestWinsorizeNeverPanics(t *testing.T) {
 		t.Fatal("single element")
 	}
 }
+
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestComputeBaseline(t *testing.T) {
 	if ComputeBaseline("m", nil) != nil || ComputeBaseline("m", []float64{math.NaN(), math.Inf(1)}) != nil {

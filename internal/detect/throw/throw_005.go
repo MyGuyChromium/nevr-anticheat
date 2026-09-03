@@ -14,6 +14,13 @@ const (
 	// deliberately conservative: at least corrMinPairs goal-directed throws
 	// and the upper bound of the 95% Fisher-z confidence interval of the
 	// Pearson correlation must lie below corrMaxUpperCI.
+	//
+	// What that can detect: a significantly NEGATIVE relationship (faster =
+	// MORE accurate). With at most corrHistory pairs the upper bound only
+	// drops below corrMaxUpperCI for r < about -0.18 (n=50; -0.27 at n=30),
+	// so a bot whose accuracy is merely independent of speed (r ~ 0) never
+	// trips it; that would need ~390 pairs. This is the intended, narrow
+	// scope of the gate until the premise is calibrated on real data.
 	corrMinPairs    = 30
 	corrMaxUpperCI  = 0.1
 	corrHistory     = 50
@@ -91,7 +98,9 @@ func (d *Throw005) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Speed-accuracy correlation check.
 		// TargetDeviation = angle from goal, higher = less accurate.
 		// Human: faster throws = more deviation, so corr(speed, deviation)
-		// should be positive. Bot: accuracy independent of speed. Fires at
+		// should be positive. The gate fires only when the correlation is
+		// significantly negative (faster = more accurate; see the constants
+		// above for why r ~ 0 cannot pass at this sample size). Fires at
 		// most once per window; the window resets after firing.
 		pairs := d.speedDeviationPairs[pid]
 		if len(pairs) >= corrMinPairs {

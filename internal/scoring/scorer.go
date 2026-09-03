@@ -16,7 +16,12 @@
 //     category. The bonus is RECOMPUTED on every ApplyCorrelationBonus call,
 //     so calling it once per batch on the live path is safe.
 //
-// Shadow events never contribute; they only create the player's entry.
+// Shadow events never contribute; they only create the player's entry. An
+// event whose contribution is zero (enforcement_weight 0, or a zero severity
+// or confidence) is likewise not counted: it adds no category, does not
+// diminish later events in its category and does not count toward the
+// per-detector cap, so a detector an operator runs at weight 0 to observe it
+// never moves a player's tier.
 //
 // # Time
 //
@@ -82,11 +87,23 @@ var metaDetectors = map[string]bool{
 	"PAT_004": true,
 }
 
+// IsMetaDetector reports whether detectorID is a meta-detector (PAT_003,
+// PAT_004): one whose events are derived from other detectors' events and so
+// never count as an independent evidence category. Enforcement gates that
+// count categories share this definition.
+func IsMetaDetector(detectorID string) bool {
+	return metaDetectors[strings.ToUpper(detectorID)]
+}
+
 // SuspicionScorer accumulates suspicion scores for players.
 type SuspicionScorer struct {
-	config     ScorerConfig
-	levels     model.LevelTable
-	players    map[string]*model.SuspicionScore
+	config  ScorerConfig
+	levels  model.LevelTable
+	players map[string]*model.SuspicionScore
+	// bonusBasis is, per player, the undecayed nominal bonus the player's
+	// CorrelationBonus was last set from. ApplyCorrelationBonus only touches
+	// the (possibly decayed) bonus when the nominal value changes.
+	bonusBasis map[string]float64
 	mu         sync.RWMutex
 	now        func() time.Time
 	matchStart time.Time
@@ -95,10 +112,11 @@ type SuspicionScorer struct {
 // NewSuspicionScorer creates a new scorer.
 func NewSuspicionScorer(cfg ScorerConfig) *SuspicionScorer {
 	return &SuspicionScorer{
-		config:  cfg,
-		levels:  cfg.EffectiveLevels(),
-		players: make(map[string]*model.SuspicionScore),
-		now:     time.Now,
+		config:     cfg,
+		levels:     cfg.EffectiveLevels(),
+		players:    make(map[string]*model.SuspicionScore),
+		bonusBasis: make(map[string]float64),
+		now:        time.Now,
 	}
 }
 
@@ -206,6 +224,13 @@ func (s *SuspicionScorer) IngestEvent(event model.DetectionEvent) model.Suspicio
 	}
 	if s.config.MaxSingleContribution > 0 && contribution > s.config.MaxSingleContribution {
 		contribution = s.config.MaxSingleContribution
+	}
+	if contribution == 0 {
+		// Nothing to score: the event must not add a category (correlation
+		// bonus), diminish later events in its category, count toward the
+		// per-detector cap, or mark the match as one with detections. The
+		// cooldown frame recorded above still applies.
+		return sc.Clone()
 	}
 
 	// Same-category diminishing returns
@@ -338,11 +363,13 @@ func (s *SuspicionScorer) ApplyDecay(now time.Time) {
 
 // ApplyCorrelationBonus recomputes the multi-category bonus for every player.
 // It is idempotent: calling it repeatedly without new events leaves every
-// score unchanged.
+// score unchanged. A bonus that ApplyDecay has decayed is left alone until
+// the nominal bonus changes (a category was added, or every scored detector
+// in a category decayed away); only then is it reset to the nominal value.
 func (s *SuspicionScorer) ApplyCorrelationBonus() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, sc := range s.players {
+	for id, sc := range s.players {
 		bonus := 0.0
 		if n := independentCategories(sc); n >= 2 {
 			bonus = float64(n-1) * 5.0
@@ -350,6 +377,10 @@ func (s *SuspicionScorer) ApplyCorrelationBonus() {
 				bonus = s.config.CorrelationBonusCap
 			}
 		}
+		if basis, ok := s.bonusBasis[id]; ok && basis == bonus {
+			continue
+		}
+		s.bonusBasis[id] = bonus
 		if bonus == sc.CorrelationBonus {
 			continue
 		}
@@ -359,11 +390,13 @@ func (s *SuspicionScorer) ApplyCorrelationBonus() {
 }
 
 // independentCategories counts categories with at least one scored event from
-// a non-meta detector.
+// a non-meta detector. A detector counts only while it still carries score:
+// zero-contribution events are never recorded, and a detector whose score has
+// decayed to nothing no longer constitutes evidence.
 func independentCategories(sc *model.SuspicionScore) int {
 	cats := make(map[string]bool)
 	for det, n := range sc.DetectorCounts {
-		if n <= 0 || metaDetectors[strings.ToUpper(det)] {
+		if n <= 0 || sc.ScoreByDetector[det] <= 0 || IsMetaDetector(det) {
 			continue
 		}
 		cats[detectorCategory(det)] = true
@@ -376,6 +409,7 @@ func (s *SuspicionScorer) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.players = make(map[string]*model.SuspicionScore)
+	s.bonusBasis = make(map[string]float64)
 }
 
 func hashString(s string) uint64 {

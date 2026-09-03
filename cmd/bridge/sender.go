@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,21 @@ type outboundMsg struct {
 
 // errAuthRejected marks a hello-phase failure that a retry cannot fix.
 var errAuthRejected = errors.New("ingest server rejected the bridge credentials")
+
+// controlKeepalive is the type of the application-level keepalive the bridge
+// sends on an idle link. The ingest ignores control types it does not know,
+// but the message still passes through its Receive and refreshes its idle
+// read deadline; a WebSocket ping frame does not (x/net/websocket answers
+// pings inside Receive without returning, so the server never re-arms the
+// deadline and closes a quiet link as idle every ReadTimeout).
+const controlKeepalive = "ping"
+
+// isAuthRejection reports whether a pre-hello error control names a
+// credential problem (as opposed to a transient refusal such as
+// too_many_connections, which a later attempt can succeed at).
+func isAuthRejection(reason string) bool {
+	return reason == "unauthorized" || strings.HasPrefix(reason, "auth")
+}
 
 // wsSender owns the single WebSocket link to the anticheat ingest server.
 //
@@ -206,8 +222,11 @@ func (s *wsSender) dial() (*websocket.Conn, error) {
 		}
 	case model.ControlError:
 		conn.Close()
-		s.stats.AuthFailures.Add(1)
-		return nil, fmt.Errorf("%w: %s", errAuthRejected, msg.Reason)
+		if isAuthRejection(msg.Reason) {
+			s.stats.AuthFailures.Add(1)
+			return nil, fmt.Errorf("%w: %s", errAuthRejected, msg.Reason)
+		}
+		return nil, fmt.Errorf("ingest server refused the connection: %s", msg.Reason)
 	default:
 		conn.Close()
 		return nil, fmt.Errorf("unexpected first message from ingest server: type=%q", msg.Type)
@@ -306,6 +325,22 @@ func (s *wsSender) addInflight(n int) {
 		s.inflightSince = time.Now()
 	}
 	s.inflight += n
+}
+
+// removeInflight takes back frames registered with addInflight that were
+// never written (send failure). Unlike settleInflight it does not touch the
+// age of the frames that remain in flight.
+func (s *wsSender) removeInflight(n int) {
+	if n <= 0 {
+		return
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.inflight -= n
+	if s.inflight <= 0 {
+		s.inflight = 0
+		s.inflightSince = time.Time{}
+	}
 }
 
 func (s *wsSender) settleInflight(n int) {
@@ -452,15 +487,14 @@ func (s *wsSender) monitorTick(ctx context.Context) {
 	}
 }
 
-// writePing sends a WebSocket ping frame so an idle link is exercised (and a
-// dead one fails fast at the write deadline).
+// writePing sends an application-level keepalive control message so an idle
+// link is exercised (a dead one fails fast at the write deadline) and the
+// ingest's idle read deadline is refreshed; see controlKeepalive for why a
+// WebSocket ping frame is not enough.
 func (s *wsSender) writePing(conn *websocket.Conn, gen uint64) {
 	_ = conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
-	conn.PayloadType = websocket.PingFrame
-	_, err := conn.Write([]byte("nevr-bridge"))
-	conn.PayloadType = websocket.TextFrame
-	if err != nil {
-		s.dropConn(gen, "keepalive ping: "+err.Error())
+	if err := websocket.JSON.Send(conn, &model.ControlMessage{Type: controlKeepalive}); err != nil {
+		s.dropConn(gen, "keepalive: "+err.Error())
 		return
 	}
 	s.lastSendNanos.Store(time.Now().UnixNano())
@@ -482,11 +516,20 @@ func (s *wsSender) deliver(ctx context.Context, msg outboundMsg) {
 			return
 		}
 	}
+	// Register the frames as in flight BEFORE writing: the read loop settles
+	// acks concurrently, and an ack that landed between the write and a
+	// later addInflight would be clamped away, leaving a phantom in-flight
+	// count that trips the ack timeout on the next quiet period.
+	s.addInflight(msg.frames)
 	_ = conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 	if err := websocket.JSON.Send(conn, msg.payload); err != nil {
 		s.stats.TotalSendFailures.Add(1)
 		if msg.frames > 0 {
+			s.removeInflight(msg.frames) // never written: dropped, not unacked-lost
 			s.stats.TotalFramesDropped.Add(int64(msg.frames))
+		}
+		if msg.control {
+			s.stats.ControlDropped.Add(1)
 		}
 		s.dropConn(gen, "write: "+err.Error())
 		return
@@ -498,7 +541,6 @@ func (s *wsSender) deliver(ctx context.Context, msg outboundMsg) {
 	}
 	s.stats.TotalBatchesSent.Add(1)
 	s.stats.TotalFramesSent.Add(int64(msg.frames))
-	s.addInflight(msg.frames)
 }
 
 // onDialFailure records a failed reconnect, drops the message that triggered

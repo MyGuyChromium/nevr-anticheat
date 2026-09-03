@@ -64,9 +64,17 @@ type MapperStats struct {
 	SpectatorsDropped int `json:"spectators_dropped"`
 	// DuplicatesSkipped counts snapshots skipped by change detection.
 	DuplicatesSkipped int `json:"duplicates_skipped"`
-	// NonMonotonicSamples counts frames whose sample time went backwards
-	// relative to the player's previous frame (DeltaTime reported as 0).
+	// NonMonotonicSamples counts frames of snapshots whose sample time went
+	// backwards by less than clockStepThreshold. Timestamp is clamped to the
+	// previous snapshot's Timestamp for them (never decreases), so a player
+	// present in both snapshots reports DeltaTime 0 (unknown).
 	NonMonotonicSamples int `json:"non_monotonic_samples"`
+	// ClockSteps counts snapshots whose sample time went backwards by at
+	// least clockStepThreshold (recorder clock adjusted: NTP step, DST
+	// fall-back). The time base is re-based so Timestamp continues from the
+	// previous snapshot plus the last observed cadence instead of going
+	// negative or backwards.
+	ClockSteps int `json:"clock_steps"`
 	// PossessionConflicts counts ticks where more than one player reported possession.
 	PossessionConflicts int `json:"possession_conflicts"`
 
@@ -84,17 +92,31 @@ type MapperStats struct {
 //
 // Time base: the producer supplies the real sample time of every snapshot
 // (MapSessionAt). Timestamp is seconds since the first sample this mapper saw
-// and DeltaTime is the per-player gap to that player's previous frame (0 on a
-// player's first frame). Nothing assumes a fixed poll cadence.
+// (or since NewMatch) and DeltaTime is the per-player gap to that player's
+// previous frame (0 on a player's first frame). Nothing assumes a fixed poll
+// cadence. Timestamp never decreases: a sample time that goes backwards by
+// less than clockStepThreshold is clamped to the previous snapshot's
+// Timestamp (MapperStats.NonMonotonicSamples); a larger backward jump is a
+// recorder clock step and the time base is re-based so Timestamp continues
+// from the previous snapshot plus the last observed cadence
+// (MapperStats.ClockSteps).
 //
-// Frame identity: FrameIndex is a 0-based counter per Mapper. The ingest
-// server re-bases indices per match, so a new Mapper for an existing match is
-// safe as long as it feeds the same ingest.
+// Frame identity: FrameIndex is a 0-based counter per Mapper (per match after
+// NewMatch). The ingest server re-bases indices per match, so a new Mapper
+// for an existing match is safe as long as it feeds the same ingest.
 type Mapper struct {
 	frameIndex int
 
 	haveFirstSample bool
 	firstSampleTime time.Time
+	// clockOffset (seconds) is added to every sample time after a backward
+	// clock step so Timestamp stays continuous.
+	clockOffset float64
+	// lastTickTimestamp is the Timestamp of the previous mapped snapshot and
+	// lastTickDt the last positive gap between consecutive snapshots.
+	haveLastTick      bool
+	lastTickTimestamp float64
+	lastTickDt        float64
 	// prevTimestamp is the last Timestamp emitted for each player.
 	prevTimestamp map[string]float64
 
@@ -117,6 +139,35 @@ func NewMapper() *Mapper {
 		warnedFields:  make(map[string]bool),
 		physics:       model.DefaultPhysics(),
 	}
+}
+
+const (
+	// clockStepThreshold is the backward jump of the sample time (seconds)
+	// from which a snapshot is treated as a recorder clock step and re-based
+	// rather than clamped.
+	clockStepThreshold = 1.0
+	// defaultNominalDt is the cadence assumed for re-basing after a clock
+	// step when the mapper has not yet observed two snapshots (30 Hz, the
+	// ingest default max_frame_rate_per_player).
+	defaultNominalDt = 1.0 / 30
+)
+
+// NewMatch resets the per-match state: the time base (Timestamp restarts at
+// 0 on the next snapshot, which becomes MatchContext.StartTime), the frame
+// index, the per-player timestamp history and the duplicate fingerprint.
+// Counters (Stats) and warn-once state persist. The replay parser calls it
+// when a recording's session id changes so the next match starts clean.
+func (m *Mapper) NewMatch() {
+	m.frameIndex = 0
+	m.haveFirstSample = false
+	m.firstSampleTime = time.Time{}
+	m.clockOffset = 0
+	m.haveLastTick = false
+	m.lastTickTimestamp = 0
+	m.lastTickDt = 0
+	m.prevTimestamp = make(map[string]float64)
+	m.haveFingerprint = false
+	m.lastFingerprint = 0
 }
 
 // SetPhysics sets the physics constants copied into every MatchContext this
@@ -175,7 +226,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 		m.haveFingerprint = true
 	}
 
-	timestamp := sampleTime.Sub(m.firstSampleTime).Seconds()
+	timestamp, backwards := m.tickTimestamp(sampleTime, result)
 
 	// Build ONE disc state per tick. Possession is a per-player boolean in the
 	// API; the disc is held by whichever mapped player reports it. Every frame
@@ -236,9 +287,11 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 			if prev, seen := m.prevTimestamp[pid]; seen {
 				dt = timestamp - prev
 				if dt < 0 {
-					m.stats.NonMonotonicSamples++
-					dt = 0
+					dt = 0 // cannot happen: Timestamp is monotonic per mapper
 				}
+			}
+			if backwards {
+				m.stats.NonMonotonicSamples++
 			}
 
 			frame, warnings, err := m.mapPlayer(player, raw, teamName, timestamp, dt, m.frameIndex, tickDisc)
@@ -257,6 +310,38 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 	m.stats.Snapshots++
 	m.frameIndex++
 	return result
+}
+
+// tickTimestamp converts a snapshot's sample time into the monotonic
+// Timestamp of this tick. backwards reports that the raw sample time went
+// backwards (by less than clockStepThreshold) and was clamped.
+func (m *Mapper) tickTimestamp(sampleTime time.Time, result *MappingResult) (timestamp float64, backwards bool) {
+	timestamp = sampleTime.Sub(m.firstSampleTime).Seconds() + m.clockOffset
+	if m.haveLastTick {
+		switch {
+		case timestamp < m.lastTickTimestamp-clockStepThreshold:
+			nominal := m.lastTickDt
+			if nominal <= 0 {
+				nominal = defaultNominalDt
+			}
+			want := m.lastTickTimestamp + nominal
+			m.clockOffset += want - timestamp
+			m.stats.ClockSteps++
+			m.warnOnce(result, "sample_time", "clock_step",
+				fmt.Sprintf("sample time stepped back %.3f s (recorder clock adjusted); time base re-based so Timestamp stays continuous, counted in MapperStats.ClockSteps",
+					m.lastTickTimestamp-timestamp))
+			timestamp = want
+		case timestamp < m.lastTickTimestamp:
+			timestamp = m.lastTickTimestamp
+			backwards = true
+		}
+		if timestamp > m.lastTickTimestamp {
+			m.lastTickDt = timestamp - m.lastTickTimestamp
+		}
+	}
+	m.haveLastTick = true
+	m.lastTickTimestamp = timestamp
+	return timestamp, backwards
 }
 
 // warnOnce appends a warning to the result the first time key is seen.
@@ -622,8 +707,8 @@ func DocumentMappings() []FieldMapping {
 	return []FieldMapping{
 		{"PlayerID", "userid / name", Confirmed, "name:<display_name>", "UserID preferred; falls back to name"},
 		{"Team", "teams[].team", Confirmed, "(dropped)", "BLUE TEAM/ORANGE TEAM by name; SPECTATORS and other teams are excluded"},
-		{"FrameIndex", "(sequential)", Inferred, "auto-increment", "0-based per Mapper; ingest re-bases per match"},
-		{"Timestamp", "(sample time)", Inferred, "0 on first sample", "Seconds since the first sample time supplied to MapSessionAt (replay line prefix / receive time)"},
+		{"FrameIndex", "(sequential)", Inferred, "auto-increment", "0-based per Mapper and per match (NewMatch); ingest re-bases per match"},
+		{"Timestamp", "(sample time)", Inferred, "0 on first sample", "Seconds since the first sample time supplied to MapSessionAt (replay line prefix / receive time); monotonic: small backward samples are clamped, clock steps re-based"},
 		{"DeltaTime", "(computed)", Inferred, "0 on a player's first frame", "Timestamp minus the same player's previous Timestamp; 0 = unknown"},
 		{"Position", "body.position", Confirmed, "rejected if zero", "Direct mapping [3]float64"},
 		{"Rotation", "body.forward/left/up", Confirmed, "zero quat if degenerate", "QuatFromDirectionVectorsChecked; reflected bases are negated and counted"},
