@@ -123,7 +123,7 @@ func TestNakamaAuth_DeviceModeAuthenticatesAndRefreshes(t *testing.T) {
 	if fake.refreshCalls.Load() != 0 {
 		t.Errorf("refreshed too early")
 	}
-	// Enter the refresh window (20% of a 10s token = 2s lead, min 5s => 5s lead).
+	// Enter the refresh window (20% of a 10s token = 2s, floored to 5s => 5s lead).
 	offset.Add(int64(6 * time.Second))
 	if _, err := d.discover(context.Background()); err != nil {
 		t.Fatalf("third discover: %v", err)
@@ -190,6 +190,106 @@ func TestNakamaAuth_BearerWithRefreshToken(t *testing.T) {
 	}
 	if fake.refreshCalls.Load() != 1 {
 		t.Errorf("refresh calls = %d, want 1", fake.refreshCalls.Load())
+	}
+}
+
+// C0 (fix pass 2): the refresh lead is 20% of the token's lifetime, so a 60s
+// token is refreshed once ~12s remain — not, as before, only when the 5s
+// floor kicked in (the lead used to be 20% of the *remaining* TTL, which by
+// construction never exceeds the remaining TTL).
+func TestNakamaAuth_RefreshLeadUsesTokenLifetime(t *testing.T) {
+	fake := startFakeNakamaWithAuth(t, "serverkey", 60*time.Second)
+	cfg := &BridgeConfig{NakamaURL: fake.srv.URL, NakamaServerKey: "serverkey", NakamaAuthMode: nakamaAuthDevice}
+	d := newDiscoverer(cfg, &bridgeStats{}, testLogger())
+	base := time.Now().Truncate(time.Second) // JWT exp has second resolution
+	var offset atomic.Int64
+	now := func() time.Time { return base.Add(time.Duration(offset.Load())) }
+	d.auth.now = now
+	fake.now = now
+
+	if _, err := d.discover(context.Background()); err != nil {
+		t.Fatalf("first discover: %v", err)
+	}
+	if got := d.auth.refreshLeadLocked(); got != 12*time.Second {
+		t.Fatalf("refresh lead for a 60s token = %v, want 12s", got)
+	}
+	// 13s left: outside the window.
+	offset.Store(int64(47 * time.Second))
+	if _, err := d.discover(context.Background()); err != nil {
+		t.Fatalf("discover at 47s: %v", err)
+	}
+	if fake.refreshCalls.Load() != 0 {
+		t.Fatalf("refreshed with 13s left; the window is 12s")
+	}
+	// 11s left: inside the window, well before the old 5s floor.
+	offset.Store(int64(49 * time.Second))
+	if _, err := d.discover(context.Background()); err != nil {
+		t.Fatalf("discover at 49s: %v", err)
+	}
+	if fake.refreshCalls.Load() != 1 || fake.authCalls.Load() != 1 {
+		t.Errorf("refresh=%d auth=%d, want 1/1 (refresh at ~48s, not at 55s+)", fake.refreshCalls.Load(), fake.authCalls.Load())
+	}
+	// The refreshed token gets a fresh 60s lifetime and the same 12s lead.
+	if got := d.auth.refreshLeadLocked(); got != 12*time.Second {
+		t.Errorf("refresh lead after refresh = %v, want 12s", got)
+	}
+}
+
+func TestNakamaAuth_RefreshLeadBounds(t *testing.T) {
+	cases := []struct {
+		name      string
+		lifetime  time.Duration
+		discovery time.Duration
+		want      time.Duration
+	}{
+		{"unknown lifetime uses Nakama's 60s default", 0, 0, 12 * time.Second},
+		{"short token floors at 5s", 10 * time.Second, 0, 5 * time.Second},
+		{"60s token", time.Minute, 0, 12 * time.Second},
+		{"10m token", 10 * time.Minute, 0, 60 * time.Second},
+		{"1h token caps at 60s", time.Hour, 0, 60 * time.Second},
+		{"lead covers one discovery cycle", time.Minute, 10 * time.Second, 15 * time.Second},
+		{"discovery floor is bounded by half the lifetime", time.Minute, 30 * time.Second, 30 * time.Second},
+		{"short token: discovery floor cannot exceed half the lifetime", 10 * time.Second, 30 * time.Second, 5 * time.Second},
+		{"long token, long discovery interval", time.Hour, 2 * time.Minute, 125 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &nakamaAuth{cfg: &BridgeConfig{DiscoveryInterval: tc.discovery}, now: time.Now, lifetime: tc.lifetime}
+			if got := a.refreshLeadLocked(); got != tc.want {
+				t.Errorf("lead(lifetime=%v, discovery=%v) = %v, want %v", tc.lifetime, tc.discovery, got, tc.want)
+			}
+		})
+	}
+}
+
+// A caller-supplied bearer token carries its own iat, so its lifetime (and
+// therefore its refresh window) is known even though the bridge did not
+// issue it.
+func TestNakamaAuth_BearerLifetimeFromIatClaim(t *testing.T) {
+	base := time.Unix(1_900_000_000, 0)
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payload, _ := json.Marshal(map[string]any{"exp": base.Add(60 * time.Second).Unix(), "iat": base.Unix()})
+	tok := header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+
+	// Adopted 50s after issue: lifetime is still the full 60s, not the 10s left.
+	exp, lifetime := jwtLifetime(tok, base.Add(50*time.Second))
+	if !exp.Equal(base.Add(60*time.Second)) || lifetime != 60*time.Second {
+		t.Errorf("jwtLifetime = (%v, %v), want (exp, 60s)", exp, lifetime)
+	}
+	// No iat: the token counts as issued now.
+	_, lifetime = jwtLifetime(makeJWT(base.Add(30*time.Second), "x"), base)
+	if lifetime != 30*time.Second {
+		t.Errorf("lifetime without iat = %v, want 30s", lifetime)
+	}
+	cfg := &BridgeConfig{NakamaURL: "http://unused", NakamaServerKey: "k", NakamaAuthMode: nakamaAuthBearer,
+		NakamaBearerToken: tok, NakamaRefreshToken: "refresh-x"}
+	a := newNakamaAuth(cfg, testLogger())
+	a.now = func() time.Time { return base.Add(50 * time.Second) }
+	if a.lifetime != 60*time.Second || a.refreshLeadLocked() != 12*time.Second {
+		t.Errorf("bearer lifetime=%v lead=%v, want 60s/12s", a.lifetime, a.refreshLeadLocked())
+	}
+	if !a.needsRefreshLocked() {
+		t.Error("10s left on a 60s token must be inside the 12s refresh window")
 	}
 }
 
