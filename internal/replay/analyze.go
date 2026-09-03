@@ -141,10 +141,14 @@ const rawTickFlushEvery = 500
 
 // AnalyzeOptions configures AnalyzeFile.
 type AnalyzeOptions struct {
-	// Force re-analyzes a match that is already stored: its detection events
-	// and score snapshots are cleared first and the new outputs are tagged
-	// source "reprocess". Without it a stored match is refused with
-	// ErrMatchAlreadyStored before anything is written.
+	// Force re-analyzes a match that is already stored: the new outputs are
+	// tagged source "reprocess" and the previous detection events and score
+	// snapshots are cleared only after the replay parsed completely, the
+	// pipeline ran and the source data (telemetry, context) was stored,
+	// immediately before the new outputs are written, so a truncated or
+	// corrupt replay never destroys the analysis it was meant to replace.
+	// Without it a stored match is refused with ErrMatchAlreadyStored before
+	// anything is written.
 	Force bool
 	// Physics is stamped on the parsed match context (zero = model.DefaultPhysics).
 	Physics model.PhysicsConstants
@@ -171,8 +175,9 @@ type FrameSummary struct {
 }
 
 // AnalyzeResult is what AnalyzeFile parsed, detected and stored for one
-// replay. Storage failures after detection are not fatal (the CLI has always
-// warned and continued); they are reported in the *Err fields.
+// replay. Storage failures after detection are not returned as errors; they
+// are reported in the *Err fields (Warnings renders them, PersistError joins
+// them for callers that treat a partially stored analysis as a failure).
 type AnalyzeResult struct {
 	// Path is the replay that was analyzed.
 	Path string
@@ -183,14 +188,17 @@ type AnalyzeResult struct {
 	// Diagnostics is the adapter's mapping report; nil for a legacy JSON replay.
 	Diagnostics *adapter.DiagnosticReport
 	// Replaced is true when the match was already stored and Force cleared
-	// its previous analysis (ClearedEvents / ClearedScores rows).
+	// its previous analysis (ClearedEvents / ClearedScores rows). It stays
+	// false when the replacement was refused because the source data could
+	// not be stored (AnalysisErr says so; the previous analysis is intact).
 	Replaced      bool
 	ClearedEvents int64
 	ClearedScores int64
 	// Result is the pipeline's output; Result.ReviewCases holds the cases
 	// StoreMatchAnalysis created.
 	Result *pipeline.MatchResult
-	// Stored reports what StoreMatchAnalysis wrote.
+	// Stored reports what StoreMatchAnalysis wrote (including the stale
+	// pending cases it closed, CasesClosed).
 	Stored StoredAnalysis
 	// Telemetry reports the telemetry frame / raw tick writes. RawStored is
 	// true when raw ticks were written (.echoreplay sources).
@@ -203,7 +211,7 @@ type AnalyzeResult struct {
 	RawTickErr   error // writing raw ticks during parsing
 	TelemetryErr error // storing telemetry frames
 	ContextErr   error // storing the match context
-	AnalysisErr  error // storing events, scores or review cases
+	AnalysisErr  error // storing (or, after a source-data failure, skipping) events, scores and review cases
 }
 
 // Warnings renders the non-fatal storage failures as messages.
@@ -224,23 +232,53 @@ func (r *AnalyzeResult) Warnings() []string {
 	return out
 }
 
+// PersistError joins the non-fatal storage failures into one error, nil when
+// everything was stored. Callers for which an analysis only counts once it
+// is fully persisted (the CLI exits non-zero) check it; Warnings renders the
+// same failures as messages for callers that show them and carry on.
+func (r *AnalyzeResult) PersistError() error {
+	var errs []error
+	if r.RawTickErr != nil {
+		errs = append(errs, fmt.Errorf("storing raw ticks: %w", r.RawTickErr))
+	}
+	if r.TelemetryErr != nil {
+		errs = append(errs, fmt.Errorf("storing telemetry: %w", r.TelemetryErr))
+	}
+	if r.ContextErr != nil {
+		errs = append(errs, fmt.Errorf("storing match context: %w", r.ContextErr))
+	}
+	if r.AnalysisErr != nil {
+		errs = append(errs, r.AnalysisErr)
+	}
+	return errors.Join(errs...)
+}
+
 // IsEchoReplay reports whether the path has the .echoreplay extension
 // (case-insensitive); anything else is read as a legacy JSON replay.
 func IsEchoReplay(path string) bool {
 	return strings.ToLower(filepath.Ext(path)) == ".echoreplay"
 }
 
-// AnalyzeFile is the `analyze` command: it parses one replay (.echoreplay
+// AnalyzeFile is the analyze command: it parses one replay (.echoreplay
 // streamed with its raw ticks written to match_ticks in bounded chunks, or a
 // legacy JSON replay), refuses a match that is already stored unless
-// opts.Force (which clears the previous analysis first), runs the match
-// through a fresh pipeline, then persists telemetry, match context and the
-// derived outputs (events, score snapshots, review cases) via
-// StoreMatchAnalysis.
+// opts.Force, runs the match through a fresh pipeline, then persists
+// telemetry, match context and the derived outputs (events, score snapshots,
+// review cases) via StoreMatchAnalysis, which also closes the pending cases
+// of players the new analysis no longer flags.
+//
+// With opts.Force on a stored match the previous events and score snapshots
+// are cleared only after the replay parsed completely, the pipeline ran and
+// the telemetry and context were stored, immediately before the new outputs
+// are written: a corrupt replay, a pipeline failure or an unwritable store
+// leaves the previous analysis exactly as it was.
 //
 // Errors before detection (unreadable file, no match id, ErrMatchAlreadyStored,
 // pipeline failure) are returned with a nil result. Storage failures after
-// detection are reported on the result, never returned.
+// detection are reported on the result, never returned; when the telemetry
+// or context could not be stored the derived outputs are not written either
+// (a match without its context is not recognised as stored, so a re-run would
+// duplicate its events) and AnalysisErr says so.
 func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts AnalyzeOptions) (*AnalyzeResult, error) {
 	if opts.NewPipeline == nil {
 		return nil, errors.New("AnalyzeFile: NewPipeline is required")
@@ -248,11 +286,13 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 	res := &AnalyzeResult{Path: path}
 	var frames []model.PlayerTelemetryFrame
 	source := "initial"
+	replace := false
 
-	// prepareMatch runs once the match id is known (first tick for a
-	// streamed .echoreplay, after reading for a legacy replay): skip a stored
-	// match unless Force, in which case the previous analysis is cleared.
-	prepareMatch := func(matchID string) error {
+	// checkMatch runs once the match id is known (first tick for a streamed
+	// .echoreplay, after reading for a legacy replay): a stored match is
+	// refused unless Force, in which case it is marked for replacement. The
+	// previous analysis is not touched here; see the persistence step below.
+	checkMatch := func(matchID string) error {
 		exists, err := store.HasMatch(ctx, matchID)
 		if err != nil {
 			return err
@@ -263,12 +303,7 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 		if !opts.Force {
 			return &MatchStoredError{MatchID: matchID}
 		}
-		source = "reprocess"
-		ev, sc, err := store.DeleteMatchAnalysis(ctx, matchID)
-		if err != nil {
-			return fmt.Errorf("clearing previous analysis: %w", err)
-		}
-		res.Replaced, res.ClearedEvents, res.ClearedScores = true, ev, sc
+		source, replace = "reprocess", true
 		return nil
 	}
 
@@ -276,7 +311,9 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 		// Stream the replay so the raw profiler payloads are written to
 		// match_ticks (once per frame index) in bounded chunks instead of
 		// being held for the whole file. Frames are still accumulated once:
-		// ProcessMatch needs the complete match.
+		// ProcessMatch needs the complete match. match_ticks is source data
+		// with ignore-on-conflict semantics, so writing it before the parse
+		// is known to succeed is harmless.
 		parser := adapter.NewEchoReplayParser()
 		if opts.Physics != (model.PhysicsConstants{}) {
 			parser.SetPhysics(opts.Physics)
@@ -304,7 +341,7 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 				if matchID == "" {
 					return errors.New("replay has no match id")
 				}
-				if err := prepareMatch(matchID); err != nil {
+				if err := checkMatch(matchID); err != nil {
 					return err
 				}
 			}
@@ -343,7 +380,7 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 		if mc.MatchID == "" {
 			return nil, errors.New("replay has no match id")
 		}
-		if err := prepareMatch(mc.MatchID); err != nil {
+		if err := checkMatch(mc.MatchID); err != nil {
 			return nil, err
 		}
 		res.MatchCtx, frames = mc, fr
@@ -371,6 +408,28 @@ func AnalyzeFile(ctx context.Context, store *sqlite.Store, path string, opts Ana
 	}
 	if err := store.StoreMatchContext(ctx, res.MatchCtx, len(frames)); err != nil {
 		res.ContextErr = err
+	}
+	if res.TelemetryErr != nil || res.ContextErr != nil {
+		// Source data first, derived outputs second (as batch does): without
+		// its telemetry and context the match is not recognised as stored,
+		// so a re-run would duplicate any events written now. With Force the
+		// previous analysis is kept intact.
+		if replace {
+			res.AnalysisErr = errors.New("previous analysis kept: the replacement's telemetry or match context could not be stored")
+		} else {
+			res.AnalysisErr = errors.New("derived outputs not stored: telemetry or match context could not be stored")
+		}
+		return res, nil
+	}
+	if replace {
+		// The replay parsed, the pipeline ran and the source data is stored:
+		// now, and only now, the previous derived outputs are replaced.
+		ev, sc, err := store.DeleteMatchAnalysis(ctx, res.MatchCtx.MatchID)
+		if err != nil {
+			res.AnalysisErr = fmt.Errorf("clearing previous analysis: %w", err)
+			return res, nil
+		}
+		res.Replaced, res.ClearedEvents, res.ClearedScores = true, ev, sc
 	}
 	res.Stored, res.AnalysisErr = StoreMatchAnalysis(ctx, store, res.MatchCtx, result, source, opts.Analysis)
 	return res, nil

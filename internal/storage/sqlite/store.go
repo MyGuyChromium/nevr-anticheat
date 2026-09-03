@@ -111,7 +111,8 @@ const eventColumns = `event_id, detector_id, detector_version, match_id, player_
 	frame_index, frame_range_start, frame_range_end, timestamp,
 	severity, confidence, COALESCE(observed_value,''), COALESCE(expected_range,''),
 	enforcement_weight, auto_enforce, is_shadow,
-	COALESCE(evidence_json,''), COALESCE(evidence_type,''), COALESCE(causal_key,''), created_at`
+	COALESCE(evidence_json,''), COALESCE(evidence_type,''), COALESCE(causal_key,''), created_at,
+	COALESCE(merged_count,0)`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -126,7 +127,7 @@ func scanEvent(r rowScanner) (model.DetectionEvent, error) {
 		&ev.FrameIndex, &ev.FrameRangeStart, &ev.FrameRangeEnd, &ev.Timestamp,
 		&ev.Severity, &ev.Confidence, &ev.ObservedValue, &ev.ExpectedRange,
 		&ev.EnforcementWeight, &autoEnforce, &shadow,
-		&evidenceJSON, &evidenceType, &causalJSON, &createdAt,
+		&evidenceJSON, &evidenceType, &causalJSON, &createdAt, &ev.MergedCount,
 	); err != nil {
 		return ev, err
 	}
@@ -187,13 +188,13 @@ func (s *Store) StoreDetectionEventWithSource(ctx context.Context, event model.D
 		`INSERT INTO detection_events (event_id, detector_id, detector_version, match_id, player_id,
 			frame_index, frame_range_start, frame_range_end, timestamp, severity, confidence,
 			observed_value, expected_range, enforcement_weight, auto_enforce, is_shadow,
-			evidence_json, evidence_type, causal_key, analysis_source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			evidence_json, evidence_type, causal_key, analysis_source, created_at, merged_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.EventID, event.DetectorID, event.DetectorVersion, event.MatchID, event.PlayerID,
 		event.FrameIndex, event.FrameRangeStart, event.FrameRangeEnd, event.Timestamp,
 		event.Severity, event.Confidence, event.ObservedValue, event.ExpectedRange,
 		event.EnforcementWeight, autoEnforce, shadow,
-		evidenceJSON, evidenceType, string(causalJSON), source, fmtDBTime(createdAt),
+		evidenceJSON, evidenceType, string(causalJSON), source, fmtDBTime(createdAt), event.MergedCount,
 	)
 	return err
 }
@@ -213,8 +214,8 @@ func (s *Store) StoreDetectionEvents(ctx context.Context, events []model.Detecti
 		`INSERT INTO detection_events (event_id, detector_id, detector_version, match_id, player_id,
 			frame_index, frame_range_start, frame_range_end, timestamp, severity, confidence,
 			observed_value, expected_range, enforcement_weight, auto_enforce, is_shadow,
-			evidence_json, evidence_type, causal_key, analysis_source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			evidence_json, evidence_type, causal_key, analysis_source, created_at, merged_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, fmt.Errorf("prepare: %w", err)
 	}
@@ -243,7 +244,7 @@ func (s *Store) StoreDetectionEvents(ctx context.Context, events []model.Detecti
 			event.FrameIndex, event.FrameRangeStart, event.FrameRangeEnd, event.Timestamp,
 			event.Severity, event.Confidence, event.ObservedValue, event.ExpectedRange,
 			event.EnforcementWeight, autoEnforce, shadow,
-			evidenceJSON, evidenceType, string(causalJSON), source, fmtDBTime(createdAt))
+			evidenceJSON, evidenceType, string(causalJSON), source, fmtDBTime(createdAt), event.MergedCount)
 		if err != nil {
 			return inserted, fmt.Errorf("insert event %s: %w", event.EventID, err)
 		}
@@ -360,7 +361,10 @@ func (s *Store) DeleteMatchScores(ctx context.Context, matchID string) (int64, e
 
 // DeleteMatchAnalysis removes every derived output for a match (events and
 // per-match score snapshots) so the match can be re-analyzed idempotently.
-// Returns (events deleted, scores deleted).
+// Review cases are NOT deleted: they carry moderator state and are refreshed
+// by the upsert in StoreReviewCase; the ones that the new analysis no longer
+// justifies are closed by CloseStaleReviewCases (replay.StoreMatchAnalysis
+// calls it). Returns (events deleted, scores deleted).
 func (s *Store) DeleteMatchAnalysis(ctx context.Context, matchID string) (int64, int64, error) {
 	events, err := s.DeleteMatchEvents(ctx, matchID)
 	if err != nil {
@@ -509,13 +513,14 @@ func (s *Store) latestScore(ctx context.Context, playerID, scope string) (model.
 	return sc, err
 }
 
-// GetPlayerHistory returns per-match score snapshots at or after `since`, oldest first.
+// GetPlayerHistory returns per-match score snapshots at or after `since`
+// (zero = all), oldest first.
 func (s *Store) GetPlayerHistory(ctx context.Context, playerID string, since time.Time) ([]model.SuspicionScore, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+scoreColumns+` FROM suspicion_scores
 		 WHERE player_id = ? AND scope = ? AND snapshot_time >= ?
 		 ORDER BY snapshot_time, id`,
-		playerID, ScoreScopeMatch, fmtDBTime(since),
+		playerID, ScoreScopeMatch, fmtDBTimeSince(since),
 	)
 	if err != nil {
 		return nil, err
@@ -537,9 +542,12 @@ func (s *Store) GetPlayerHistory(ctx context.Context, playerID string, since tim
 // ---------------------------------------------------------------------------
 
 // StoreReviewCase inserts or updates a review case. On conflict the analytical
-// columns are refreshed but a status set by a moderator (anything other than
-// 'pending') and an existing assignment are preserved, so re-running analysis
-// never reopens a handled case.
+// columns (score, level, threshold version, detectors, match window) are
+// refreshed but a status set by a moderator (anything other than 'pending')
+// and an existing assignment are preserved, so re-running analysis never
+// reopens a handled case. The one exception is a case the system closed as
+// stale (close_reason set): the player is flagged again, so it reopens with
+// the new status and the reason is cleared.
 func (s *Store) StoreReviewCase(ctx context.Context, rc model.ReviewCase) error {
 	detectorsJSON, err := json.Marshal(rc.DetectorsTriggered)
 	if err != nil {
@@ -552,8 +560,9 @@ func (s *Store) StoreReviewCase(ctx context.Context, rc model.ReviewCase) error 
 	now := time.Now()
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO review_cases (case_id, player_id, match_id, severity, suspicion_score,
-			recommended_action, explanation, status, assigned_to, detectors_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			recommended_action, explanation, status, assigned_to, detectors_json, created_at, updated_at,
+			level, threshold_version, timestamp_start, timestamp_end, close_reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
 		ON CONFLICT(case_id) DO UPDATE SET
 			player_id = excluded.player_id,
 			match_id = excluded.match_id,
@@ -562,26 +571,75 @@ func (s *Store) StoreReviewCase(ctx context.Context, rc model.ReviewCase) error 
 			recommended_action = excluded.recommended_action,
 			explanation = excluded.explanation,
 			detectors_json = excluded.detectors_json,
-			status = CASE WHEN review_cases.status = 'pending' THEN excluded.status ELSE review_cases.status END,
+			level = excluded.level,
+			threshold_version = excluded.threshold_version,
+			timestamp_start = excluded.timestamp_start,
+			timestamp_end = excluded.timestamp_end,
+			status = CASE WHEN review_cases.status = 'pending' OR review_cases.close_reason != ''
+				THEN excluded.status ELSE review_cases.status END,
+			close_reason = '',
 			assigned_to = COALESCE(NULLIF(review_cases.assigned_to, ''), excluded.assigned_to),
 			updated_at = excluded.updated_at`,
 		rc.CaseID, rc.PlayerID, rc.MatchID, rc.Severity, rc.SuspicionScore,
 		rc.RecommendedAction, rc.Explanation, status, rc.AssignedTo,
 		string(detectorsJSON), fmtDBTime(rc.CreatedAt), fmtDBTime(now),
+		rc.Level, rc.ThresholdVersion, nullableDBTime(rc.TimestampStart), nullableDBTime(rc.TimestampEnd),
 	)
 	return err
 }
 
+// nullableDBTime renders t for an optional timestamp column: NULL for zero.
+func nullableDBTime(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	v := t.UTC().Format(dbTimeLayout)
+	return &v
+}
+
+// CloseStaleReviewCases closes the 'pending' review cases of a match whose
+// player is not in keepPlayers, recording reason as close_reason. It is the
+// second half of re-analysis: the upsert refreshes the cases of players still
+// flagged, this closes the ones the new analysis no longer justifies (the
+// threshold was raised, a detector moved to shadow, a detector bug was fixed).
+// Cases in any other status were touched by a moderator and are left alone;
+// nothing is ever deleted. Returns the number of cases closed.
+func (s *Store) CloseStaleReviewCases(ctx context.Context, matchID string, keepPlayers []string, reason string) (int64, error) {
+	if matchID == "" {
+		return 0, fmt.Errorf("match id required")
+	}
+	if reason == "" {
+		reason = "not flagged by re-analysis"
+	}
+	args := []any{reason, fmtDBTime(time.Now()), matchID}
+	query := `UPDATE review_cases SET status = 'closed', close_reason = ?, updated_at = ?
+		 WHERE match_id = ? AND status = 'pending'`
+	if len(keepPlayers) > 0 {
+		query += ` AND player_id NOT IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keepPlayers)), ",") + `)`
+		for _, pid := range keepPlayers {
+			args = append(args, pid)
+		}
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 const reviewCaseColumns = `case_id, player_id, match_id, COALESCE(severity,''), COALESCE(suspicion_score,0),
 	COALESCE(recommended_action,''), COALESCE(explanation,''), status, COALESCE(assigned_to,''),
-	COALESCE(detectors_json,''), created_at, COALESCE(updated_at,'')`
+	COALESCE(detectors_json,''), created_at, COALESCE(updated_at,''),
+	COALESCE(level,''), COALESCE(threshold_version,''), COALESCE(timestamp_start,''), COALESCE(timestamp_end,''),
+	COALESCE(close_reason,'')`
 
 func scanReviewCase(r rowScanner) (model.ReviewCase, error) {
 	var rc model.ReviewCase
-	var detectorsJSON, createdStr, updatedStr string
+	var detectorsJSON, createdStr, updatedStr, startStr, endStr string
 	if err := r.Scan(&rc.CaseID, &rc.PlayerID, &rc.MatchID, &rc.Severity, &rc.SuspicionScore,
 		&rc.RecommendedAction, &rc.Explanation, &rc.Status, &rc.AssignedTo,
-		&detectorsJSON, &createdStr, &updatedStr); err != nil {
+		&detectorsJSON, &createdStr, &updatedStr,
+		&rc.Level, &rc.ThresholdVersion, &startStr, &endStr, &rc.CloseReason); err != nil {
 		return rc, err
 	}
 	if detectorsJSON != "" {
@@ -590,6 +648,12 @@ func scanReviewCase(r rowScanner) (model.ReviewCase, error) {
 	rc.CreatedAt = parseDBTimeLenient(createdStr)
 	if updatedStr != "" {
 		rc.UpdatedAt = parseDBTimeLenient(updatedStr)
+	}
+	if startStr != "" {
+		rc.TimestampStart = parseDBTimeLenient(startStr)
+	}
+	if endStr != "" {
+		rc.TimestampEnd = parseDBTimeLenient(endStr)
 	}
 	return rc, nil
 }
@@ -652,6 +716,28 @@ func (s *Store) UpdateReviewCaseStatusAt(ctx context.Context, caseID, status, as
 
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// caseStatusTx returns the status of a single-match or cross-match case, or
+// ErrNotFound.
+func caseStatusTx(ctx context.Context, ex execer, caseID string) (string, error) {
+	var status string
+	err := ex.QueryRowContext(ctx, `SELECT status FROM review_cases WHERE case_id = ?`, caseID).Scan(&status)
+	if err == nil {
+		return status, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	err = ex.QueryRowContext(ctx, `SELECT status FROM cross_match_review_cases WHERE case_id = ?`, caseID).Scan(&status)
+	if err == nil {
+		return status, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("case %s: %w", caseID, ErrNotFound)
+	}
+	return "", err
 }
 
 func (s *Store) updateCaseStatusTx(ctx context.Context, ex execer, caseID, status, assignedTo string, at time.Time) error {
@@ -682,10 +768,20 @@ func (s *Store) updateCaseStatusTx(ctx context.Context, ex execer, caseID, statu
 // Moderator decisions
 // ---------------------------------------------------------------------------
 
+// ErrCaseNotDecidable is returned by StoreModeratorDecision for a case that
+// is already 'decided' or 'closed'. A second verdict on a decided case would
+// be counted as a second reviewed case by calibration; an appeal must move
+// the case to 'appealed' (review.Queue) before a new verdict is recorded.
+var ErrCaseNotDecidable = errors.New("case is already decided or closed")
+
 // StoreModeratorDecision records a moderator verdict and marks the referenced
 // case (single-match or cross-match) as 'decided' in the same transaction.
 // The verdict must be one of ValidVerdicts. A missing DecisionID or DecidedAt
-// is filled in.
+// is filled in. The case must be in a status from which 'decided' is a valid
+// transition (pending, assigned, in_review or appealed — the same table as
+// review.ValidTransition); otherwise ErrCaseNotDecidable is returned and
+// nothing is written. review.Queue.Decide is the intended caller: it checks
+// the transition first and then records the decision through this method.
 func (s *Store) StoreModeratorDecision(ctx context.Context, d model.ModeratorDecision) error {
 	if !validVerdicts[d.Verdict] {
 		return fmt.Errorf("invalid verdict %q (want one of %s)", d.Verdict, strings.Join(ValidVerdicts(), ", "))
@@ -717,6 +813,13 @@ func (s *Store) StoreModeratorDecision(ctx context.Context, d model.ModeratorDec
 	}
 	defer tx.Rollback()
 
+	status, err := caseStatusTx(ctx, tx, d.CaseID)
+	if err != nil {
+		return err
+	}
+	if status == CaseStatusDecided || status == CaseStatusClosed {
+		return fmt.Errorf("case %s (%s): %w", d.CaseID, status, ErrCaseNotDecidable)
+	}
 	if err := s.updateCaseStatusTx(ctx, tx, d.CaseID, CaseStatusDecided, d.ModeratorID, d.DecidedAt); err != nil {
 		return err
 	}
@@ -757,10 +860,7 @@ func scanDecision(r rowScanner) (model.ModeratorDecision, error) {
 // ListModeratorDecisions returns decisions made at or after `since`, newest
 // first. A zero `since` returns all; limit <= 0 means no limit.
 func (s *Store) ListModeratorDecisions(ctx context.Context, since time.Time, limit int) ([]model.ModeratorDecision, error) {
-	sinceStr := "0000-00-00T00:00:00Z"
-	if !since.IsZero() {
-		sinceStr = fmtDBTime(since)
-	}
+	sinceStr := fmtDBTimeSince(since)
 	if limit <= 0 {
 		limit = -1 // SQLite: no limit
 	}

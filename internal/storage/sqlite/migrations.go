@@ -36,13 +36,20 @@
 //
 //   - review_cases / moderator_decisions / enforcement_actions: moderator
 //     workflow. Decisions are the calibration ground truth for detectors.
+//     A review case records the level, threshold_version and match time
+//     window it was built under so calibration can group by threshold set.
+//     Re-analysis upserts cases under their deterministic id; a pending case
+//     whose player no longer reaches the review tier is closed with a
+//     close_reason (never deleted), and reopened if a later run flags the
+//     player again. Moderator-set statuses are always preserved.
 //
 // # Timestamps
 //
 // Every timestamp column is TEXT in UTC RFC3339 with second precision and a
 // literal 'Z' ("2006-01-02T15:04:05Z", see dbtime.go). Inserts always supply the
 // value from Go; the SQL DEFAULT exists only for ad-hoc inserts. Migration 10
-// rewrote rows written by older versions in datetime('now') or offset layouts.
+// rewrote rows written by older versions in datetime('now') or offset layouts
+// (migration 11 did the same for schema_migrations.applied_at).
 package sqlite
 
 import (
@@ -61,9 +68,13 @@ type MigrationVersion struct {
 	SQL         string
 }
 
-// timestampColumns lists every (table, column) that holds a dbTimeLayout value.
-// Used by migration 10 to normalize legacy rows and by tests to assert coverage.
-var timestampColumns = [][2]string{
+// timestampColumnsV10 lists every (table, column) holding a dbTimeLayout value
+// as of schema version 10. Migration 10 normalizes exactly this list; it is
+// frozen because a migration's SQL must not change after it has been applied.
+// schema_migrations.applied_at is in the list for coverage but is normalized
+// by migration 11: the pre-v10 runner inserted rows with the datetime('now')
+// DEFAULT, so versions 2..8 of an old file are in the legacy layout.
+var timestampColumnsV10 = [][2]string{
 	{"detection_events", "created_at"},
 	{"suspicion_scores", "snapshot_time"},
 	{"match_summaries", "start_time"},
@@ -86,6 +97,14 @@ var timestampColumns = [][2]string{
 	{"cross_match_review_cases", "updated_at"},
 	{"schema_migrations", "applied_at"},
 }
+
+// timestampColumns lists every (table, column) that holds a dbTimeLayout value
+// in the current schema (tests assert coverage). Columns added after version
+// 10 are created already normalized and appended here.
+var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
+	[2]string{"review_cases", "timestamp_start"},
+	[2]string{"review_cases", "timestamp_end"},
+)
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
 // each exists after migrations so a partially upgraded file fails at startup
@@ -324,22 +343,43 @@ var migrations = []MigrationVersion{
 		Version: 10, Description: "normalize all timestamp columns to UTC RFC3339 'Z'; backfill match_contexts.match_start_time",
 		SQL: normalizeTimestampsSQL(),
 	},
+	{
+		Version: 11, Description: "review_cases level/threshold_version/timestamps/close_reason, detection_events merged_count, normalize schema_migrations.applied_at",
+		SQL: `ALTER TABLE review_cases ADD COLUMN level TEXT NOT NULL DEFAULT '';
+		ALTER TABLE review_cases ADD COLUMN threshold_version TEXT NOT NULL DEFAULT '';
+		ALTER TABLE review_cases ADD COLUMN timestamp_start TEXT;
+		ALTER TABLE review_cases ADD COLUMN timestamp_end TEXT;
+		ALTER TABLE review_cases ADD COLUMN close_reason TEXT NOT NULL DEFAULT '';
+		ALTER TABLE detection_events ADD COLUMN merged_count INTEGER NOT NULL DEFAULT 0;
+		CREATE INDEX IF NOT EXISTS idx_cases_match_status ON review_cases(match_id, status);
+		CREATE INDEX IF NOT EXISTS idx_cases_threshold ON review_cases(threshold_version);
+		` + normalizeTimestampSQL("schema_migrations", "applied_at"),
+	},
 }
 
-// normalizeTimestampsSQL rewrites every legacy timestamp value (datetime('now')
-// 'YYYY-MM-DD HH:MM:SS' or an RFC3339 value with a numeric offset) into
-// dbTimeLayout. SQLite's strftime understands both legacy shapes and converts
-// offsets to UTC; values it cannot parse are left untouched (COALESCE).
+// normalizeTimestampSQL rewrites every legacy value of one timestamp column
+// (datetime('now') 'YYYY-MM-DD HH:MM:SS' or an RFC3339 value with a numeric
+// offset) into dbTimeLayout. SQLite's strftime understands both legacy shapes
+// and converts offsets to UTC; values it cannot parse are left untouched
+// (COALESCE). The statement is idempotent.
+func normalizeTimestampSQL(table, column string) string {
+	return fmt.Sprintf(
+		"UPDATE %s SET %s = COALESCE(strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', %s), %s) "+
+			"WHERE %s IS NOT NULL AND %s != '' AND %s NOT LIKE '____-__-__T__:__:__Z';\n",
+		table, column, column, column, column, column, column)
+}
+
+// normalizeTimestampsSQL is migration 10: every timestamp column that existed
+// at version 10 except schema_migrations.applied_at, which migration 11
+// normalizes (the skip was an oversight: the old runner's DEFAULT wrote the
+// legacy layout for versions 2..8).
 func normalizeTimestampsSQL() string {
 	var b strings.Builder
-	for _, tc := range timestampColumns {
+	for _, tc := range timestampColumnsV10 {
 		if tc[0] == "schema_migrations" {
-			continue // written by this migration runner; already normalized
+			continue
 		}
-		fmt.Fprintf(&b,
-			"UPDATE %s SET %s = COALESCE(strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', %s), %s) "+
-				"WHERE %s IS NOT NULL AND %s != '' AND %s NOT LIKE '____-__-__T__:__:__Z';\n",
-			tc[0], tc[1], tc[1], tc[1], tc[1], tc[1], tc[1])
+		b.WriteString(normalizeTimestampSQL(tc[0], tc[1]))
 	}
 	// Backfill the indexed match start time from the JSON context written by
 	// earlier versions. Zero Go times ('0001-01-01...') mean "unknown" and stay NULL.

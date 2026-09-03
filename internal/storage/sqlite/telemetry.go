@@ -420,7 +420,8 @@ func (s *Store) GetPlayerFrames(ctx context.Context, playerID string, matchLimit
 // GetMatchIDsByTimeRange returns match IDs whose match time falls in
 // [since, until). Match time is match_contexts.match_start_time when the
 // context records one, otherwise the earliest telemetry ingestion time for
-// the match. Results are ordered by match time, then match ID.
+// the match. A zero since means no lower bound; a zero until means now.
+// Results are ordered by match time, then match ID.
 func (s *Store) GetMatchIDsByTimeRange(ctx context.Context, since, until time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT m.match_id FROM (
@@ -432,7 +433,7 @@ func (s *Store) GetMatchIDsByTimeRange(ctx context.Context, since, until time.Ti
 		 ) m
 		 WHERE m.match_time >= ? AND m.match_time < ?
 		 ORDER BY m.match_time, m.match_id`,
-		fmtDBTime(since), fmtDBTime(until),
+		fmtDBTimeSince(since), fmtDBTime(until),
 	)
 	if err != nil {
 		return nil, err

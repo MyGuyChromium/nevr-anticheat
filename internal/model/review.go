@@ -51,6 +51,11 @@ type ReviewCase struct {
 	AssignedTo string    `json:"assigned_to,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	// CloseReason is set when the system (not a moderator) closed the case:
+	// a re-analysis of the match no longer flags the player. Such a case is
+	// reopened automatically if a later analysis flags the player again.
+	// Empty for moderator closures.
+	CloseReason string `json:"close_reason,omitempty"`
 
 	// ThresholdVersion identifies the level table and detector versions the
 	// case was built under, so cases from different threshold sets can be
