@@ -5,10 +5,12 @@ per-user Inno Setup package: it does not download or execute scripts during
 installation, does not request administrator access, and keeps evidence under
 `%LOCALAPPDATA%\NEVR-Anticheat` outside the replaceable program directory.
 
-Every release publishes SHA-256 checksums and GitHub build-provenance
-attestations. The Windows release workflow also performs a real silent
-install/uninstall smoke test and scans the final artifacts with Microsoft
-Defender when Defender is available on the hosted runner.
+Every release publishes SHA-256 checksums. GitHub build-provenance attestations
+are added when the repository visibility supports them; GitHub does not offer
+that feature to user-owned private repositories. The Windows release workflow
+also performs a real silent install/uninstall smoke test and scans the final
+artifacts with Microsoft Defender when Defender is available on the hosted
+runner.
 
 ## Authenticode signing
 
