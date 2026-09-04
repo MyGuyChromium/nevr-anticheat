@@ -1451,7 +1451,12 @@ func TestContinuousMode_ZeroFramesThenRecovery(t *testing.T) {
 	cancel, _ := runBridgeAsync(cfg, stats, 5*time.Second)
 	waitFor(2*time.Second, func() bool { return stats.TotalPolls.Load() >= 5 })
 	fb.set(fakeSessionJSON("zf-sess", "playing", 3), 200)
-	ok := waitForBatches(fa, 1, 3*time.Second)
+	// Receiving the batch and recording its acknowledgement happen on opposite
+	// sides of the WebSocket. Wait for both before cancelling the bridge so the
+	// test cannot race a valid acknowledgement that is already in flight.
+	ok := waitFor(3*time.Second, func() bool {
+		return fa.batchCount() >= 1 && stats.TotalFramesForwarded.Load() >= 3
+	})
 	cancel()
 	if !ok || stats.TotalFramesForwarded.Load() < 3 {
 		t.Errorf("no recovery: batches=%d forwarded=%d", fa.batchCount(), stats.TotalFramesForwarded.Load())
