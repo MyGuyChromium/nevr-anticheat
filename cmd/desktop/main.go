@@ -26,7 +26,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.7.0"
+const appVersion = "0.8.0"
 
 // Filled by the release workflow. Development builds intentionally retain
 // these values so the updater can say that their revision is unknown.

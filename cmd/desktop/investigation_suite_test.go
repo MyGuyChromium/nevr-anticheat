@@ -44,6 +44,12 @@ func TestInvestigationSuiteRoutes(t *testing.T) {
 	if resp := postJSONTest(t, base+"/api/filters", map[string]string{"name": "Throws", "filter_json": `{"detector":"THROW_001"}`}, nil); resp.StatusCode != 200 {
 		t.Fatalf("filter status=%d", resp.StatusCode)
 	}
+	if resp := postJSONTest(t, base+"/api/calibration/opportunities", map[string]any{
+		"match_id": matchID, "player_id": "echovr:1001", "detector_id": "THROW_001",
+		"opportunity_kind": "throw", "ground_truth": "negative", "frame_start": 5, "frame_end": 8,
+	}, nil); resp.StatusCode != 200 {
+		t.Fatalf("opportunity status=%d", resp.StatusCode)
+	}
 
 	var validation struct {
 		Splits map[string][]string `json:"splits"`
@@ -81,7 +87,7 @@ func TestInvestigationSuiteRoutes(t *testing.T) {
 	libraryBody, _ := io.ReadAll(response.Body)
 	response.Body.Close()
 	var library evidenceLibrary
-	if response.StatusCode != 200 || json.Unmarshal(libraryBody, &library) != nil || len(library.Notes) != 1 || len(library.Filters) != 1 {
+	if response.StatusCode != 200 || json.Unmarshal(libraryBody, &library) != nil || library.Version != 2 || len(library.Opportunities) != 1 || len(library.Notes) != 1 || len(library.Filters) != 1 {
 		t.Fatalf("library status=%d body=%s", response.StatusCode, libraryBody)
 	}
 	response, err = http.Get(base + "/api/match/" + matchID + "/report")

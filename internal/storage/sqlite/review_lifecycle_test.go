@@ -342,7 +342,7 @@ func TestMigration11_NormalizesSchemaMigrationsAppliedAt(t *testing.T) {
 	if seen != SchemaVersion() {
 		t.Errorf("schema_migrations rows = %d, want %d", seen, SchemaVersion())
 	}
-	if len(timestampColumns) != len(timestampColumnsV10)+12 {
+	if len(timestampColumns) != len(timestampColumnsV10)+15 {
 		t.Errorf("timestampColumns should extend the frozen v10 list: %d vs %d", len(timestampColumns), len(timestampColumnsV10))
 	}
 }

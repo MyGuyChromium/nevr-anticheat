@@ -139,6 +139,7 @@
   .review-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
   .review-buttons .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
   .review-note { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; max-width: 30ch; }
+  .blind-mask { display: inline-block; color: var(--muted); background: var(--neutral-bg); border: 1px dashed var(--line-2); padding: 5px 8px; border-radius: 3px; }
   .match-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0; padding: 14px; border: 1px solid var(--line); background: var(--panel); }
   .match-tools .label { color: var(--muted); font: 10px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; margin-right: 4px; }
   .match-tools .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
@@ -535,7 +536,7 @@
         <h2 id="h-upload">Every movement.<br><span>Under review.</span></h2>
         <p class="hero-deck">Turn an Echo VR recording into a defensible, frame-level investigation—locally, privately, and without automatic punishment.</p>
         <div class="protocol-grid" aria-label="Analysis guarantees">
-          <div><b>30</b><span>detectors observed</span></div>
+          <div><b>30</b><span>detector definitions</span></div>
           <div><b>0</b><span>automatic actions</span></div>
           <div><b>127.0.0.1</b><span>local-only surface</span></div>
         </div>
@@ -598,6 +599,7 @@
         <div class="form-row"><label class="form-field">Parameter<select id="lab-param"></select></label><label class="form-field">Candidate value<input id="lab-value" type="number" step="any"></label><label class="check-inline"><input id="lab-enable" type="checkbox"> Enable in preview</label><button id="preview-threshold" class="btn">Preview</button></div>
         <div id="threshold-result" class="status">Choose a stored match and parameter.</div>
       </div>
+      <div class="lab-card"><h3>Blinded evidence review</h3><p class="help">Hide detector identity, confidence, and conclusion until you reveal them. Decisions made while hidden are recorded as blind reviews.</p><label class="check-inline"><input id="blind-review" type="checkbox"> Conceal detector conclusions</label><p class="metric-note">Open the Spark clip and physics inspector first, then label the behavior or reveal the signal.</p></div>
     </div>
   </section>
   <section class="block" aria-labelledby="h-history">
@@ -707,6 +709,9 @@
   $('history-sort').value = prefs.historySort || 'newest';
   $('history-flagged').checked = !!prefs.historyFlagged;
   $('history-label').value = prefs.historyLabel || '';
+  let blindReview = !!prefs.blindReview;
+  const revealedEvents = new Set();
+  $('blind-review').checked = blindReview;
   const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
   async function getJSON(url) {
     let r;
@@ -898,27 +903,30 @@
       <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s, m.disc_speed_cap, m.match_id)}</details>`;
   }
 
-  function reviewControls(e) {
+  function reviewControls(e, concealed = false) {
     const chosen = e.review_verdict || '';
     const button = (verdict, label) => `<button class="btn btn-sm ${chosen === verdict ? 'selected' : ''}" data-review-event="${esc(e.event_id)}" data-verdict="${verdict}" title="Label whether this detector observation is correct">${label}</button>`;
     return `<div class="review-buttons">${button('yes', '✓ Correct')}${button('no', '✕ False positive')}${button('uncertain', '? Unsure')}
       <button class="btn btn-sm" data-review-event="${esc(e.event_id)}" data-review-note="1">Note</button></div>
+      ${concealed ? '<span class="review-note">Decision will be recorded as blinded.</span>' : ''}${e.blind_review ? '<span class="review-note">Previously reviewed blind.</span>' : ''}
       ${e.review_comment ? `<span class="review-note" title="${esc(e.review_comment)}">${esc(e.review_comment)}</span>` : ''}`;
   }
 
   function eventRows(events, matchID) {
-    return events.map((e) => `<tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
-      <td class="det"><span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span></td>
+    return events.map((e) => { const concealed = blindReview && !revealedEvents.has(e.event_id); return `<tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
+      <td class="det">${concealed ? '<span class="blind-mask">Detector hidden</span>' : `<span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span>`}</td>
       <td>${who(e.player_name, e.player_id)}</td>
       <td class="num" title="Frame ${fmtInt(e.frame_index)}">${e.frame_range_start === e.frame_range_end ? fmtInt(e.frame_range_start) : `${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</td>
       <td class="num">${fmtClock(e.timestamp)}</td>
-      <td class="num">${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</td>
-      <td class="num">${meter(e.confidence)}</td>
-      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span></td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
-      <td class="review-cell">${reviewControls(e)}</td>
+      <td class="num">${concealed ? '<span class="blind-mask">hidden</span>' : `${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}`}</td>
+      <td class="num">${concealed ? '—' : meter(e.confidence)}</td>
+      <td class="wide">${concealed ? '<span class="blind-mask">Conclusion hidden</span>' : `${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span>`}</td><td class="wide dim">${concealed ? '—' : esc(e.expected_range) || '—'}</td>
+      <td class="review-cell">${reviewControls(e, concealed)}</td>
       <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
-      <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>
-      <a class="btn btn-sm" href="api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}">Diagnostic ZIP</a></span></td></tr>`).join('');
+      ${concealed ? `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(e.frame_index) ? e.frame_index : 0}" data-physics-player="${esc(e.player_id)}">Inspect raw physics</button>` : `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>`}
+      ${concealed ? `<button class="btn btn-sm" data-reveal-event="${esc(e.event_id)}">Reveal detector</button>` : ''}
+      <a class="btn btn-sm" href="${concealed ? `api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(e.frame_index) ? e.frame_index : 0}?player=${encodeURIComponent(e.player_id)}` : `api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}`}">Diagnostic ZIP</a></span></td></tr>`;
+    }).join('');
   }
 
   function eventsTable(m, idx, all, detectorID = '') {
@@ -969,7 +977,7 @@
     const button = (value) => `<button class="btn btn-sm ${m.calibration_label === value ? 'selected' : ''}" data-label-match="${esc(m.match_id)}" data-label="${value}">${esc(labelName(value))}</button>`;
     const st = m.storage || {};
     return `<div class="match-tools" data-match-tools="${esc(m.match_id)}"><span class="label">Replay ground truth</span>${button('known_clean')}${button('suspected')}${button('confirmed_cheat')}
-      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><button class="btn btn-sm" data-investigation-match="${esc(m.match_id)}">Investigation studio</button><a class="btn btn-sm" href="api/match/${encodeURIComponent(m.match_id)}/report">Case report</a><button class="btn btn-sm" data-compare-match="${esc(m.match_id)}">Before / after</button><button class="btn btn-sm" data-sandbox-match="${esc(m.match_id)}">Threshold sandbox</button><span class="spacer"></span>
+      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><button class="btn btn-sm" data-opportunity-match="${esc(m.match_id)}">Ground-truth window</button><button class="btn btn-sm" data-investigation-match="${esc(m.match_id)}">Investigation studio</button><a class="btn btn-sm" href="api/match/${encodeURIComponent(m.match_id)}/report">Case report</a><button class="btn btn-sm" data-compare-match="${esc(m.match_id)}">Before / after</button><button class="btn btn-sm" data-sandbox-match="${esc(m.match_id)}">Threshold sandbox</button><span class="spacer"></span>
       <button class="btn btn-sm" data-archive-match="${esc(m.match_id)}">Archive raw</button><button class="btn btn-sm" data-prune-match="${esc(m.match_id)}">Archive + remove active raw</button><button class="btn btn-sm" data-restore-match="${esc(m.match_id)}">Restore raw</button>
       <p class="storage-note">${m.calibration_label ? `Label: ${esc(labelName(m.calibration_label))}${m.calibration_comment ? ` · ${esc(m.calibration_comment)}` : ''}. ` : 'Replay is not labeled yet. '}${fmtInt(st.raw_ticks || 0)} raw ticks (${fmtBytes(st.raw_tick_bytes || 0)}) and ${fmtInt(st.normalized_frames || 0)} normalized player-frames. Pruning first writes and verifies a restorable full-fidelity ZIP; archives retain player identities and should stay private. Freed SQLite pages become reusable, but the DB file may not immediately shrink.</p></div>`;
   }
@@ -1233,17 +1241,22 @@
   async function loadCalibration() {
     const el = $('calibration');
     try {
-      const c = await getJSON('api/calibration');
+      const [c,v,promotions] = await Promise.all([getJSON('api/calibration'),getJSON('api/lab/validation'),getJSON('api/lab/promotions')]);
       el.className = ''; el.removeAttribute('aria-busy');
       const labels = c.match_labels || {};
+      const staleSamples=(v.detectors||[]).reduce((total,d)=>total+Number(d.overall?.stale_provenance_samples||0),0);
       const cards = `<div class="health-grid">
         <div class="health-card"><span>Known clean</span><b>${fmtInt(labels.known_clean || 0)}</b><small class="muted">replays</small></div>
         <div class="health-card"><span>Suspected</span><b>${fmtInt(labels.suspected || 0)}</b><small class="muted">replays</small></div>
         <div class="health-card"><span>Confirmed cheat</span><b>${fmtInt(labels.confirmed_cheat || 0)}</b><small class="muted">replays</small></div>
-        <div class="health-card"><span>Still unlabeled</span><b>${fmtInt(c.unlabeled_matches || 0)}</b><small class="muted">of ${fmtInt(c.stored_matches || 0)} stored</small></div></div>`;
-      const detectors = c.detectors || [];
-      const table = detectors.length ? `<h3>Detector ground truth<span class="count">${fmtInt(detectors.length)} detectors</span></h3><table><thead><tr><th>Detector</th><th class="num">Correct</th><th class="num">False +</th><th class="num">Unsure</th><th class="num">Labels</th><th class="num">Precision</th></tr></thead><tbody>${detectors.map((d) => `<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(d.confirmed)}</td><td class="num">${fmtInt(d.false_positive)}</td><td class="num">${fmtInt((d.inconclusive || 0) + (d.needs_more_data || 0))}</td><td class="num">${fmtInt(d.direct_labels)}</td><td class="num">${d.has_precision ? `${fmtNum(d.precision * 100, 1)}%` : '<span class="muted">not enough data</span>'}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No detector observation has been labeled yet. Open a match and mark individual detections Correct, False positive, or Unsure.</p>';
-      el.innerHTML = cards + table + `<p class="summary-note warning">${esc(c.notice)}</p>`;
+        <div class="health-card"><span>Still unlabeled</span><b>${fmtInt(c.unlabeled_matches || 0)}</b><small class="muted">of ${fmtInt(c.stored_matches || 0)} stored</small></div></div>
+        <div class="health-grid"><div class="health-card"><span>Calibration samples</span><b>${fmtInt(v.samples)}</b><small class="muted">event labels + behavior windows</small></div><div class="health-card"><span>Blinded samples</span><b>${fmtInt(v.blind_samples)}</b><small class="muted">reviewed before reveal</small></div><div class="health-card"><span>Stale decisive samples</span><b class="${staleSamples?'regression-fail':'regression-pass'}">${fmtInt(staleSamples)}</b><small class="muted">re-analyze before promotion</small></div><div class="health-card"><span>Player leakage</span><b class="${v.player_leakage?'regression-fail':'regression-pass'}">${v.player_leakage?'detected':'none'}</b><small class="muted">connected matches stay together</small></div><div class="health-card"><span>Promotion posture</span><b>review only</b><small class="muted">automatic enforcement disabled</small></div></div>`;
+      const detectors = (v.detectors || []).filter((d)=>{const m=d.overall||{};return (m.positive_opportunities||0)+(m.negative_opportunities||0)+(m.uncertain||0)>0});
+      const table = detectors.length ? `<h3>Detector confusion matrix<span class="count">${fmtInt(detectors.length)} measured</span></h3><div class="physics-table"><table><thead><tr><th>Detector</th><th class="num">TP</th><th class="num">FP</th><th class="num">FN</th><th class="num">TN</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">FP / 100</th><th>Promotion gate</th></tr></thead><tbody>${detectors.map((d)=>{const m=d.overall||{},pc=m.precision_ci95||{},rc=m.recall_ci95||{};return `<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(m.true_positive)}</td><td class="num regression-fail">${fmtInt(m.false_positive)}</td><td class="num regression-fail">${fmtInt(m.false_negative)}</td><td class="num">${fmtInt(m.true_negative)}</td><td class="num" title="95% CI ${fmtNum((pc.lower||0)*100,1)}–${fmtNum((pc.upper||0)*100,1)}%">${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td class="num" title="95% CI ${fmtNum((rc.lower||0)*100,1)}–${fmtNum((rc.upper||0)*100,1)}%">${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td class="num">${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td><button class="btn btn-sm" data-calibration-details="${esc(d.detector_id)}">Details</button> ${d.eligible?`<button class="btn btn-sm" data-promote-detector="${esc(d.detector_id)}">Promote to review</button>`:`<span class="tag warn" title="${esc((d.reasons||[]).join(' · '))}">not eligible</span>`}</td></tr>`}).join('')}</tbody></table></div>` : '<p class="empty">No measured opportunities yet. Label an emitted event or add a ground-truth window to begin measuring false negatives and true negatives.</p>';
+      const activePromotions=(promotions.promotions||[]).filter(p=>p.status==='active');
+      const promotionStatus=activePromotions.length?`<h3>Staged review promotion</h3>${activePromotions.map(p=>`<p><span class="tag warn">review mode</span> <span class="mono">${esc(p.detector_id)}</span> · ${esc(p.profile_name)} <button class="btn btn-sm" data-rollback-detector="${esc(p.detector_id)}">Return to shadow</button></p>`).join('')}`:'';
+      el.innerHTML = cards + table + promotionStatus + `<p class="summary-note warning">${esc(v.notice)}</p>`;
+      el.dataset.validation=JSON.stringify(v);
     } catch (e) { panelError(el, 'the calibration library', e); }
   }
 
@@ -1251,6 +1264,21 @@
     $('lab-dialog-title').textContent = title;
     $('lab-dialog-content').innerHTML = html;
     if (!$('lab-dialog').open) $('lab-dialog').showModal();
+  }
+
+  async function openOpportunityEditor(matchID) {
+    const view = views.find((item) => item.match_id === matchID) || historyMatches.find((item) => item.match_id === matchID);
+    if (!view) throw new Error('open the stored match before annotating a ground-truth window');
+    const data = await getJSON(`api/calibration/opportunities?match_id=${encodeURIComponent(matchID)}`);
+    const playerOptions = (view.players || []).map((p) => `<option value="${esc(p.player_id)}">${esc(p.name || p.player_id)}</option>`).join('');
+    const detectorOptions = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
+    const rows = (data.opportunities || []).map((o) => `<tr><td class="mono">${esc(o.detector_id)}</td><td>${who((view.players||[]).find(p=>p.player_id===o.player_id)?.name,o.player_id)}</td><td><span class="tag ${o.ground_truth==='positive'?'bad':o.ground_truth==='negative'?'ok':'warn'}">${esc(o.ground_truth)}</span></td><td>${esc(o.opportunity_kind)}</td><td class="num">${fmtInt(o.frame_start)}–${fmtInt(o.frame_end)}</td><td>${esc(o.behavior_type || '—')}<span class="explain">${esc(o.comment || '')}${o.blind_review ? ' · blind review' : ''}</span></td><td><button class="btn btn-sm" data-delete-opportunity="${esc(o.opportunity_id)}" data-opportunity-owner="${esc(matchID)}">Delete</button></td></tr>`).join('');
+    openLabDialog('Ground-truth opportunities', `<p class="notice">Annotate the exact player and frame window where a detector should—or should not—fire. A positive window with no matching signal becomes a false negative.</p>
+      <div class="form-row"><label class="form-field">Player<select id="opportunity-player">${playerOptions}</select></label><label class="form-field">Detector<select id="opportunity-detector">${detectorOptions}</select></label><label class="form-field">Truth<select id="opportunity-truth"><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option><option value="uncertain">Uncertain / exclude</option></select></label></div>
+      <div class="form-row"><label class="form-field">Opportunity type<select id="opportunity-kind"><option value="throw">Throw</option><option value="movement_window">Movement window</option><option value="state_transition">State transition</option><option value="match">Whole match</option><option value="player_history">Player history</option><option value="custom">Custom</option></select></label><label class="form-field">Start frame<input id="opportunity-start" type="number" min="0" step="1" value="0"></label><label class="form-field">End frame<input id="opportunity-end" type="number" min="0" step="1" value="${Math.max(0,Number(view.frames_processed||0)-1)}"></label></div>
+      <div class="form-row"><label class="form-field">Behavior type<input id="opportunity-behavior" maxlength="120" placeholder="e.g. verified over-cap release"></label><label class="form-field path">Review note<input id="opportunity-comment" maxlength="4000" placeholder="What did the reviewer verify in Spark?"></label></div>
+      <div class="form-row"><label class="check-inline"><input id="opportunity-blind" type="checkbox" ${blindReview?'checked':''}> Reviewed before detector conclusion was revealed</label><button class="btn" data-save-opportunity="${esc(matchID)}">Save ground truth</button></div>
+      <h3>Saved opportunities<span class="count">${fmtInt((data.opportunities||[]).length)}</span></h3><div class="physics-table"><table><thead><tr><th>Detector</th><th>Player</th><th>Truth</th><th>Type</th><th>Frames</th><th>Evidence</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No ground-truth windows yet.</td></tr>'}</tbody></table></div>`);
   }
 
   let activePlaylist = [], activePlaylistIndex = -1, activeInvestigationMatch = '';
@@ -1298,7 +1326,7 @@
     try {
       const [v,p,f,q,s,b,synth] = await Promise.all([getJSON('api/lab/validation'),getJSON('api/profiles'),getJSON('api/filters'),getJSON('api/queue'),getJSON('api/setup'),getJSON('api/maintenance/backups'),getJSON('api/lab/synthetic')]);
       el.className=''; el.removeAttribute('aria-busy');
-      const metricRows=(v.detectors||[]).map(d=>`<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(d.confirmed)}</td><td class="num">${fmtInt(d.false_positive)}</td><td class="num">${d.has_precision ? fmtNum(d.precision*100,1)+'%' : '—'}</td><td>${esc(d.recommendation)}</td></tr>`).join('');
+      const metricRows=(v.detectors||[]).filter(d=>(d.overall?.positive_opportunities||0)+(d.overall?.negative_opportunities||0)>0).map(d=>{const m=d.overall||{};return `<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(m.true_positive)}</td><td class="num">${fmtInt(m.false_positive)}</td><td class="num">${fmtInt(m.false_negative)}</td><td class="num">${fmtInt(m.true_negative)}</td><td class="num">${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td class="num">${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td>${d.eligible?'<span class="tag ok">eligible</span>':`<span class="tag warn" title="${esc((d.reasons||[]).join(' · '))}">blocked</span>`}</td></tr>`}).join('');
       const split=v.splits||{}, drift=v.drift||{}, backups=b.backups||[], profiles=p.profiles||[], filters=f.filters||[];
       const queueRows=(q.items||[]).slice(0,8).map(x=>`<tr><td>${esc(x.file)}</td><td>${esc(x.source)}</td><td><span class="tag ${x.status==='failed'?'bad':x.status==='complete'?'ok':'warn'}">${esc(x.status)}</span></td><td class="num">${fmtInt(x.duration_ms)} ms</td></tr>`).join('');
       const players=[...new Map(historyMatches.flatMap(m=>(m.players||[]).map(x=>[x.player_id,x])).filter(x=>x[0])).values()];
@@ -1306,15 +1334,15 @@
       const firstMatrixParam=labSpecs[0]?.params?.[0], firstMatrixValue=Number(firstMatrixParam?.value);
       const matrixDefaults=Number.isFinite(firstMatrixValue) ? [firstMatrixValue*.9,firstMatrixValue,firstMatrixValue*1.1].map(x=>Number(x.toPrecision(6))).join(', ') : '';
       el.innerHTML=`<div class="studio-grid">
-        <div class="studio-card wide"><h3>Precision, recall &amp; recommendations</h3><div class="health-grid"><div class="health-card"><span>Match recall</span><b>${v.match_recall.available ? fmtNum(v.match_recall.recall*100,1)+'%' : 'not available'}</b><small class="muted">${fmtInt(v.match_recall.with_any_signal)} / ${fmtInt(v.match_recall.confirmed_matches)} confirmed matches had any signal</small></div><div class="health-card"><span>Training</span><b>${fmtInt((split.training||[]).length)}</b></div><div class="health-card"><span>Validation</span><b>${fmtInt((split.validation||[]).length)}</b></div><div class="health-card"><span>Locked holdout</span><b>${fmtInt((split.holdout||[]).length)}</b></div></div><div class="physics-table"><table><thead><tr><th>Detector</th><th>Correct</th><th>False +</th><th>Precision</th><th>Recommendation</th></tr></thead><tbody>${metricRows || '<tr><td colspan="5" class="muted">Label observations to unlock detector metrics.</td></tr>'}</tbody></table></div><p class="metric-note">${esc(v.notice)}</p></div>
+        <div class="studio-card wide"><h3>Precision, recall &amp; promotion gates</h3><div class="health-grid"><div class="health-card"><span>Measured opportunities</span><b>${fmtInt(v.samples)}</b><small class="muted">${fmtInt(v.blind_samples)} reviewed blind</small></div><div class="health-card"><span>Training</span><b>${fmtInt((split.training||[]).length)}</b></div><div class="health-card"><span>Validation</span><b>${fmtInt((split.validation||[]).length)}</b></div><div class="health-card"><span>Locked holdout</span><b>${fmtInt((split.holdout||[]).length)}</b></div></div><div class="physics-table"><table><thead><tr><th>Detector</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>Gate</th></tr></thead><tbody>${metricRows || '<tr><td colspan="8" class="muted">Add ground-truth opportunities to unlock detector metrics.</td></tr>'}</tbody></table></div><p class="metric-note">${esc(v.notice)}</p></div>
         <div class="studio-card"><h3>Drift monitor</h3>${drift.available ? `<p><b>Quality</b> ${fmtNum(drift.change.quality,1)} · <b>Events/run</b> ${fmtNum(drift.change.events,1)} · <b>Runtime</b> ${fmtNum(drift.change.pipeline_ms,0)} ms</p>` : `<p class="empty">${esc(drift.message)}</p>`}<p class="metric-note">Recent analyses are compared with the preceding analysis window.</p></div>
         <div class="studio-card"><h3>Label disagreements</h3><p><b>${fmtInt((v.disagreements||[]).length)}</b> known-clean matches still contain observations.</p><div class="studio-actions"><button class="btn" id="show-disagreements">Review disagreements</button></div></div>
-        <div class="studio-card"><h3>Configuration profiles</h3><p>Active: <span class="tag">${esc(p.active)}</span><br><span class="mono muted">${esc(p.current_fingerprint)}</span></p><label class="form-field">New profile name<input id="profile-name" maxlength="80" placeholder="Conservative v1"></label><div class="studio-actions"><button class="btn" id="save-profile">Save current</button>${profiles.map(x=>`<button class="btn btn-sm ${x.active?'selected':''}" data-activate-profile="${esc(x.name)}" ${x.active?'disabled':''}>${esc(x.name)}</button>`).join('')}</div><p class="metric-note">Activations apply after restart and remain shadow-only.</p></div>
-        <div class="studio-card"><h3>Experiment matrix</h3><label class="form-field">Match<select id="matrix-match">${historyMatches.map(m=>`<option value="${esc(m.match_id)}">${esc(m.source_file||m.match_id)}</option>`).join('')}</select></label><label class="form-field">Detector<select id="matrix-detector">${labSpecs.map(d=>`<option value="${esc(d.id)}">${esc(d.id)}</option>`).join('')}</select></label><label class="form-field">Parameter<input id="matrix-param" value="${esc(firstMatrixParam?.key||'')}"></label><label class="form-field">Values<input id="matrix-values" value="${esc(matrixDefaults)}" title="Absolute candidate values, comma separated"></label><div class="studio-actions"><button class="btn" id="run-matrix" ${historyMatches.length&&firstMatrixParam?'':'disabled'}>Run matrix</button></div></div>
+        <div class="studio-card"><h3>Configuration profiles</h3><p>Active: <span class="tag">${esc(p.active)}</span><br><span class="mono muted">${esc(p.current_fingerprint)}</span></p><label class="form-field">New profile name<input id="profile-name" maxlength="80" placeholder="Conservative v1"></label><div class="studio-actions"><button class="btn" id="save-profile">Save current</button>${profiles.map(x=>`<button class="btn btn-sm ${x.active?'selected':''}" data-activate-profile="${esc(x.name)}" ${x.active?'disabled':''}>${esc(x.name)}</button>`).join('')}</div><p class="metric-note">Hand-saved and imported profiles remain shadow-only. Only a passed promotion gate can create a single-detector review profile.</p></div>
+        <div class="studio-card"><h3>Experiment matrix</h3><label class="form-field">Scope<select id="matrix-scope"><option value="training">Full training split</option><option value="validation">Validation split</option><option value="match">One match only</option></select></label><label class="form-field">Match<select id="matrix-match" disabled>${historyMatches.map(m=>`<option value="${esc(m.match_id)}">${esc(m.source_file||m.match_id)}</option>`).join('')}</select></label><label class="form-field">Detector<select id="matrix-detector">${labSpecs.map(d=>`<option value="${esc(d.id)}">${esc(d.id)}</option>`).join('')}</select></label><label class="form-field">Parameter<input id="matrix-param" value="${esc(firstMatrixParam?.key||'')}"></label><label class="form-field">Values<input id="matrix-values" value="${esc(matrixDefaults)}" title="Absolute candidate values, comma separated"></label><div class="studio-actions"><button class="btn" id="run-matrix" ${historyMatches.length&&firstMatrixParam?'':'disabled'}>Run training sweep</button></div><p class="metric-note">Training and validation sweeps calculate TP/FP/FN/TN for every value and never touch holdout matches. Save the chosen value as a shadow candidate before promotion.</p></div>
         <div class="studio-card"><h3>Side-by-side players</h3><div class="form-row"><label class="form-field">Player A<select id="compare-a">${playerOptions}</select></label><label class="form-field">Player B<select id="compare-b">${playerOptions}</select></label></div><div class="studio-actions"><button class="btn" id="compare-players" ${players.length<2?'disabled':''}>Compare</button></div></div>
-        <div class="studio-card wide"><h3>Queue &amp; performance</h3><div class="health-grid"><div class="health-card"><span>Running</span><b>${fmtInt(q.running)}</b></div><div class="health-card"><span>Failed</span><b>${fmtInt(q.failed)}</b></div><div class="health-card"><span>Average duration</span><b>${fmtInt(q.average_duration_ms)} ms</b></div></div><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Duration</th></tr></thead><tbody>${queueRows || '<tr><td colspan="4" class="muted">No v0.5 queue jobs yet.</td></tr>'}</tbody></table></div>
+        <div class="studio-card wide"><h3>Queue &amp; performance</h3><div class="health-grid"><div class="health-card"><span>Running</span><b>${fmtInt(q.running)}</b></div><div class="health-card"><span>Failed</span><b>${fmtInt(q.failed)}</b></div><div class="health-card"><span>Average duration</span><b>${fmtInt(q.average_duration_ms)} ms</b></div></div><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Duration</th></tr></thead><tbody>${queueRows || '<tr><td colspan="4" class="muted">No queue jobs yet.</td></tr>'}</tbody></table></div>
         <div class="studio-card"><h3>First-run readiness</h3><p><span class="tag ${s.ready?'ok':'warn'}">${s.ready?'ready':'attention needed'}</span></p><p>Evidence folder ${s.writable?'writable':'not writable'} · Spark ${s.spark_installed?'ready':'not found'} · ${fmtInt(s.stored_matches)} matches</p><div class="studio-actions"><button class="btn" id="show-setup">Setup guide</button></div></div>
-        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports labels, direct reviews, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div></div>
+        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports match labels, blinded event reviews, ground-truth opportunities, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div></div>
         <div class="studio-card"><h3>Saved investigation views</h3><div class="studio-actions">${filters.map(x=>`<button class="btn btn-sm" data-load-filter="${esc(x.filter_json)}">${esc(x.name)}</button>`).join('') || '<span class="muted">No saved filters.</span>'}</div><div class="studio-actions"><button class="btn" id="save-filter">Save current History filter</button></div></div>
         <div class="studio-card"><h3>Backup &amp; restore</h3><label class="form-field">Verified backup<select id="restore-backup">${backups.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} · ${fmtBytes(x.bytes)}</option>`).join('')}</select></label><div class="studio-actions"><button class="btn" id="backup-db-studio">Create backup</button><button class="btn" id="restore-db" ${backups.length?'':'disabled'}>Restore on restart</button></div><p class="metric-note">Restore first creates a safety backup and preserves the replaced database.</p></div>
         <div class="studio-card"><h3>Adversarial probes</h3><p>${(synth.probes||[]).map(x=>`<span class="tag" title="${esc(x.expected)}">${esc(x.id)}</span>`).join(' ')}</p><p class="metric-note">Deterministic synthetic scenarios cover legal motion, contact ambiguity, tracking loss, clock corruption, and disc-cap breaches.</p></div>
@@ -1323,7 +1351,7 @@
       if ($('compare-b') && players.length>1) $('compare-b').selectedIndex=1;
       if (!prefs.v05SetupSeen) {
         prefs.v05SetupSeen = true; savePrefs();
-        openLabDialog('Welcome to NEVR v0.5', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Nothing in this app automatically punishes a player. Build labeled evidence before trusting a detector.</p>`);
+        openLabDialog('Welcome to NEVR v0.8', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Nothing in this app automatically punishes a player. Build labeled evidence before trusting a detector.</p>`);
       }
     } catch(e){ panelError(el,'the investigation studio',e); }
   }
@@ -1515,6 +1543,16 @@
   $('lab-param').addEventListener('change', syncLabValue);
 
   document.addEventListener('change', (e) => {
+    if (e.target.id === 'blind-review') {
+      blindReview = e.target.checked; prefs.blindReview = blindReview; savePrefs();
+      if (!blindReview) revealedEvents.clear();
+      document.querySelectorAll('[data-assessment]').forEach((root) => {
+        const idx=+root.dataset.assessment, m=views[idx], state=viewState[idx];
+        if (m && state) root.querySelector('.events').innerHTML=eventsTable(m,idx,state.all,state.detector);
+      });
+      setStatus(blindReview ? 'Blinded review enabled. Detector conclusions are concealed until revealed.' : 'Blinded review disabled.','ok');
+      return;
+    }
     const select = e.target.closest('select[data-cheat-filter]');
     if (!select) return;
     const idx = +select.dataset.cheatFilter;
@@ -1531,6 +1569,30 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const opportunityButton = e.target.closest('button[data-opportunity-match]');
+    if (opportunityButton) {
+      opportunityButton.disabled = true;
+      try { await openOpportunityEditor(opportunityButton.dataset.opportunityMatch); }
+      catch (err) { setStatus(`Could not open ground-truth editor: ${err.message}`, 'err'); }
+      finally { opportunityButton.disabled = false; }
+      return;
+    }
+    const saveOpportunity = e.target.closest('button[data-save-opportunity]');
+    if (saveOpportunity) {
+      const start=Number($('opportunity-start').value), end=Number($('opportunity-end').value);
+      if (!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<start) { setStatus('Ground-truth frames must be ordered whole numbers.','err'); return; }
+      saveOpportunity.disabled=true;
+      try {
+        await postJSON('api/calibration/opportunities',{match_id:saveOpportunity.dataset.saveOpportunity,player_id:$('opportunity-player').value,detector_id:$('opportunity-detector').value,ground_truth:$('opportunity-truth').value,opportunity_kind:$('opportunity-kind').value,frame_start:start,frame_end:end,timestamp_start:0,timestamp_end:0,behavior_type:$('opportunity-behavior').value,comment:$('opportunity-comment').value,blind_review:$('opportunity-blind').checked});
+        await openOpportunityEditor(saveOpportunity.dataset.saveOpportunity); setStatus('Ground-truth opportunity saved.','ok'); loadCalibration(); loadStudio();
+      } catch(err) { setStatus(`Could not save ground truth: ${err.message}`,'err'); }
+      finally { saveOpportunity.disabled=false; }
+      return;
+    }
+    const deleteOpportunity=e.target.closest('button[data-delete-opportunity]');
+    if(deleteOpportunity){if(!confirm('Delete this ground-truth opportunity?'))return;try{await deleteJSON(`api/calibration/opportunities/${encodeURIComponent(deleteOpportunity.dataset.deleteOpportunity)}`);await openOpportunityEditor(deleteOpportunity.dataset.opportunityOwner);setStatus('Ground-truth opportunity deleted.','ok');loadCalibration();loadStudio()}catch(err){setStatus(`Could not delete ground truth: ${err.message}`,'err')}return}
+    const revealEvent=e.target.closest('button[data-reveal-event]');
+    if(revealEvent){revealedEvents.add(revealEvent.dataset.revealEvent);const row=revealEvent.closest('tr[data-event-row]'),matchRoot=revealEvent.closest('[data-assessment]');if(matchRoot){const idx=+matchRoot.dataset.assessment,state=viewState[idx];matchRoot.querySelector('.events').innerHTML=eventsTable(views[idx],idx,state.all,state.detector)}return}
     const investigationButton = e.target.closest('button[data-investigation-match]');
     if (investigationButton) {
       investigationButton.disabled = true;
@@ -1574,12 +1636,21 @@
     if(activateProfile){if(!confirm(`Activate ${activateProfile.dataset.activateProfile} after the next app restart?`))return;try{await postJSON(`api/profiles/${encodeURIComponent(activateProfile.dataset.activateProfile)}/activate`);setStatus('Profile selected. Restart the desktop app to apply it.','ok');await loadStudio()}catch(err){setStatus(`Could not activate profile: ${err.message}`,'err')}return}
     if (e.target.closest('#run-matrix')) {
       const values=$('matrix-values').value.split(',').map(Number).filter(Number.isFinite);
-      try{const result=await postJSON('api/lab/experiments',{MatchID:$('matrix-match').value,DetectorID:$('matrix-detector').value,Parameter:$('matrix-param').value,Values:values});openLabDialog('Threshold experiment matrix',`<p class="notice">Preview only; no database or config changes.</p><table><thead><tr><th>Value</th><th>Events</th><th>Runtime</th></tr></thead><tbody>${result.rows.map(x=>`<tr><td>${esc(x.value)} ${esc(x.unit)}</td><td>${fmtInt(x.events)}</td><td>${fmtInt(x.pipeline_ms)} ms</td></tr>`).join('')}</tbody></table>`)}catch(err){setStatus(`Matrix failed: ${err.message}`,'err')}return;
+      const button=e.target.closest('#run-matrix');button.disabled=true;button.textContent='Running…';
+      try{const result=await postJSON('api/lab/experiments',{match_id:$('matrix-match').value,detector_id:$('matrix-detector').value,parameter:$('matrix-param').value,values,scope:$('matrix-scope').value,enabled:true});openLabDialog('Threshold experiment matrix',`<p class="notice">${esc(result.notice||'Preview only; no database or config changes.')}</p><div class="physics-table"><table><thead><tr><th>Value</th><th>Matches</th><th>Events</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Runtime</th><th>Candidate</th></tr></thead><tbody>${result.rows.map(x=>{const m=x.metrics||{};return `<tr><td>${esc(x.value)} ${esc(x.unit)}</td><td>${fmtInt(x.matches)}</td><td>${fmtInt(x.events)}</td><td>${fmtInt(m.true_positive)}</td><td>${fmtInt(m.false_positive)}</td><td>${fmtInt(m.false_negative)}</td><td>${fmtInt(m.true_negative)}</td><td>${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td>${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td>${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td>${fmtInt(x.pipeline_ms)} ms</td><td><button class="btn btn-sm" data-save-candidate="1" data-candidate-detector="${esc(result.detector_id)}" data-candidate-param="${esc(result.parameter)}" data-candidate-value="${esc(x.value)}">Save shadow candidate</button></td></tr>`}).join('')}</tbody></table></div>`)}catch(err){setStatus(`Matrix failed: ${err.message}`,'err')}finally{button.disabled=false;const scope=$('matrix-scope')?.value;button.textContent=scope==='training'?'Run training sweep':scope==='validation'?'Run validation sweep':'Run matrix'}return;
     }
+    const calibrationDetails=e.target.closest('button[data-calibration-details]');
+    if(calibrationDetails){const v=JSON.parse($('calibration').dataset.validation||'{}'),d=(v.detectors||[]).find(x=>x.detector_id===calibrationDetails.dataset.calibrationDetails);if(!d)return;const row=(name,m)=>`<tr><td>${esc(name)}</td><td>${fmtInt(m.true_positive)}</td><td>${fmtInt(m.false_positive)}</td><td>${fmtInt(m.false_negative)}</td><td>${fmtInt(m.true_negative)}</td><td>${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td>${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td>${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td>${fmtInt(m.players)} / ${fmtInt(m.matches)}</td></tr>`;const strata=(title,map)=>`<h3>${esc(title)}</h3><div class="physics-table"><table><thead><tr><th>Band</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Players / matches</th></tr></thead><tbody>${Object.entries(map||{}).map(([k,m])=>row(k,m)).join('')||'<tr><td colspan="9" class="muted">No labeled samples.</td></tr>'}</tbody></table></div>`;openLabDialog(`Calibration — ${d.detector_id}`,`<div class="physics-table"><table><thead><tr><th>Split</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Players / matches</th></tr></thead><tbody>${row('Overall',d.overall)}${row('Training',d.training)}${row('Validation',d.validation)}${row('Locked holdout',d.holdout)}</tbody></table></div><h3>Promotion gate</h3>${d.eligible?'<p class="notice">Eligible for single-detector scored review. Automatic enforcement remains disabled.</p>':`<ul class="health-list">${(d.reasons||[]).map(x=>`<li class="warning">${esc(x)}</li>`).join('')}</ul>`}${strata('By ping',d.by_ping)}${strata('By capture rate',d.by_capture_rate)}${strata('By telemetry quality',d.by_quality)}`);return}
+    const saveCandidate=e.target.closest('button[data-save-candidate]');
+    if(saveCandidate){const detector=saveCandidate.dataset.candidateDetector,param=saveCandidate.dataset.candidateParam,value=Number(saveCandidate.dataset.candidateValue);if(!confirm(`Save ${detector}.${param} = ${value} as the next shadow-only candidate profile?`))return;saveCandidate.disabled=true;try{const result=await postJSON('api/lab/candidate',{detector_id:detector,parameter:param,value});setStatus(result.message,'ok');await loadStudio()}catch(err){setStatus(`Could not save candidate: ${err.message}`,'err')}finally{saveCandidate.disabled=false}return}
+    const promote=e.target.closest('button[data-promote-detector]');
+    if(promote){const id=promote.dataset.promoteDetector;if(!confirm(`Promote ${id} to scored human-review mode? Only this detector will score, automatic enforcement stays disabled, and a restart is required.`))return;promote.disabled=true;try{const result=await postJSON(`api/lab/promotions/${encodeURIComponent(id)}`);setStatus(result.message,'ok');await loadCalibration();await loadStudio()}catch(err){setStatus(`Promotion blocked: ${err.message}`,'err')}finally{promote.disabled=false}return}
+    const rollback=e.target.closest('button[data-rollback-detector]');
+    if(rollback){const id=rollback.dataset.rollbackDetector;if(!confirm(`Return ${id} to shadow mode?`))return;rollback.disabled=true;try{const result=await postJSON(`api/lab/promotions/${encodeURIComponent(id)}/rollback`);setStatus(result.message,'ok');await loadCalibration();await loadStudio()}catch(err){setStatus(`Rollback failed: ${err.message}`,'err')}finally{rollback.disabled=false}return}
     if(e.target.closest('#compare-players')){try{const result=await getJSON(`api/players/compare?a=${encodeURIComponent($('compare-a').value)}&b=${encodeURIComponent($('compare-b').value)}`);openLabDialog('Player comparison',`<div class="team-grid">${result.players.map(p=>`<div class="team-card"><div class="team-title"><strong>${esc(p.name||p.player_id)}</strong></div><div class="team-stats"><div><span>Matches</span><b>${fmtInt(p.matches)}</b></div><div><span>Signals</span><b>${fmtInt(p.events)}</b></div><div><span>Throws</span><b>${fmtInt(p.throws)}</b></div><div><span>Fastest</span><b>${fmtNum(p.max_throw_speed,2)} m/s</b></div></div></div>`).join('')}</div><p class="metric-note">${esc(result.notice)}</p>`)}catch(err){setStatus(`Comparison failed: ${err.message}`,'err')}return}
     if(e.target.closest('#save-filter')){const name=prompt('Name this History filter preset:');if(!name)return;const filter={search:$('history-search').value,detector:$('history-detector').value,label:$('history-label').value,sort:$('history-sort').value,flagged:$('history-flagged').checked};try{await postJSON('api/filters',{name,filter_json:JSON.stringify(filter)});setStatus('Saved History filter preset.','ok');await loadStudio()}catch(err){setStatus(`Could not save filter: ${err.message}`,'err')}return}
     const loadFilter=e.target.closest('button[data-load-filter]');if(loadFilter){try{const f=JSON.parse(loadFilter.dataset.loadFilter);$('history-search').value=f.search||'';$('history-detector').value=f.detector||'';$('history-label').value=f.label||'';$('history-sort').value=f.sort||'newest';$('history-flagged').checked=!!f.flagged;renderHistory();$('h-history').scrollIntoView({behavior:reduced?'auto':'smooth'})}catch(err){setStatus('Saved filter is invalid.','err')}return}
-    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text()));setStatus(`Imported ${Object.values(result.imported||{}).reduce((a,b)=>a+b,0)} evidence records.`,'ok');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text())),imported=Object.values(result.imported||{}).reduce((a,b)=>a+b,0),rejected=Object.values(result.rejected||{}).reduce((a,b)=>a+b,0);setStatus(result.ok?`Imported ${imported} evidence records.`:`Imported ${imported}; rejected ${rejected}. ${result.first_error||'Inspect the library for invalid or overlapping records.'}`,result.ok?'ok':'err');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
     if(e.target.closest('#backup-db-studio')){try{const result=await postJSON('api/maintenance/backup');setStatus(`Backup created: ${result.path}`,'ok');await loadStudio()}catch(err){setStatus(`Backup failed: ${err.message}`,'err')}return}
     if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok')}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
     if (e.target.closest('#run-regression')) { await loadRegression(); return; }
@@ -1752,12 +1823,13 @@
       }
       reviewButton.disabled = true;
       try {
-        const saved = await postJSON(`api/event/${encodeURIComponent(eventID)}/review`, { verdict, comment });
+        const reviewedBlind = blindReview && !revealedEvents.has(eventID);
+        const saved = await postJSON(`api/event/${encodeURIComponent(eventID)}/review`, { verdict, comment, blind_review: reviewedBlind });
         for (const view of views) for (const item of (view.events || [])) if (item.event_id === eventID) {
-          item.review_verdict = saved.verdict; item.review_comment = saved.comment; item.reviewed_at = saved.reviewed_at;
+          item.review_verdict = saved.verdict; item.review_comment = saved.comment; item.reviewed_at = saved.reviewed_at; item.blind_review = saved.blind_review;
         }
         document.querySelectorAll('tr[data-event-row]').forEach((row) => {
-          if (row.dataset.eventRow === eventID) row.querySelector('.review-cell').innerHTML = reviewControls(event);
+          if (row.dataset.eventRow === eventID) row.querySelector('.review-cell').innerHTML = reviewControls(event, reviewedBlind);
         });
         setStatus(`Saved ${event.detector_id} as ${saved.verdict === 'yes' ? 'correct' : saved.verdict === 'no' ? 'a false positive' : 'unsure'}.`, 'ok');
         loadHealth(); loadRegression();
@@ -1872,6 +1944,11 @@
     e.preventDefault();document.querySelectorAll('[data-playlist-row]').forEach(row=>row.classList.toggle('active',+row.dataset.playlistRow===activePlaylistIndex));document.querySelector(`[data-playlist-row="${activePlaylistIndex}"]`)?.scrollIntoView({block:'nearest'});
   });
   document.addEventListener('change', (e) => {
+    if (e.target.id === 'matrix-scope') {
+      if ($('matrix-match')) $('matrix-match').disabled = e.target.value !== 'match';
+      if ($('run-matrix')) $('run-matrix').textContent = e.target.value === 'training' ? 'Run training sweep' : e.target.value === 'validation' ? 'Run validation sweep' : 'Run matrix';
+      return;
+    }
     if (e.target.id !== 'matrix-detector') return;
     const detector = labSpecs.find((item) => item.id === e.target.value);
     if ($('matrix-param')) $('matrix-param').value = detector?.params?.[0]?.key || '';

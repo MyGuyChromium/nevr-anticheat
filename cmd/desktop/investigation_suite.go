@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"html"
 	"math"
 	"net/http"
@@ -372,106 +371,17 @@ func (s *server) playerHistory(ctx context.Context, playerID string) (playerHist
 	return out, nil
 }
 
-type validationMetric struct {
-	DetectorID     string  `json:"detector_id"`
-	Confirmed      int     `json:"confirmed"`
-	FalsePositive  int     `json:"false_positive"`
-	Uncertain      int     `json:"uncertain"`
-	Precision      float64 `json:"precision"`
-	HasPrecision   bool    `json:"has_precision"`
-	Recommendation string  `json:"recommendation"`
-}
-
-func datasetSplit(matchID string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(matchID))
-	bucket := h.Sum32() % 10
-	if bucket < 2 {
-		return "holdout"
-	}
-	if bucket < 4 {
-		return "validation"
-	}
-	return "training"
-}
-
 func (s *server) handleValidationDashboard(w http.ResponseWriter, r *http.Request) {
-	ctx, store := r.Context(), s.engine.Store()
-	reviews, err := store.ListEventReviews(ctx, time.Time{})
+	dashboard, err := s.buildCalibrationDashboard(r.Context(), nil)
 	if err != nil {
-		writeError(w, 500, "loading labels: %v", err)
+		s.rollBackAllPromotions(r.Context())
+		writeError(w, 500, "building calibration dashboard: %v", err)
 		return
 	}
-	metricsByID := map[string]*validationMetric{}
-	for _, review := range reviews {
-		metric := metricsByID[review.DetectorID]
-		if metric == nil {
-			metric = &validationMetric{DetectorID: review.DetectorID}
-			metricsByID[review.DetectorID] = metric
-		}
-		switch review.Verdict {
-		case "yes":
-			metric.Confirmed++
-		case "no":
-			metric.FalsePositive++
-		default:
-			metric.Uncertain++
-		}
-	}
-	var metrics []validationMetric
-	for _, metric := range metricsByID {
-		denominator := metric.Confirmed + metric.FalsePositive
-		if denominator > 0 {
-			metric.HasPrecision = true
-			metric.Precision = float64(metric.Confirmed) / float64(denominator)
-		}
-		switch {
-		case denominator < 5:
-			metric.Recommendation = "Collect at least five direct labels before tuning."
-		case metric.Precision < .7:
-			metric.Recommendation = "High false-positive rate: tighten this detector and replay the holdout set."
-		case metric.Precision >= .9:
-			metric.Recommendation = "Precision is promising; preserve settings and expand diverse labels."
-		default:
-			metric.Recommendation = "Borderline precision: inspect disagreements before changing thresholds."
-		}
-		metrics = append(metrics, *metric)
-	}
-	sort.Slice(metrics, func(i, j int) bool { return metrics[i].DetectorID < metrics[j].DetectorID })
-	matches, _ := store.ListMatches(ctx, 500)
-	labels, _ := store.GetMatchLabels(ctx, nil)
-	splits := map[string][]string{"training": {}, "validation": {}, "holdout": {}}
-	confirmed, caught := 0, 0
-	var disagreements []map[string]any
-	for _, match := range matches {
-		id := match.Context.MatchID
-		split := datasetSplit(id)
-		splits[split] = append(splits[split], id)
-		label, labeled := labels[id]
-		events, _ := store.GetMatchEvents(ctx, id)
-		if labeled && label.Label == sqlite.MatchLabelConfirmedCheat {
-			confirmed++
-			if len(events) > 0 {
-				caught++
-			}
-		}
-		if labeled && label.Label == sqlite.MatchLabelKnownClean && len(events) > 0 {
-			disagreements = append(disagreements, map[string]any{"match_id": id, "label": label.Label, "events": len(events), "reason": "known-clean replay still has detector observations"})
-		}
-	}
-	runs, _ := store.ListAnalysisRuns(ctx, "", 500)
-	drift := computeDrift(runs)
-	writeJSON(w, 200, map[string]any{"detectors": metrics, "splits": splits, "disagreements": disagreements,
-		"match_recall": map[string]any{"confirmed_matches": confirmed, "with_any_signal": caught, "recall": ratio(caught, confirmed), "available": confirmed > 0},
-		"drift":        drift, "threshold_recommendations": metrics,
-		"notice": "Detector precision uses direct event labels. Recall is only a coarse match-level value because match labels do not identify which cheat or detector should fire."})
-}
-
-func ratio(n, total int) float64 {
-	if total == 0 {
-		return 0
-	}
-	return float64(n) / float64(total)
+	runs, _ := s.engine.Store().ListAnalysisRuns(r.Context(), "", 500)
+	dashboard.Drift = computeDrift(runs)
+	dashboard.AutoRolledBack = s.reconcilePromotions(r.Context(), dashboard)
+	writeJSON(w, 200, dashboard)
 }
 
 func computeDrift(runs []sqlite.AnalysisRun) map[string]any {
@@ -497,50 +407,132 @@ func computeDrift(runs []sqlite.AnalysisRun) map[string]any {
 
 func (s *server) handleExperimentMatrix(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		MatchID, DetectorID, Parameter string
-		Values                         []float64
+		MatchID          string    `json:"match_id"`
+		DetectorID       string    `json:"detector_id"`
+		Parameter        string    `json:"parameter"`
+		Scope            string    `json:"scope"`
+		Enabled          *bool     `json:"enabled,omitempty"`
+		Values           []float64 `json:"values"`
+		LegacyMatchID    string    `json:"MatchID"`
+		LegacyDetectorID string    `json:"DetectorID"`
+		LegacyParameter  string    `json:"Parameter"`
+		LegacyValues     []float64 `json:"Values"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, 400, "invalid matrix: %v", err)
 		return
 	}
+	if req.MatchID == "" {
+		req.MatchID = req.LegacyMatchID
+	}
+	if req.DetectorID == "" {
+		req.DetectorID = req.LegacyDetectorID
+	}
+	if req.Parameter == "" {
+		req.Parameter = req.LegacyParameter
+	}
+	if len(req.Values) == 0 {
+		req.Values = req.LegacyValues
+	}
+	req.DetectorID = strings.ToUpper(strings.TrimSpace(req.DetectorID))
+	req.Parameter = strings.TrimSpace(req.Parameter)
 	if len(req.Values) == 0 || len(req.Values) > 12 {
 		writeError(w, 400, "provide 1-12 candidate values")
 		return
 	}
-	mc, err := s.engine.Store().GetMatchContext(r.Context(), req.MatchID)
-	if err != nil {
-		writeError(w, 404, "loading match: %v", err)
+	req.Scope = strings.ToLower(strings.TrimSpace(req.Scope))
+	if req.Scope == "" {
+		req.Scope = "match"
+	}
+	if req.Scope != "match" && req.Scope != "training" && req.Scope != "validation" {
+		writeError(w, 400, "scope must be match, training, or validation")
 		return
 	}
-	frames, err := s.engine.Store().GetMatchFrames(r.Context(), req.MatchID)
-	if err != nil {
-		writeError(w, 500, "loading frames: %v", err)
-		return
+	type experimentMatch struct{ id string }
+	var selected []experimentMatch
+	if req.Scope == "match" {
+		if strings.TrimSpace(req.MatchID) == "" {
+			writeError(w, 400, "match_id is required for match scope")
+			return
+		}
+		if _, err := s.engine.Store().GetMatchContext(r.Context(), req.MatchID); err != nil {
+			writeError(w, 404, "loading match: %v", err)
+			return
+		}
+		selected = append(selected, experimentMatch{id: req.MatchID})
+	} else {
+		matches, err := s.engine.Store().ListMatches(r.Context(), 100000)
+		if err != nil {
+			writeError(w, 500, "loading training matches: %v", err)
+			return
+		}
+		splits, _ := groupedDatasetSplits(matches)
+		for _, match := range matches {
+			if match.Context != nil && splits[match.Context.MatchID] == req.Scope {
+				selected = append(selected, experimentMatch{id: match.Context.MatchID})
+			}
+		}
+		if len(selected) == 0 {
+			writeError(w, 422, "the player-grouped %s split has no matches", req.Scope)
+			return
+		}
 	}
 	var rows []map[string]any
 	for _, value := range req.Values {
 		candidate := cloneConfig(s.engine.Config())
-		applied, unit, err := setSandboxParam(candidate, thresholdPreviewRequest{MatchID: req.MatchID, Detector: req.DetectorID, Parameter: req.Parameter, Value: value})
+		applied, unit, err := setSandboxParam(candidate, thresholdPreviewRequest{MatchID: req.MatchID, Detector: req.DetectorID, Parameter: req.Parameter, Value: value, Enabled: req.Enabled})
 		if err != nil {
 			writeError(w, 400, "value %v: %v", value, err)
 			return
 		}
 		started := time.Now()
-		result, err := replay.NewEngine(candidate, s.engine.Store()).NewPipeline().ProcessMatch(r.Context(), mc, frames)
-		if err != nil {
-			writeError(w, 500, "running matrix: %v", err)
-			return
-		}
+		candidateEvents := make(map[string][]model.DetectionEvent, len(selected))
 		count := 0
-		for _, event := range result.DetectionEvents {
-			if event.DetectorID == req.DetectorID {
-				count++
+		for _, match := range selected {
+			mc, err := s.engine.Store().GetMatchContext(r.Context(), match.id)
+			if err != nil {
+				writeError(w, 500, "loading match %s: %v", match.id, err)
+				return
+			}
+			frames, err := s.engine.Store().GetMatchFrames(r.Context(), match.id)
+			if err != nil {
+				writeError(w, 500, "loading frames for %s: %v", match.id, err)
+				return
+			}
+			result, err := replay.NewEngine(candidate, s.engine.Store()).NewPipeline().ProcessMatch(r.Context(), mc, frames)
+			if err != nil {
+				writeError(w, 500, "running matrix on %s: %v", match.id, err)
+				return
+			}
+			candidateEvents[match.id] = result.DetectionEvents
+			for _, event := range result.DetectionEvents {
+				if event.DetectorID == req.DetectorID {
+					count++
+				}
 			}
 		}
-		rows = append(rows, map[string]any{"value": applied, "unit": unit, "events": count, "pipeline_ms": time.Since(started).Milliseconds()})
+		row := map[string]any{"value": applied, "unit": unit, "events": count, "matches": len(selected), "pipeline_ms": time.Since(started).Milliseconds()}
+		if req.Scope == "training" || req.Scope == "validation" {
+			dashboard, err := s.buildCalibrationDashboard(r.Context(), candidateEvents)
+			if err != nil {
+				writeError(w, 500, "measuring candidate: %v", err)
+				return
+			}
+			for _, metric := range dashboard.Detectors {
+				if metric.DetectorID == req.DetectorID {
+					if req.Scope == "training" {
+						row["metrics"] = metric.Training
+					} else {
+						row["metrics"] = metric.Validation
+					}
+					break
+				}
+			}
+		}
+		rows = append(rows, row)
 	}
-	writeJSON(w, 200, map[string]any{"match_id": req.MatchID, "detector_id": req.DetectorID, "parameter": req.Parameter, "rows": rows, "persisted": false})
+	writeJSON(w, 200, map[string]any{"match_id": req.MatchID, "scope": req.Scope, "detector_id": req.DetectorID, "parameter": req.Parameter, "rows": rows, "persisted": false, "holdout_used": false,
+		"notice": "Training and validation sweeps never evaluate the locked holdout. Candidate values are not written to the database or active configuration."})
 }
 
 func syntheticFrames(kind string) []model.PlayerTelemetryFrame {
@@ -704,27 +696,50 @@ func (s *server) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
 }
 
 type evidenceLibrary struct {
-	Version    int                        `json:"version"`
-	ExportedAt time.Time                  `json:"exported_at"`
-	AppVersion string                     `json:"app_version"`
-	Labels     []sqlite.MatchLabel        `json:"match_labels"`
-	Reviews    []sqlite.EventReview       `json:"event_reviews"`
-	Notes      []sqlite.InvestigationNote `json:"notes"`
-	Filters    []sqlite.SavedFilter       `json:"saved_filters"`
+	Version       int                             `json:"version"`
+	ExportedAt    time.Time                       `json:"exported_at"`
+	AppVersion    string                          `json:"app_version"`
+	Labels        []sqlite.MatchLabel             `json:"match_labels"`
+	Reviews       []sqlite.EventReview            `json:"event_reviews"`
+	Opportunities []sqlite.CalibrationOpportunity `json:"calibration_opportunities,omitempty"`
+	Notes         []sqlite.InvestigationNote      `json:"notes"`
+	Filters       []sqlite.SavedFilter            `json:"saved_filters"`
 }
 
 func (s *server) handleExportLibrary(w http.ResponseWriter, r *http.Request) {
-	labelsMap, _ := s.engine.Store().GetMatchLabels(r.Context(), nil)
+	store := s.engine.Store()
+	labelsMap, err := store.GetMatchLabels(r.Context(), nil)
+	if err != nil {
+		writeError(w, 500, "exporting match labels: %v", err)
+		return
+	}
 	labels := make([]sqlite.MatchLabel, 0, len(labelsMap))
 	for _, label := range labelsMap {
 		labels = append(labels, label)
 	}
 	sort.Slice(labels, func(i, j int) bool { return labels[i].MatchID < labels[j].MatchID })
-	reviews, _ := s.engine.Store().ListEventReviews(r.Context(), time.Time{})
-	notes, _ := s.engine.Store().ListInvestigationNotes(r.Context(), "")
-	filters, _ := s.engine.Store().ListSavedFilters(r.Context())
+	reviews, err := store.ListEventReviews(r.Context(), time.Time{})
+	if err != nil {
+		writeError(w, 500, "exporting event reviews: %v", err)
+		return
+	}
+	opportunities, err := store.ListCalibrationOpportunities(r.Context(), "", "")
+	if err != nil {
+		writeError(w, 500, "exporting ground-truth opportunities: %v", err)
+		return
+	}
+	notes, err := store.ListInvestigationNotes(r.Context(), "")
+	if err != nil {
+		writeError(w, 500, "exporting investigation notes: %v", err)
+		return
+	}
+	filters, err := store.ListSavedFilters(r.Context())
+	if err != nil {
+		writeError(w, 500, "exporting saved filters: %v", err)
+		return
+	}
 	w.Header().Set("Content-Disposition", `attachment; filename="nevr-evidence-library.json"`)
-	writeJSON(w, 200, evidenceLibrary{Version: 1, ExportedAt: time.Now().UTC(), AppVersion: appVersion, Labels: labels, Reviews: reviews, Notes: notes, Filters: filters})
+	writeJSON(w, 200, evidenceLibrary{Version: 2, ExportedAt: time.Now().UTC(), AppVersion: appVersion, Labels: labels, Reviews: reviews, Opportunities: opportunities, Notes: notes, Filters: filters})
 }
 
 func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
@@ -733,32 +748,46 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid library: %v", err)
 		return
 	}
-	if lib.Version != 1 {
+	if lib.Version != 1 && lib.Version != 2 {
 		writeError(w, 400, "unsupported library version %d", lib.Version)
 		return
 	}
-	counts := map[string]int{"labels": 0, "reviews": 0, "notes": 0, "filters": 0}
-	for _, x := range lib.Labels {
-		if s.engine.Store().ImportMatchLabel(r.Context(), x) == nil {
-			counts["labels"]++
+	counts := map[string]int{"labels": 0, "reviews": 0, "opportunities": 0, "notes": 0, "filters": 0}
+	rejected := map[string]int{"labels": 0, "reviews": 0, "opportunities": 0, "notes": 0, "filters": 0}
+	var firstError string
+	record := func(kind string, err error) {
+		if err == nil {
+			counts[kind]++
+			return
 		}
+		rejected[kind]++
+		if firstError == "" {
+			firstError = err.Error()
+		}
+	}
+	for _, x := range lib.Labels {
+		record("labels", s.engine.Store().ImportMatchLabel(r.Context(), x))
 	}
 	for _, x := range lib.Reviews {
-		if s.engine.Store().ImportEventReview(r.Context(), x) == nil {
-			counts["reviews"]++
-		}
+		record("reviews", s.engine.Store().ImportEventReview(r.Context(), x))
+	}
+	for _, x := range lib.Opportunities {
+		record("opportunities", s.engine.Store().ImportCalibrationOpportunity(r.Context(), x))
 	}
 	for _, x := range lib.Notes {
-		if _, err := s.engine.Store().StoreInvestigationNote(r.Context(), x); err == nil {
-			counts["notes"]++
-		}
+		_, err := s.engine.Store().StoreInvestigationNote(r.Context(), x)
+		record("notes", err)
 	}
 	for _, x := range lib.Filters {
-		if _, err := s.engine.Store().StoreSavedFilter(r.Context(), x); err == nil {
-			counts["filters"]++
-		}
+		_, err := s.engine.Store().StoreSavedFilter(r.Context(), x)
+		record("filters", err)
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "imported": counts})
+	s.reconcileCalibrationChange(r.Context())
+	totalRejected := 0
+	for _, count := range rejected {
+		totalRejected += count
+	}
+	writeJSON(w, 200, map[string]any{"ok": totalRejected == 0, "imported": counts, "rejected": rejected, "first_error": firstError})
 }
 
 func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -781,7 +810,7 @@ func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) 
 	sort.Strings(unsafe)
 	stored, _ := s.engine.Store().GetStoredMatchCount(r.Context())
 	labels, _ := s.engine.Store().MatchLabelCounts(r.Context())
-	writeJSON(w, 200, map[string]any{"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label individual observations.", "Export the portable evidence library before moving to another PC."}})
+	writeJSON(w, 200, map[string]any{"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label observations and missed opportunities.", "Export the portable evidence library before moving to another PC."}})
 }
 
 func errorText(err error) string {

@@ -122,6 +122,9 @@ var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
 	[2]string{"config_profiles", "updated_at"},
 	[2]string{"saved_filters", "created_at"},
 	[2]string{"saved_filters", "updated_at"},
+	[2]string{"calibration_opportunities", "reviewed_at"},
+	[2]string{"detector_promotions", "created_at"},
+	[2]string{"detector_promotions", "updated_at"},
 )
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
@@ -134,6 +137,7 @@ var requiredTables = []string{
 	"match_contexts", "cross_match_review_cases", "match_ticks", "schema_migrations",
 	"event_reviews", "match_labels", "analysis_snapshots", "investigation_notes",
 	"analysis_runs", "config_profiles", "saved_filters",
+	"calibration_opportunities", "detector_promotions",
 }
 
 var migrations = []MigrationVersion{
@@ -476,6 +480,45 @@ var migrations = []MigrationVersion{
 			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
 			updated_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
 		);`,
+	},
+	{
+		Version: 17, Description: "calibration opportunities, blinded reviews, and gated detector promotions",
+		SQL: `ALTER TABLE event_reviews ADD COLUMN blind_review INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE analysis_runs ADD COLUMN calibration_fingerprint TEXT NOT NULL DEFAULT '';
+
+		CREATE TABLE IF NOT EXISTS calibration_opportunities (
+			opportunity_id  TEXT PRIMARY KEY,
+			match_id        TEXT NOT NULL,
+			player_id       TEXT NOT NULL,
+			detector_id     TEXT NOT NULL,
+			behavior_type   TEXT NOT NULL DEFAULT '',
+			opportunity_kind TEXT NOT NULL CHECK (opportunity_kind IN ('throw','movement_window','state_transition','match','player_history','custom')),
+			frame_start     INTEGER NOT NULL,
+			frame_end       INTEGER NOT NULL,
+			timestamp_start REAL NOT NULL DEFAULT 0,
+			timestamp_end   REAL NOT NULL DEFAULT 0,
+			ground_truth    TEXT NOT NULL CHECK (ground_truth IN ('positive','negative','uncertain')),
+			comment         TEXT NOT NULL DEFAULT '',
+			reviewer_id     TEXT NOT NULL,
+			blind_review    INTEGER NOT NULL DEFAULT 0,
+			reviewed_at     TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_calibration_opportunities_detector
+			ON calibration_opportunities(detector_id, ground_truth, reviewed_at);
+		CREATE INDEX IF NOT EXISTS idx_calibration_opportunities_match
+			ON calibration_opportunities(match_id, player_id, frame_start, frame_end);
+
+		CREATE TABLE IF NOT EXISTS detector_promotions (
+			detector_id       TEXT PRIMARY KEY,
+			profile_name      TEXT NOT NULL,
+			status            TEXT NOT NULL CHECK (status IN ('candidate','active','rolled_back')),
+			metrics_json      TEXT NOT NULL DEFAULT '{}',
+			config_fingerprint TEXT NOT NULL DEFAULT '',
+			created_at        TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			updated_at        TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_detector_promotions_status
+			ON detector_promotions(status, updated_at);`,
 	},
 }
 

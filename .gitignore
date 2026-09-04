@@ -6,6 +6,7 @@ nevr-compat
 /bridge
 /nevr-bridge
 *.exe
+cmd/desktop/resource_windows_amd64.syso
 
 # Compiled test binaries (go test -c)
 *.test

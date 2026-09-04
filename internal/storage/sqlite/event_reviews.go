@@ -28,6 +28,7 @@ type EventReview struct {
 	Verdict         string    `json:"verdict"`
 	Comment         string    `json:"comment"`
 	ReviewerID      string    `json:"reviewer_id"`
+	BlindReview     bool      `json:"blind_review"`
 	ReviewedAt      time.Time `json:"reviewed_at"`
 }
 
@@ -42,6 +43,12 @@ func validEventVerdict(verdict string) bool {
 
 // StoreEventReview creates or replaces the direct label for eventID.
 func (s *Store) StoreEventReview(ctx context.Context, eventID, verdict, comment, reviewerID string) (EventReview, error) {
+	return s.StoreEventReviewWithBlind(ctx, eventID, verdict, comment, reviewerID, false)
+}
+
+// StoreEventReviewWithBlind records whether the reviewer made the decision
+// before the detector identity and confidence were revealed.
+func (s *Store) StoreEventReviewWithBlind(ctx context.Context, eventID, verdict, comment, reviewerID string, blindReview bool) (EventReview, error) {
 	eventID = strings.TrimSpace(eventID)
 	verdict = strings.ToLower(strings.TrimSpace(verdict))
 	comment = strings.TrimSpace(comment)
@@ -76,22 +83,27 @@ func (s *Store) StoreEventReview(ctx context.Context, eventID, verdict, comment,
 	if err != nil {
 		return EventReview{}, fmt.Errorf("loading event %s: %w", eventID, err)
 	}
-	review.Verdict, review.Comment, review.ReviewerID = verdict, comment, reviewerID
+	review.Verdict, review.Comment, review.ReviewerID, review.BlindReview = verdict, comment, reviewerID, blindReview
 	review.ReviewedAt = nowUTC()
 	reviewedAt = fmtDBTime(review.ReviewedAt)
+	blind := 0
+	if blindReview {
+		blind = 1
+	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO event_reviews
 		 (event_id, match_id, player_id, detector_id, detector_version, frame_index,
 		  timestamp, severity, confidence, observed_value, expected_range, evidence_type,
-		  evidence_json, verdict, comment, reviewer_id, reviewed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  evidence_json, verdict, comment, reviewer_id, reviewed_at, blind_review)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(event_id) DO UPDATE SET
 		  verdict=excluded.verdict, comment=excluded.comment,
-		  reviewer_id=excluded.reviewer_id, reviewed_at=excluded.reviewed_at`,
+		  reviewer_id=excluded.reviewer_id, reviewed_at=excluded.reviewed_at,
+		  blind_review=excluded.blind_review`,
 		review.EventID, review.MatchID, review.PlayerID, review.DetectorID,
 		review.DetectorVersion, review.FrameIndex, review.Timestamp, review.Severity,
 		review.Confidence, review.ObservedValue, review.ExpectedRange, review.EvidenceType,
-		review.EvidenceJSON, review.Verdict, review.Comment, review.ReviewerID, reviewedAt)
+		review.EvidenceJSON, review.Verdict, review.Comment, review.ReviewerID, reviewedAt, blind)
 	if err != nil {
 		return EventReview{}, fmt.Errorf("storing event review: %w", err)
 	}
@@ -100,16 +112,18 @@ func (s *Store) StoreEventReview(ctx context.Context, eventID, verdict, comment,
 
 const eventReviewColumns = `event_id, match_id, player_id, detector_id,
 	detector_version, frame_index, timestamp, severity, confidence, observed_value,
-	expected_range, evidence_type, evidence_json, verdict, comment, reviewer_id, reviewed_at`
+	expected_range, evidence_type, evidence_json, verdict, comment, reviewer_id, reviewed_at, blind_review`
 
 func scanEventReview(r rowScanner) (EventReview, error) {
 	var out EventReview
 	var reviewedAt string
+	var blind int
 	err := r.Scan(&out.EventID, &out.MatchID, &out.PlayerID, &out.DetectorID,
 		&out.DetectorVersion, &out.FrameIndex, &out.Timestamp, &out.Severity,
 		&out.Confidence, &out.ObservedValue, &out.ExpectedRange, &out.EvidenceType,
 		&out.EvidenceJSON, &out.Verdict, &out.Comment,
-		&out.ReviewerID, &reviewedAt)
+		&out.ReviewerID, &reviewedAt, &blind)
+	out.BlindReview = blind != 0
 	out.ReviewedAt = parseDBTimeLenient(reviewedAt)
 	return out, err
 }
