@@ -242,7 +242,7 @@ func launchSparkReplayViewer(clipPath string) (string, error) {
 			lastErr = err
 		}
 	}
-	message := "Spark Replay Viewer was not found. In Spark, open Replay Viewer once so Spark installs it to Documents\\Replay Viewer, or set NEVR_REPLAY_VIEWER to Replay Viewer.exe"
+	message := "replay viewer unavailable: open Replay Viewer in Spark once so it installs to Documents\\Replay Viewer, or set NEVR_REPLAY_VIEWER to Replay Viewer.exe"
 	if lastErr != nil {
 		return "", fmt.Errorf("%s: %w", message, lastErr)
 	}

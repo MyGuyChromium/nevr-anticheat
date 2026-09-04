@@ -112,9 +112,6 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 	restR := body.Add(rightHandOffset)
 	fi := 0
 
-	// lastDisc is the resting disc between throws (idle until the first hold).
-	lastDisc := model.DiscState{Position: model.Vec3{0, 2, 0}}
-
 	// tuck is the off-hand pull-back during a throw (set per throw).
 	tuck := model.Vec3{}
 	emit := func(right model.Vec3, scripted bool, disc model.DiscState, has bool) {
@@ -222,7 +219,7 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 			}
 			emit(h, s.ScriptedHand, model.DiscState{Position: pos, Velocity: vel, Speed: vel.Magnitude(), FramesSinceRelease: k}, false)
 		}
-		lastDisc = model.DiscState{Position: pos}
+		lastDisc := model.DiscState{Position: pos}
 		tuck = model.Vec3{}
 		for g := 0; g < s.GapFrames; g++ {
 			emit(restR, s.ScriptedHand, lastDisc, false)
