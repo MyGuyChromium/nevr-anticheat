@@ -25,9 +25,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -68,7 +68,7 @@ jobs:
           cp packaging/Rollback-NEVR.cmd packaging/Rollback-NEVR.ps1 "$package/installer/"
 
       - name: Upload unsigned program files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nevr-windows-unsigned
           path: dist/NEVR-Anticheat-Windows-x64
@@ -82,10 +82,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download program files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nevr-windows-unsigned
           path: dist/NEVR-Anticheat-Windows-x64
@@ -290,7 +290,7 @@ jobs:
           Remove-Item -LiteralPath $evidenceMarker -Force
 
       - name: Upload verified Windows release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: NEVR-Anticheat-Windows
           path: |
@@ -329,10 +329,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download verified release files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: NEVR-Anticheat-Windows
           path: dist
