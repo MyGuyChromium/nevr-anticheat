@@ -1,0 +1,61 @@
+name: Security and parser fuzzing
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "17 7 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Reachable vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+      - name: Security static analysis
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -severity medium -exclude G201,G202,G204,G304 -nosec-require-justification -nosec-require-rules ./...
+
+      - name: Fuzz NDJSON replay boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayNDJSON$' -fuzztime 20s
+
+      - name: Fuzz ZIP replay boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayZIP$' -fuzztime 20s
+
+      - name: Fuzz Echo session mapping
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoSessionMapping$' -fuzztime 20s
+
+      - name: Fuzz legacy JSON replay boundary
+        run: go test ./internal/replay -run '^$' -fuzz '^FuzzLegacyJSONReplay$' -fuzztime 20s
+
+      - name: Generate CycloneDX SBOM
+        run: go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0 mod -json -output nevr-sbom.cdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: nevr-cyclonedx-sbom
+          path: nevr-sbom.cdx.json
+          if-no-files-found: error
+
+  dependency-review:
+    if: ${{ github.event_name == 'pull_request' && !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate

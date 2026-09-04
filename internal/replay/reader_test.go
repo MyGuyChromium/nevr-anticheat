@@ -1,10 +1,23 @@
 package replay
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestJSONFrameParserRejectsOversizedDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	if err := os.WriteFile(path, []byte(`{"header":{},"frames":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parser := NewJSONFrameParser()
+	parser.SetMaxBytes(8)
+	if err := parser.Open(path); !errors.Is(err, ErrLegacyReplayTooLarge) {
+		t.Fatalf("Open error = %v, want ErrLegacyReplayTooLarge", err)
+	}
+}
 
 // F210: an excerpt whose first timestamp is not 0 must not report dt = timestamp.
 func TestReplayReader_FirstTickDeltaTimeIsZero(t *testing.T) {

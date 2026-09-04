@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -249,6 +251,29 @@ func TestImportedOpportunityIsNotMeasuredUntilReplayExists(t *testing.T) {
 	}
 	if dashboard.Samples != 0 {
 		t.Fatalf("unavailable imported replay contributed %d samples", dashboard.Samples)
+	}
+}
+
+func TestCalibrationReportCarriesVerifiableProvenance(t *testing.T) {
+	_, ts := newTestServer(t)
+	var report calibrationReport
+	resp := getJSON(t, ts.URL+"/"+testToken+"/api/lab/calibration-report", &report)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("report status = %d", resp.StatusCode)
+	}
+	if report.Payload.SchemaVersion != "nevr-calibration-report/v1" || report.Payload.ConfigFingerprint == "" || report.Payload.CalibrationFingerprint == "" {
+		t.Fatalf("report provenance = %+v", report.Payload)
+	}
+	raw, err := json.Marshal(report.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); report.SHA256 != got || resp.Header.Get("X-NEVR-Payload-SHA256") != got {
+		t.Fatalf("report hash = %q header=%q want %q", report.SHA256, resp.Header.Get("X-NEVR-Payload-SHA256"), got)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); disposition == "" {
+		t.Fatal("calibration report is missing download disposition")
 	}
 }
 

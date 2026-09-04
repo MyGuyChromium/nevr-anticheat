@@ -44,7 +44,7 @@ func (s *Store) Backup(ctx context.Context, destination string) (err error) {
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("sqlite: checking backup destination: %w", statErr)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return fmt.Errorf("sqlite: creating backup directory: %w", err)
 	}
 

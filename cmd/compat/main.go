@@ -22,6 +22,7 @@ func main() {
 	strict := flag.Bool("strict", false, "Enable strict mode (fail on uncertain fields)")
 	replayMode := flag.Bool("replay", false, "Parse as .echoreplay NDJSON file (not single session JSON)")
 	maxFrames := flag.Int("max-frames", 500, "Max frames to process in replay mode")
+	physicsAudit := flag.String("physics-audit", "", "Export frame-by-frame independent physics audit CSV (requires one replay path)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -32,7 +33,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  --replay       Parse as .echoreplay NDJSON (not single JSON)")
 		fmt.Fprintln(os.Stderr, "  --strict       Fail on uncertain fields")
 		fmt.Fprintln(os.Stderr, "  --max-frames N Max frames in replay mode (default 500)")
+		fmt.Fprintln(os.Stderr, "  --physics-audit FILE Export raw and derived physics columns to CSV")
 		os.Exit(1)
+	}
+	if *physicsAudit != "" {
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "--physics-audit requires exactly one replay input")
+			os.Exit(2)
+		}
+		rows, err := writePhysicsAudit(args[0], *physicsAudit)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Physics audit failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Physics audit wrote %d player-frames to %s\n", rows, *physicsAudit)
+		return
 	}
 
 	if *replayMode {

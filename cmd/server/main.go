@@ -29,10 +29,20 @@ func main() {
 }
 
 func run() int {
-	fs := flag.NewFlagSet("nevr-server", flag.ExitOnError)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runWithContext(ctx, os.Args[1:], os.Getenv)
+}
+
+// runWithContext makes the real server lifecycle testable without sending an
+// operating-system signal or mutating global flags/environment.
+func runWithContext(parent context.Context, args []string, getenv func(string) string) int {
+	fs := flag.NewFlagSet("nevr-server", flag.ContinueOnError)
 	configPath := fs.String("config", "", "Path to config file")
 	sf := registerServerFlags(fs, config.DefaultConfig().Server)
-	_ = fs.Parse(os.Args[1:]) // ExitOnError
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
@@ -80,7 +90,7 @@ func run() int {
 	matchMgr.SetPersistInterval(sv.PersistInterval)
 
 	// Telemetry server. The bearer token is environment-only.
-	serverCfg := ingestServerConfig(sv, os.Getenv("NEVR_AC_AUTH_TOKEN"), os.Getenv("NEVR_AC_ALLOW_UNAUTH") == "1")
+	serverCfg := ingestServerConfig(sv, getenv("NEVR_AC_AUTH_TOKEN"), getenv("NEVR_AC_ALLOW_UNAUTH") == "1")
 
 	telemetryServer := ingest.NewServer(serverCfg, matchMgr, logger)
 	telemetryServer.SetMetrics(m)
@@ -99,9 +109,9 @@ func run() int {
 	promExporter := metrics.NewPrometheusExporter(m)
 	metricsMux := http.NewServeMux()
 	metricsMux.HandleFunc("/metrics", promExporter.Handler())
-	metricsServer := &http.Server{Addr: sv.Metrics, Handler: metricsMux}
+	metricsServer := &http.Server{Addr: sv.Metrics, Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	// Background maintenance
@@ -146,9 +156,6 @@ func run() int {
 		serverErr <- telemetryServer.Start(ctx)
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	logger.Info("NEVR telemetry ingestion server running",
 		"telemetry", telemetryServer.Addr().String(),
 		"metrics", sv.Metrics,
@@ -158,8 +165,8 @@ func run() int {
 
 	exitCode := 0
 	select {
-	case sig := <-sigCh:
-		logger.Info("shutting down...", "signal", sig.String())
+	case <-parent.Done():
+		logger.Info("shutting down...", "reason", parent.Err())
 	case err := <-serverErr:
 		if err != nil {
 			logger.Error("telemetry server error", "error", err)

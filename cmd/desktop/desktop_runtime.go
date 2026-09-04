@@ -413,6 +413,7 @@ func suggestedReplayFolders() []string {
 	}
 	var out []string
 	for _, path := range candidates {
+		// #nosec G703 -- candidates are fixed replay locations below OS-provided user roots.
 		if st, err := os.Stat(path); err == nil && st.IsDir() {
 			out = append(out, path)
 		}

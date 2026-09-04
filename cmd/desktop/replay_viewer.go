@@ -90,7 +90,7 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 	}
 	sort.Ints(indices)
 
-	if err := os.MkdirAll(clipDir, 0o755); err != nil {
+	if err := os.MkdirAll(clipDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create replay clip directory: %w", err)
 	}
 	pattern := fmt.Sprintf("nevr-%s-%s-frame-%d-*.echoreplay",

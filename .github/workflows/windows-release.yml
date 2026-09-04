@@ -90,20 +90,45 @@ jobs:
           name: nevr-windows-unsigned
           path: dist/NEVR-Anticheat-Windows-x64
 
-      - name: Import optional Authenticode certificate
+      - name: Select signing mode
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          $pfxValues = @($env:WINDOWS_SIGNING_CERTIFICATE, $env:WINDOWS_SIGNING_PASSWORD)
+          $artifactValues = @(
+            $env:AZURE_CLIENT_ID, $env:AZURE_TENANT_ID, $env:AZURE_SUBSCRIPTION_ID,
+            $env:ARTIFACT_SIGNING_ENDPOINT, $env:ARTIFACT_SIGNING_ACCOUNT, $env:ARTIFACT_SIGNING_PROFILE
+          )
+          $pfxCount = @($pfxValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          $artifactCount = @($artifactValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($pfxCount -ne 0 -and $pfxCount -ne $pfxValues.Count) { throw "The PFX signing configuration is incomplete." }
+          if ($artifactCount -ne 0 -and $artifactCount -ne $artifactValues.Count) { throw "The Artifact Signing configuration is incomplete." }
+          $pfxEnabled = $pfxCount -eq $pfxValues.Count
+          $artifactEnabled = $artifactCount -eq $artifactValues.Count
+          if ($pfxEnabled -and $artifactEnabled) { throw "Configure either PFX or Artifact Signing, not both." }
+          $releaseSigningEnabled = $pfxEnabled -or $artifactEnabled
+          "NEVR_PFX_SIGNING_ENABLED=$($pfxEnabled.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "NEVR_ARTIFACT_SIGNING_ENABLED=$($artifactEnabled.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "NEVR_RELEASE_SIGNING_ENABLED=$($releaseSigningEnabled.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not $releaseSigningEnabled) {
+            Write-Warning "No publisher identity is configured; producing an unsigned development installer that can trigger SmartScreen."
+          }
+
+      - name: Import optional PFX Authenticode certificate
+        if: env.NEVR_PFX_SIGNING_ENABLED == 'true'
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
           WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
         run: |
-          $enabled = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE) -and
-            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)
-          "NEVR_SIGNING_ENABLED=$($enabled.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          if (-not $enabled) {
-            Write-Host "Authenticode certificate is not configured; producing an unsigned development installer."
-            exit 0
-          }
-
           $pfxPath = Join-Path $env:RUNNER_TEMP "nevr-signing.pfx"
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE))
           $password = ConvertTo-SecureString $env:WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
@@ -117,8 +142,31 @@ jobs:
           "NEVR_CERT_THUMBPRINT=$($certificate.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "NEVR_SIGNTOOL=$signTool" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Sign application executables
-        if: env.NEVR_SIGNING_ENABLED == 'true'
+      - name: Azure login for Artifact Signing
+        if: env.NEVR_ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign application executables with Artifact Signing
+        if: env.NEVR_ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\NEVR-Anticheat-Windows-x64
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: NEVR-Anticheat
+          description-url: https://github.com/MyGuyChromium/nevr-anticheat
+
+      - name: Sign application executables with PFX
+        if: env.NEVR_PFX_SIGNING_ENABLED == 'true'
         shell: pwsh
         run: |
           Get-ChildItem dist\NEVR-Anticheat-Windows-x64\*.exe | ForEach-Object {
@@ -140,12 +188,45 @@ jobs:
           Set-Content ($zip + ".sha256") ($zipHash + "  NEVR-Anticheat-Windows-x64.zip") -Encoding ascii
 
           $signCommand = ""
-          if ($env:NEVR_SIGNING_ENABLED -eq "true") {
+          if ($env:NEVR_PFX_SIGNING_ENABLED -eq "true") {
             $signCommand = '$q' + $env:NEVR_SIGNTOOL + '$q sign /sha1 ' + $env:NEVR_CERT_THUMBPRINT +
               ' /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /d $qNEVR-Anticheat$q $f'
           }
           & .\scripts\build-installer.ps1 -PackageZip $zip -OutputDirectory (Join-Path $PWD "dist") `
             -Version $version -SignToolCommand $signCommand
+
+      - name: Sign installer with Artifact Signing
+        if: env.NEVR_ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\NEVR-Anticheat-Setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: NEVR-Anticheat Setup
+          description-url: https://github.com/MyGuyChromium/nevr-anticheat
+
+      - name: Finalize hashes and verify publisher signatures
+        shell: pwsh
+        run: |
+          foreach ($name in @("NEVR-Anticheat-Setup.exe", "NEVR-Anticheat-Windows-x64.zip")) {
+            $path = Join-Path $PWD ("dist\" + $name)
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath ($path + ".sha256") -Value ($hash + "  " + $name) -Encoding ascii
+          }
+          if ($env:NEVR_RELEASE_SIGNING_ENABLED -ne "true") { exit 0 }
+          $signedFiles = @((Get-ChildItem dist\NEVR-Anticheat-Windows-x64\*.exe).FullName)
+          $signedFiles += (Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe")
+          foreach ($path in $signedFiles) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.Status -ne "Valid") {
+              throw "Invalid publisher signature on $path: $($signature.Status) $($signature.StatusMessage)"
+            }
+            Write-Host "$([IO.Path]::GetFileName($path)): $($signature.SignerCertificate.Subject)"
+          }
 
       - name: Scan release files with Microsoft Defender
         shell: pwsh

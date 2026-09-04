@@ -198,6 +198,7 @@ func (s *server) writeDiagnosticBundle(w http.ResponseWriter, r *http.Request, i
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- this is a ZIP attachment with an explicit binary content type.
 	_, _ = w.Write(bundle)
 }
 

@@ -98,7 +98,7 @@ func (s *server) createRawArchive(ctx context.Context, matchID string) (string, 
 	}
 	sort.Ints(indices)
 	dir := s.archiveDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", rawArchiveManifest{}, err
 	}
 	tmp, err := os.CreateTemp(dir, archivePrefix(matchID)+"*.tmp")
@@ -110,6 +110,7 @@ func (s *server) createRawArchive(ctx context.Context, matchID string) (string, 
 	defer func() {
 		_ = tmp.Close()
 		if !keep {
+			// #nosec G703 -- tmpPath was returned by CreateTemp inside archiveDir.
 			_ = os.Remove(tmpPath)
 		}
 	}()
@@ -142,6 +143,7 @@ func (s *server) createRawArchive(ctx context.Context, matchID string) (string, 
 	}
 	finalName := archivePrefix(matchID) + time.Now().UTC().Format("20060102-150405.000000000") + ".raw.zip"
 	finalPath := filepath.Join(dir, finalName)
+	// #nosec G703 -- both paths are inside archiveDir and finalName uses safeClipName.
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return "", rawArchiveManifest{}, err
 	}
@@ -230,6 +232,7 @@ func (s *server) rawArchiveStats() (files int, bytes int64) {
 }
 
 func fileSize(path string) int64 {
+	// #nosec G703 -- callers pass paths built by NEVR inside its private data directories.
 	if info, err := os.Stat(path); err == nil {
 		return info.Size()
 	}

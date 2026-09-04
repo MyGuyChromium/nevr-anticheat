@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -195,6 +197,33 @@ type calibrationDashboard struct {
 	Disagreements  []map[string]any            `json:"disagreements,omitempty"`
 	MatchRecall    map[string]any              `json:"match_recall,omitempty"`
 	AutoRolledBack []string                    `json:"auto_rolled_back,omitempty"`
+}
+
+type calibrationReportPayload struct {
+	SchemaVersion          string                     `json:"schema_version"`
+	GeneratedAt            time.Time                  `json:"generated_at"`
+	AppVersion             string                     `json:"app_version"`
+	BuildCommit            string                     `json:"build_commit"`
+	ConfigFingerprint      string                     `json:"config_fingerprint"`
+	CalibrationFingerprint string                     `json:"calibration_fingerprint"`
+	ActiveProfile          string                     `json:"active_profile"`
+	Dashboard              calibrationDashboard       `json:"dashboard"`
+	Promotions             []sqlite.DetectorPromotion `json:"promotions"`
+	EffectiveDetectors     []config.EffectiveDetector `json:"effective_detectors"`
+	Physics                model.PhysicsConstants     `json:"physics"`
+	Library                calibrationLibrarySnapshot `json:"library"`
+}
+
+type calibrationLibrarySnapshot struct {
+	MatchLabels      map[string]int `json:"match_labels"`
+	StoredMatches    int            `json:"stored_matches"`
+	LabeledMatches   int            `json:"labeled_matches"`
+	UnlabeledMatches int            `json:"unlabeled_matches"`
+}
+
+type calibrationReport struct {
+	SHA256  string                   `json:"sha256"`
+	Payload calibrationReportPayload `json:"payload"`
 }
 
 type unionFind struct{ parent map[string]string }
@@ -633,6 +662,54 @@ func (s *server) handleCalibrationOpportunities(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, 200, map[string]any{"opportunities": items})
+}
+
+// handleCalibrationReport emits a self-identifying, hashed promotion packet.
+// The hash covers the payload exactly as encoded below and lets reviewers keep
+// a durable record of the build, physics, thresholds, splits, and confidence
+// intervals on which a promotion decision was based.
+func (s *server) handleCalibrationReport(w http.ResponseWriter, r *http.Request) {
+	dashboard, err := s.buildCalibrationDashboard(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "building calibration report: %v", err)
+		return
+	}
+	runs, _ := s.engine.Store().ListAnalysisRuns(r.Context(), "", 500)
+	dashboard.Drift = computeDrift(runs)
+	promotions, err := s.engine.Store().ListDetectorPromotions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading detector promotions: %v", err)
+		return
+	}
+	counts, err := s.engine.Store().MatchLabelCounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading calibration library labels: %v", err)
+		return
+	}
+	stored, err := s.engine.Store().GetStoredMatchCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "counting calibration replays: %v", err)
+		return
+	}
+	labeled := counts[sqlite.MatchLabelKnownClean] + counts[sqlite.MatchLabelSuspected] + counts[sqlite.MatchLabelConfirmedCheat]
+	payload := calibrationReportPayload{
+		SchemaVersion: "nevr-calibration-report/v1", GeneratedAt: time.Now().UTC(),
+		AppVersion: appVersion, BuildCommit: buildCommit,
+		ConfigFingerprint: s.configFingerprint(), CalibrationFingerprint: calibrationFingerprint(s.engine.Config()),
+		ActiveProfile: s.activeProfileName(r.Context()), Dashboard: dashboard, Promotions: promotions,
+		EffectiveDetectors: s.engine.Config().EffectiveTable(), Physics: s.engine.Physics(),
+		Library: calibrationLibrarySnapshot{MatchLabels: counts, StoredMatches: stored, LabeledMatches: labeled, UnlabeledMatches: maxInt(0, stored-labeled)},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encoding calibration report: %v", err)
+		return
+	}
+	sum := sha256.Sum256(raw)
+	report := calibrationReport{SHA256: hex.EncodeToString(sum[:]), Payload: payload}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="nevr-calibration-%s.json"`, payload.GeneratedAt.Format("20060102T150405Z")))
+	w.Header().Set("X-NEVR-Payload-SHA256", report.SHA256)
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *server) handleStoreCalibrationOpportunity(w http.ResponseWriter, r *http.Request) {

@@ -49,7 +49,7 @@ func SplitReplaySessions(src, dst, secondID string, gap time.Duration) (first, s
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
-	if err := os.WriteFile(dst, []byte(out.String()), 0o644); err != nil {
+	if err := os.WriteFile(dst, []byte(out.String()), 0o600); err != nil {
 		return 0, 0, err
 	}
 	return first, len(lines) - first, nil
