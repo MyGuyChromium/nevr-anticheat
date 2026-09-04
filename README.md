@@ -35,7 +35,7 @@ Design rules:
 
 ### Windows download with EXEs
 
-GitHub's green **Code → Download ZIP** button is a source-code archive, so it intentionally does not contain ignored build outputs such as `.exe` files. Download `NEVR-Anticheat-Windows-x64.zip` from the repository's **Releases** page instead. Every merge to `master` and every manually started **Windows package** Actions run also publishes the same ZIP as a downloadable artifact.
+GitHub's green **Code → Download ZIP** button is a source-code archive, so it intentionally does not contain ignored build outputs such as `.exe` files. Download the ready-to-run [`NEVR-Anticheat-Windows-x64.zip`](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip) instead. Every successful merge to `master` refreshes that stable release and also publishes the ZIP plus its SHA-256 checksum as Actions artifacts. A manually started **Windows package** run publishes the artifacts without replacing the public release unless it runs on `master`.
 
 Maintainers can build that package locally from PowerShell with:
 

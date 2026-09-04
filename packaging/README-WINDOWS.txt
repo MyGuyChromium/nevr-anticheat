@@ -37,6 +37,9 @@ configuration. See README.md for command-line and live-server instructions.
 IMPORTANT
 
 GitHub's green Code > Download ZIP button downloads source code only. It does
-not contain compiled EXEs. Download NEVR-Anticheat-Windows-x64.zip from the
-repository's Releases page (or the Windows package artifact from an Actions
-run) when you want ready-to-run programs.
+not contain compiled EXEs. Download the ready-to-run package here:
+
+  https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip
+
+The Windows package artifact from a successful Actions run contains the same
+ZIP and a SHA-256 checksum.
