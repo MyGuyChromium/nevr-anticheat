@@ -126,6 +126,62 @@ func TestThrow001_Observed1991FiresEvenAtHighPing(t *testing.T) {
 	}
 }
 
+func TestThrow001_EngineTotalSpeedOverridesUnderCapDiscSample(t *testing.T) {
+	d := NewThrow001(nil)
+	players := withThrow("p1", 100, 18.7, 0)
+	th := players["p1"].LastThrow
+	th.SampledDiscSpeed = 18.7
+	th.GameLastThrow = &model.GameThrowDetails{
+		ArmSpeed: 12.4, TotalSpeed: 19.91, SpeedFromArm: 12,
+		SpeedFromMovement: 4.2, SpeedFromWrist: 3.71,
+	}
+	events := d.Evaluate(testCtx(), players, 100)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" {
+		t.Fatalf("engine-reported 19.91 m/s must fire over an 18.7 m/s sample: %+v", events)
+	}
+	evidence := events[0].Evidence.(model.ThrowEvidence)
+	if evidence.ReleaseSpeed != 19.91 || evidence.SampledDiscSpeed != 18.7 || evidence.GameLastThrow == nil {
+		t.Fatalf("engine and sampled evidence were not both preserved: %+v", evidence)
+	}
+	if evidence.GameLastThrow.SpeedFromMovement != 4.2 {
+		t.Fatalf("movement contribution missing from evidence: %+v", evidence.GameLastThrow)
+	}
+}
+
+func TestThrow001_CorroboratedExtremeSpeedIsNotDowngradedToArtifact(t *testing.T) {
+	d := NewThrow001(nil)
+	players := withThrow("p1", 100, 20, 0)
+	th := players["p1"].LastThrow
+	th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 50, SpeedFromArm: 40, SpeedFromMovement: 5, SpeedFromWrist: 5}
+	events := d.Evaluate(testCtx(), players, 100)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" || events[0].Severity < 0.99 {
+		t.Fatalf("engine-corroborated impossible speed was downgraded: %+v", events)
+	}
+}
+
+func TestThrow001_EngineRecordCannotHideFasterDiscSample(t *testing.T) {
+	d := NewThrow001(nil)
+	players := withThrow("p1", 100, 25, 0)
+	th := players["p1"].LastThrow
+	th.SampledDiscSpeed = 25
+	th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 18, SpeedFromArm: 12, SpeedFromMovement: 3, SpeedFromWrist: 3}
+	events := d.Evaluate(testCtx(), players, 100)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" {
+		t.Fatalf("a lower engine total must not hide a 25 m/s disc sample: %+v", events)
+	}
+	if evidence := events[0].Evidence.(model.ThrowEvidence); evidence.ReleaseSpeed != 25 {
+		t.Fatalf("evaluated speed = %.2f, want the faster 25 m/s observation", evidence.ReleaseSpeed)
+	}
+
+	players = withThrow("p1", 200, 50, 0)
+	th = players["p1"].LastThrow
+	th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 18, SpeedFromArm: 12, SpeedFromMovement: 3, SpeedFromWrist: 3}
+	events = d.Evaluate(testCtx(), players, 200)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed_artifact" {
+		t.Fatalf("an uncorroborated >2x sample should retain artifact handling: %+v", events)
+	}
+}
+
 func TestThrow001_ArtifactAboveTwiceCapIsReportedNotDropped(t *testing.T) {
 	d := NewThrow001(nil)
 	mc := testCtx()

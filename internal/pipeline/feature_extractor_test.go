@@ -514,6 +514,38 @@ func TestExtractor_ReleaseSpeedFromGameVelocity(t *testing.T) {
 	}
 }
 
+func TestExtractor_GameLastThrowOverridesSampleAndStrengthensAttribution(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	pos := model.Vec3{0, 1, -10}
+	dt := 0.067
+	for i := 0; i < 4; i++ {
+		f := feFrame("p1", i, float64(i)*dt, pos)
+		f.HasPossession = true
+		f.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+	f := feFrame("p1", 4, 4*dt, pos)
+	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0, 0}), Velocity: model.Vec3{18.7, 0, 0}, Speed: 18.7}
+	f.GameLastThrow = &model.GameThrowDetails{
+		ArmSpeed: 12.4, TotalSpeed: 19.91, SpeedFromArm: 12,
+		SpeedFromMovement: 4.2, SpeedFromWrist: 3.71,
+	}
+	fe.UpdatePlayerState(ps, &f, mc)
+
+	th := ps.LastThrow
+	if th == nil || !approx(th.ReleaseSpeed, 19.91, 1e-9) || !approx(th.SampledDiscSpeed, 18.7, 1e-9) {
+		t.Fatalf("engine/sample speeds not retained correctly: %+v", th)
+	}
+	if th.GameLastThrow == nil || th.GameLastThrow.SpeedFromMovement != 4.2 {
+		t.Fatalf("engine component breakdown missing: %+v", th)
+	}
+	if th.Attribution.Method != "game_last_throw" || th.Attribution.Confidence != 1 || th.Attribution.LookbackDepth != 0 {
+		t.Fatalf("local engine attribution not applied: %+v", th.Attribution)
+	}
+}
+
 func TestExtractor_TeamFromFrame(t *testing.T) {
 	fe := NewFeatureExtractor(30)
 	mc := feTestCtx()

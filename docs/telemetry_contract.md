@@ -53,6 +53,21 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
       "shield_active": false,
       "is_immune": false,
       "has_possession": false,
+      "game_last_throw": {
+        "arm_speed": 12.4,
+        "total_speed": 19.91,
+        "off_axis_spin_deg": 3.2,
+        "wrist_throw_penalty": 0.4,
+        "rot_per_sec": 8.1,
+        "pot_speed_from_rot": 2.5,
+        "speed_from_arm": 12.0,
+        "speed_from_movement": 4.2,
+        "speed_from_wrist": 3.71,
+        "wrist_align_to_throw_deg": 4.5,
+        "throw_align_to_movement_deg": 7.5,
+        "off_axis_penalty": 0.2,
+        "throw_move_penalty": 0.1
+      },
       "estimated_ping_ms": 45.0,
       "game_phase": "playing",
       "blue_score": 4,
@@ -61,7 +76,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
       "stuns": 3,
       "disc": {
         "position": [5.0, 2.1, 0.0],
-        "velocity": [12.5, 1.0, -0.5],
+        "velocity": [19.91, 0.0, 0.0],
         "possessor_id": "",
         "is_held": false
       }
@@ -100,6 +115,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `shield_active` | bool | — | optional | — | STATE_003/STATE_005; unconfirmed in every known source. |
 | `is_immune` | bool | — | optional | — | STATE_004; unconfirmed in every known source. |
 | `has_possession` | bool | — | **yes** | — | A `true → false` transition is a throw (see §4). |
+| `game_last_throw` | object | m/s and degrees | optional | `total_speed > 0`; every value finite; invalid objects are dropped (`invalid_game_last_throw`) | Echo VR's engine-authored local-client `last_throw` record. Emit it only on the release snapshot where the record changes and only on that local player's frame. See below. |
 | `disc` | object | — | desired | see below | Omit only when the disc is unknown; every throw/disc detector needs it. |
 | `estimated_ping_ms` | float64 | ms | desired | `[0, 1000]`; invalid/negative becomes 0, values above 1000 are clamped (`invalid_ping`) | Values above `pipeline.high_ping_threshold_ms` (150) set `IsHighPing`. Absent/0 = strictest tolerance. |
 | `game_phase` | string | — | desired | see §5 | Absent/empty = active play. |
@@ -193,7 +209,7 @@ The server finalizes the match: closes open dedup incidents, persists remaining 
 
 ### 4. Example: throw transition
 
-A throw is detected by the feature extractor when `has_possession` goes `true → false` between a player's consecutive frames during an active phase. The producer never sends throw events.
+A throw is detected by the feature extractor when `has_possession` goes `true → false` between a player's consecutive frames during an active phase. The producer never sends a derived throw event; it may attach the game-authored `game_last_throw` observation to the release frame.
 
 For raw Echo VR/Spark snapshots, the adapter derives `has_possession` from
 `holding_left` / `holding_right` when those fields are present because the
@@ -225,6 +241,16 @@ held sample), not the already-moving free disc in frame N+1. If either prior
 hand position is missing, the thrower can still be possession-attributed but
 the left/right hand choice remains `unknown`; hand-dependent detectors do not
 invent a hand.
+
+Echo VR's top-level `last_throw` belongs only to `client_name`. The bridge
+compares that record with the preceding snapshot, copies it to
+`game_last_throw` only when it changes, and attaches it only to the matching
+local player's frame. THROW_001 evaluates the higher of `total_speed` and the
+simultaneous disc-velocity magnitude, so one source cannot conceal a faster
+reading; both are retained in evidence. The remaining twelve fields are preserved,
+including the engine's arm, movement and wrist contributions and its alignment
+and penalty values. Remote players do not have this engine breakdown; their
+release speed continues to use `|disc.velocity|`.
 
 ### 5. Game phase values
 

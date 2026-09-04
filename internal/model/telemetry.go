@@ -1,6 +1,9 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"math"
+)
 
 // PlayerTelemetryFrame represents a single frame of telemetry data for one player.
 type PlayerTelemetryFrame struct {
@@ -27,6 +30,11 @@ type PlayerTelemetryFrame struct {
 	IsImmune      bool `json:"is_immune"`
 	HasPossession bool `json:"has_possession"`
 
+	// GameLastThrow is the Echo VR engine's local-player-only last_throw
+	// record. The adapter emits it only on the snapshot where the record
+	// changes, so a repeated/stale value cannot be attached to a later throw.
+	GameLastThrow *GameThrowDetails `json:"game_last_throw,omitempty"`
+
 	Disc *DiscState `json:"disc,omitempty"`
 
 	EstimatedPingMs float64 `json:"estimated_ping_ms,omitempty"`
@@ -39,6 +47,46 @@ type PlayerTelemetryFrame struct {
 	OrangeScore int `json:"orange_score,omitempty"`
 	Goals       int `json:"goals,omitempty"`
 	Stuns       int `json:"stuns,omitempty"`
+}
+
+// GameThrowDetails is Echo VR's own breakdown of a completed local-player
+// throw. These values come directly from the engine's top-level last_throw
+// object; they are observations, not estimates made by the anticheat.
+// Echo VR does not expose this object for remote players.
+type GameThrowDetails struct {
+	ArmSpeed                float64 `json:"arm_speed"`
+	TotalSpeed              float64 `json:"total_speed"`
+	OffAxisSpinDeg          float64 `json:"off_axis_spin_deg"`
+	WristThrowPenalty       float64 `json:"wrist_throw_penalty"`
+	RotPerSec               float64 `json:"rot_per_sec"`
+	PotentialSpeedFromRot   float64 `json:"pot_speed_from_rot"`
+	SpeedFromArm            float64 `json:"speed_from_arm"`
+	SpeedFromMovement       float64 `json:"speed_from_movement"`
+	SpeedFromWrist          float64 `json:"speed_from_wrist"`
+	WristAlignToThrowDeg    float64 `json:"wrist_align_to_throw_deg"`
+	ThrowAlignToMovementDeg float64 `json:"throw_align_to_movement_deg"`
+	OffAxisPenalty          float64 `json:"off_axis_penalty"`
+	ThrowMovePenalty        float64 `json:"throw_move_penalty"`
+}
+
+// Valid reports whether the engine record contains a finite, positive total
+// speed and only finite component values.
+func (g GameThrowDetails) Valid() bool {
+	values := [...]float64{
+		g.ArmSpeed, g.TotalSpeed, g.OffAxisSpinDeg, g.WristThrowPenalty,
+		g.RotPerSec, g.PotentialSpeedFromRot, g.SpeedFromArm,
+		g.SpeedFromMovement, g.SpeedFromWrist, g.WristAlignToThrowDeg,
+		g.ThrowAlignToMovementDeg, g.OffAxisPenalty, g.ThrowMovePenalty,
+	}
+	if g.TotalSpeed <= 0 {
+		return false
+	}
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // DiscState represents the state of the disc at a single frame.

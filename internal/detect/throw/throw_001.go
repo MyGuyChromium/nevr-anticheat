@@ -42,9 +42,10 @@ type throwSample struct {
 
 // Throw001 detects impossible disc release velocities (THROW_001).
 //
-// Release speed is the game-reported disc velocity magnitude at the release
-// frame (feature extractor), not a position delta, so the detector does not
-// depend on the sampling interval.
+// Release speed is the higher of the engine's last_throw.total_speed and the
+// game-reported disc velocity magnitude for local-client throws, otherwise
+// the disc magnitude alone. Neither path uses a position delta, so the
+// detector does not depend on the sampling interval.
 type Throw001 struct {
 	detect.BaseDetector
 	baseTolerance           float64
@@ -61,7 +62,7 @@ type Throw001 struct {
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.3.0",
+			DetectorID: "THROW_001", DetectorVersion: "1.4.0",
 			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
@@ -103,6 +104,11 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t == nil {
 			continue
 		}
+		if t.GameLastThrow != nil && t.GameLastThrow.Valid() {
+			normalized := *t
+			normalized.ReleaseSpeed = math.Max(t.ReleaseSpeed, t.GameLastThrow.TotalSpeed)
+			t = &normalized
+		}
 		if math.IsNaN(t.ReleaseSpeed) || math.IsInf(t.ReleaseSpeed, 0) || t.ReleaseSpeed <= 0 {
 			continue
 		}
@@ -119,8 +125,13 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			handSpeed = math.Max(handSpeed, 0.01)
 		}
 
+		sampledDiscSpeed := t.SampledDiscSpeed
+		if sampledDiscSpeed <= 0 {
+			sampledDiscSpeed = t.ReleaseVelocity.Magnitude()
+		}
 		evidence := model.ThrowEvidence{
 			ReleaseVelocity: t.ReleaseVelocity, ReleaseSpeed: t.ReleaseSpeed,
+			SampledDiscSpeed: sampledDiscSpeed, GameLastThrow: t.GameLastThrow,
 			ReleasePosition: t.ReleasePosition,
 			PlayerVelocity:  t.PlayerVelocity, PlayerSpeed: playerSpeed,
 			AlignedMovementSpeed:   alignedMovementSpeed,
@@ -134,9 +145,13 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			EffectiveCap:              effectiveCap, PingMs: ps.EstimatedPingMs,
 		}
 
-		// Suspected artifact: > 2x the physics cap. Reported separately at
-		// low severity and excluded from every statistic.
-		if matchCtx.Physics.DiscSpeedCap > 0 && t.ReleaseSpeed > matchCtx.Physics.DiscSpeedCap*artifactCapMultiple {
+		// Suspected artifact: > 2x the physics cap when only a sampled disc
+		// velocity is available. An engine-authored last_throw value is direct
+		// corroboration, so it remains on the hard over-cap path regardless of
+		// magnitude.
+		engineCorroborated := t.GameLastThrow != nil && t.GameLastThrow.Valid() &&
+			matchCtx.Physics.DiscSpeedCap > 0 && t.GameLastThrow.TotalSpeed > matchCtx.Physics.DiscSpeedCap*artifactCapMultiple
+		if !engineCorroborated && matchCtx.Physics.DiscSpeedCap > 0 && t.ReleaseSpeed > matchCtx.Physics.DiscSpeedCap*artifactCapMultiple {
 			d.artifactCounts[pid]++
 			evidence.ArtifactSuspected = true
 			evidence.ArtifactCount = d.artifactCounts[pid]
@@ -193,6 +208,11 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t.HandKinematicsValid {
 			observed = fmt.Sprintf("disc_speed: %.2f m/s (player-relative %.2f; aligned movement %+.2f; hand ratio %.1f)",
 				t.ReleaseSpeed, playerRelativeSpeed, alignedMovementSpeed, speedRatio)
+		}
+		if t.GameLastThrow != nil {
+			observed += fmt.Sprintf("; engine last_throw: arm %.2f, movement %.2f, wrist %.2f m/s (sampled disc %.2f)",
+				t.GameLastThrow.SpeedFromArm, t.GameLastThrow.SpeedFromMovement,
+				t.GameLastThrow.SpeedFromWrist, sampledDiscSpeed)
 		}
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence, evidence,
 			observed,

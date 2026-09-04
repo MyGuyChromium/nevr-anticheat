@@ -275,6 +275,52 @@ func TestMapper_HoldingFieldsOverrideStalePossession(t *testing.T) {
 	}
 }
 
+func TestMapper_GameLastThrowChangeGoesOnlyToLocalPlayer(t *testing.T) {
+	a := testPlayer("Local", 1, [3]float64{1, 1.6, -10})
+	b := testPlayer("Remote", 2, [3]float64{-1, 1.6, 10})
+	m := NewMapper()
+	m.SetDedupeIdentical(true)
+	t0 := time.Unix(1000, 0)
+
+	baseline := twoTeamSession("m", []EchoVRPlayer{a}, []EchoVRPlayer{b})
+	baseline.ClientName = "Local"
+	baseline.LastThrow = &EchoVRLastThrow{}
+	r0 := m.MapSessionAt(baseline, t0)
+	if frameByPlayer(r0.Frames, "echovr:1").GameLastThrow != nil {
+		t.Fatal("the first last_throw value is a baseline, not a new throw")
+	}
+
+	changed := twoTeamSession("m", []EchoVRPlayer{a}, []EchoVRPlayer{b})
+	changed.ClientName = "Local"
+	changed.LastThrow = &EchoVRLastThrow{
+		ArmSpeed: 12.4, TotalSpeed: 19.91, OffAxisSpinDeg: 3.2,
+		WristThrowPenalty: 0.4, RotPerSec: 8.1, PotentialSpeedFromRot: 2.5,
+		SpeedFromArm: 12, SpeedFromMovement: 4.2, SpeedFromWrist: 3.71,
+		WristAlignToThrowDeg: 4.5, ThrowAlignToMovementDeg: 7.5,
+		OffAxisPenalty: 0.2, ThrowMovePenalty: 0.1,
+	}
+	r1 := m.MapSessionAt(changed, t0.Add(67*time.Millisecond))
+	if r1.SkippedDuplicate {
+		t.Fatal("a last_throw change must survive live snapshot deduplication")
+	}
+	local := frameByPlayer(r1.Frames, "echovr:1")
+	remote := frameByPlayer(r1.Frames, "echovr:2")
+	if local == nil || local.GameLastThrow == nil || local.GameLastThrow.TotalSpeed != 19.91 || local.GameLastThrow.SpeedFromMovement != 4.2 {
+		t.Fatalf("local engine throw was not mapped: %+v", local)
+	}
+	if remote == nil || remote.GameLastThrow != nil {
+		t.Fatalf("local-only last_throw leaked to remote player: %+v", remote)
+	}
+
+	// With dedupe disabled, a repeated engine record maps a normal frame but
+	// does not pulse again and cannot be attached to a later release.
+	m.SetDedupeIdentical(false)
+	r2 := m.MapSessionAt(changed, t0.Add(134*time.Millisecond))
+	if frameByPlayer(r2.Frames, "echovr:1").GameLastThrow != nil {
+		t.Fatal("an unchanged last_throw record must not be emitted twice")
+	}
+}
+
 // F97: lost hand tracking is the zero quaternion, and all three vectors are required.
 func TestMapper_LostHandTrackingIsZeroQuat(t *testing.T) {
 	p := testPlayer("A", 1, [3]float64{1, 1.6, -10})
