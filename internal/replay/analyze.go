@@ -455,6 +455,9 @@ func (a *fileAnalysis) begin(mc *model.MatchContext) (*matchRun, error) {
 // the raw payloads to match_ticks every rawTickFlushEvery ticks. Nothing of
 // a refused match is kept.
 func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
 	if r.res.AlreadyStored {
 		return nil
 	}

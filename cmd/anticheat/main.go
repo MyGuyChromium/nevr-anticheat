@@ -1009,29 +1009,30 @@ func runCalibrationReport(configPath, sinceSpec string) {
 	}
 	fmt.Println("================================================================================")
 	if since.IsZero() {
-		fmt.Println("DETECTOR CALIBRATION (all moderator decisions)")
+		fmt.Println("DETECTOR CALIBRATION (all human labels)")
 	} else {
-		fmt.Printf("DETECTOR CALIBRATION (decisions since %s)\n", since.UTC().Format(time.RFC3339))
+		fmt.Printf("DETECTOR CALIBRATION (labels since %s)\n", since.UTC().Format(time.RFC3339))
 	}
 	fmt.Println("================================================================================")
 	if len(rows) == 0 {
-		fmt.Println("  No moderator decisions recorded. Use `verdict <case-id> ...` to label cases.")
+		fmt.Println("  No human labels recorded. Label observations in the desktop app or use `verdict <case-id> ...`.")
 		return
 	}
-	fmt.Printf("  %-12s %9s %9s %9s %9s %6s %7s %9s\n",
-		"DETECTOR", "CONFIRMED", "FALSE_POS", "INCONCL", "NEED_DATA", "CASES", "EVENTS", "PRECISION")
+	fmt.Printf("  %-12s %9s %9s %9s %9s %6s %7s %7s %9s\n",
+		"DETECTOR", "CONFIRMED", "FALSE_POS", "INCONCL", "NEED_DATA", "CASES", "EVENTS", "LABELS", "PRECISION")
 	for _, c := range rows {
 		prec := "n/a"
 		if p, ok := c.Precision(); ok {
 			prec = fmt.Sprintf("%.0f%%", p*100)
 		}
-		fmt.Printf("  %-12s %9d %9d %9d %9d %6d %7d %9s\n",
+		fmt.Printf("  %-12s %9d %9d %9d %9d %6d %7d %7d %9s\n",
 			c.DetectorID, c.Confirmed, c.FalsePositive, c.Inconclusive, c.NeedsMoreData,
-			c.CasesReviewed, c.EventsReviewed, prec)
+			c.CasesReviewed, c.EventsReviewed, c.DirectLabels, prec)
 	}
 	fmt.Println()
 	fmt.Println("  Counts are per decided case in which the detector fired (shadow events included).")
 	fmt.Println("  Explicit --detector feedback overrides the case verdict for that detector.")
+	fmt.Println("  LABELS are direct detector verdicts recorded in the desktop app.")
 }
 
 type observationReport struct {

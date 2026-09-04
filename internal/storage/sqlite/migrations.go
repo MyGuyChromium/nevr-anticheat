@@ -43,6 +43,10 @@
 //     close_reason (never deleted), and reopened if a later run flags the
 //     player again. Moderator-set statuses are always preserved.
 //
+//   - event_reviews: direct human labels on individual detector observations.
+//     Event metadata is snapshotted so labels remain calibration evidence when
+//     re-analysis replaces derived detection_events rows.
+//
 // # Timestamps
 //
 // Every timestamp column is TEXT in UTC RFC3339 with second precision and a
@@ -104,6 +108,7 @@ var timestampColumnsV10 = [][2]string{
 var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
 	[2]string{"review_cases", "timestamp_start"},
 	[2]string{"review_cases", "timestamp_end"},
+	[2]string{"event_reviews", "reviewed_at"},
 )
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
@@ -114,6 +119,7 @@ var requiredTables = []string{
 	"review_cases", "moderator_decisions", "player_profiles", "population_baselines",
 	"replay_bundles", "anomaly_clusters", "enforcement_log", "telemetry_frames",
 	"match_contexts", "cross_match_review_cases", "match_ticks", "schema_migrations",
+	"event_reviews",
 }
 
 var migrations = []MigrationVersion{
@@ -357,7 +363,31 @@ var migrations = []MigrationVersion{
 	},
 	{
 		Version: 12, Description: "match_summaries.summary_json: the offline match summary document (scoreboard, goals, throws)",
-		SQL:     `ALTER TABLE match_summaries ADD COLUMN summary_json TEXT;`,
+		SQL: `ALTER TABLE match_summaries ADD COLUMN summary_json TEXT;`,
+	},
+	{
+		Version: 13, Description: "durable event-level detector reviews for desktop calibration",
+		SQL: `CREATE TABLE IF NOT EXISTS event_reviews (
+			event_id         TEXT PRIMARY KEY,
+			match_id         TEXT NOT NULL,
+			player_id        TEXT NOT NULL,
+			detector_id      TEXT NOT NULL,
+			detector_version TEXT NOT NULL DEFAULT '',
+			frame_index      INTEGER NOT NULL,
+			timestamp        REAL NOT NULL DEFAULT 0,
+			severity         REAL NOT NULL DEFAULT 0,
+			confidence       REAL NOT NULL DEFAULT 0,
+			observed_value   TEXT NOT NULL DEFAULT '',
+			expected_range   TEXT NOT NULL DEFAULT '',
+			evidence_type    TEXT NOT NULL DEFAULT '',
+			evidence_json    TEXT NOT NULL DEFAULT '',
+			verdict          TEXT NOT NULL CHECK (verdict IN ('yes','no','uncertain')),
+			comment          TEXT NOT NULL DEFAULT '',
+			reviewer_id      TEXT NOT NULL,
+			reviewed_at      TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_event_reviews_detector ON event_reviews(detector_id, reviewed_at);
+		CREATE INDEX IF NOT EXISTS idx_event_reviews_match ON event_reviews(match_id);`,
 	},
 }
 

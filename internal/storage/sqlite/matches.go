@@ -5,10 +5,74 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
+
+// MatchReviewSignals are the compact detector/review facts used by the
+// desktop history list without loading every full match.
+type MatchReviewSignals struct {
+	EventCount  int
+	DetectorIDs []string
+	Flagged     bool
+}
+
+// GetMatchReviewSignals returns signals for the requested match IDs. Missing
+// IDs simply have no entry.
+func (s *Store) GetMatchReviewSignals(ctx context.Context, matchIDs []string) (map[string]MatchReviewSignals, error) {
+	out := make(map[string]MatchReviewSignals)
+	if len(matchIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(matchIDs)), ",")
+	args := make([]any, len(matchIDs))
+	for i, id := range matchIDs {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT match_id, detector_id, COUNT(*) FROM detection_events
+		 WHERE match_id IN (`+placeholders+`) GROUP BY match_id, detector_id
+		 ORDER BY match_id, detector_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var matchID, detectorID string
+		var count int
+		if err := rows.Scan(&matchID, &detectorID, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		signal := out[matchID]
+		signal.EventCount += count
+		signal.DetectorIDs = append(signal.DetectorIDs, detectorID)
+		out[matchID] = signal
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT DISTINCT match_id FROM review_cases
+		 WHERE match_id IN (`+placeholders+`) AND status IN (?, ?, ?)`,
+		append(args, CaseStatusPending, CaseStatusAssigned, CaseStatusInReview)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var matchID string
+		if err := rows.Scan(&matchID); err != nil {
+			return nil, err
+		}
+		signal := out[matchID]
+		signal.Flagged = true
+		out[matchID] = signal
+	}
+	return out, rows.Err()
+}
 
 // StoredMatch is one match_contexts row: the persisted context plus what
 // the store knows about the ingest (used by the desktop app's history).

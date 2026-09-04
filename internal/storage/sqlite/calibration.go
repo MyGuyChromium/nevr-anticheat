@@ -10,8 +10,8 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// DetectorCalibration is the moderator ground truth for one detector: how
-// often the cases it fired in were confirmed, dismissed, or left open.
+// DetectorCalibration is the human ground truth for one detector: moderator
+// case decisions plus direct event labels from the desktop app.
 //
 // A detector "fired in" a case when it produced any event (shadow or not) for
 // the case's player in the case's match(es). Shadow events count on purpose:
@@ -28,6 +28,7 @@ type DetectorCalibration struct {
 	CasesReviewed  int // decisions in which the detector fired or received feedback
 	FeedbackGiven  int // decisions carrying explicit feedback for this detector
 	EventsReviewed int // events by this detector inside reviewed cases
+	DirectLabels   int // individual desktop event labels for this detector
 }
 
 // Precision returns confirmed / (confirmed + false positives) and whether
@@ -170,6 +171,27 @@ func (s *Store) ComputeCalibration(ctx context.Context, since time.Time) ([]Dete
 			case VerdictNeedsMoreData:
 				c.NeedsMoreData++
 			}
+		}
+	}
+
+	// Direct event labels are independent calibration evidence. They are
+	// especially important while detectors run in shadow mode and therefore do
+	// not create review cases.
+	direct, err := s.ListEventReviews(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("listing event reviews: %w", err)
+	}
+	for _, review := range direct {
+		c := get(review.DetectorID)
+		c.DirectLabels++
+		c.EventsReviewed++
+		switch review.Verdict {
+		case "yes":
+			c.Confirmed++
+		case "no":
+			c.FalsePositive++
+		default:
+			c.Inconclusive++
 		}
 	}
 

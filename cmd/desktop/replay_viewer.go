@@ -208,12 +208,12 @@ func replayViewerCandidates(goos string, getenv func(string) string, executableD
 	return out
 }
 
-func launchSparkReplayViewer(clipPath string) (string, error) {
+func resolvedReplayViewers() []string {
 	executableDir := ""
 	if executable, err := os.Executable(); err == nil {
 		executableDir = filepath.Dir(executable)
 	}
-	var lastErr error
+	var out []string
 	for _, candidate := range replayViewerCandidates(runtime.GOOS, os.Getenv, executableDir) {
 		command := candidate
 		if filepath.IsAbs(candidate) {
@@ -228,6 +228,23 @@ func launchSparkReplayViewer(clipPath string) (string, error) {
 			}
 			command = resolved
 		}
+		out = append(out, command)
+	}
+	return out
+}
+
+// findSparkReplayViewer resolves the preferred viewer without launching it.
+func findSparkReplayViewer() (string, error) {
+	if commands := resolvedReplayViewers(); len(commands) > 0 {
+		return commands[0], nil
+	}
+	message := "replay viewer unavailable: open Replay Viewer in Spark once so it installs to Documents\\Replay Viewer, or set NEVR_REPLAY_VIEWER to Replay Viewer.exe"
+	return "", errors.New(message)
+}
+
+func launchSparkReplayViewer(clipPath string) (string, error) {
+	var lastErr error
+	for _, command := range resolvedReplayViewers() {
 		var args []string
 		if strings.TrimSpace(clipPath) != "" {
 			args = append(args, clipPath)

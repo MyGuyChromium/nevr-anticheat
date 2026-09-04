@@ -203,6 +203,99 @@ func getJSON(t *testing.T, url string, v any) *http.Response {
 	return resp
 }
 
+func postAPI(t *testing.T, url string, payload any, out any) *http.Response {
+	t.Helper()
+	var body io.Reader
+	contentType := ""
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, contentType = bytes.NewReader(raw), "application/json"
+	}
+	resp, err := http.Post(url, contentType, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if out != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			t.Fatalf("decoding %s: %v", raw, err)
+		}
+	}
+	return resp
+}
+
+func TestDesktop_QoLHealthMaintenanceAndCancel(t *testing.T) {
+	s, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	var health healthResponse
+	if resp := getJSON(t, base+"/api/health", &health); resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status %d", resp.StatusCode)
+	}
+	if health.Version != appVersion || health.SchemaVersion != sqlite.SchemaVersion() || health.DatabasePath == "" || health.DiscSpeedCap != 18.9 {
+		t.Fatalf("health = %+v", health)
+	}
+
+	if err := os.WriteFile(filepath.Join(s.clipDir, "generated.echoreplay"), []byte("clip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cleared struct {
+		Removed int `json:"removed"`
+	}
+	if resp := postAPI(t, base+"/api/maintenance/clear-clips", nil, &cleared); resp.StatusCode != http.StatusOK || cleared.Removed != 1 {
+		t.Fatalf("clear clips: status %d, %+v", resp.StatusCode, cleared)
+	}
+	if entries, _ := os.ReadDir(s.clipDir); len(entries) != 0 {
+		t.Fatalf("clips remain: %v", entries)
+	}
+
+	var backup struct {
+		Path  string `json:"path"`
+		Bytes int64  `json:"bytes"`
+	}
+	if resp := postAPI(t, base+"/api/maintenance/backup", nil, &backup); resp.StatusCode != http.StatusOK || backup.Path == "" || backup.Bytes == 0 {
+		t.Fatalf("backup: status %d, %+v", resp.StatusCode, backup)
+	}
+	if _, err := os.Stat(backup.Path); err != nil {
+		t.Fatalf("backup missing: %v", err)
+	}
+
+	ctx, id := s.beginAnalysis()
+	defer s.finishAnalysis(id)
+	var cancelled map[string]bool
+	if resp := postAPI(t, base+"/api/analyze/cancel", nil, &cancelled); resp.StatusCode != http.StatusOK || !cancelled["cancelled"] {
+		t.Fatalf("cancel: status %d, %+v", resp.StatusCode, cancelled)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("active analysis context was not cancelled")
+	}
+}
+
+func TestDesktop_EventReviewAPI(t *testing.T) {
+	s, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	ev := model.DetectionEvent{
+		EventID: "desktop-event", DetectorID: "THROW_003", DetectorVersion: "2.0.0",
+		MatchID: "m-review", PlayerID: "p1", FrameIndex: 9, Severity: .8, Confidence: .9,
+	}
+	if err := s.engine.Store().StoreDetectionEvent(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	var review sqlite.EventReview
+	resp := postAPI(t, base+"/api/event/desktop-event/review", map[string]string{"verdict": "no", "comment": "legal slap"}, &review)
+	if resp.StatusCode != http.StatusOK || review.Verdict != "no" || review.Comment != "legal slap" || review.ReviewerID != "local-owner" {
+		t.Fatalf("review: status %d, %+v", resp.StatusCode, review)
+	}
+	if resp := postAPI(t, base+"/api/event/missing/review", map[string]string{"verdict": "yes"}, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing event status = %d", resp.StatusCode)
+	}
+}
+
 // TestDesktop_AnalyzeFixture: the synthetic replay goes through the API and
 // comes back as a match card: id, four rostered players with teams and
 // names, no review cases; a second upload is refused until force is set;
@@ -517,7 +610,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by cheat", "data-replay-frame", "data-throw-scroll", "Spark replay", "Detector observations"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by cheat", "data-replay-frame", "data-throw-scroll", "Spark replay", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Health &amp; maintenance", "Back up database"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
