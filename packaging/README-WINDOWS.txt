@@ -3,11 +3,20 @@ NEVR-Anticheat for Windows (x64)
 
 START HERE
 
-1. Extract the entire ZIP. Do not run an EXE from inside the ZIP.
-2. Recommended: double-click Install-NEVR.cmd. It installs for your Windows
-   account, creates shortcuts, and keeps evidence outside the program folder.
-3. Or run nevr-desktop.exe directly for portable mode.
-4. Drop one or more .echoreplay files onto the local app window.
+NORMAL INSTALL (recommended)
+
+1. Download NEVR-Anticheat-Setup.exe.
+2. Double-click it and choose Install.
+3. NEVR opens automatically. Drop one or more .echoreplay files onto the app.
+
+Setup needs no ZIP extraction, command prompt, administrator access, folder
+selection, or manual configuration. It creates the Windows shortcuts and the
+Installed apps entry automatically.
+
+PORTABLE / ADVANCED
+
+Extract the entire NEVR-Anticheat-Windows-x64.zip, then run nevr-desktop.exe.
+Install-NEVR.cmd remains in that ZIP for compatibility with older installs.
 
 Installed mode keeps the database under LocalAppData\NEVR-Anticheat. Portable
 mode stores it beside nevr-desktop.exe. Windows Firewall does not need to expose
@@ -48,9 +57,12 @@ configuration. See README.md for command-line and live-server instructions.
 IMPORTANT
 
 GitHub's green Code > Download ZIP button downloads source code only. It does
-not contain compiled EXEs. Download the ready-to-run package here:
+not contain compiled EXEs. Download the one-click installer here:
+
+  https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe
+
+The advanced portable package remains available here:
 
   https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip
 
-The Windows package artifact from a successful Actions run contains the same
-ZIP and a SHA-256 checksum.
+Successful releases include SHA-256 checksums and GitHub build provenance.

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+    [switch]$BuildInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,6 +66,10 @@ try {
     $zipPath = Join-Path $outputRoot "NEVR-Anticheat-Windows-x64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force
     Write-Host "Created $zipPath"
+    if ($BuildInstaller) {
+        & (Join-Path $repoRoot "scripts\build-installer.ps1") -PackageZip $zipPath -OutputDirectory $outputRoot
+        if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+    }
 }
 finally {
     if (Test-Path -LiteralPath $stage) {

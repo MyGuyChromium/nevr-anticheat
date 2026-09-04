@@ -2,6 +2,8 @@
 
 Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 30 detectors analyse it there.
 
+**Windows:** [Download NEVR-Anticheat-Setup.exe](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe), double-click it, and choose **Install**. No ZIP extraction, command prompt, administrator access, or manual folder selection is required.
+
 **Validation status: 0 of 30 detectors have been validated on labelled real Echo VR telemetry.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
 
 ## Architecture
@@ -35,9 +37,11 @@ Design rules:
 
 ### Windows download with EXEs
 
-GitHub's green **Code → Download ZIP** button is a source-code archive, so it intentionally does not contain ignored build outputs such as `.exe` files. Download the ready-to-run [`NEVR-Anticheat-Windows-x64.zip`](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip) instead. Every successful merge to `master` refreshes that stable release and also publishes the ZIP plus its SHA-256 checksum as Actions artifacts. A manually started **Windows package** run publishes the artifacts without replacing the public release unless it runs on `master`.
+GitHub's green **Code → Download ZIP** button is a source-code archive, so it intentionally does not contain compiled programs. Normal users should download [`NEVR-Anticheat-Setup.exe`](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe), double-click it, and choose **Install**. Setup installs for the current Windows account, creates the shortcuts, appears in Windows Installed apps, and launches NEVR. It does not need administrator access.
 
-After extracting the release, `Install-NEVR.cmd` installs it for the current Windows account and creates Start Menu/desktop shortcuts. Installed evidence lives under `%LOCALAPPDATA%\NEVR-Anticheat`, separate from the replaceable program files; uninstalling preserves it unless `Uninstall-NEVR.ps1 -RemoveEvidence` is deliberately requested. Running `nevr-desktop.exe` directly remains the portable option.
+Installed evidence lives under `%LOCALAPPDATA%\NEVR-Anticheat`, separate from the replaceable program files. Upgrades and normal uninstall preserve it. The [`NEVR-Anticheat-Windows-x64.zip`](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip) remains available for portable and advanced use.
+
+Each successful master build publishes SHA-256 checksums and GitHub provenance attestations, runs a clean install/uninstall preservation test, and scans the output with Microsoft Defender when it is available on the build runner. Authenticode publisher identity is enabled automatically when the repository's signing-certificate secrets are configured; see [`docs/windows_release_trust.md`](docs/windows_release_trust.md).
 
 The desktop's update card follows the verified `windows-latest` release tag. Because this repository is private, set a read-only GitHub token in `NEVR_GITHUB_TOKEN` if you want automatic in-app update checks; opening the release page works through your already signed-in browser without a token.
 

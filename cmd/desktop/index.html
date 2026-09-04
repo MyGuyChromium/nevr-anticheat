@@ -105,6 +105,7 @@
   .check { display: flex; gap: 10px; align-items: flex-start; flex: 1; }
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
   .check label { font-weight: 500; cursor: pointer; }
+  .check-mark { color: var(--accent); font: 700 18px/1 var(--display); flex: none; }
   .help { color: var(--muted); font-size: 13px; margin: 2px 0 0; max-width: 64ch; }
   .status { margin: 16px 0 0; color: var(--muted); min-height: 21px; }
   .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
@@ -551,9 +552,9 @@
         </div>
         <div class="controls">
           <div class="check">
-            <input type="checkbox" id="force" checked disabled>
+            <span class="check-mark" aria-hidden="true">↻</span>
             <div>
-              <label for="force">Always re-analyze stored matches</label>
+              <strong>Stored replays refresh automatically</strong>
               <p class="help">Every upload uses the current detectors and replaces earlier derived events and scores. Raw source telemetry and human labels remain preserved.</p>
             </div>
           </div>
@@ -1095,7 +1096,7 @@
   }
   function processQueueItem(item, i) {
     return new Promise((resolve) => {
-      const fd = new FormData(); fd.append('files', item.file, item.file.name); fd.append('force', '1');
+      const fd = new FormData(); fd.append('files', item.file, item.file.name);
       const xhr = currentXHR = new XMLHttpRequest();
       xhr.open('POST', 'api/analyze'); xhr.responseType = 'json';
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
@@ -1387,7 +1388,7 @@
         <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
         <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
         <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>
-        <div class="lab-card"><h3>Windows updates</h3><p class="help">Installed releases embed their source revision. The app compares it with the last successfully packaged Windows release; downloads still require your click.</p><p><span class="tag ${update.available ? 'warn' : update.error ? '' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="open-update" class="btn">Open latest release</button></div></div>
+        <div class="lab-card"><h3>Windows updates</h3><p class="help">Installed releases embed their source revision. The app compares it with the last successfully packaged Windows release; downloading the verified installer still requires your click.</p><p><span class="tag ${update.available ? 'warn' : update.error ? '' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="open-update" class="btn">Download installer</button></div></div>
         <div class="lab-card"><h3>Support bundle</h3><p class="help">Creates a ZIP with app health and pseudonymized aggregate diagnostics. It excludes raw ticks, frames, the database, player identities, and your watch-folder path.</p><button id="support-bundle" class="btn">Create support bundle</button></div></div>`;
     } catch (e) { panelError(el, 'automation and recovery settings', e); }
   }
@@ -1627,7 +1628,7 @@
     if (e.target.closest('#resume-recovery')) { try { const r = await postJSON('api/recovery/resume'); setStatus(r.message, 'ok'); setTimeout(loadAutomation, 1200); } catch (err) { setStatus(`Recovery failed: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#discard-recovery')) { if (!confirm('Discard only the pending uploaded copies? Stored matches, original replays, and the database are not affected.')) return; try { const r = await postJSON('api/recovery/discard'); setStatus(r.message, 'ok'); await loadAutomation(); } catch (err) { setStatus(`Could not discard pending uploads: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#check-update')) { await loadAutomation(); setStatus('Update check finished.', 'ok'); return; }
-    if (e.target.closest('#open-update')) { try { const r = await postJSON('api/update/open'); setStatus(r.message, 'ok'); } catch (err) { setStatus(`Could not open release: ${err.message}`, 'err'); } return; }
+    if (e.target.closest('#open-update')) { try { const r = await postJSON('api/update/open'); setStatus(r.message, 'ok'); } catch (err) { setStatus(`Could not open installer: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#support-bundle')) {
       const button = e.target.closest('#support-bundle'); button.disabled = true; button.textContent = 'Creating…';
       try { const r = await postJSON('api/maintenance/support-bundle'); setStatus(`${r.message} ${r.path}`, 'ok'); } catch (err) { setStatus(`Support bundle failed: ${err.message}`, 'err'); }

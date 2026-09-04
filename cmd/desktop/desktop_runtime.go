@@ -543,7 +543,7 @@ func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	status := updateStatus{CurrentVersion: appVersion, CurrentCommit: buildCommit, BuildTime: buildTime,
 		ReleaseURL: "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest", CheckedAt: fmtTime(time.Now())}
 	// Follow the rolling-release tag instead of master. The workflow only moves
-	// this tag after every executable has built and the release ZIP is ready, so
+	// this tag after every executable, the installer, and the portable ZIP are ready, so
 	// the desktop never advertises an un-downloadable commit as an update.
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, s.runtime.updateURL+"/git/ref/tags/windows-latest", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -560,7 +560,7 @@ func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == http.StatusNotFound {
-			status.Error = "Automatic checks require a public repository or NEVR_GITHUB_TOKEN; Open latest release still works with your signed-in browser."
+			status.Error = "Automatic checks require a public repository or NEVR_GITHUB_TOKEN; Download installer still works with your signed-in browser."
 		} else {
 			status.Error = "GitHub returned " + resp.Status
 		}
@@ -583,12 +583,12 @@ func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleOpenUpdate(w http.ResponseWriter, _ *http.Request) {
-	url := "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest"
+	url := "https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe"
 	if err := openBrowser(url); err != nil {
-		writeError(w, 500, "opening release page: %v", err)
+		writeError(w, 500, "opening installer download: %v", err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "url": url, "message": "Opened the latest verified Windows release."})
+	writeJSON(w, 200, map[string]any{"ok": true, "url": url, "message": "Opened the latest verified Windows installer download."})
 }
 
 func addZipJSON(zw *zip.Writer, name string, value any) error {
