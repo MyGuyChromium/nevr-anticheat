@@ -13,6 +13,14 @@ Installed mode keeps the database under LocalAppData\NEVR-Anticheat. Portable
 mode stores it beside nevr-desktop.exe. Windows Firewall does not need to expose
 it: the desktop app listens only on 127.0.0.1 (this computer).
 
+UPDATES AND ROLLBACK
+
+Installing a newer package snapshots the previous program files without
+copying or changing the evidence database. If an update has a problem, run
+Rollback-NEVR.cmd from LocalAppData\Programs\NEVR-Anticheat to restore the
+newest program snapshot. Database backup/restore is a separate, verified action
+inside the desktop app's Investigation & reliability studio.
+
 SPARK REPLAY VIEWER
 
 Detection rows have an Open clip button and every throw-log row has an Open

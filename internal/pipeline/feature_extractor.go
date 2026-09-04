@@ -188,6 +188,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	prevLeftHandRot := ps.LeftHandRot
 	prevRightHandRot := ps.RightHandRot
 	prevPlayspaceAnchor := ps.PlayspaceAnchor
+	prevReportedVelocity := ps.ReportedVelocity
 	prevTimestamp := ps.LastTimestamp
 	prevHasDisc := ps.HasDisc
 	prevBlueScore := ps.PrevBlueScore
@@ -458,7 +459,58 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.LastBoostFrame = frame.FrameIndex
 	}
 
+	ps.LegalContext = buildLegalMotionContext(ps, frame, prevReportedVelocity, dtKnown, rawDt)
+
 	ps.FrameCount++
+}
+
+// buildLegalMotionContext centralizes legitimate-motion interpretation for
+// every detector. The source cannot identify the object or player involved in
+// a collision, so contact flags are intentionally phrased as candidates.
+func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetryFrame, previousReported model.Vec3, dtKnown bool, dt float64) model.LegalMotionContext {
+	ctx := model.LegalMotionContext{
+		Boosting:       ps.IsBoosting,
+		GameLocomotion: ps.HasReportedVelocity && ps.ReportedVelocity.Magnitude() >= 0.25,
+		TrackingLimited: frame.LeftHandPosition.IsZero() || frame.RightHandPosition.IsZero() ||
+			!frame.LeftHandRotation.IsUnit() || !frame.RightHandRotation.IsUnit(),
+		Confidence: 1,
+	}
+	if ps.IsHighPing {
+		ctx.Confidence *= 0.75
+	}
+	if ctx.TrackingLimited {
+		ctx.Confidence *= 0.65
+	}
+	if ps.PlayspaceValid && ps.PlayspaceRigCoherence >= 0.4 {
+		ctx.Leaning = ps.PlayspaceDistance >= 0.08 && ps.PlayspaceDistance <= 0.65 && ps.PlayspaceSpeed < 0.35
+		ctx.PlayspaceStep = !ps.IsBoosting && ps.PlayspaceSpeed >= 0.35 && ps.PlayspaceSpeed <= 2.2
+	}
+	if dtKnown && dt > 0 && !ps.IsBoosting && ps.HasReportedVelocity {
+		reportedAcceleration := ps.ReportedVelocity.Sub(previousReported).Magnitude() / dt
+		handBurst := math.Max(ps.LeftHandRelativeSpeed, ps.RightHandRelativeSpeed)
+		ctx.PossibleSlapOrPush = reportedAcceleration >= 6 && handBurst >= 1.2
+	}
+	if ps.LastThrow != nil && ps.LastThrow.FrameIndex == frame.FrameIndex {
+		ctx.PossibleHeadContact = ps.LastThrow.PossibleHeadContact
+	}
+	ctx.CannotDistinguishContact = ctx.PossibleSlapOrPush || (ctx.GameLocomotion && !ctx.Boosting)
+	switch {
+	case ctx.PossibleHeadContact:
+		ctx.PrimaryExplanation = "possible legal head contact at disc release"
+	case ctx.Boosting:
+		ctx.PrimaryExplanation = "game-reported boost"
+	case ctx.PossibleSlapOrPush:
+		ctx.PrimaryExplanation = "possible legal wall/block slap or player push"
+	case ctx.PlayspaceStep:
+		ctx.PrimaryExplanation = "coherent physical playspace step"
+	case ctx.Leaning:
+		ctx.PrimaryExplanation = "coherent lean inside the tracked playspace"
+	case ctx.GameLocomotion:
+		ctx.PrimaryExplanation = "game-authored locomotion (stack, grab, push, or ordinary movement may contribute)"
+	default:
+		ctx.PrimaryExplanation = "no special legal-motion context identified"
+	}
+	return ctx
 }
 
 // playspaceRigCoherence measures whether tracked hands translated with the

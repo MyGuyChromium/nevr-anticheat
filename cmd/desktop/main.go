@@ -26,7 +26,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.4.0"
+const appVersion = "0.5.0"
 
 // Filled by the release workflow. Development builds intentionally retain
 // these values so the updater can say that their revision is unknown.
@@ -63,6 +63,9 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	}
 	if logLevel != "" {
 		cfg.General.LogLevel = logLevel
+	}
+	if err := applyPendingRestore(cfg.General.DBPath); err != nil {
+		return fmt.Errorf("applying scheduled database restore: %w", err)
 	}
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {

@@ -60,6 +60,7 @@ type server struct {
 }
 
 func newServer(engine *replay.Engine, token string) *server {
+	applyActiveProfile(engine)
 	s := &server{
 		engine: engine, token: token, mux: http.NewServeMux(), quit: make(chan struct{}),
 		clipDir: defaultReplayClipDir(), launchReplay: launchSparkReplayViewer,
@@ -75,6 +76,9 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/lab/regression", s.handleRegressionLab)
 	s.mux.HandleFunc("GET "+p+"/api/lab/thresholds", s.handleThresholdSpecs)
 	s.mux.HandleFunc("POST "+p+"/api/lab/thresholds/preview", s.handleThresholdPreview)
+	s.mux.HandleFunc("POST "+p+"/api/lab/experiments", s.handleExperimentMatrix)
+	s.mux.HandleFunc("GET "+p+"/api/lab/validation", s.handleValidationDashboard)
+	s.mux.HandleFunc("GET "+p+"/api/lab/synthetic", s.handleSyntheticProbes)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/open-data-folder", s.handleOpenDataFolder)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/clear-clips", s.handleClearClips)
@@ -86,13 +90,20 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/recovery/resume", s.handleRecoveryResume)
 	s.mux.HandleFunc("POST "+p+"/api/recovery/discard", s.handleRecoveryDiscard)
 	s.mux.HandleFunc("GET "+p+"/api/update", s.handleUpdateCheck)
+	s.mux.HandleFunc("GET "+p+"/api/queue", s.handleQueue)
 	s.mux.HandleFunc("POST "+p+"/api/update/open", s.handleOpenUpdate)
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
 	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/comparison", s.handleAnalysisComparison)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/investigation", s.handleInvestigation)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/report", s.handleCaseReport)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/notes", s.handleListNotes)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/notes", s.handleStoreNote)
+	s.mux.HandleFunc("DELETE "+p+"/api/note/{id}", s.handleDeleteNote)
 	s.mux.HandleFunc("GET "+p+"/api/player/{id}/history", s.handlePlayerHistory)
+	s.mux.HandleFunc("GET "+p+"/api/players/compare", s.handlePlayerComparison)
 	s.mux.HandleFunc("POST "+p+"/api/match/{id}/label", s.handleMatchLabel)
 	s.mux.HandleFunc("POST "+p+"/api/event/{id}/review", s.handleEventReview)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/physics/frame/{frame}", s.handlePhysicsFrame)
@@ -108,6 +119,18 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/match/{id}/replay/{event}", s.handleReplayClip)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/evidence/{player}", s.handleMatchEvidence)
 	s.mux.HandleFunc("GET "+p+"/api/case/{id}/evidence", s.handleCaseEvidence)
+	s.mux.HandleFunc("GET "+p+"/api/profiles", s.handleProfiles)
+	s.mux.HandleFunc("POST "+p+"/api/profiles", s.handleStoreProfile)
+	s.mux.HandleFunc("POST "+p+"/api/profiles/{name}/activate", s.handleActivateProfile)
+	s.mux.HandleFunc("DELETE "+p+"/api/profiles/{name}", s.handleDeleteProfile)
+	s.mux.HandleFunc("GET "+p+"/api/filters", s.handleFilters)
+	s.mux.HandleFunc("POST "+p+"/api/filters", s.handleStoreFilter)
+	s.mux.HandleFunc("DELETE "+p+"/api/filters/{name}", s.handleDeleteFilter)
+	s.mux.HandleFunc("GET "+p+"/api/library", s.handleExportLibrary)
+	s.mux.HandleFunc("POST "+p+"/api/library", s.handleImportLibrary)
+	s.mux.HandleFunc("GET "+p+"/api/setup", s.handleSetupDiagnostics)
+	s.mux.HandleFunc("GET "+p+"/api/maintenance/backups", s.handleListBackups)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/restore", s.handleScheduleRestore)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -1088,7 +1111,20 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		// The analysis remains independent of a disconnected upload request,
 		// but the explicit Cancel action can stop it at the next replay tick.
+		queueID := s.runtime.queueStart(entry.File, "upload")
+		started := time.Now()
 		results, err := s.engine.AnalyzeFileAll(analysisCtx, path, force)
+		recordAnalysisResults(analysisCtx, s.engine, results, "upload", time.Since(started))
+		queueErr := err
+		if queueErr == nil {
+			for _, result := range results {
+				if result != nil && result.PersistError() != nil {
+					queueErr = result.PersistError()
+					break
+				}
+			}
+		}
+		s.runtime.queueFinish(queueID, len(results), queueErr)
 		for _, res := range results {
 			entry.Matches = append(entry.Matches, s.matchEntry(analysisCtx, res, entry.File))
 		}

@@ -7,8 +7,19 @@ $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\NEVR-Anticheat'
 $dataRoot = Join-Path $env:LOCALAPPDATA 'NEVR-Anticheat'
 $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
 $desktop = [Environment]::GetFolderPath('Desktop')
+$rollbackRoot = Join-Path $dataRoot 'program-rollbacks'
 
 Get-Process -Name 'nevr-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force
+# Preserve the installed program before replacing it. Evidence is not copied:
+# it already lives separately in $dataRoot and remains compatible/migrated.
+if (Test-Path -LiteralPath (Join-Path $installRoot 'nevr-desktop.exe')) {
+    $snapshot = Join-Path $rollbackRoot ([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Force -Path $snapshot | Out-Null
+    Get-ChildItem -LiteralPath $installRoot -File | Copy-Item -Destination $snapshot -Force
+    if (Test-Path -LiteralPath (Join-Path $installRoot 'configs')) {
+        Copy-Item -LiteralPath (Join-Path $installRoot 'configs') -Destination $snapshot -Recurse -Force
+    }
+}
 New-Item -ItemType Directory -Force -Path $installRoot, $dataRoot, (Join-Path $installRoot 'configs') | Out-Null
 Get-ChildItem -LiteralPath $sourceRoot -Filter '*.exe' -File | Copy-Item -Destination $installRoot -Force
 Get-ChildItem -LiteralPath $sourceRoot -Filter 'README*.txt' -File | Copy-Item -Destination $installRoot -Force
@@ -16,6 +27,8 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'README.md') -Destination $install
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'configs\default.toml') -Destination (Join-Path $installRoot 'configs') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-NEVR.ps1') -Destination $installRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-NEVR.cmd') -Destination $installRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Rollback-NEVR.ps1') -Destination $installRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Rollback-NEVR.cmd') -Destination $installRoot -Force
 
 $dbPath = (Join-Path $dataRoot 'nevr-anticheat.db').Replace('\', '/')
 $configPath = Join-Path $installRoot 'installed.toml'

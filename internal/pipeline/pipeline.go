@@ -104,6 +104,9 @@ type MatchResult struct {
 	EventsRateLimitedByKey map[string]int `json:"events_rate_limited_by_key,omitempty"`
 	// EventsInvalid counts detector emissions dropped by DetectionEvent.Validate.
 	EventsInvalid int `json:"events_invalid"`
+	// TelemetryQuality is assessed before offline detectors run. Low-quality
+	// input can only reduce confidence and force shadow mode.
+	TelemetryQuality TelemetryQualityReport `json:"telemetry_quality"`
 }
 
 // Pipeline orchestrates frame processing through detectors and scoring.
@@ -129,6 +132,7 @@ type Pipeline struct {
 
 	// invalidLogged throttles per (player, reason) warnings across batches.
 	invalidLogged map[string]int
+	quality       TelemetryQualityReport
 }
 
 // SetSkipReset controls whether ProcessMatch skips resetting detector, scorer,
@@ -245,6 +249,14 @@ func (p *Pipeline) ProcessMatch(
 ) (*MatchResult, error) {
 	start := time.Now()
 	result := newMatchResult(matchCtx.MatchID)
+	if !p.skipReset {
+		p.quality = AssessTelemetryQuality(frames, p.cfg)
+	} else {
+		// A live slice is often only one frame. The persistent live validation
+		// path handles it incrementally; never gate it as a short offline file.
+		p.quality = TelemetryQualityReport{Score: 100, Grade: "live", ConfidenceMultiplier: 1}
+	}
+	result.TelemetryQuality = p.quality
 
 	// Offline: every call is a whole match, reset everything. Live: the
 	// first slice only creates the roster; state seeded before it (and by
@@ -411,9 +423,45 @@ func (p *Pipeline) acceptEmissions(events []model.DetectionEvent, fi int, result
 		if p.shadowIDs[ev.DetectorID] {
 			ev.IsShadow = true
 		}
+		if p.quality.ConfidenceMultiplier > 0 && p.quality.ConfidenceMultiplier < 1 {
+			ev.Confidence = model.Clamp(ev.Confidence*p.quality.ConfidenceMultiplier, 0, 1)
+		}
+		if p.quality.Gated {
+			ev.IsShadow = true
+			ev.AutoEnforce = false
+			ev.EnforcementWeight = 0
+		}
+		p.applyLegalContext(&ev)
 		kept = append(kept, ev)
 	}
 	return kept
+}
+
+// applyLegalContext only lowers confidence when the shared motion context
+// offers a plausible legal/tracking explanation. It never suppresses the
+// dedicated playspace-abuse detectors, and never increases a signal.
+func (p *Pipeline) applyLegalContext(ev *model.DetectionEvent) {
+	state := p.players[ev.PlayerID]
+	if state == nil {
+		return
+	}
+	ctx := state.LegalContext
+	multiplier := 1.0
+	switch {
+	case ctx.TrackingLimited:
+		multiplier = 0.55
+	case ctx.PossibleHeadContact && (ev.DetectorID == "THROW_003" || ev.DetectorID == "BIO_001"):
+		multiplier = 0.35
+	case ctx.PossibleSlapOrPush && (ev.DetectorID == "BIO_001" || ev.DetectorID == "BIO_002" || ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		multiplier = 0.6
+	case (ctx.Leaning || ctx.PlayspaceStep) && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		multiplier = 0.65
+	case ctx.Boosting && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		multiplier = 0.75
+	}
+	if multiplier < 1 {
+		ev.Confidence = model.Clamp(ev.Confidence*multiplier*model.Clamp(ctx.Confidence, 0.25, 1), 0, 1)
+	}
 }
 
 // dedupAndEmit folds events emitted at frame fi into the open incidents and
