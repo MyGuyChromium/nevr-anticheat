@@ -47,6 +47,10 @@
 //     Event metadata is snapshotted so labels remain calibration evidence when
 //     re-analysis replaces derived detection_events rows.
 //
+//   - match_labels: human ground truth for the replay as a whole. This is the
+//     calibration-library index (known clean, suspected, or confirmed cheat),
+//     not an enforcement decision.
+//
 // # Timestamps
 //
 // Every timestamp column is TEXT in UTC RFC3339 with second precision and a
@@ -109,6 +113,7 @@ var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
 	[2]string{"review_cases", "timestamp_start"},
 	[2]string{"review_cases", "timestamp_end"},
 	[2]string{"event_reviews", "reviewed_at"},
+	[2]string{"match_labels", "reviewed_at"},
 )
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
@@ -119,7 +124,7 @@ var requiredTables = []string{
 	"review_cases", "moderator_decisions", "player_profiles", "population_baselines",
 	"replay_bundles", "anomaly_clusters", "enforcement_log", "telemetry_frames",
 	"match_contexts", "cross_match_review_cases", "match_ticks", "schema_migrations",
-	"event_reviews",
+	"event_reviews", "match_labels",
 }
 
 var migrations = []MigrationVersion{
@@ -388,6 +393,19 @@ var migrations = []MigrationVersion{
 		);
 		CREATE INDEX IF NOT EXISTS idx_event_reviews_detector ON event_reviews(detector_id, reviewed_at);
 		CREATE INDEX IF NOT EXISTS idx_event_reviews_match ON event_reviews(match_id);`,
+	},
+	{
+		Version: 14, Description: "match-level labels for the replay calibration library",
+		SQL: `CREATE TABLE IF NOT EXISTS match_labels (
+			match_id     TEXT PRIMARY KEY,
+			label        TEXT NOT NULL CHECK (label IN ('known_clean','suspected','confirmed_cheat')),
+			comment      TEXT NOT NULL DEFAULT '',
+			reviewer_id  TEXT NOT NULL,
+			app_version  TEXT NOT NULL DEFAULT '',
+			config_fingerprint TEXT NOT NULL DEFAULT '',
+			reviewed_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_match_labels_label ON match_labels(label, reviewed_at);`,
 	},
 }
 

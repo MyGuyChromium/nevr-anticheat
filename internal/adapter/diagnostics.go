@@ -62,6 +62,10 @@ type DiagnosticReport struct {
 
 	// Per-field presence tracking
 	FieldPresence map[string]*FieldDiagnostic `json:"field_presence"`
+	// UnknownFields counts JSON keys not represented by the adapter schema.
+	// They are informational drift signals: a new Echo/Spark field is not an
+	// error, but it should be reviewed before silently ignoring it forever.
+	UnknownFields map[string]int `json:"unknown_fields,omitempty"`
 	// PresenceTracked is true when at least one snapshot was recorded from raw
 	// JSON (RecordSessionJSON), so FieldDiagnostic.Missing reflects absent keys.
 	PresenceTracked bool `json:"presence_tracked"`
@@ -109,6 +113,7 @@ func NewDiagnosticReport() *DiagnosticReport {
 	return &DiagnosticReport{
 		PlayersSeenIDs:    make(map[string]bool),
 		FieldPresence:     make(map[string]*FieldDiagnostic),
+		UnknownFields:     make(map[string]int),
 		RejectionsByField: make(map[string]int),
 		maxSamples:        3,
 	}
@@ -158,6 +163,21 @@ func (dr *DiagnosticReport) recordBool(name string, value bool, present bool) {
 		fd.Present++
 	default:
 		fd.Inactive++
+	}
+}
+
+func (dr *DiagnosticReport) recordString(name, value string, present bool) {
+	fd := dr.getField(name)
+	switch {
+	case !present:
+		fd.Missing++
+	case strings.TrimSpace(value) == "":
+		fd.Inactive++
+	default:
+		fd.Present++
+		if fd.SampleValue == "" {
+			fd.SampleValue = value
+		}
 	}
 }
 
@@ -297,6 +317,7 @@ func (dr *DiagnosticReport) RecordSessionJSON(data []byte) (*EchoVRSessionRespon
 	}
 	dr.mu.Lock()
 	dr.PresenceTracked = true
+	dr.recordUnknownFields(presence)
 	dr.recordSession(&session, presence)
 	dr.mu.Unlock()
 	return &session, nil
@@ -310,6 +331,7 @@ func (dr *DiagnosticReport) RecordSessionWithJSON(session *EchoVRSessionResponse
 	defer dr.mu.Unlock()
 	if err == nil {
 		dr.PresenceTracked = true
+		dr.recordUnknownFields(presence)
 	} else {
 		presence = nil
 	}
@@ -387,6 +409,8 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 	}
 
 	// Track scores
+	dr.recordString("sessionid", raw.SessionID, presence.hasTop("sessionid"))
+	dr.recordString("game_status", raw.GameStatus, presence.hasTop("game_status"))
 	dr.recordFloat("blue_points", float64(raw.BluePoints), presence.hasTop("blue_points"))
 	dr.recordFloat("orange_points", float64(raw.OrangePoints), presence.hasTop("orange_points"))
 	dr.recordFloat("game_clock", raw.GameClock, presence.hasTop("game_clock"))
@@ -437,6 +461,7 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 
 			// Position
 			dr.recordVec3("position", p.Body.Position, has("body.position"))
+			dr.recordVec3("velocity", p.Velocity, has("velocity"))
 
 			// Direction vectors
 			dr.recordVec3("forward", p.Body.Forward, has("body.forward"))
@@ -483,6 +508,8 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 			dr.recordBool("invulnerable", p.Invulnerable, has("invulnerable"))
 			dr.recordBool("blocking", p.Blocking, has("blocking"))
 			dr.recordBool("possession", p.Possession, has("possession"))
+			dr.recordString("holding_left", p.HoldingLeft, has("holding_left"))
+			dr.recordString("holding_right", p.HoldingRight, has("holding_right"))
 
 			if p.HasDisc() {
 				possessionHolders++

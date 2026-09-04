@@ -253,6 +253,35 @@ func (s *Store) GetMatchRawTicks(ctx context.Context, matchID string, fromIdx, t
 	return out, nil
 }
 
+// GetAllMatchRawTicks returns every original source tick for a match. Unlike a
+// range based on normalized frame indices, this also retains raw snapshots
+// whose player rows were all rejected or absent; archive callers must use it.
+func (s *Store) GetAllMatchRawTicks(ctx context.Context, matchID string) (map[int]string, error) {
+	out := make(map[int]string)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT frame_index, raw_json FROM match_ticks WHERE match_id = ? ORDER BY frame_index`, matchID)
+	if err != nil {
+		return nil, err
+	}
+	if err := collectTicks(rows, out); err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT frame_index, raw_json FROM telemetry_frames
+		 WHERE match_id = ? AND raw_json IS NOT NULL
+		 GROUP BY frame_index ORDER BY frame_index`, matchID)
+	if err != nil {
+		return nil, err
+	}
+	if err := collectTicks(rows, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func collectTicks(rows *sql.Rows, out map[int]string) error {
 	defer rows.Close()
 	for rows.Next() {
