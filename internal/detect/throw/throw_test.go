@@ -200,50 +200,22 @@ func TestThrow001_ArtifactAboveTwiceCapIsReportedNotDropped(t *testing.T) {
 	if !ok || !evd.ArtifactSuspected || evd.ArtifactCount != 1 {
 		t.Fatalf("evidence should flag the artifact: %+v", ev.Evidence)
 	}
-	if len(d.subCapSpeeds["p1"]) != 0 {
-		t.Fatal("artifact releases must not enter the cap-riding statistic")
-	}
 	d.Evaluate(mc, withThrow("p1", 200, 60.0, 0), 200)
 	if d.artifactCounts["p1"] != 2 {
 		t.Fatalf("artifact count %d want 2", d.artifactCounts["p1"])
 	}
 }
 
-func TestThrow001_CapRidingOncePerWindowAndSubCapOnly(t *testing.T) {
-	d := NewThrow001(map[string]any{"cap_riding_cooldown_frames": 900})
+func TestThrow001_RepeatedNearCapThrowsRemainLegal(t *testing.T) {
+	d := NewThrow001(nil)
 	mc := testCtx()
-	var fired []int
-	frame := 0
-	for i := 0; i < 12; i++ {
-		frame = i * 30
-		// 18.5 m/s: under the 18.9 effective cap, within 2 m/s of it, zero spread.
-		events := d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame)
-		for _, ev := range events {
-			if ev.CausalKey.AnomalyType == "cap_riding" {
-				fired = append(fired, frame)
-				if ev.CausalKey.FrameStart != 0 {
-					t.Errorf("cap-riding causal key should start at the window's first throw, got %d", ev.CausalKey.FrameStart)
-				}
-			}
+	for i := 0; i < 100; i++ {
+		frame := i * 30
+		// Repeatability close to the cap can be legitimate player skill. A
+		// sub-cap release must never become a detection through repetition.
+		if events := d.Evaluate(mc, withThrow("p1", frame, 18.89, 0), frame); len(events) != 0 {
+			t.Fatalf("legal near-cap throw %d produced %+v", i, events)
 		}
-	}
-	if len(fired) != 1 || fired[0] != 7*30 {
-		t.Fatalf("expected exactly one cap-riding event on the 8th throw, got %v", fired)
-	}
-	// Over-cap throws do not feed the sub-cap statistic.
-	before := len(d.subCapSpeeds["p1"])
-	events := d.Evaluate(mc, withThrow("p1", frame+30, 25.0, 0), frame+30)
-	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" {
-		t.Fatalf("over-cap throw should produce a disc_speed event, got %+v", events)
-	}
-	if len(d.subCapSpeeds["p1"]) != before {
-		t.Fatal("over-cap throw leaked into the cap-riding statistic")
-	}
-	// After the cooldown a new event may fire again.
-	frame += 1000
-	events = d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame)
-	if len(events) != 1 || events[0].CausalKey.AnomalyType != "cap_riding" {
-		t.Fatalf("expected cap-riding after cooldown, got %+v", events)
 	}
 }
 
@@ -271,24 +243,6 @@ func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
 	}
 	if events[0].AutoEnforce {
 		t.Fatal("disc_speed_artifact must never carry AutoEnforce")
-	}
-	// Cap riding (statistical, sub-cap) never carries AutoEnforce either.
-	frame := 400
-	var capEv *model.DetectionEvent
-	for i := 0; i < capRidingMinThrows && capEv == nil; i++ {
-		frame += 10
-		for _, ev := range d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame) {
-			if ev.CausalKey.AnomalyType == "cap_riding" {
-				e := ev
-				capEv = &e
-			}
-		}
-	}
-	if capEv == nil {
-		t.Fatal("expected a cap_riding event after 8 tight sub-cap throws")
-	}
-	if capEv.AutoEnforce {
-		t.Fatal("cap_riding must never carry AutoEnforce")
 	}
 }
 

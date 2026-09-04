@@ -91,7 +91,7 @@ func TestOverlay_ParamsOnlySectionDoesNotDisable(t *testing.T) {
 	if dc.Params["base_tolerance"] != 2.5 {
 		t.Fatalf("override not applied: %v", dc.Params["base_tolerance"])
 	}
-	if dc.Params["ping_tolerance_scalar"] != 0.0 || dc.Params["cap_riding_cooldown_frames"] != 900 {
+	if dc.Params["ping_tolerance_scalar"] != 0.0 {
 		t.Fatalf("sibling params lost: %v", dc.Params)
 	}
 	// The loaded map must be independent of the defaults returned by later calls.
@@ -204,11 +204,11 @@ func TestOverlay_AliasIsNormalizedAndWarns(t *testing.T) {
 }
 
 func TestOverlay_RemovedKeyWarnsAndIsDropped(t *testing.T) {
-	cfg := mustLoad(t, "[detector.THROW_001.params]\nspeed_threshold = 20.0\n[detector.MOV_002.params]\nmax_frame_gap_ms = 200.0\n")
+	cfg := mustLoad(t, "[detector.THROW_001.params]\nspeed_threshold = 20.0\ncap_riding_cooldown_frames = 900\n[detector.MOV_002.params]\nmax_frame_gap_ms = 200.0\n")
 	if _, ok := cfg.Detectors["THROW_001"].Params["speed_threshold"]; ok {
 		t.Fatal("removed key kept")
 	}
-	if !hasWarning(cfg, "THROW_001.params.speed_threshold") || !hasWarning(cfg, "MOV_002.params.max_frame_gap_ms") {
+	if !hasWarning(cfg, "THROW_001.params.speed_threshold") || !hasWarning(cfg, "THROW_001.params.cap_riding_cooldown_frames") || !hasWarning(cfg, "MOV_002.params.max_frame_gap_ms") {
 		t.Fatalf("missing removed-key warnings: %v", cfg.Warnings)
 	}
 	if cfg.Detectors["MOV_002"].Params["max_frame_gap"] != 5 {

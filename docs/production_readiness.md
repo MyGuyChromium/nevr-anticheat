@@ -46,7 +46,7 @@
 
 | Detector | Status | Safe for Shadow? | Safe to score? | Primary Risk |
 |----------|--------|-------------------|----------------|-------------|
-| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until replay telemetry is validated | The 18.9 m/s physics cap is real. Release speed comes directly from `disc.velocity`, so default base/ping padding is zero. Evidence includes player speed, movement aligned with the throw, and player-relative disc speed. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2 and excluded from cap-riding; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. |
+| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until replay telemetry is validated | The 18.9 m/s physics cap is real. Release speed comes directly from `disc.velocity`, so default base/ping padding is zero. Evidence includes player speed, movement aligned with the throw, and player-relative disc speed. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. Repeated legal near-cap throws do not produce an event. |
 | THROW_002 | **UNVERIFIED** | Observation only, after the pre-release snapshot is confirmed non-identical | No | v2.0.0 single-delta approach, needs real-data calibration. The old BROKEN mechanism (multi-frame acceleration over pre-release snapshots that carried identical velocities in every real replay) was **removed** in v2.0.0 and replaced by a single delta: last pre-release disc speed vs release speed (`max_speed_delta` 22 m/s), with snapshots now excluding the release frame. The new mechanism is **unvalidated**: nobody has yet shown on a real replay that the pre-release snapshot carries a genuine, non-identical disc velocity. Ships disabled. |
 | THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed. Frame-of-reference guard skips throws where body speed ≥ hand speed. A head-proximity guard skips a first free-disc sample that may already include a headbutt, rather than treating its post-contact velocity as a wrist-release angle. |
 | THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally; with the 1e-8 threshold even varied human throws fire. Degenerate dimensions are now excluded from the product, which removes one collapse mechanism but does not make the threshold meaningful. |
@@ -159,7 +159,7 @@ Telemetry is never pruned automatically; `nevr-server` prunes detection events a
 | THROW_008 | ~118 | Uses game distance-from-thrower; first 3 frames not judged. |
 | MOV_002 | ~91 | Jumps > 12 m treated as resets; distinct-player cluster suppression; goal cooldown. |
 | BIO_001 | ~80 | 3-frame sustained floor; note the 15 Hz saturation. |
-| THROW_001 | ~60 | dt gate removed; releases > 2× cap (37.8 m/s) now reported as `disc_speed_artifact` at severity 0.2 instead of being dropped; cap-riding once per 900 frames. |
+| THROW_001 | ~60 | dt gate removed; releases > 2× cap (37.8 m/s) now reported as `disc_speed_artifact` at severity 0.2 instead of being dropped. The false-positive-prone cap-riding heuristic has been removed. |
 | STATE_004 | ~54 | Escalating re-fire with tolerance. |
 
 Key conclusions that still hold: THROW_001's over-cap events (above the 18.9 m/s engine cap) are genuinely impossible *if the velocity is real*; the 2×-cap artifacts are now visible rather than hidden so that question can be answered. One match (`6BEF4CA8`) produced ~90 % of all events; a broader sample is required.

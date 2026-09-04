@@ -522,10 +522,10 @@
         </div>
         <div class="controls">
           <div class="check">
-            <input type="checkbox" id="force">
+            <input type="checkbox" id="force" checked disabled>
             <div>
-              <label for="force">Re-analyze stored matches</label>
-              <p class="help">Replaces earlier derived events and scores. Source telemetry remains preserved.</p>
+              <label for="force">Always re-analyze stored matches</label>
+              <p class="help">Every upload uses the current detectors and replaces earlier derived events and scores. Raw source telemetry and human labels remain preserved.</p>
             </div>
           </div>
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
@@ -544,7 +544,7 @@
 
   <section class="block" aria-labelledby="h-flagged">
     <div class="section-kicker"><span>03</span> Human review queue</div>
-    <h2 id="h-flagged">Flagged players</h2>
+    <h2 id="h-flagged">Players needing review</h2>
     <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-observations">
@@ -645,13 +645,10 @@
   let prefs = {};
   try { prefs = JSON.parse(localStorage.getItem(prefKey) || '{}') || {}; } catch (_) {}
   const savePrefs = () => { try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {} };
-  $('force').checked = !!prefs.force;
   $('history-search').value = prefs.historySearch || '';
   $('history-sort').value = prefs.historySort || 'newest';
   $('history-flagged').checked = !!prefs.historyFlagged;
   $('history-label').value = prefs.historyLabel || '';
-  $('force').addEventListener('change', () => { prefs.force = $('force').checked; savePrefs(); });
-
   const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
   async function getJSON(url) {
     let r;
@@ -707,6 +704,20 @@
     return `<button class="btn btn-sm" data-replay-match="${esc(m.match_id)}" data-replay-event="${esc(event.event_id)}">${esc(label)}</button>`;
   }
 
+  function playerSignalBadge(p, filteredCounts) {
+    const scored = filteredCounts ? filteredCounts.scored : p.detections;
+    const shadow = filteredCounts ? filteredCounts.shadow : p.shadow_detections;
+    if (scored > 0) {
+      return p.level === 'clean'
+        ? '<span class="tag warn" title="A scored signal exists but its total remains below the first suspicion threshold">below threshold</span>'
+        : badge(p.level);
+    }
+    if (shadow > 0) {
+      return '<span class="tag warn" title="Detected in observation-only mode; this is evidence to review, not a cheating verdict">shadow review</span>';
+    }
+    return '<span class="tag ok">no signals</span>';
+  }
+
   function playersTable(m, detectorID = '') {
     if (!m.players.length) return '<p class="empty">The replay carried no players on the blue or orange team.</p>';
     const cap = Math.max((m.levels && m.levels.action_worthy) || 0, ...m.players.map((p) => p.score || 0), 1);
@@ -719,14 +730,15 @@
     }
     const rows = m.players.slice().filter((p) => !detectorID || counts.has(p.player_id)).sort((a, b) => (b.score || 0) - (a.score || 0));
     if (!rows.length) return `<p class="empty">No player triggered ${esc(detectorID)} in this match.</p>`;
-    return `<table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th><th class="num" title="Scores always remain full-match totals">Score${detectorID ? ' (overall)' : ''}</th><th>Level</th>
+    return `<table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th><th class="num" title="Scores always remain full-match totals">Score${detectorID ? ' (overall)' : ''}</th><th>Signal status</th>
       <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th><th>Evidence</th></tr></thead><tbody>` +
       rows.map((p) => { const c = counts.get(p.player_id); return `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${fmtInt(p.frames)}</td>
-        <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${badge(p.level)}</td>
+        <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${playerSignalBadge(p, c)}</td>
         <td class="num">${fmtInt(c ? c.scored : p.detections)}</td><td class="num dim">${fmtInt(c ? c.shadow : p.shadow_detections)}</td>
         <td>${detectorID ? `${esc(detectorID)} (${fmtInt(c.scored + c.shadow)})` : (p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>')}</td>
         <td>${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}</td></tr>`; }).join('') + '</tbody></table>' +
-      (detectorID ? '<p class="summary-note">Detection counts and evidence follow this filter. Suspicion scores and levels remain full-match totals.</p>' : '');
+      '<p class="summary-note"><b>No signals</b> means no detector fired. <b>Shadow review</b> means a detector observed something but deliberately added zero score. Neither status is a verified cheating verdict.</p>' +
+      (detectorID ? '<p class="summary-note">Detection counts and evidence follow this filter. Suspicion scores remain full-match totals.</p>' : '');
   }
 
   function assessmentFilter(m, idx) {
@@ -738,7 +750,7 @@
     }
     const options = [...counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, item]) =>
       `<option value="${esc(id)}">${esc(id)} — ${esc(item.name)} (${fmtInt(item.count)})</option>`).join('');
-    return `<div class="assessment-controls"><label for="cheat-filter-${idx}">Filter by cheat</label>
+    return `<div class="assessment-controls"><label for="cheat-filter-${idx}">Filter by detector</label>
       <select id="cheat-filter-${idx}" data-cheat-filter="${idx}" ${counts.size ? '' : 'disabled'}><option value="">All detectors (${fmtInt((m.events || []).length)})</option>${options}</select>
       <span class="assessment-count" data-assessment-count>${fmtInt((m.events || []).length)} shown</span></div>`;
   }
@@ -933,7 +945,7 @@
       ${calibrationControls(m)}
       ${matchReport(m)}
       <section class="assessment" data-assessment="${idx}">
-        <div class="assessment-head"><h3>Anticheat assessment</h3>${assessmentFilter(m, idx)}</div>
+        <div class="assessment-head"><h3>Anticheat signals</h3>${assessmentFilter(m, idx)}</div>
         <div class="assessment-players" data-assessment-players>${playersTable(m)}</div>
         <details class="sub" ${m.events.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Detections<span class="count" data-detection-count>${fmtInt(m.events.length)}</span></h3></summary><div class="events">${eventsTable(m, idx, false)}</div></details>
       </section>
@@ -965,7 +977,7 @@
         <div><h4>First 160 bytes</h4><pre>${esc(d.head_text) || '<span class="muted">(empty)</span>'}</pre><pre>${esc(d.head_hex) || '<span class="muted">(empty)</span>'}</pre></div>
         <div class="full"><button class="btn btn-text btn-sm" data-copy="${n}">Copy this diagnostic</button></div></div>`;
     } else if (res.already_stored) {
-      body = `<p class="muted">Tick “Re-analyze matches that are already stored” to replace its analysis, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
+      body = `<p class="muted">This direct API request did not enable replacement. Upload through the desktop page to re-analyze automatically, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
     }
     return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
       <p class="err">${esc(res.error)}</p>${body}</section>`;
@@ -992,7 +1004,6 @@
   let busy = false;
   let currentXHR = null;
   let queueStopped = false;
-  let queueForce = false;
   let queue = [];
   let queuePanel = null;
   const drop = $('drop');
@@ -1022,8 +1033,7 @@
   }
   function processQueueItem(item, i) {
     return new Promise((resolve) => {
-      const fd = new FormData(); fd.append('files', item.file, item.file.name);
-      if (queueForce) fd.append('force', '1');
+      const fd = new FormData(); fd.append('files', item.file, item.file.name); fd.append('force', '1');
       const xhr = currentXHR = new XMLHttpRequest();
       xhr.open('POST', 'api/analyze'); xhr.responseType = 'json';
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
@@ -1051,7 +1061,7 @@
   }
   async function runQueue(indices) {
     if (busy) return;
-    busy = true; queueStopped = false; queueForce = $('force').checked; $('force').disabled = true; drop.setAttribute('aria-busy', 'true');
+    busy = true; queueStopped = false; drop.setAttribute('aria-busy', 'true');
     $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Cancel queue</button>';
     const totals = { analyzed: 0, stored: 0, failed: 0, cancelled: 0 };
     for (const i of indices) {
@@ -1070,7 +1080,7 @@
         setQueueState(i, counts.analyzed ? 'analyzed' : counts.failed ? 'failed' : 'already stored', counts.failed ? 'bad' : 'ok', !!counts.failed);
       }
     }
-    busy = false; $('force').disabled = false; drop.removeAttribute('aria-busy');
+    busy = false; drop.removeAttribute('aria-busy');
     $('files').value = ''; $('folder').value = '';
     const failed = queue.filter((item) => item.state === 'failed' || item.state === 'cancelled').length;
     $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / cancelled</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
@@ -1119,7 +1129,7 @@
       const f = await getJSON('api/flagged');
       el.className = ''; el.removeAttribute('aria-busy');
       if (!f.single_match.length && !f.cross_match.length) {
-        el.innerHTML = '<p class="empty">No player is flagged. A case appears here when a player reaches the review threshold in one match, or accumulates suspicion across several.</p>';
+        el.innerHTML = '<p class="empty">No player currently needs review. A case appears here when scored signals reach the review threshold in one match or accumulate across several. A case is not a cheating verdict.</p>';
         return;
       }
       let html = '';

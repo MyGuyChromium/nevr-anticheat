@@ -299,7 +299,7 @@ func AllScenarios() []Scenario {
 		{Name: "ExtendedReach", Frames: fb().ExtendedReach(100)},
 		{Name: "AimbotThrows", Frames: fb().AimbotThrows(8)},
 		{Name: "ArtifactThrows", Frames: fb().ArtifactThrows(3)},
-		{Name: "CapRidingThrows", Frames: fb().CapRidingThrows(10)},
+		{Name: "NearCapThrows", Frames: fb().NearCapThrows(10)},
 		{Name: "PrecisionAimbot", Frames: fb().PrecisionAimbot(10)},
 		{Name: "MagnetismCheat", Frames: fb().MagnetismCheat(4)},
 		{Name: "AcceleratingDisc", Frames: fb().AcceleratingDisc(3)},

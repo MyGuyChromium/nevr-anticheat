@@ -263,8 +263,8 @@ func (fb *FrameBuilder) NormalThrowSequence(nThrows int) []model.PlayerTelemetry
 }
 
 // EliteThrowSequence generates top-tier throws at 15-17 m/s (under the
-// 18.9 m/s cap and outside the cap-riding band), 2.5-4 degrees off the
-// goal with fast hands. Must stay clean on the production-enabled set.
+// 18.9 m/s cap), 2.5-4 degrees off the goal with fast hands. Must stay clean
+// on the production-enabled set.
 func (fb *FrameBuilder) EliteThrowSequence(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {
@@ -320,10 +320,10 @@ func (fb *FrameBuilder) ArtifactThrows(nThrows int) []model.PlayerTelemetryFrame
 	return frames
 }
 
-// CapRidingThrows generates sub-cap releases pinned at 17.9-18.7 m/s: the
-// mean sits within 2 m/s of the effective cap with a spread below 1 m/s,
-// which THROW_001 reports once per cooldown as cap riding after 8 throws.
-func (fb *FrameBuilder) CapRidingThrows(nThrows int) []model.PlayerTelemetryFrame {
+// NearCapThrows generates legal sub-cap releases pinned at 17.9-18.7 m/s.
+// It is a regression fixture: consistency close to the cap is player skill,
+// not evidence of a modified client.
+func (fb *FrameBuilder) NearCapThrows(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {
 		ft := float64(t)

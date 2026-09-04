@@ -17,28 +17,10 @@ const (
 	artifactCapMultiple = 2.0
 	artifactSeverity    = 0.2
 
-	// Cap-riding statistic: sub-cap throws only.
-	capRidingHistory   = 50
-	capRidingMinThrows = 8
-	capRidingSeverity  = 0.3
-	// capRidingMeanMargin / capRidingMaxStddev: mean within this many m/s of
-	// the effective cap with a spread below this stddev.
-	capRidingMeanMargin = 2.0
-	capRidingMaxStddev  = 1.0
-	// defaultCapRidingCooldownFrames: at most one cap-riding event per
-	// player per cooldown window (~60 s at 15 fps).
-	defaultCapRidingCooldownFrames = 900
-
 	// autoEnforceMinExcess: over-cap margin (m/s) required before an event
 	// may carry AutoEnforce (only when the detector's auto-enforce is on).
 	autoEnforceMinExcess = 5.0
 )
-
-// throwSample is one release used by the cap-riding statistic.
-type throwSample struct {
-	speed float64
-	frame int
-}
 
 // Throw001 detects impossible disc release velocities (THROW_001).
 //
@@ -48,21 +30,17 @@ type throwSample struct {
 // detector does not depend on the sampling interval.
 type Throw001 struct {
 	detect.BaseDetector
-	baseTolerance           float64
-	pingToleranceScalar     float64
-	maxSpeedRatio           float64
-	sigmoidSteepness        float64
-	capRidingCooldownFrames int
-
-	subCapSpeeds   map[string][]throwSample // per-player sub-cap release history
-	lastCapRiding  map[string]int           // per-player frame of last cap-riding event
-	artifactCounts map[string]int           // per-player count of >2x-cap releases
+	baseTolerance       float64
+	pingToleranceScalar float64
+	maxSpeedRatio       float64
+	sigmoidSteepness    float64
+	artifactCounts      map[string]int // per-player count of >2x-cap releases
 }
 
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.4.0",
+			DetectorID: "THROW_001", DetectorVersion: "1.5.0",
 			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
@@ -71,19 +49,16 @@ func NewThrow001(params map[string]any) *Throw001 {
 			// config wiring can turn it on via SetAutoEnforce.
 			IsAutoEnforce: false,
 		},
-		baseTolerance:           detect.GetFloat(params, "base_tolerance", 0.0),
-		pingToleranceScalar:     detect.GetFloat(params, "ping_tolerance_scalar", 0.0),
-		maxSpeedRatio:           detect.GetFloat(params, "max_speed_ratio", 3.0),
-		sigmoidSteepness:        detect.GetFloat(params, "sigmoid_steepness", 2.0),
-		capRidingCooldownFrames: detect.GetInt(params, "cap_riding_cooldown_frames", defaultCapRidingCooldownFrames),
+		baseTolerance:       detect.GetFloat(params, "base_tolerance", 0.0),
+		pingToleranceScalar: detect.GetFloat(params, "ping_tolerance_scalar", 0.0),
+		maxSpeedRatio:       detect.GetFloat(params, "max_speed_ratio", 3.0),
+		sigmoidSteepness:    detect.GetFloat(params, "sigmoid_steepness", 2.0),
 	}
 	d.Reset()
 	return d
 }
 
 func (d *Throw001) Reset() {
-	d.subCapSpeeds = make(map[string][]throwSample)
-	d.lastCapRiding = make(map[string]int)
 	d.artifactCounts = make(map[string]int)
 }
 
@@ -92,7 +67,6 @@ func (d *Throw001) Configure(params map[string]any) error {
 	d.pingToleranceScalar = detect.GetFloat(params, "ping_tolerance_scalar", d.pingToleranceScalar)
 	d.maxSpeedRatio = detect.GetFloat(params, "max_speed_ratio", d.maxSpeedRatio)
 	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
-	d.capRidingCooldownFrames = detect.GetInt(params, "cap_riding_cooldown_frames", d.capRidingCooldownFrames)
 	return nil
 }
 
@@ -178,10 +152,8 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 
 		if speedExcess <= 0 {
-			// Sub-cap release: feed the cap-riding statistic only.
-			if ev := d.checkCapRiding(matchCtx, ps, t, frameIdx, effectiveCap, pingTolerance, evidence); ev != nil {
-				events = append(events, *ev)
-			}
+			// A repeatable near-cap throw is legal skill, not evidence of a
+			// modified client. Only an actual over-cap release is observable.
 			continue
 		}
 
@@ -228,45 +200,4 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		events = append(events, ev)
 	}
 	return events
-}
-
-// checkCapRiding records a sub-cap release and emits at most one cap-riding
-// event per player per cooldown window when the recent sub-cap releases sit
-// tightly just under the effective cap.
-func (d *Throw001) checkCapRiding(matchCtx *model.MatchContext, ps *model.PlayerState, t *model.ThrowEvent, frameIdx int, effectiveCap, pingTolerance float64, evidence model.ThrowEvidence) *model.DetectionEvent {
-	pid := ps.PlayerID
-	hist := append(d.subCapSpeeds[pid], throwSample{speed: t.ReleaseSpeed, frame: frameIdx})
-	if len(hist) > capRidingHistory {
-		hist = hist[len(hist)-capRidingHistory:]
-	}
-	d.subCapSpeeds[pid] = hist
-	if len(hist) < capRidingMinThrows {
-		return nil
-	}
-	speeds := make([]float64, len(hist))
-	for i, s := range hist {
-		speeds[i] = s.speed
-	}
-	mean := model.Mean(speeds)
-	stddev := model.StdDev(speeds)
-	if mean <= effectiveCap-capRidingMeanMargin || stddev >= capRidingMaxStddev {
-		return nil
-	}
-	if last, ok := d.lastCapRiding[pid]; ok && frameIdx-last < d.capRidingCooldownFrames {
-		return nil
-	}
-	d.lastCapRiding[pid] = frameIdx
-
-	throwCountFactor := math.Min(1.0, float64(len(hist))/float64(capRidingMinThrows*2))
-	ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, capRidingSeverity, capRidingSeverity*throwCountFactor,
-		evidence,
-		fmt.Sprintf("cap_riding: mean=%.1f stddev=%.2f over %d sub-cap throws", mean, stddev, len(hist)),
-		fmt.Sprintf("disc_speed: variance expected near cap %.1f m/s", effectiveCap),
-		model.CausalKey{PlayerID: pid, FrameStart: hist[0].frame, FrameEnd: frameIdx, AnomalyType: "cap_riding"},
-	)
-	// Cap riding is a statistical hint on sub-cap throws; it never carries
-	// AutoEnforce regardless of the detector's auto-enforce flag.
-	ev.AutoEnforce = false
-	ev.Attribution = &t.Attribution
-	return &ev
 }
