@@ -91,11 +91,11 @@ func TestOverlay_ParamsOnlySectionDoesNotDisable(t *testing.T) {
 	if dc.Params["base_tolerance"] != 2.5 {
 		t.Fatalf("override not applied: %v", dc.Params["base_tolerance"])
 	}
-	if dc.Params["ping_tolerance_scalar"] != 5.0 || dc.Params["cap_riding_cooldown_frames"] != 900 {
+	if dc.Params["ping_tolerance_scalar"] != 0.0 || dc.Params["cap_riding_cooldown_frames"] != 900 {
 		t.Fatalf("sibling params lost: %v", dc.Params)
 	}
 	// The loaded map must be independent of the defaults returned by later calls.
-	if DefaultConfig().Detectors["THROW_001"].Params["base_tolerance"] != 1.3 {
+	if DefaultConfig().Detectors["THROW_001"].Params["base_tolerance"] != 0.0 {
 		t.Fatal("overlay mutated the shared defaults")
 	}
 }
@@ -375,7 +375,7 @@ func TestPhysicsConstants(t *testing.T) {
 		t.Fatalf("goal_z = %v", got.GoalZ)
 	}
 	cfg = mustLoad(t, "[physics]\ngoal_z = 40\n")
-	if cfg.Physics.Constants().GoalZ != 40 || cfg.Physics.Constants().DiscSpeedCap != 18.7 {
+	if cfg.Physics.Constants().GoalZ != 40 || cfg.Physics.Constants().DiscSpeedCap != 18.9 {
 		t.Fatalf("goal_z override wrong: %+v", cfg.Physics.Constants())
 	}
 	if !hasWarning(cfg, "[physics] differs") {

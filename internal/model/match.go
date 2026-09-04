@@ -66,10 +66,10 @@ type PhysicsConstants struct {
 // DefaultPhysics returns the default physics constants for Echo VR.
 func DefaultPhysics() PhysicsConstants {
 	return PhysicsConstants{
-		DiscSpeedCap:   18.7,
+		DiscSpeedCap:   18.9,
 		BoostSpeedCap:  5.0,
 		MaxPlayerSpeed: 55.0,
-		MaxThrowSpeed:  20.0,
+		MaxThrowSpeed:  18.9,
 		StunDuration:   3.0,
 		ShieldCooldown: 5.0,
 		ImmunityWindow: 1.5,

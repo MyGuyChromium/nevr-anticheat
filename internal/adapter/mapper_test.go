@@ -256,6 +256,25 @@ func TestMapper_DiscSharedAcrossFrames(t *testing.T) {
 	}
 }
 
+func TestMapper_HoldingFieldsOverrideStalePossession(t *testing.T) {
+	p := testPlayer("Thrower", 1, [3]float64{1, 1.6, -10})
+	p.Possession = true
+	p.HoldingLeft, p.HoldingRight = "none", "none"
+	r := NewMapper().MapSessionAt(twoTeamSession("m", []EchoVRPlayer{p}, nil), time.Unix(0, 0))
+	if len(r.Frames) != 1 {
+		t.Fatalf("frames=%d, want 1", len(r.Frames))
+	}
+	if r.Frames[0].HasPossession || r.Frames[0].Disc.IsHeld {
+		t.Fatalf("explicit empty hands must override stale possession: %+v", r.Frames[0])
+	}
+
+	p.HoldingRight = "disc"
+	r = NewMapper().MapSessionAt(twoTeamSession("m", []EchoVRPlayer{p}, nil), time.Unix(0, 0))
+	if !r.Frames[0].HasPossession || !r.Frames[0].Disc.IsHeld || r.Frames[0].Disc.PossessorID != "echovr:1" {
+		t.Fatalf("explicit disc hand was not mapped as possession: %+v", r.Frames[0])
+	}
+}
+
 // F97: lost hand tracking is the zero quaternion, and all three vectors are required.
 func TestMapper_LostHandTrackingIsZeroQuat(t *testing.T) {
 	p := testPlayer("A", 1, [3]float64{1, 1.6, -10})

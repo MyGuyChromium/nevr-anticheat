@@ -227,7 +227,7 @@ func TestConfigDocs_ShadowDeployLoadsAndIsShadowOnly(t *testing.T) {
 		t.Errorf("shadow overrides not applied: %+v %+v", cfg.General, cfg.Pipeline)
 	}
 	// Inherited from the defaults.
-	if cfg.Scoring.ReviewThreshold != 60 || cfg.Physics.DiscSpeedCap != 18.7 || cfg.Pipeline.HistoryWindow != 30 {
+	if cfg.Scoring.ReviewThreshold != 60 || cfg.Physics.DiscSpeedCap != 18.9 || cfg.Pipeline.HistoryWindow != 30 {
 		t.Errorf("defaults not inherited: %+v %+v", cfg.Scoring, cfg.Pipeline)
 	}
 }

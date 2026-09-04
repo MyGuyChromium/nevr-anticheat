@@ -33,7 +33,7 @@ db_path     = "./nevr-ac-shadow.db"   # separate DB for the shadow deployment
 [pipeline]
 max_events_per_player_per_detector = 50   # lower than default to bound noise from a spamming detector
 
-# [physics] and [scoring] are inherited from the defaults (18.7 m/s disc cap,
+# [physics] and [scoring] are inherited from the defaults (18.9 m/s disc cap,
 # review at 60 = high_risk). Nothing here is scored, so the scoring keys only
 # matter for the offline `analyze` runs used to check a detector's behaviour.
 
@@ -42,7 +42,7 @@ max_events_per_player_per_detector = 50   # lower than default to bound noise fr
 # ==============================================================================
 
 [detector.THROW_001]
-# Impossible Release Velocity: engine cap 18.7 m/s; tolerances UNVERIFIED.
+# Impossible Release Velocity: engine cap 18.9 m/s; direct velocity, no default tolerance.
 enabled            = true
 enforcement_weight = 0.8
 auto_enforce       = false

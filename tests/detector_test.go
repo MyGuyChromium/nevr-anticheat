@@ -44,11 +44,11 @@ func TestDetectors(t *testing.T) {
 			category: "threshold_boundary",
 			detector: configuredDetector(throw.NewThrow001(nil), cfg, "THROW_001"),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
-				// Effective cap at 0 ms ping: 18.7 (physics) + 1.3 (base_tolerance) = 20.0.
+				// Effective cap is the 18.9 m/s engine cap; direct disc velocity does not need ping padding.
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				te := testutil.MakeThrowEvent("p1", 100, 19.9, 0.0) // 0.1 m/s under the effective cap
+				te := testutil.MakeThrowEvent("p1", 100, 18.9, 0.0) // exactly at the effective cap
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
@@ -62,7 +62,7 @@ func TestDetectors(t *testing.T) {
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				te := testutil.MakeThrowEvent("p1", 100, 20.1, 0.0) // 0.1 m/s over the effective cap
+				te := testutil.MakeThrowEvent("p1", 100, 18.91, 0.0) // above the effective cap
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
@@ -73,17 +73,16 @@ func TestDetectors(t *testing.T) {
 			category: "laggy_data",
 			detector: configuredDetector(throw.NewThrow001(nil), cfg, "THROW_001"),
 			setupMatch: func() (*model.MatchContext, map[string]*model.PlayerState, int) {
-				// 300 ms ping adds 0.3 * 5.0 = 1.5 m/s of tolerance: 21.0 m/s
-				// is over the 0 ms cap (20.0) but under the laggy cap (21.5).
+				// Ping does not enlarge a cap applied to game-reported disc.velocity.
 				mc := testutil.NewMatchContext()
 				ps := testutil.NewPlayerState("p1")
 				ps.HasDisc = true
-				te := testutil.MakeThrowEvent("p1", 100, 21.0, 0.0)
+				te := testutil.MakeThrowEvent("p1", 100, 19.91, 0.0)
 				ps.LastThrow = &te
 				ps.EstimatedPingMs = 300.0
 				return mc, map[string]*model.PlayerState{"p1": ps}, 100
 			},
-			wantEvents: false,
+			wantEvents: true,
 		},
 		{
 			name:     "THROW_001/clear_violation",

@@ -15,7 +15,7 @@
 | LeftHandPosition / RightHandPosition | `/session` → `lhand.pos` / `rhand.pos` | Available |
 | LeftHandRotation / RightHandRotation | `/session` → `lhand`/`rhand` direction vectors | Available, converted; handedness convention **unconfirmed** |
 | IsStunned | `/session` → `stunned` | Available |
-| HasPossession | `/session` → `possession` | Available |
+| HasPossession | `/session` → `holding_left` / `holding_right` (`possession` fallback) | Available; hand-held fields are authoritative because `possession` can stay true for the last carrier after release |
 | Disc.Position / Disc.Velocity | `/session` → `disc.position` / `disc.velocity` | Available; one `DiscState` per tick copied onto every player's frame |
 | BlueScore / OrangeScore | `/session` → `blue_points` / `orange_points` | Available |
 | Goals / Stuns | `/session` → per-player stats | Available; per-frame update granularity **unconfirmed** |
@@ -46,7 +46,7 @@
 
 | Detector | Status | Safe for Shadow? | Safe to score? | Primary Risk |
 |----------|--------|-------------------|----------------|-------------|
-| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until tolerances validated | Physics cap is real; tolerance/ping values are UNVERIFIED. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2 and excluded from cap-riding; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. |
+| THROW_001 | **PHYSICS_GROUNDED** | Yes | Not until replay telemetry is validated | The 18.9 m/s physics cap is real. Release speed comes directly from `disc.velocity`, so default base/ping padding is zero. Evidence includes player speed, movement aligned with the throw, and player-relative disc speed. Releases > 2× cap are reported as `disc_speed_artifact` at severity 0.2 and excluded from cap-riding; the old dt > 0.05 s gate is gone, so it fires on 15 Hz data. |
 | THROW_002 | **UNVERIFIED** | Observation only, after the pre-release snapshot is confirmed non-identical | No | v2.0.0 single-delta approach, needs real-data calibration. The old BROKEN mechanism (multi-frame acceleration over pre-release snapshots that carried identical velocities in every real replay) was **removed** in v2.0.0 and replaced by a single delta: last pre-release disc speed vs release speed (`max_speed_delta` 22 m/s), with snapshots now excluding the release frame. The new mechanism is **unvalidated**: nobody has yet shown on a real replay that the pre-release snapshot carries a genuine, non-identical disc velocity. Ships disabled. |
 | THROW_003 | **UNVERIFIED** | Yes (observation only) | After calibration | Wrist-flick throws exceed 45° legitimately; threshold guessed. Frame-of-reference guard skips throws where body speed ≥ hand speed. |
 | THROW_004 | **UNSAFE** | Log only | No | Regrab playstyle produces low variance naturally; with the 1e-8 threshold even varied human throws fire. Degenerate dimensions are now excluded from the product, which removes one collapse mechanism but does not make the threshold meaningful. |
@@ -96,7 +96,7 @@ In shadow mode `enforcement_weight` has **no effect**: shadow events are never s
 | Gap | Impact | Severity |
 |-----|--------|----------|
 | **Coordinate frame / handedness.** Resolved 2026-09-03: real recordings are 100 % proper-basis; the converter handles both conventions and counts them. | A mixed count on a new source would mean an inconsistent producer; hand-rotation detectors stay observation-only until calibrated regardless. | **LOW** — resolved |
-| **Disc state during possession.** The adapter now emits one disc per tick with `possessor_id`/`is_held` from the first possessing player in team order (multi-holder ticks counted as `PossessionConflicts`). Whether Echo VR reports disc velocity as zero, player velocity or stale while held is still unknown. | Release speed (THROW_001/002) and hand-to-disc distance could be wrong. | **HIGH** — needs empirical validation |
+| **Disc state during possession.** The adapter emits one disc per tick with `possessor_id`/`is_held` from the first mapped player whose `holding_left`/`holding_right` says `disc`; sources without those fields fall back to `possession` (multi-holder ticks counted as `PossessionConflicts`). A real replay proved `possession` can stay true after release, so it is not used when explicit hand state exists. Whether Echo VR reports disc velocity as zero, player velocity or stale while held is still unknown. | Release speed (THROW_001/002) and hand-to-disc distance could be wrong on old sources without holding fields. | **MEDIUM** — release transition resolved for Spark replays; held-disc velocity still needs empirical validation |
 | **Stun count granularity.** STATE_007 needs per-frame `stuns` increments. | STATE_007 may be dead on live data. | **HIGH** |
 | **Replay format.** The `.echoreplay` parser exists (`internal/adapter/replay_parser.go`): NDJSON lines of `timestamp\tJSON`, optionally inside a ZIP, streamed per tick. It is what `analyze`/`batch` use. The `internal/replay` `FrameParser` interface and its JSON parser remain for legacy JSON replays only. | None for offline mode; comments that still mention protobuf are stale. | **LOW** |
 | **Live path statefulness.** The pipeline keeps per-player state across batches (`SetSkipReset`), so inline detection works even with one frame per batch. Inline results are `analysis_source = initial`; reprocessing stays canonical. | None; earlier revisions of this document called inline detection non-functional. | **LOW** |
@@ -158,10 +158,10 @@ Telemetry is never pruned automatically; `nevr-server` prunes detection events a
 | THROW_008 | ~118 | Uses game distance-from-thrower; first 3 frames not judged. |
 | MOV_002 | ~91 | Jumps > 12 m treated as resets; distinct-player cluster suppression; goal cooldown. |
 | BIO_001 | ~80 | 3-frame sustained floor; note the 15 Hz saturation. |
-| THROW_001 | ~60 | dt gate removed; releases > 2× cap (37.4 m/s) now reported as `disc_speed_artifact` at severity 0.2 instead of being dropped; cap-riding once per 900 frames. |
+| THROW_001 | ~60 | dt gate removed; releases > 2× cap (37.8 m/s) now reported as `disc_speed_artifact` at severity 0.2 instead of being dropped; cap-riding once per 900 frames. |
 | STATE_004 | ~54 | Escalating re-fire with tolerance. |
 
-Key conclusions that still hold: THROW_001's over-cap events (22–96 m/s against a ~20 m/s effective cap) are genuinely impossible *if the velocity is real*; the 2×-cap artifacts are now visible rather than hidden so that question can be answered. One match (`6BEF4CA8`) produced ~90 % of all events; a broader sample is required.
+Key conclusions that still hold: THROW_001's over-cap events (above the 18.9 m/s engine cap) are genuinely impossible *if the velocity is real*; the 2×-cap artifacts are now visible rather than hidden so that question can be answered. One match (`6BEF4CA8`) produced ~90 % of all events; a broader sample is required.
 
 ## 6b. Real-data run (2026-09-03)
 
@@ -176,7 +176,7 @@ Detector output on those three matches (all shadow): BIO_002 fired twice on two-
 Collected from the quality-pass fixer reports. Each has a conservative default in place.
 
 1. **Goal side per team.** No convention found; the extractor learns the side per match from the first score increment. Confirm from a replay and, if fixed, set `FeatureExtractor.SetBlueGoalSide(±1)` via a config key.
-2. **THROW_001 auto-enforcement** stays off (`auto_enforce = false`). Enabling it makes any possession-tracked release > ~25 m/s carry `AutoEnforce`. Keep off until the 22–96 m/s events are explained.
+2. **THROW_001 auto-enforcement** stays off (`auto_enforce = false`). Enabling it makes any possession-tracked release more than 5 m/s over the effective cap carry `AutoEnforce` when the other confidence gates pass. Keep off until over-cap replay events are explained.
 3. **Releases > 2× cap** are `disc_speed_artifact` at severity 0.2. Decide after re-running calibration whether they are timing artifacts (keep low) or injection (route to the disc_speed path).
 4. **THROW_005 correlation gate** (n ≥ 30, CI upper < 0.1) is deliberately conservative; keep observation-only until measured on real players.
 5. **THROW_004** remains UNSAFE/disabled; recalibrate the 1e-8 threshold or retire the detector.

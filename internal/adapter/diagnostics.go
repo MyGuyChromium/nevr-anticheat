@@ -447,7 +447,7 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 			dr.recordBool("blocking", p.Blocking, has("blocking"))
 			dr.recordBool("possession", p.Possession, has("possession"))
 
-			if p.Possession {
+			if p.HasDisc() {
 				possessionHolders++
 			}
 
@@ -580,7 +580,7 @@ func (dr *DiagnosticReport) CompatibilityReport() string {
 	}
 
 	checks := []detCheck{
-		{"THROW_001-008", []string{"position", "lhand.pos", "rhand.pos", "disc.position", "disc.velocity", "possession"}, ""},
+		{"THROW_001-008", []string{"position", "lhand.pos", "rhand.pos", "disc.position", "disc.velocity", "possession"}, "holding_left/right are preferred for release timing when present"},
 		{"BIO_001", []string{"lhand.forward", "rhand.forward"}, ""},
 		{"BIO_002", []string{"lhand.pos", "rhand.pos"}, ""},
 		{"BIO_003", []string{"lhand.pos", "rhand.pos", "position"}, ""},

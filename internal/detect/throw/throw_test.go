@@ -82,7 +82,7 @@ func TestThrow001_OverCapFiresAtReplayRate(t *testing.T) {
 func TestThrow001_MissingHandKinematicsCannotInflateSpeedRatio(t *testing.T) {
 	d := NewThrow001(nil)
 	mc := testCtx()
-	players := withThrow("p1", 100, 20.1, 0)
+	players := withThrow("p1", 100, 18.91, 0)
 	players["p1"].LastThrow.ThrowingHand = "unknown"
 	players["p1"].LastThrow.HandSpeed = 0
 	players["p1"].LastThrow.HandKinematicsValid = false
@@ -102,8 +102,27 @@ func TestThrow001_MissingHandKinematicsCannotInflateSpeedRatio(t *testing.T) {
 
 func TestThrow001_SubCapNoEvent(t *testing.T) {
 	d := NewThrow001(nil)
-	if ev := d.Evaluate(testCtx(), withThrow("p1", 100, 19.9, 0), 100); len(ev) != 0 {
-		t.Fatalf("19.9 m/s (under cap+tolerance) fired: %+v", ev)
+	if ev := d.Evaluate(testCtx(), withThrow("p1", 100, 18.9, 0), 100); len(ev) != 0 {
+		t.Fatalf("18.9 m/s (at the engine cap) fired: %+v", ev)
+	}
+}
+
+func TestThrow001_Observed1991FiresEvenAtHighPing(t *testing.T) {
+	d := NewThrow001(nil)
+	players := withThrow("p1", 100, 19.91, 0)
+	players["p1"].EstimatedPingMs = 300
+	players["p1"].LastThrow.PlayerVelocity = model.Vec3{3, 0, 0}
+	events := d.Evaluate(testCtx(), players, 100)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" {
+		t.Fatalf("19.91 m/s must be reported above the 18.9 m/s cap: %+v", events)
+	}
+	evidence := events[0].Evidence.(model.ThrowEvidence)
+	if !near(evidence.EffectiveCap, 18.9, 1e-9) {
+		t.Fatalf("effective cap %.3f, want 18.9", evidence.EffectiveCap)
+	}
+	if !near(evidence.PlayerSpeed, 3, 1e-9) || !near(evidence.AlignedMovementSpeed, 3, 1e-9) ||
+		!near(evidence.PlayerRelativeSpeed, 16.91, 1e-9) {
+		t.Fatalf("movement-relative evidence is wrong: %+v", evidence)
 	}
 }
 
@@ -141,8 +160,8 @@ func TestThrow001_CapRidingOncePerWindowAndSubCapOnly(t *testing.T) {
 	frame := 0
 	for i := 0; i < 12; i++ {
 		frame = i * 30
-		// 19.5 m/s: under the 20.0 effective cap, within 2 m/s of it, zero spread.
-		events := d.Evaluate(mc, withThrow("p1", frame, 19.5, 0), frame)
+		// 18.5 m/s: under the 18.9 effective cap, within 2 m/s of it, zero spread.
+		events := d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame)
 		for _, ev := range events {
 			if ev.CausalKey.AnomalyType == "cap_riding" {
 				fired = append(fired, frame)
@@ -166,7 +185,7 @@ func TestThrow001_CapRidingOncePerWindowAndSubCapOnly(t *testing.T) {
 	}
 	// After the cooldown a new event may fire again.
 	frame += 1000
-	events = d.Evaluate(mc, withThrow("p1", frame, 19.5, 0), frame)
+	events = d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame)
 	if len(events) != 1 || events[0].CausalKey.AnomalyType != "cap_riding" {
 		t.Fatalf("expected cap-riding after cooldown, got %+v", events)
 	}
@@ -202,7 +221,7 @@ func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
 	var capEv *model.DetectionEvent
 	for i := 0; i < capRidingMinThrows && capEv == nil; i++ {
 		frame += 10
-		for _, ev := range d.Evaluate(mc, withThrow("p1", frame, 19.5, 0), frame) {
+		for _, ev := range d.Evaluate(mc, withThrow("p1", frame, 18.5, 0), frame) {
 			if ev.CausalKey.AnomalyType == "cap_riding" {
 				e := ev
 				capEv = &e
@@ -217,12 +236,12 @@ func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestThrow001_HighPingRaisesEffectiveCap(t *testing.T) {
-	d := NewThrow001(nil)
-	players := withThrow("p1", 100, 20.5, 0)
-	players["p1"].EstimatedPingMs = 300 // +1.5 m/s tolerance -> cap 21.5
+func TestThrow001_ExplicitPingToleranceCanRaiseEffectiveCap(t *testing.T) {
+	d := NewThrow001(map[string]any{"ping_tolerance_scalar": 5.0})
+	players := withThrow("p1", 100, 20.0, 0)
+	players["p1"].EstimatedPingMs = 300 // optional +1.5 m/s tolerance -> cap 20.4
 	if ev := d.Evaluate(testCtx(), players, 100); len(ev) != 0 {
-		t.Fatalf("20.5 m/s at 300 ms ping should be under the effective cap: %+v", ev)
+		t.Fatalf("explicit legacy ping tolerance should raise the cap: %+v", ev)
 	}
 }
 

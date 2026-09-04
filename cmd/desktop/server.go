@@ -180,6 +180,7 @@ type diagView struct {
 type matchView struct {
 	MatchID         string               `json:"match_id"`
 	Levels          model.LevelTable     `json:"levels"`
+	DiscSpeedCap    float64              `json:"disc_speed_cap"`
 	SourceFile      string               `json:"source_file"`
 	StartTime       string               `json:"start_time"`
 	DurationSeconds float64              `json:"duration_seconds"`
@@ -255,6 +256,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 	v := matchView{
 		MatchID:         mc.MatchID,
 		Levels:          levels,
+		DiscSpeedCap:    mc.Physics.DiscSpeedCap,
 		SourceFile:      d.sourceFile,
 		StartTime:       fmtTime(mc.StartTime),
 		DurationSeconds: mc.Duration.Seconds(),

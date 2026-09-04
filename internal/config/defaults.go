@@ -17,10 +17,10 @@ func DefaultConfig() *Config {
 			DBPath:     "./nevr-anticheat.db",
 		},
 		Physics: PhysicsConfig{
-			DiscSpeedCap:   18.7,
+			DiscSpeedCap:   18.9,
 			BoostSpeedCap:  5.0,
 			MaxPlayerSpeed: 55.0,
-			MaxThrowSpeed:  20.0,
+			MaxThrowSpeed:  18.9,
 			StunDuration:   3.0,
 			ShieldCooldown: 5.0,
 			ImmunityWindow: 1.5,
@@ -83,10 +83,11 @@ func DefaultConfig() *Config {
 // runs when a binary is started with any config, including the defaults.
 func defaultDetectors() map[string]DetectorConfig {
 	return map[string]DetectorConfig{
-		// UNVALIDATED: the physics cap is a real game constant but the
-		// tolerance values are unverified on real telemetry.
+		// PHYSICS_GROUNDED: Echo VR caps throws at 18.9 m/s. Release speed is
+		// read directly from disc.velocity, so network ping does not enlarge it.
+		// Keep this shadow-only until the replay telemetry is validated.
 		"THROW_001": {Enabled: true, EnforcementWeight: 0.8, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
-			"base_tolerance": 1.3, "ping_tolerance_scalar": 5.0, "max_speed_ratio": 3.0,
+			"base_tolerance": 0.0, "ping_tolerance_scalar": 0.0, "max_speed_ratio": 3.0,
 			"sigmoid_steepness": 2.0, "cap_riding_cooldown_frames": 900,
 		}},
 		// UNVERIFIED: v2.0.0 single-delta approach, needs real-data calibration
