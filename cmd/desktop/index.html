@@ -108,6 +108,26 @@
   .help { color: var(--muted); font-size: 13px; margin: 2px 0 0; max-width: 64ch; }
   .status { margin: 16px 0 0; color: var(--muted); min-height: 21px; }
   .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
+  .queue-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .queue-actions:empty { display: none; }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 16px; }
+  .filters input[type="search"], .filters select {
+    min-height: 36px; border: 1px solid var(--line-2); background: var(--panel-solid); color: var(--ink);
+    padding: 7px 10px; font: 13px/1.3 inherit;
+  }
+  .filters input[type="search"] { min-width: min(360px, 100%); flex: 1; }
+  .filters .check-inline { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); }
+  .history-count { color: var(--muted); font: 11px/1.3 var(--mono); margin-left: auto; }
+  .health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .health-card { border: 1px solid var(--line); background: var(--panel); padding: 16px; min-width: 0; }
+  .health-card span { display: block; color: var(--muted); font: 10px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+  .health-card b { display: block; margin-top: 7px; font-size: 17px; overflow-wrap: anywhere; }
+  .health-path { margin-top: 14px; color: var(--muted); overflow-wrap: anywhere; }
+  .maintenance { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .review-cell { min-width: 218px; }
+  .review-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+  .review-buttons .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
+  .review-note { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; max-width: 30ch; }
 
   /* tables */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -252,8 +272,9 @@
     .assessment-head { align-items: flex-start; flex-direction: column; }
     .assessment-controls { width: 100%; align-items: flex-start; flex-direction: column; }
     .assessment-controls select { width: 100%; min-width: 0; }
+    .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
-  @media (max-width: 620px) { .team-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 620px) { .team-grid, .health-grid { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) {
     *, ::before, ::after { transition: none !important; animation: none !important; }
     .bar.wait > i { width: 100%; opacity: .45; }
@@ -468,10 +489,11 @@
         <div class="console-top"><span>LOCAL ANALYSIS PORT</span><b><i></i> READY</b></div>
         <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
           <input id="files" type="file" multiple accept=".echoreplay,.json">
+          <input id="folder" type="file" multiple webkitdirectory directory accept=".echoreplay,.json">
           <div id="drop-idle">
             <span class="drop-mark" aria-hidden="true">↗</span>
             <div class="lead">Drop <code>.echoreplay</code> files</div>
-            <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · up to 200 MB per batch</div>
+            <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · <a href="#" id="pick-folder">scan a folder</a> · up to 200 MB per file</div>
           </div>
         </div>
         <div class="controls">
@@ -484,6 +506,7 @@
           </div>
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
         </div>
+        <div id="queue-actions" class="queue-actions"></div>
         <p id="status" class="status" role="status" aria-live="polite">Engine ready. Waiting for a replay.</p>
       </div>
     </div>
@@ -508,7 +531,19 @@
   <section class="block" aria-labelledby="h-history">
     <div class="section-kicker"><span>05</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
+    <div class="filters" aria-label="History filters">
+      <input id="history-search" type="search" placeholder="Search match, file, player, map…" aria-label="Search history">
+      <select id="history-detector" aria-label="Filter history by detector"><option value="">All detectors</option></select>
+      <select id="history-sort" aria-label="Sort history"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+      <label class="check-inline"><input id="history-flagged" type="checkbox"> Flagged only</label>
+      <span id="history-count" class="history-count"></span>
+    </div>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
+  </section>
+  <section class="block" aria-labelledby="h-system">
+    <div class="section-kicker"><span>06</span> Local system</div>
+    <h2 id="h-system">Health &amp; maintenance</h2>
+    <div id="health" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div></div>
   </section>
 </main>
 
@@ -572,6 +607,16 @@
   const meter = (v, tone = '') => `<span class="val">${fmtNum(v, 2)}</span>${bar(v, 1, tone)}`;
   const sep = '<span class="sep">·</span>';
 
+  const prefKey = 'nevr-desktop-preferences-v1';
+  let prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem(prefKey) || '{}') || {}; } catch (_) {}
+  const savePrefs = () => { try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {} };
+  $('force').checked = !!prefs.force;
+  $('history-search').value = prefs.historySearch || '';
+  $('history-sort').value = prefs.historySort || 'newest';
+  $('history-flagged').checked = !!prefs.historyFlagged;
+  $('force').addEventListener('change', () => { prefs.force = $('force').checked; savePrefs(); });
+
   const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
   async function getJSON(url) {
     let r;
@@ -586,10 +631,12 @@
     if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
     return body;
   }
-  async function postJSON(url) {
+  async function postJSON(url, payload) {
     let r;
     try {
-      r = await fetch(url, { method: 'POST', cache: 'no-store' });
+      r = await fetch(url, { method: 'POST', cache: 'no-store',
+        headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: payload === undefined ? undefined : JSON.stringify(payload) });
     } catch (_) {
       setConnectionState(false);
       throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
@@ -738,8 +785,16 @@
       <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s, m.disc_speed_cap, m.match_id)}</details>`;
   }
 
+  function reviewControls(e) {
+    const chosen = e.review_verdict || '';
+    const button = (verdict, label) => `<button class="btn btn-sm ${chosen === verdict ? 'selected' : ''}" data-review-event="${esc(e.event_id)}" data-verdict="${verdict}" title="Label whether this detector observation is correct">${label}</button>`;
+    return `<div class="review-buttons">${button('yes', '✓ Correct')}${button('no', '✕ False positive')}${button('uncertain', '? Unsure')}
+      <button class="btn btn-sm" data-review-event="${esc(e.event_id)}" data-review-note="1">Note</button></div>
+      ${e.review_comment ? `<span class="review-note" title="${esc(e.review_comment)}">${esc(e.review_comment)}</span>` : ''}`;
+  }
+
   function eventRows(events, matchID) {
-    return events.map((e) => `<tr class="${e.is_shadow ? 'shadow' : ''}">
+    return events.map((e) => `<tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
       <td class="det"><span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span></td>
       <td>${who(e.player_name, e.player_id)}</td>
       <td class="num" title="Frame ${fmtInt(e.frame_index)}">${e.frame_range_start === e.frame_range_end ? fmtInt(e.frame_range_start) : `${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</td>
@@ -747,6 +802,7 @@
       <td class="num">${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</td>
       <td class="num">${meter(e.confidence)}</td>
       <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
+      <td class="review-cell">${reviewControls(e)}</td>
       <td><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button></td></tr>`).join('');
   }
 
@@ -756,10 +812,11 @@
     if (!n) return `<p class="empty">${detectorID ? `${esc(detectorID)} did not fire on this match.` : 'No detector fired on this match.'}</p>`;
     const sorted = filtered.slice().sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index));
     const shown = all ? sorted : sorted.slice(0, EVENT_LIMIT);
-    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="9">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
+    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="10">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
     return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
-      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Spark replay</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>`;
+      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Detector verdict</th><th>Spark replay</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>
+      <p class="summary-note">“Correct” means the detector observation is valid; “False positive” means the play was legal. These labels feed local calibration and never punish a player.</p>`;
   }
 
   function casesList(m) {
@@ -870,101 +927,121 @@
 
   // ---- upload ---------------------------------------------------------------
   let busy = false;
+  let currentXHR = null;
+  let queueStopped = false;
+  let queueForce = false;
+  let queue = [];
+  let queuePanel = null;
   const drop = $('drop');
   function uploadList(files) {
     return `<div class="overall" id="overall"></div><ol class="uploads">${files.map((f, i) => `<li>
-      <span class="name">${esc(f.name)}<span class="mono">${fmtBytes(f.size)}</span></span><span class="state" id="ust-${i}">waiting</span>
+      <span class="name">${esc(f.webkitRelativePath || f.name)}<span class="mono">${fmtBytes(f.size)}</span></span><span><span class="state" id="ust-${i}">waiting</span> <button class="btn btn-text btn-sm" data-retry-file="${i}" hidden>Retry</button></span>
       <span class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="${esc(f.name)}" id="ubar-${i}"><i></i></span></li>`).join('')}</ol>`;
   }
+  const setQueueState = (i, text, cls = '', retry = false) => {
+    const el = $('ust-' + i); if (!el) return;
+    el.textContent = text; el.className = 'state ' + cls;
+    const button = document.querySelector(`[data-retry-file="${i}"]`); if (button) button.hidden = !retry;
+  };
+  const setQueueBar = (i, pct, wait = false) => {
+    const b = $('ubar-' + i); if (!b) return;
+    b.classList.toggle('wait', wait); b.setAttribute('aria-valuenow', Number(pct).toFixed(0)); b.firstElementChild.style.width = pct + '%';
+  };
+  const overall = (text, sub = '') => { const el = $('overall'); if (el) el.innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
+  const responseItems = (res) => (res.matches && res.matches.length ? res.matches : [res]);
+  function showResponse(res) {
+    const fileError = res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null;
+    if (fileError) prepend(failCard(fileError));
+    responseItems(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
+    let analyzed = 0, stored = 0, failed = fileError ? 1 : 0;
+    responseItems(res).forEach((m) => { if (m.ok) analyzed++; else if (m.already_stored) stored++; else failed++; });
+    return { analyzed, stored, failed };
+  }
+  function processQueueItem(item, i) {
+    return new Promise((resolve) => {
+      const fd = new FormData(); fd.append('files', item.file, item.file.name);
+      if (queueForce) fd.append('force', '1');
+      const xhr = currentXHR = new XMLHttpRequest();
+      xhr.open('POST', 'api/analyze'); xhr.responseType = 'json';
+      setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const pct = Math.min(100, e.loaded / e.total * 100);
+        setQueueBar(i, pct); setQueueState(i, `uploading ${pct.toFixed(0)}%`);
+        overall(`File ${i + 1} of ${queue.length}`, `${esc(item.file.name)} · ${fmtBytes(e.loaded)} of ${fmtBytes(e.total)}`);
+      };
+      xhr.upload.onload = () => {
+        setQueueBar(i, 100, true); setQueueState(i, 'analyzing');
+        overall(`Analyzing ${i + 1} of ${queue.length}`, item.file.name);
+        setStatus(`Analyzing ${item.file.name}; long replays can take a while.`);
+      };
+      xhr.onerror = () => { setConnectionState(false); resolve({ error: 'local engine disconnected' }); };
+      xhr.onabort = () => resolve({ cancelled: true });
+      xhr.onload = () => {
+        setConnectionState(true);
+        const body = xhr.response || {};
+        if (xhr.status !== 200 || !Array.isArray(body.results)) resolve({ error: body.error || `${xhr.status} ${xhr.statusText}` });
+        else resolve({ response: body.results[0] });
+      };
+      xhr.send(fd);
+    });
+  }
+  async function runQueue(indices) {
+    if (busy) return;
+    busy = true; queueStopped = false; queueForce = $('force').checked; $('force').disabled = true; drop.setAttribute('aria-busy', 'true');
+    $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Cancel queue</button>';
+    const totals = { analyzed: 0, stored: 0, failed: 0, cancelled: 0 };
+    for (const i of indices) {
+      if (queueStopped) { queue[i].state = 'cancelled'; setQueueState(i, 'cancelled', 'bad', true); totals.cancelled++; continue; }
+      const item = queue[i]; item.state = 'running';
+      const result = await processQueueItem(item, i); currentXHR = null;
+      setQueueBar(i, 100, false);
+      if (result.cancelled || queueStopped) {
+        item.state = 'cancelled'; setQueueState(i, 'cancelled', 'bad', true); totals.cancelled++;
+      } else if (result.error || !result.response) {
+        item.state = 'failed'; item.error = result.error || 'empty response'; setQueueState(i, 'failed', 'bad', true); totals.failed++;
+      } else {
+        const counts = showResponse(result.response);
+        Object.keys(counts).forEach((key) => { totals[key] += counts[key]; });
+        item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : 'stored';
+        setQueueState(i, counts.analyzed ? 'analyzed' : counts.failed ? 'failed' : 'already stored', counts.failed ? 'bad' : 'ok', !!counts.failed);
+      }
+    }
+    busy = false; $('force').disabled = false; drop.removeAttribute('aria-busy');
+    $('files').value = ''; $('folder').value = '';
+    const failed = queue.filter((item) => item.state === 'failed' || item.state === 'cancelled').length;
+    $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / cancelled</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
+    const parts = [`${totals.analyzed} analyzed`]; if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} failed`); if (totals.cancelled) parts.push(`${totals.cancelled} cancelled`);
+    overall(queueStopped ? 'Queue stopped' : 'Queue complete', parts.join(' · '));
+    setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : 'ok');
+    refreshPanels();
+    if (totals.analyzed) $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+  }
   function analyze(fileList) {
-    const files = Array.from(fileList || []);
-    if (!files.length || busy) return;
-    busy = true;
-    drop.classList.add('busy'); drop.setAttribute('aria-busy', 'true');
-    $('drop-idle').hidden = true;
-    const list = document.createElement('div');
-    list.innerHTML = uploadList(files);
-    drop.appendChild(list);
-    const total = files.reduce((n, f) => n + f.size, 0);
-    const offsets = []; files.reduce((o, f) => (offsets.push(o), o + f.size), 0);
-    const setState = (i, text, cls = '') => { const el = $('ust-' + i); el.textContent = text; el.className = 'state ' + cls; };
-    const setBar = (i, pct, wait) => { const b = $('ubar-' + i); b.classList.toggle('wait', !!wait); b.setAttribute('aria-valuenow', pct.toFixed(0)); b.firstElementChild.style.width = pct + '%'; };
-    const overall = (text, sub = '') => { $('overall').innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
-    overall(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}`, fmtBytes(total));
-    setStatus(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}, ${fmtBytes(total)}.`);
-
-    const fd = new FormData();
-    files.forEach((f) => fd.append('files', f, f.name));
-    if ($('force').checked) fd.append('force', '1');
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', 'api/analyze');
-    xhr.responseType = 'json';
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const sent = total * (e.loaded / e.total);
-      let done = 0;
-      files.forEach((f, i) => {
-        const frac = f.size ? Math.min(1, Math.max(0, (sent - offsets[i]) / f.size)) : 1;
-        if (frac >= 1) done++;
-        setBar(i, frac * 100);
-        setState(i, frac >= 1 ? 'uploaded' : frac > 0 ? `uploading ${(frac * 100).toFixed(0)}%` : 'waiting');
-      });
-      overall(`Uploading ${Math.min(done + 1, files.length)} of ${files.length}`, `${fmtBytes(sent)} of ${fmtBytes(total)}`);
-      if (e.loaded >= e.total) analyzing();
-    };
-    const analyzing = () => {
-      files.forEach((_, i) => { setBar(i, 100, true); setState(i, 'analyzing'); });
-      overall(`Analyzing ${files.length} file${files.length > 1 ? 's' : ''}`, 'this can take a while for long replays');
-      setStatus(`Upload complete. Analyzing ${files.length} file${files.length > 1 ? 's' : ''}; this can take a while for long replays.`);
-    };
-    xhr.upload.onload = analyzing;
-    const finish = (err) => {
-      busy = false;
-      $('files').value = '';
-      drop.classList.remove('busy'); drop.removeAttribute('aria-busy');
-      list.remove();
-      $('drop-idle').hidden = false;
-      if (err) setStatus(`Upload failed: ${err}`, 'err');
-      refreshPanels();
-    };
-    xhr.onerror = () => { setConnectionState(false); finish('the local engine disconnected. Relaunch nevr-desktop.exe and use its new window.'); };
-    xhr.onload = () => {
-      setConnectionState(true);
-      const body = xhr.response || {};
-      if (xhr.status !== 200 || !Array.isArray(body.results)) return finish(body.error || `${xhr.status} ${xhr.statusText}`);
-      // A file holds one match, or several after a rematch (res.matches);
-      // each is counted and shown on its own. A failure that stopped the
-      // file after some matches is in res.error next to them.
-      const items = (res) => (res.matches && res.matches.length ? res.matches : [res]);
-      const fileError = (res) => (res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null);
-      let ok = 0, failed = 0, stored = 0;
-      body.results.forEach((res, i) => {
-        let a = 0, s = 0, f = fileError(res) ? 1 : 0;
-        items(res).forEach((m) => { if (m.ok) a++; else if (m.already_stored) s++; else f++; });
-        ok += a; stored += s; failed += f;
-        setState(i, a ? 'analyzed' : (f ? 'failed' : 'already stored'), a && !f ? 'ok' : 'bad');
-      });
-      // Prepend in reverse so the first file, and its first match, end up on top.
-      body.results.slice().reverse().forEach((res) => {
-        const fe = fileError(res);
-        if (fe) prepend(failCard(fe));
-        items(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
-      });
-      const parts = [`${ok} analyzed`]; if (stored) parts.push(`${stored} already stored`); if (failed) parts.push(`${failed} failed`);
-      finish();
-      setStatus(`Done: ${parts.join(', ')}.`, failed ? 'err' : 'ok');
-      $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
-    };
-    xhr.send(fd);
+    if (busy) return;
+    const all = Array.from(fileList || []);
+    const files = all.filter((f) => /\.(echoreplay|json)$/i.test(f.name));
+    if (!files.length) {
+      if (all.length) setStatus('No supported .echoreplay or .json files were found.', 'err');
+      return;
+    }
+    queue = files.map((file) => ({ file, state: 'waiting' }));
+    if (queuePanel) queuePanel.remove();
+    queuePanel = document.createElement('div'); queuePanel.innerHTML = uploadList(files); drop.appendChild(queuePanel);
+    drop.classList.add('busy'); $('drop-idle').hidden = true;
+    if (all.length !== files.length) setStatus(`Ignored ${all.length - files.length} unsupported file${all.length - files.length === 1 ? '' : 's'}.`);
+    runQueue(queue.map((_, i) => i));
   }
 
   ['dragenter', 'dragover'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (!busy) drop.classList.add('over'); }));
   document.addEventListener('dragleave', (e) => { if (e.target === document.documentElement || !e.relatedTarget) drop.classList.remove('over'); });
   document.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); analyze(e.dataTransfer && e.dataTransfer.files); });
   $('pick').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!busy) $('files').click(); });
+  $('pick-folder').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!busy) $('folder').click(); });
   drop.addEventListener('click', (e) => { if (!busy && !e.target.closest('a, button')) $('files').click(); });
   drop.addEventListener('keydown', (e) => { if (!busy && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('files').click(); } });
   $('files').addEventListener('change', (e) => analyze(e.target.files));
+  $('folder').addEventListener('change', (e) => analyze(e.target.files));
   $('clear').addEventListener('click', () => {
     $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0;
     $('results-block').hidden = true; $('clear').hidden = true;
@@ -1011,24 +1088,75 @@
     } catch (e) { panelError(el, 'the detector observations', e); }
   }
 
-  async function loadHistory() {
+  let historyMatches = [];
+  function renderHistory() {
     const el = $('history');
-    try {
-      const h = await getJSON('api/matches');
-      el.className = ''; el.removeAttribute('aria-busy');
-      if (!h.matches.length) {
-        el.innerHTML = '<p class="empty">No match has been analyzed yet. Every replay you drop above is kept in the database and listed here.</p>';
-        return;
-      }
-      el.innerHTML = `<table><thead><tr><th>Match</th><th>Mode</th><th class="num">Start</th><th class="num">Duration</th><th>Players</th><th>Analyzed</th><th></th></tr></thead><tbody>` +
-        h.matches.map((m) => `<tr>
+    const query = $('history-search').value.trim().toLowerCase();
+    const detector = $('history-detector').value;
+    const flagged = $('history-flagged').checked;
+    const oldest = $('history-sort').value === 'oldest';
+    const rows = historyMatches.filter((m) => {
+      if (detector && !(m.detector_ids || []).includes(detector)) return false;
+      if (flagged && !m.flagged) return false;
+      if (!query) return true;
+      return [m.match_id, m.source_file, m.source, m.game_mode, m.map, ...(m.players || []).flatMap((p) => [p.name, p.player_id])].join(' ').toLowerCase().includes(query);
+    }).sort((a, b) => (oldest ? 1 : -1) * (new Date(a.analyzed_at || 0) - new Date(b.analyzed_at || 0)));
+    $('history-count').textContent = `${fmtInt(rows.length)} of ${fmtInt(historyMatches.length)}`;
+    if (!historyMatches.length) {
+      el.innerHTML = '<p class="empty">No match has been analyzed yet. Every replay you drop above is kept in the database and listed here.</p>';
+      return;
+    }
+    if (!rows.length) {
+      el.innerHTML = '<p class="empty">No stored match matches these filters.</p>';
+      return;
+    }
+    el.innerHTML = `<table><thead><tr><th>Match</th><th>Mode</th><th class="num">Start</th><th class="num">Duration</th><th>Players</th><th>Signals</th><th>Analyzed</th><th></th></tr></thead><tbody>` +
+        rows.map((m) => `<tr>
           <td><span class="mono">${esc(m.match_id)}</span><br><span class="muted">${esc(m.source_file || m.source)}</span></td>
           <td>${esc(m.game_mode) || '<span class="muted">—</span>'}${m.map ? `<br><span class="muted">${esc(m.map)}</span>` : ''}</td>
           <td class="num">${esc(fmtStart(m.start_time))}</td><td class="num">${fmtDur(m.duration_seconds)}</td>
           <td>${m.players.map((p) => `<span style="color:var(--${p.team === 'orange' ? 'orange' : p.team === 'blue' ? 'blue' : 'muted'})">${esc(p.name || p.player_id)}</span>`).join(', ') || '<span class="muted">—</span>'}</td>
+          <td>${m.flagged ? '<span class="tag bad">flagged</span> ' : ''}${m.event_count ? `<span class="mono">${fmtInt(m.event_count)}</span> <span class="muted">events</span>` : '<span class="muted">clean</span>'}</td>
           <td>${timeAgo(m.analyzed_at)}</td>
           <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">Open</button></td></tr>`).join('') + '</tbody></table>';
+  }
+
+  async function loadHistory() {
+    const el = $('history');
+    try {
+      const h = await getJSON('api/matches');
+      el.className = ''; el.removeAttribute('aria-busy'); historyMatches = h.matches || [];
+      const detectors = [...new Set(historyMatches.flatMap((m) => m.detector_ids || []))].sort();
+      const selected = prefs.historyDetector || '';
+      $('history-detector').innerHTML = '<option value="">All detectors</option>' + detectors.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+      if (detectors.includes(selected)) $('history-detector').value = selected;
+      renderHistory();
     } catch (e) { panelError(el, 'the history', e); }
+  }
+
+  ['history-search', 'history-detector', 'history-sort', 'history-flagged'].forEach((id) => {
+    $(id).addEventListener(id === 'history-search' ? 'input' : 'change', () => {
+      prefs.historySearch = $('history-search').value; prefs.historyDetector = $('history-detector').value;
+      prefs.historySort = $('history-sort').value; prefs.historyFlagged = $('history-flagged').checked; savePrefs(); renderHistory();
+    });
+  });
+
+  async function loadHealth() {
+    const el = $('health');
+    try {
+      const h = await getJSON('api/health');
+      el.className = ''; el.removeAttribute('aria-busy');
+      el.innerHTML = `<div class="health-grid">
+        <div class="health-card"><span>Desktop</span><b>v${esc(h.version)}</b><small class="muted">schema ${fmtInt(h.schema_version)}</small></div>
+        <div class="health-card"><span>Evidence store</span><b>${fmtInt(h.stored_matches)} matches</b><small class="muted">${fmtBytes(h.database_bytes)}</small></div>
+        <div class="health-card"><span>Detector labels</span><b>${fmtInt(h.direct_label_count)}</b><small class="muted">saved locally</small></div>
+        <div class="health-card"><span>Spark Replay Viewer</span><b style="color:var(--${h.spark_installed ? 'ok' : 'warn'})">${h.spark_installed ? 'Ready' : 'Not found'}</b><small class="muted">${h.spark_installed ? esc(h.spark_path) : 'Open Spark once or set NEVR_REPLAY_VIEWER'}</small></div>
+        <div class="health-card"><span>Replay clips</span><b>${fmtInt(h.clip_files)} files</b><small class="muted">${fmtBytes(h.clip_bytes)}</small></div>
+        <div class="health-card"><span>Physics guardrail</span><b>${fmtNum(h.disc_speed_cap, 1)} m/s</b><small class="muted">maximum disc speed</small></div>
+      </div>
+      <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span></p>
+      <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
+    } catch (e) { panelError(el, 'system health', e); }
   }
 
   document.addEventListener('change', (e) => {
@@ -1048,6 +1176,76 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const maintenance = e.target.closest('#backup-db, #open-data, #clear-clips');
+    if (maintenance) {
+      if (maintenance.id === 'clear-clips' && !confirm('Delete generated replay clips? Original replays and the anticheat database are not affected.')) return;
+      const endpoint = maintenance.id === 'backup-db' ? 'backup' : maintenance.id === 'open-data' ? 'open-data-folder' : 'clear-clips';
+      const label = maintenance.textContent; maintenance.disabled = true; maintenance.textContent = 'Working…';
+      try {
+        const result = await postJSON('api/maintenance/' + endpoint);
+        setStatus(maintenance.id === 'backup-db' ? `Backup created: ${result.path}` : maintenance.id === 'clear-clips' ? `Cleared ${fmtInt(result.removed)} generated clip item(s).` : `Opened ${result.path}.`, 'ok');
+        loadHealth();
+      } catch (err) { setStatus(`Maintenance action failed: ${err.message}`, 'err'); }
+      finally { maintenance.disabled = false; maintenance.textContent = label; }
+      return;
+    }
+    if (e.target.closest('#cancel-queue')) {
+      queueStopped = true;
+      if (currentXHR) currentXHR.abort();
+      try { await postJSON('api/analyze/cancel'); } catch (_) {}
+      setStatus('Cancelling the active replay and stopping the queue…');
+      return;
+    }
+    if (e.target.closest('#retry-failed')) {
+      const retry = [];
+      queue.forEach((item, i) => { if (item.state === 'failed' || item.state === 'cancelled') { item.state = 'waiting'; setQueueState(i, 'waiting'); setQueueBar(i, 0); retry.push(i); } });
+      runQueue(retry); return;
+    }
+    const retryFile = e.target.closest('button[data-retry-file]');
+    if (retryFile && !busy) {
+      const i = +retryFile.dataset.retryFile; queue[i].state = 'waiting'; setQueueState(i, 'waiting'); setQueueBar(i, 0); runQueue([i]); return;
+    }
+    if (e.target.closest('#clear-queue') && !busy) {
+      queue = []; if (queuePanel) queuePanel.remove(); queuePanel = null;
+      drop.classList.remove('busy'); $('drop-idle').hidden = false; $('queue-actions').innerHTML = '';
+      setStatus('Queue cleared. Stored matches remain in History.'); return;
+    }
+    const reviewButton = e.target.closest('button[data-review-event]');
+    if (reviewButton) {
+      const eventID = reviewButton.dataset.reviewEvent;
+      let event;
+      for (const view of views) {
+        event = (view.events || []).find((item) => item.event_id === eventID);
+        if (event) break;
+      }
+      if (!event) return;
+      let verdict = reviewButton.dataset.verdict || event.review_verdict;
+      let comment = event.review_comment || '';
+      if (reviewButton.dataset.reviewNote) {
+        if (!verdict) {
+          setStatus('Choose Correct, False positive, or Unsure before adding a note.', 'err');
+          return;
+        }
+        const entered = prompt('Optional note for this detector label:', comment);
+        if (entered === null) return;
+        comment = entered;
+      }
+      reviewButton.disabled = true;
+      try {
+        const saved = await postJSON(`api/event/${encodeURIComponent(eventID)}/review`, { verdict, comment });
+        for (const view of views) for (const item of (view.events || [])) if (item.event_id === eventID) {
+          item.review_verdict = saved.verdict; item.review_comment = saved.comment; item.reviewed_at = saved.reviewed_at;
+        }
+        document.querySelectorAll('tr[data-event-row]').forEach((row) => {
+          if (row.dataset.eventRow === eventID) row.querySelector('.review-cell').innerHTML = reviewControls(event);
+        });
+        setStatus(`Saved ${event.detector_id} as ${saved.verdict === 'yes' ? 'correct' : saved.verdict === 'no' ? 'a false positive' : 'unsure'}.`, 'ok');
+        loadHealth();
+      } catch (err) {
+        setStatus(`Could not save detector verdict: ${err.message}`, 'err');
+      } finally { reviewButton.disabled = false; }
+      return;
+    }
     const replay = e.target.closest('button[data-replay-event]');
     if (replay) {
       const label = replay.textContent;
@@ -1146,7 +1344,7 @@
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
 
-  function refreshPanels() { loadFlagged(); loadObservations(); loadHistory(); }
+  function refreshPanels() { loadFlagged(); loadObservations(); loadHistory(); loadHealth(); }
   refreshPanels();
   setInterval(probeConnection, 5000);
 })();

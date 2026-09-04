@@ -238,7 +238,7 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 	}
 	for _, since := range []string{"", "7d"} {
 		out = captureStdout(t, func() { runCalibrationReport(cfgPath, since) })
-		if !strings.Contains(out, "DETECTOR CALIBRATION") || !strings.Contains(out, "No moderator decisions") {
+		if !strings.Contains(out, "DETECTOR CALIBRATION") || !strings.Contains(out, "No human labels") {
 			t.Errorf("calibration report (since %q):\n%s", since, out)
 		}
 	}

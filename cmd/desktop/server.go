@@ -13,7 +13,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +30,8 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-// maxUploadBytes bounds one /api/analyze request (all files together).
+// maxUploadBytes bounds one /api/analyze request. The desktop queue submits
+// one file per request; API clients may still submit several within this cap.
 const maxUploadBytes = 200 << 20
 
 // historyLimit bounds the History panel and the flagged lists.
@@ -48,6 +51,9 @@ type server struct {
 	launchReplay replayLaunchFunc
 
 	analyzeMu sync.Mutex // uploads are analyzed one at a time
+	activeMu  sync.Mutex
+	activeID  uint64
+	activeCtx context.CancelFunc
 	quitOnce  sync.Once
 	quit      chan struct{}
 }
@@ -60,10 +66,16 @@ func newServer(engine *replay.Engine, token string) *server {
 	p := "/" + token
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
+	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
+	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/open-data-folder", s.handleOpenDataFolder)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/clear-clips", s.handleClearClips)
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
 	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
+	s.mux.HandleFunc("POST "+p+"/api/event/{id}/review", s.handleEventReview)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
 	s.mux.HandleFunc("POST "+p+"/api/replay-viewer", s.handleReplayViewer)
@@ -141,6 +153,9 @@ type eventView struct {
 	ExpectedRange   string  `json:"expected_range"`
 	IsShadow        bool    `json:"is_shadow"`
 	MergedCount     int     `json:"merged_count"`
+	ReviewVerdict   string  `json:"review_verdict,omitempty"`
+	ReviewComment   string  `json:"review_comment,omitempty"`
+	ReviewedAt      string  `json:"reviewed_at,omitempty"`
 }
 
 type caseView struct {
@@ -229,6 +244,7 @@ type matchData struct {
 	framesByPlayer  map[string]int
 	scores          map[string]model.SuspicionScore
 	events          []model.DetectionEvent
+	eventReviews    map[string]sqlite.EventReview
 	cases           []model.ReviewCase
 	hasScore        bool
 	blue, orange    int
@@ -384,7 +400,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 		if spec, ok := config.DetectorSpecFor(ev.DetectorID); ok {
 			detectorName = spec.Name
 		}
-		v.Events = append(v.Events, eventView{
+		evView := eventView{
 			EventID:         ev.EventID,
 			DetectorID:      ev.DetectorID,
 			DetectorName:    detectorName,
@@ -402,7 +418,13 @@ func (s *server) buildMatchView(d matchData) matchView {
 			ExpectedRange:   ev.ExpectedRange,
 			IsShadow:        ev.IsShadow,
 			MergedCount:     ev.MergedCount,
-		})
+		}
+		if review, ok := d.eventReviews[ev.EventID]; ok {
+			evView.ReviewVerdict = review.Verdict
+			evView.ReviewComment = review.Comment
+			evView.ReviewedAt = fmtTime(review.ReviewedAt)
+		}
+		v.Events = append(v.Events, evView)
 	}
 	for _, rc := range d.cases {
 		v.Cases = append(v.Cases, s.caseView(rc, mc))
@@ -506,6 +528,10 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 	if err != nil {
 		return matchView{}, fmt.Errorf("loading events: %w", err)
 	}
+	reviews, err := store.GetEventReviewsByMatch(ctx, matchID)
+	if err != nil {
+		return matchView{}, fmt.Errorf("loading event reviews: %w", err)
+	}
 	scores, err := store.GetMatchScores(ctx, matchID)
 	if err != nil {
 		return matchView{}, fmt.Errorf("loading scores: %w", err)
@@ -534,6 +560,7 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 		framesByPlayer:  counts,
 		scores:          scores,
 		events:          events,
+		eventReviews:    reviews,
 		cases:           cases,
 		hasScore:        hasScore,
 		blue:            blue,
@@ -876,6 +903,47 @@ func saveUpload(dir string, idx int, fh *multipart.FileHeader) (string, error) {
 	return path, dst.Close()
 }
 
+func (s *server) beginAnalysis() (context.Context, uint64) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.activeMu.Lock()
+	s.activeID++
+	id := s.activeID
+	s.activeCtx = cancel
+	s.activeMu.Unlock()
+	return ctx, id
+}
+
+func (s *server) finishAnalysis(id uint64) {
+	s.activeMu.Lock()
+	if s.activeID == id {
+		if s.activeCtx != nil {
+			s.activeCtx()
+		}
+		s.activeCtx = nil
+	}
+	s.activeMu.Unlock()
+}
+
+func (s *server) cancelAnalysis() bool {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if s.activeCtx == nil {
+		return false
+	}
+	s.activeCtx()
+	return true
+}
+
+func (s *server) analysisActive() bool {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	return s.activeCtx != nil
+}
+
+func (s *server) handleCancelAnalyze(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": s.cancelAnalysis()})
+}
+
 func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -910,10 +978,17 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// the results page is easier to read when files finish in upload order.
 	s.analyzeMu.Lock()
 	defer s.analyzeMu.Unlock()
+	analysisCtx, analysisID := s.beginAnalysis()
+	defer s.finishAnalysis(analysisID)
 
 	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(files))}
 	for i, fh := range files {
 		entry := analyzeEntry{File: uploadName(fh.Filename)}
+		if analysisCtx.Err() != nil {
+			entry.Error = "analysis cancelled"
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
 		switch strings.ToLower(filepath.Ext(entry.File)) {
 		case ".echoreplay", ".json":
 		default:
@@ -927,16 +1002,19 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			resp.Results = append(resp.Results, entry)
 			continue
 		}
-		// The analysis is not tied to the request: a closed tab must not
-		// leave a half-written match behind. Every match the file holds is
-		// analyzed and reported (a recording holds two after a rematch).
-		results, err := s.engine.AnalyzeFileAll(context.Background(), path, force)
+		// The analysis remains independent of a disconnected upload request,
+		// but the explicit Cancel action can stop it at the next replay tick.
+		results, err := s.engine.AnalyzeFileAll(analysisCtx, path, force)
 		for _, res := range results {
 			entry.Matches = append(entry.Matches, s.matchEntry(res, entry.File))
 		}
 		entry.mirrorFirst()
 		if err != nil {
-			entry.Error = err.Error()
+			if errors.Is(err, context.Canceled) {
+				entry.Error = "analysis cancelled"
+			} else {
+				entry.Error = err.Error()
+			}
 			if len(results) == 0 {
 				entry.Diagnostic = diagnoseUpload(path)
 			}
@@ -944,6 +1022,164 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		resp.Results = append(resp.Results, entry)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type healthResponse struct {
+	Version          string  `json:"version"`
+	SchemaVersion    int     `json:"schema_version"`
+	DatabasePath     string  `json:"database_path"`
+	DatabaseBytes    int64   `json:"database_bytes"`
+	StoredMatches    int     `json:"stored_matches"`
+	ClipDirectory    string  `json:"clip_directory"`
+	ClipFiles        int     `json:"clip_files"`
+	ClipBytes        int64   `json:"clip_bytes"`
+	SparkInstalled   bool    `json:"spark_installed"`
+	SparkPath        string  `json:"spark_path,omitempty"`
+	DiscSpeedCap     float64 `json:"disc_speed_cap"`
+	AnalysisActive   bool    `json:"analysis_active"`
+	DirectLabelCount int     `json:"direct_label_count"`
+}
+
+func directoryStats(path string) (files int, bytes int64) {
+	_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		if info, statErr := entry.Info(); statErr == nil {
+			files++
+			bytes += info.Size()
+		}
+		return nil
+	})
+	return files, bytes
+}
+
+func (s *server) databasePath() string {
+	path := s.engine.Store().Path()
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	path := s.databasePath()
+	var dbBytes int64
+	if info, err := os.Stat(path); err == nil {
+		dbBytes = info.Size()
+	}
+	matches, err := s.engine.Store().GetStoredMatchCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "counting stored matches: %v", err)
+		return
+	}
+	labelCount, err := s.engine.Store().GetEventReviewCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "counting detector labels: %v", err)
+		return
+	}
+	clipDir, _ := filepath.Abs(s.clipDir)
+	clipFiles, clipBytes := directoryStats(clipDir)
+	sparkPath, sparkErr := findSparkReplayViewer()
+	writeJSON(w, http.StatusOK, healthResponse{
+		Version: appVersion, SchemaVersion: sqlite.SchemaVersion(), DatabasePath: path,
+		DatabaseBytes: dbBytes, StoredMatches: matches, ClipDirectory: clipDir,
+		ClipFiles: clipFiles, ClipBytes: clipBytes, SparkInstalled: sparkErr == nil,
+		SparkPath: sparkPath, DiscSpeedCap: s.engine.Config().Physics.Constants().DiscSpeedCap,
+		AnalysisActive: s.analysisActive(), DirectLabelCount: labelCount,
+	})
+}
+
+func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	dir := filepath.Join(filepath.Dir(s.databasePath()), "backups")
+	name := "nevr-anticheat-" + time.Now().UTC().Format("20060102-150405.000000000") + ".db"
+	path := filepath.Join(dir, name)
+	if err := s.engine.Store().Backup(r.Context(), path); err != nil {
+		writeError(w, http.StatusInternalServerError, "creating backup: %v", err)
+		return
+	}
+	var bytes int64
+	if info, err := os.Stat(path); err == nil {
+		bytes = info.Size()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path, "bytes": bytes})
+}
+
+func openDirectory(path string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer.exe", path)
+	case "darwin":
+		cmd = exec.Command("open", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+	return cmd.Start()
+}
+
+func (s *server) handleOpenDataFolder(w http.ResponseWriter, _ *http.Request) {
+	dir := filepath.Dir(s.databasePath())
+	if err := openDirectory(dir); err != nil {
+		writeError(w, http.StatusInternalServerError, "opening data folder: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": dir})
+}
+
+func (s *server) handleClearClips(w http.ResponseWriter, _ *http.Request) {
+	abs, err := filepath.Abs(strings.TrimSpace(s.clipDir))
+	if err != nil || strings.TrimSpace(s.clipDir) == "" {
+		writeError(w, http.StatusInternalServerError, "invalid replay clip directory")
+		return
+	}
+	entries, err := os.ReadDir(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": 0})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reading replay clips: %v", err)
+		return
+	}
+	removed := 0
+	for _, entry := range entries {
+		target := filepath.Join(abs, entry.Name())
+		rel, relErr := filepath.Rel(abs, target)
+		if relErr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			writeError(w, http.StatusInternalServerError, "unsafe replay clip path")
+			return
+		}
+		if err := os.RemoveAll(target); err != nil {
+			writeError(w, http.StatusInternalServerError, "removing replay clip %s: %v", entry.Name(), err)
+			return
+		}
+		removed++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+}
+
+func (s *server) handleEventReview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Verdict    string `json:"verdict"`
+		Comment    string `json:"comment"`
+		ReviewerID string `json:"reviewer_id"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid review: %v", err)
+		return
+	}
+	review, err := s.engine.Store().StoreEventReview(r.Context(), r.PathValue("id"), body.Verdict, body.Comment, body.ReviewerID)
+	if errors.Is(err, sqlite.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "%v", err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
 }
 
 type crossMatchCaseView struct {
@@ -1066,6 +1302,9 @@ type matchListEntry struct {
 	FrameCount      int           `json:"frame_count"`
 	AnalyzedAt      string        `json:"analyzed_at"`
 	Players         []rosterEntry `json:"players"`
+	EventCount      int           `json:"event_count"`
+	DetectorIDs     []string      `json:"detector_ids"`
+	Flagged         bool          `json:"flagged"`
 }
 
 func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
@@ -1074,9 +1313,19 @@ func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "loading matches: %v", err)
 		return
 	}
+	matchIDs := make([]string, 0, len(list))
+	for _, sm := range list {
+		matchIDs = append(matchIDs, sm.Context.MatchID)
+	}
+	signals, err := s.engine.Store().GetMatchReviewSignals(r.Context(), matchIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading match review signals: %v", err)
+		return
+	}
 	out := make([]matchListEntry, 0, len(list))
 	for _, sm := range list {
 		mc := sm.Context
+		signal := signals[mc.MatchID]
 		e := matchListEntry{
 			MatchID:         mc.MatchID,
 			SourceFile:      filepath.Base(mc.ReplayFile),
@@ -1088,6 +1337,9 @@ func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
 			FrameCount:      sm.FrameCount,
 			AnalyzedAt:      fmtTime(sm.IngestedAt),
 			Players:         []rosterEntry{},
+			EventCount:      signal.EventCount,
+			DetectorIDs:     signal.DetectorIDs,
+			Flagged:         signal.Flagged,
 		}
 		if mc.ReplayFile == "" {
 			e.SourceFile = ""

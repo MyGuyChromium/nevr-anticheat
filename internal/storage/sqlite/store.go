@@ -64,7 +64,8 @@ const pruneChunkSize = 5000
 
 // Store provides SQLite-backed persistence.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // NewStore opens or creates a SQLite database with optimized settings and
@@ -88,13 +89,16 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, path: dbPath}, nil
 }
 
 // DB returns the underlying *sql.DB for use by migrations and other low-level operations.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
+
+// Path returns the database path supplied to NewStore.
+func (s *Store) Path() string { return s.path }
 
 // Close closes the database connection.
 func (s *Store) Close() error {

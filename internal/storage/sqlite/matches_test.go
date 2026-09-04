@@ -52,6 +52,28 @@ func TestMatches_ListAndLookup(t *testing.T) {
 	}
 }
 
+func TestMatches_ReviewSignals(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	mustStoreEvent(t, s, mkEvent("THROW_003", "p1", "m-1", 1, .5, .5))
+	mustStoreEvent(t, s, mkEvent("THROW_003", "p1", "m-1", 2, .5, .5))
+	mustStoreEvent(t, s, mkEvent("MOV_006", "p1", "m-1", 3, .5, .5))
+	if err := s.StoreReviewCase(ctx, model.ReviewCase{CaseID: "RC-signals", PlayerID: "p1", MatchID: "m-1", Status: CaseStatusPending}); err != nil {
+		t.Fatal(err)
+	}
+	signals, err := s.GetMatchReviewSignals(ctx, []string{"m-1", "empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := signals["m-1"]
+	if got.EventCount != 3 || !got.Flagged || len(got.DetectorIDs) != 2 || got.DetectorIDs[0] != "MOV_006" || got.DetectorIDs[1] != "THROW_003" {
+		t.Fatalf("signals = %+v", got)
+	}
+	if _, ok := signals["empty"]; ok {
+		t.Fatalf("empty match unexpectedly has signals: %+v", signals["empty"])
+	}
+}
+
 // TestMatches_ScoresCasesFramesAndScore: per-match derived data is read back
 // by match id, and the final team score comes from the last stored frame.
 func TestMatches_ScoresCasesFramesAndScore(t *testing.T) {
