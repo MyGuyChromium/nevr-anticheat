@@ -257,6 +257,9 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	if m.Replaced || len(m.Warnings) != 0 {
 		t.Errorf("replaced=%v warnings=%v", m.Replaced, m.Warnings)
 	}
+	if m.DiscSpeedCap != 18.9 {
+		t.Errorf("disc speed cap = %v, want 18.9", m.DiscSpeedCap)
+	}
 	if m.Summary == nil || m.Summary.Version != replay.SummaryVersion || m.Summary.MatchID != m.MatchID || m.Summary.Ticks != 120 || len(m.Summary.Players) != 4 {
 		t.Errorf("match summary %+v", m.Summary)
 	}
@@ -413,7 +416,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "Download JSON", "Export player CSV", "Review replay", "Detector observations"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Review replay", "Detector observations"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}

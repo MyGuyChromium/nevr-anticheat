@@ -19,7 +19,7 @@ The file is an overlay on `configs/default.toml`; every param keeps its calibrat
 
 | Detector | Weight | What it catches | Physics basis | UNVERIFIED aspect |
 |----------|--------|-----------------|---------------|-------------------|
-| THROW_001 | 0.8 | Release speed above the 18.7 m/s cap (+1.3 m/s tolerance, + ping) | Engine-enforced cap | Tolerances; releases > 37.4 m/s are `disc_speed_artifact` at severity 0.2 |
+| THROW_001 | 0.8 | Release speed above the 18.9 m/s cap | Engine-enforced cap | Direct `disc.velocity`; releases > 37.8 m/s are `disc_speed_artifact` at severity 0.2 |
 | THROW_006 | 0.8 | Disc bending in free flight | Zero-G straight-line physics | Angle thresholds; needs 5 sustained violation frames |
 | BIO_002 | 0.6 | Hand speed above 50 m/s | Human limit ~12 m/s | Threshold is 4× the limit |
 | MOV_001 | 0.7 | Sustained speed above 55 m/s | Physics speed cap | Median window on real variable-dt data |
@@ -187,7 +187,7 @@ Metrics that matter (all exist on `/metrics`):
 **After match 3**
 
 - [ ] Re-check BIO_001 (still 0) and the per-detector spread.
-- [ ] Look at THROW_001 samples: `sqlite3 nevr-ac-shadow.db "SELECT observed_value, expected_range, severity FROM detection_events WHERE detector_id='THROW_001' ORDER BY severity DESC LIMIT 20;"` — `disc_speed_artifact` rows (severity 0.2) are releases above 37.4 m/s; a large share of them means the disc velocity is not what the detector assumes.
+- [ ] Look at THROW_001 samples: `sqlite3 nevr-ac-shadow.db "SELECT observed_value, expected_range, severity FROM detection_events WHERE detector_id='THROW_001' ORDER BY severity DESC LIMIT 20;"` — `disc_speed_artifact` rows (severity 0.2) are releases above 37.8 m/s; a large share of them means the disc velocity is not what the detector assumes.
 - [ ] Reprocess one match offline with the same config and confirm the event counts match the live run: `./nevr-ac --config configs/shadow_deploy.toml reprocess-match <match-id>`.
 
 ## What to watch during the first 10 matches

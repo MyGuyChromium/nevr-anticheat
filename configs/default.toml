@@ -49,10 +49,10 @@ db_path     = "./nevr-anticheat.db"  # SQLite file (WAL mode; .db-wal/.db-shm si
 # A warning is logged when these differ from the engine defaults.
 # =============================================================================
 [physics]
-disc_speed_cap   = 18.7     # m/s, engine-enforced maximum disc speed
+disc_speed_cap   = 18.9     # m/s, engine-enforced maximum disc speed
 boost_speed_cap  = 5.0      # m/s, speed gained by one boost
 max_player_speed = 55.0     # m/s, hard cap for player movement (MOV_001 burst branch)
-max_throw_speed  = 20.0     # m/s, reference only
+max_throw_speed  = 18.9     # m/s, reference only
 stun_duration    = 3.0      # s, reference for STATE_002 evidence
 shield_cooldown  = 5.0      # s, reference for STATE_005 evidence
 immunity_window  = 1.5      # s, post-respawn immunity (reference)
@@ -156,8 +156,9 @@ persist_interval          = "2m"      # how often a live match context is re-per
 # ----------------------------------------------------------------------------- throw
 
 [detector.THROW_001]
-# Impossible Release Velocity. PHYSICS_GROUNDED: the 18.7 m/s cap is a real
-# engine constant; base_tolerance and ping_tolerance_scalar are UNVERIFIED.
+# Impossible Release Velocity. PHYSICS_GROUNDED: the 18.9 m/s cap is a real
+# engine constant. Release speed comes directly from disc.velocity, so ping
+# does not enlarge the cap. Optional tolerances default to zero.
 # Releases above 2x the cap are reported as anomaly disc_speed_artifact at
 # severity 0.2 (timing artifact vs injection is unresolved on real data).
 enabled            = true
@@ -165,8 +166,8 @@ enforcement_weight = 0.8
 auto_enforce       = false   # keep off until the 22-96 m/s over-cap events in the calibration DB are explained
 mode               = "shadow"
 [detector.THROW_001.params]
-base_tolerance             = 1.3    # m/s added to physics.disc_speed_cap
-ping_tolerance_scalar      = 5.0    # m/s per second of estimated ping
+base_tolerance             = 0.0    # optional m/s added to physics.disc_speed_cap
+ping_tolerance_scalar      = 0.0    # optional legacy m/s per second of estimated ping
 max_speed_ratio            = 3.0    # release/cap ratio at which severity saturates
 sigmoid_steepness          = 2.0
 cap_riding_cooldown_frames = 900    # frames; at most one cap-riding event per player per window (~60 s at 15 Hz)

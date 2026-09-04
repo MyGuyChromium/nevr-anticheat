@@ -163,7 +163,7 @@ func TestTimestamps_Throw001FiresAt15FpsFromReplay(t *testing.T) {
 		if !ok || math.Abs(te.ReleaseSpeed-35) > 1e-6 {
 			t.Errorf("release speed should be the game-reported 35 m/s: %#v", ev.Evidence)
 		}
-		if !strings.Contains(ev.ObservedValue, "35.0 m/s") {
+		if !strings.Contains(ev.ObservedValue, "35.00 m/s") {
 			t.Errorf("observed = %q", ev.ObservedValue)
 		}
 	}

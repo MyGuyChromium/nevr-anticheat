@@ -11,7 +11,7 @@ import (
 // adapter produces (shared disc state, possession boolean, game-reported
 // disc velocity). Every field maps onto a detector input:
 //
-//	ReleaseSpeed      THROW_001 (cap 18.7 + 1.3 + ping tolerance), THROW_002 (delta from rest)
+//	ReleaseSpeed      THROW_001 (18.9 m/s cap), THROW_002 (delta from rest)
 //	DeviationDeg      THROW_005 (goal-directed when < 30 deg; precision when mean < 2 deg)
 //	HandSpeed         THROW_003 (min 3 m/s), THROW_001 speed ratio, THROW_004/PAT_002 signature
 //	HandReverse       THROW_003 (release angle ~180 deg > 177)
@@ -266,7 +266,7 @@ func (fb *FrameBuilder) NormalThrowSequence(nThrows int) []model.PlayerTelemetry
 }
 
 // EliteThrowSequence generates top-tier throws at 15-17 m/s (under the
-// 18.7 m/s cap and outside the cap-riding band), 2.5-4 degrees off the
+// 18.9 m/s cap and outside the cap-riding band), 2.5-4 degrees off the
 // goal with fast hands. Must stay clean on the production-enabled set.
 func (fb *FrameBuilder) EliteThrowSequence(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
@@ -291,7 +291,7 @@ func (fb *FrameBuilder) EliteThrowSequence(nThrows int) []model.PlayerTelemetryF
 }
 
 // AimbotSpeed is the release speed of AimbotThrows: over the effective
-// THROW_001 cap (18.7 + 1.3 + ping tolerance) and under the 2x-cap artifact
+// THROW_001 cap (18.9 m/s by default) and under the 2x-cap artifact
 // band, so each release is an over-cap "disc_speed" event.
 const AimbotSpeed = 35.0
 
@@ -323,7 +323,7 @@ func (fb *FrameBuilder) ArtifactThrows(nThrows int) []model.PlayerTelemetryFrame
 	return frames
 }
 
-// CapRidingThrows generates sub-cap releases pinned at 18.5-19.5 m/s: the
+// CapRidingThrows generates sub-cap releases pinned at 17.9-18.7 m/s: the
 // mean sits within 2 m/s of the effective cap with a spread below 1 m/s,
 // which THROW_001 reports once per cooldown as cap riding after 8 throws.
 func (fb *FrameBuilder) CapRidingThrows(nThrows int) []model.PlayerTelemetryFrame {
@@ -332,7 +332,7 @@ func (fb *FrameBuilder) CapRidingThrows(nThrows int) []model.PlayerTelemetryFram
 		ft := float64(t)
 		specs[t] = ThrowSpec{
 			HoldFrames: 10 + t%3, FlightFrames: 15, GapFrames: 6,
-			ReleaseSpeed: 18.5 + 1.0*frac(ft*0.37+0.2), DeviationDeg: 3.0 + 5.0*frac(ft*0.61),
+			ReleaseSpeed: 17.9 + 0.8*frac(ft*0.37+0.2), DeviationDeg: 3.0 + 5.0*frac(ft*0.61),
 			DeviationSeed: ft * 2.1, HandSpeed: 8.0, WindupBack: 0.3, SpeedGainPerFrame: -0.05,
 		}
 	}
@@ -379,7 +379,7 @@ func (fb *FrameBuilder) MagnetismCheat(nThrows int) []model.PlayerTelemetryFrame
 
 // AcceleratingDisc generates throws whose disc GAINS 6 m/s on every
 // free-flight frame (10 -> 70 m/s over 10 frames, under the validator's
-// 4 x DiscSpeedCap = 74.8 m/s disc sanity bound) without changing
+// 4 x DiscSpeedCap = 75.6 m/s disc sanity bound) without changing
 // direction. THROW_008 counts >= 4 speed increases above its 5 m/s
 // tolerance and fires when the track finalizes.
 func (fb *FrameBuilder) AcceleratingDisc(nThrows int) []model.PlayerTelemetryFrame {

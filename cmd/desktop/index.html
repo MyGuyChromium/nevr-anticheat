@@ -184,6 +184,8 @@
   .goal-dot.blue { background: var(--blue); }
   .goal-dot.orange { background: var(--orange); }
   .goal-yes { color: var(--ok); font-weight: 600; }
+  .cap-breach { color: var(--bad); font-weight: 700; }
+  tr.cap-breach-row td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
   .stat-tables { overflow-x: auto; }
   .stat-tables table { min-width: 980px; }
   .throw-table { overflow-x: auto; max-height: 430px; }
@@ -624,27 +626,35 @@
       '</tbody></table></div><p class="summary-note">Ping shows average / maximum milliseconds. Possession is seconds. “Scored” is throws linked to a goal.</p>';
   }
 
-  function goalsTable(s) {
+  function speedCell(speed, cap) {
+    const value = Number(speed) || 0, limit = Number(cap) || 0;
+    if (limit > 0 && value > limit) {
+      return `<span class="cap-breach">${fmtNum(value, 2)} m/s</span> <span class="tag bad">over ${fmtNum(limit, 1)} cap by ${fmtNum(value - limit, 2)}</span>`;
+    }
+    return `${fmtNum(value, 2)} m/s`;
+  }
+
+  function goalsTable(s, discSpeedCap) {
     const goals = s.goals || [];
     if (!goals.length) return '<p class="empty">No score change was observed in the recording.</p>';
     return `<div class="events"><table><thead><tr><th>Clock</th><th>Score</th><th>Team</th><th>Scorer</th><th>Assist</th><th>Shot</th><th class="num">Distance</th><th class="num">Disc speed</th></tr></thead><tbody>` +
-      goals.map((g) => `<tr><td class="mono">${esc(g.clock || fmtClock(g.time))}</td><td><strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong></td>
+      goals.map((g) => `<tr class="${g.described && discSpeedCap > 0 && g.disc_speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(g.clock || fmtClock(g.time))}</td><td><strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong></td>
         <td><span class="goal-dot ${esc(g.team)}"></span>${team(g.team)} <span class="muted">+${fmtInt(g.points)}</span></td><td>${person(g.scorer, g.scorer_id)}</td><td>${person(g.assist, g.assist_id)}</td>
         <td>${g.described ? esc(g.goal_type) || '<span class="muted">—</span>' : '<span class="muted">Details unavailable</span>'}</td>
-        <td class="num">${g.described ? `${fmtNum(g.distance, 2)} m` : '—'}</td><td class="num">${g.described ? `${fmtNum(g.disc_speed, 2)} m/s` : '—'}</td></tr>`).join('') +
+        <td class="num">${g.described ? `${fmtNum(g.distance, 2)} m` : '—'}</td><td class="num">${g.described ? speedCell(g.disc_speed, discSpeedCap) : '—'}</td></tr>`).join('') +
       '</tbody></table></div>';
   }
 
-  function throwsTable(s) {
+  function throwsTable(s, discSpeedCap) {
     const throws = s.throws || [];
     if (!throws.length) {
       const why = s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.';
       return `<p class="empty">${esc(why)}</p>`;
     }
     return `<div class="throw-table"><table><thead><tr><th>Clock</th><th>Player</th><th>Team</th><th class="num">Speed</th><th>Result</th><th class="num">Frame</th></tr></thead><tbody>` +
-      throws.map((th) => `<tr><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
-        <td class="num">${fmtNum(th.speed, 2)} m/s</td><td>${th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'}</td><td class="num dim">${fmtInt(th.frame_index)}</td></tr>`).join('') +
-      `</tbody></table></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}; a throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
+      throws.map((th) => `<tr class="${discSpeedCap > 0 && th.speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
+        <td class="num">${speedCell(th.speed, discSpeedCap)}</td><td>${th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'}</td><td class="num dim">${fmtInt(th.frame_index)}</td></tr>`).join('') +
+      `</tbody></table></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}. Speeds above the ${fmtNum(discSpeedCap, 1)} m/s engine cap are marked for review; the player-relative breakdown is stored with THROW_001 evidence. A throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
   }
 
   function matchReport(m) {
@@ -655,8 +665,8 @@
       <a class="btn btn-sm" href="api/match/${id}/summary.json">Download JSON</a><a class="btn btn-sm" href="api/match/${id}/export.csv">Export player CSV</a></div></div>
       <div class="team-grid">${teamCard(s.teams && s.teams.blue, 'blue')}${teamCard(s.teams && s.teams.orange, 'orange')}</div>
       <details class="sub" open><summary><span class="tog" aria-hidden="true"></span><h3>Player statistics<span class="count">${fmtInt((s.players || []).length)}</span></h3></summary>${gameStatsTable(s)}</details>
-      <details class="sub" ${s.goals && s.goals.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Scoring timeline<span class="count">${fmtInt((s.goals || []).length)}</span></h3></summary>${goalsTable(s)}</details>
-      <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s)}</details>`;
+      <details class="sub" ${s.goals && s.goals.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Scoring timeline<span class="count">${fmtInt((s.goals || []).length)}</span></h3></summary>${goalsTable(s, m.disc_speed_cap)}</details>
+      <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s, m.disc_speed_cap)}</details>`;
   }
 
   function eventRows(events) {

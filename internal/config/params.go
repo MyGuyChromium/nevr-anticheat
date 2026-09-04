@@ -77,8 +77,8 @@ const sigmoidDoc = "steepness of the severity/confidence sigmoid"
 var detectorSpecs = map[string]DetectorSpec{
 	"THROW_001": {ID: "THROW_001", Name: "Impossible Release Velocity", Category: "throw",
 		Params: []ParamSpec{
-			f("base_tolerance", 1.3, "m/s", "tolerance added to physics.disc_speed_cap before a release is over-cap"),
-			f("ping_tolerance_scalar", 5.0, "m/s per s of ping", "extra tolerance per second of estimated ping"),
+			f("base_tolerance", 0.0, "m/s", "optional tolerance added to physics.disc_speed_cap before a release is over-cap"),
+			f("ping_tolerance_scalar", 0.0, "m/s per s of ping", "optional legacy tolerance per second of estimated ping; zero by default because release speed comes from disc.velocity"),
 			f("max_speed_ratio", 3.0, "ratio", "release/cap ratio at which severity saturates"),
 			f("sigmoid_steepness", 2.0, "", sigmoidDoc),
 			i("cap_riding_cooldown_frames", 900, "frames", "at most one cap-riding event per player per window"),

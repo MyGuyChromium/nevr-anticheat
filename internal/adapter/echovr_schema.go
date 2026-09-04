@@ -97,7 +97,7 @@ type EchoVRPlayer struct {
 	// Game state booleans
 	Stunned      bool `json:"stunned"`      // CONFIRMED: player is stunned
 	Invulnerable bool `json:"invulnerable"` // CONFIRMED: post-respawn invulnerability
-	Possession   bool `json:"possession"`   // CONFIRMED: player holds the disc
+	Possession   bool `json:"possession"`   // CONFIRMED: current/last carrier; may remain true after release
 	Blocking     bool `json:"blocking"`     // CONFIRMED: shield/block active
 
 	// CONFIRMED from a real Spark recording: what each hand holds, "none",
@@ -204,6 +204,18 @@ func (p *EchoVRPlayer) HoldsDisc() bool {
 // sources, whose only release signal is the Possession boolean).
 func (p *EchoVRPlayer) HasHoldingFields() bool {
 	return p.HoldingLeft != "" || p.HoldingRight != ""
+}
+
+// HasDisc uses the hand-held item fields when the source supplies them. In
+// real Spark replays the older Possession flag stays true for the last carrier
+// after release, while holding_left / holding_right change from "disc" to
+// "none" on the release tick. Older sources without holding fields fall back
+// to Possession.
+func (p *EchoVRPlayer) HasDisc() bool {
+	if p.HasHoldingFields() {
+		return p.HoldsDisc()
+	}
+	return p.Possession
 }
 
 // Note: Top-level "possession" is a [2]int array (team_idx, player_idx).

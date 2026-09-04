@@ -5,6 +5,11 @@ type ThrowEvidence struct {
 	ReleaseVelocity           Vec3    `json:"release_velocity"`
 	ReleaseSpeed              float64 `json:"release_speed"`
 	ReleasePosition           Vec3    `json:"release_position"`
+	PlayerVelocity            Vec3    `json:"player_velocity"`
+	PlayerSpeed               float64 `json:"player_speed"`
+	AlignedMovementSpeed      float64 `json:"aligned_movement_speed"`
+	PlayerRelativeVelocity    Vec3    `json:"player_relative_velocity"`
+	PlayerRelativeSpeed       float64 `json:"player_relative_speed"`
 	HandVelocity              Vec3    `json:"hand_velocity"`
 	HandSpeed                 float64 `json:"hand_speed"`
 	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`

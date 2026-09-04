@@ -61,7 +61,7 @@ type Throw001 struct {
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.2.0",
+			DetectorID: "THROW_001", DetectorVersion: "1.3.0",
 			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
@@ -70,8 +70,8 @@ func NewThrow001(params map[string]any) *Throw001 {
 			// config wiring can turn it on via SetAutoEnforce.
 			IsAutoEnforce: false,
 		},
-		baseTolerance:           detect.GetFloat(params, "base_tolerance", 1.3),
-		pingToleranceScalar:     detect.GetFloat(params, "ping_tolerance_scalar", 5.0),
+		baseTolerance:           detect.GetFloat(params, "base_tolerance", 0.0),
+		pingToleranceScalar:     detect.GetFloat(params, "ping_tolerance_scalar", 0.0),
 		maxSpeedRatio:           detect.GetFloat(params, "max_speed_ratio", 3.0),
 		sigmoidSteepness:        detect.GetFloat(params, "sigmoid_steepness", 2.0),
 		capRidingCooldownFrames: detect.GetInt(params, "cap_riding_cooldown_frames", defaultCapRidingCooldownFrames),
@@ -110,6 +110,10 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		pingTolerance := (ps.EstimatedPingMs / 1000.0) * d.pingToleranceScalar
 		effectiveCap := matchCtx.Physics.DiscSpeedCap + d.baseTolerance + pingTolerance
 		speedExcess := t.ReleaseSpeed - effectiveCap
+		playerSpeed := t.PlayerVelocity.Magnitude()
+		alignedMovementSpeed := t.PlayerVelocity.Dot(t.ReleaseVelocity) / t.ReleaseSpeed
+		playerRelativeVelocity := t.ReleaseVelocity.Sub(t.PlayerVelocity)
+		playerRelativeSpeed := playerRelativeVelocity.Magnitude()
 		handSpeed := t.HandSpeed
 		if t.HandKinematicsValid {
 			handSpeed = math.Max(handSpeed, 0.01)
@@ -117,8 +121,12 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 
 		evidence := model.ThrowEvidence{
 			ReleaseVelocity: t.ReleaseVelocity, ReleaseSpeed: t.ReleaseSpeed,
-			ReleasePosition: t.ReleasePosition, HandVelocity: t.HandVelocity,
-			HandSpeed: t.HandSpeed, HandRelativeVelocity: t.HandRelativeVelocity,
+			ReleasePosition: t.ReleasePosition,
+			PlayerVelocity:  t.PlayerVelocity, PlayerSpeed: playerSpeed,
+			AlignedMovementSpeed:   alignedMovementSpeed,
+			PlayerRelativeVelocity: playerRelativeVelocity, PlayerRelativeSpeed: playerRelativeSpeed,
+			HandVelocity: t.HandVelocity,
+			HandSpeed:    t.HandSpeed, HandRelativeVelocity: t.HandRelativeVelocity,
 			HandRelativeSpeed:         t.HandRelativeSpeed,
 			HandKinematicsValid:       t.HandKinematicsValid,
 			HandAttributionConfidence: t.HandAttributionConfidence,
@@ -180,9 +188,11 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		evidence.SpeedRatio = speedRatio
 
-		observed := fmt.Sprintf("disc_speed: %.1f m/s (hand ratio unavailable)", t.ReleaseSpeed)
+		observed := fmt.Sprintf("disc_speed: %.2f m/s (player-relative %.2f; aligned movement %+.2f; hand ratio unavailable)",
+			t.ReleaseSpeed, playerRelativeSpeed, alignedMovementSpeed)
 		if t.HandKinematicsValid {
-			observed = fmt.Sprintf("disc_speed: %.1f m/s (ratio: %.1f)", t.ReleaseSpeed, speedRatio)
+			observed = fmt.Sprintf("disc_speed: %.2f m/s (player-relative %.2f; aligned movement %+.2f; hand ratio %.1f)",
+				t.ReleaseSpeed, playerRelativeSpeed, alignedMovementSpeed, speedRatio)
 		}
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence, evidence,
 			observed,

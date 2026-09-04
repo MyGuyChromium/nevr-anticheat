@@ -228,8 +228,9 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 
 	timestamp, backwards := m.tickTimestamp(sampleTime, result)
 
-	// Build ONE disc state per tick. Possession is a per-player boolean in the
-	// API; the disc is held by whichever mapped player reports it. Every frame
+	// Build ONE disc state per tick. Explicit hand-held item fields are the
+	// authoritative release signal; older sources fall back to Possession.
+	// The disc is held by whichever mapped player reports it. Every frame
 	// of this tick gets the same values so detectors that look at "the disc"
 	// through any player's frame agree on whether it is held and by whom.
 	var tickDisc *model.DiscState
@@ -247,7 +248,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 			continue
 		}
 		for i := range team.Players {
-			if team.Players[i].Possession {
+			if team.Players[i].HasDisc() {
 				holders++
 				if tickDisc != nil && !tickDisc.IsHeld {
 					tickDisc.IsHeld = true
@@ -419,6 +420,8 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			writeV(p.LHand.Forward)
 			writeV(p.RHand.Forward)
 			writeB(p.Possession)
+			h.Write([]byte(p.HoldingLeft))
+			h.Write([]byte(p.HoldingRight))
 			writeB(p.Stunned)
 			writeB(p.Blocking)
 		}
@@ -557,8 +560,9 @@ func (m *Mapper) mapPlayer(
 		disc = &d
 	}
 
-	// CONFIRMED: per-player possession boolean exists in Echo VR API
-	hasPossession := p.Possession
+	// Explicit hand-held fields drop on the actual release tick. The legacy
+	// Possession boolean can remain true for the last carrier after release.
+	hasPossession := p.HasDisc()
 
 	// CONFIRMED: stunned boolean
 	isStunned := p.Stunned
@@ -743,10 +747,10 @@ func DocumentMappings() []FieldMapping {
 		{"IsBoosting", "(absent)", Absent, "false", "Echo VR API does not expose boosting state"},
 		{"ShieldActive", "blocking", Confirmed, "false", "Per-player blocking boolean"},
 		{"IsImmune", "invulnerable", Confirmed, "false", "Post-respawn invulnerability"},
-		{"HasPossession", "possession", Confirmed, "false", "Per-player possession boolean from API"},
+		{"HasPossession", "holding_left/right; possession fallback", Confirmed, "false", "Explicit hand-held item fields mark release; older sources fall back to the sticky possession boolean"},
 		{"Disc.Position", "disc.position", Confirmed, "nil disc", "One DiscState per tick, identical on every player's frame"},
 		{"Disc.Velocity", "disc.velocity", Confirmed, "nil disc", "Direct mapping; Speed = |velocity|"},
-		{"Disc.IsHeld/PossessorID", "players[].possession", Inferred, "false / empty", "Holder = the mapped player reporting possession; shared by all frames of the tick"},
+		{"Disc.IsHeld/PossessorID", "players[].holding_left/right; possession fallback", Inferred, "false / empty", "Holder = first mapped player whose hand explicitly holds the disc; older sources fall back to possession"},
 		{"EstimatedPingMs", "ping", Confirmed, "0", "Per-player ping in ms; enables lag compensation"},
 		{"GamePhase", "game_status", Confirmed, "playing", "Direct string mapping with normalization"},
 		{"BlueScore", "blue_points", Confirmed, "0", "Direct mapping"},

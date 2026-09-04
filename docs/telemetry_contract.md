@@ -195,6 +195,12 @@ The server finalizes the match: closes open dedup incidents, persists remaining 
 
 A throw is detected by the feature extractor when `has_possession` goes `true → false` between a player's consecutive frames during an active phase. The producer never sends throw events.
 
+For raw Echo VR/Spark snapshots, the adapter derives `has_possession` from
+`holding_left` / `holding_right` when those fields are present because the
+separate `possession` boolean can remain true for the last carrier after the
+disc is released. Older/custom sources without hand-held item fields fall back
+to `possession`.
+
 Frame N (holding the disc):
 
 ```json

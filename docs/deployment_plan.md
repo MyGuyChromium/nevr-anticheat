@@ -93,7 +93,7 @@ For each detector metric (from `evidence_json` of clean matches): mean, stddev, 
 
 | Metric | Source | Expected legit range (to be measured) |
 |--------|--------|---------------------------------------|
-| Throw release speed | THROW_001 evidence `release_speed` | 0.5 – 18.7 m/s |
+| Throw release speed | THROW_001 evidence `release_speed` | 0.5 – 18.9 m/s |
 | Hand speed at release | THROW_001/THROW_003 evidence `hand_speed` | 0.5 – 12 m/s |
 | Release angle | THROW_003 evidence | 0 – 45° |
 | Sustained player speed | MOV_001 evidence (median over 30 frames) | 0 – 50 m/s |

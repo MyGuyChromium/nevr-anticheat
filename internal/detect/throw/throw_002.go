@@ -12,7 +12,7 @@ import (
 // Approach: compare the disc speed in the last pre-release snapshot (the
 // frame immediately BEFORE the release frame, as built by the feature
 // extractor) against the release speed. A legitimate wrist flick can impart
-// at most ~18.7 m/s (the engine-enforced cap). A sudden jump larger than
+// at most ~18.9 m/s (the engine-enforced cap). A sudden jump larger than
 // maxSpeedDelta is physically impossible regardless of player motion.
 //
 // Snapshots whose source frame carried no disc state are unusable and skipped.
@@ -28,7 +28,7 @@ func NewThrow002(params map[string]any) *Throw002 {
 			DetectorName: "Impossible Disc Acceleration", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.7,
 		},
-		// 22.0 m/s: above the 18.7 m/s physics cap with tolerance, well below
+		// 22.0 m/s: above the 18.9 m/s physics cap, well below
 		// any cheat-injected value. Calibrate against real match data.
 		maxSpeedDelta: detect.GetFloat(params, "max_speed_delta", 22.0),
 	}
