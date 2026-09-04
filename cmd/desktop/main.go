@@ -26,7 +26,14 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.3.1"
+const appVersion = "0.4.0"
+
+// Filled by the release workflow. Development builds intentionally retain
+// these values so the updater can say that their revision is unknown.
+var (
+	buildCommit = "development"
+	buildTime   = "unknown"
+)
 
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file (default: built-in defaults, database next to the executable)")
@@ -88,15 +95,29 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	var serveFailure error
 	select {
 	case <-ctx.Done():
 	case <-srv.Done():
 	case err := <-serveErr:
-		return fmt.Errorf("serving: %w", err)
+		if err != nil && err != http.ErrServerClosed {
+			serveFailure = fmt.Errorf("serving: %w", err)
+		}
 	}
+	// Stop the watch/recovery worker before closing its database. This also
+	// makes Ctrl+C follow the same orderly path as the in-app Quit button.
+	srv.quitOnce.Do(func() { close(srv.quit) })
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return hs.Shutdown(shutdownCtx)
+	if err := hs.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	select {
+	case <-srv.runtime.stopped:
+		return serveFailure
+	case <-shutdownCtx.Done():
+		return shutdownCtx.Err()
+	}
 }
 
 type appWindowCandidate struct {

@@ -370,14 +370,27 @@ func (s *Store) DeleteMatchScores(ctx context.Context, matchID string) (int64, e
 // justifies are closed by CloseStaleReviewCases (replay.StoreMatchAnalysis
 // calls it). Returns (events deleted, scores deleted).
 func (s *Store) DeleteMatchAnalysis(ctx context.Context, matchID string) (int64, int64, error) {
-	events, err := s.DeleteMatchEvents(ctx, matchID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	if err := captureAnalysisSnapshotTx(ctx, tx, matchID); err != nil {
+		return 0, 0, fmt.Errorf("snapshotting previous analysis: %w", err)
+	}
+	eventResult, err := tx.ExecContext(ctx, "DELETE FROM detection_events WHERE match_id = ?", matchID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("deleting events: %w", err)
 	}
-	scores, err := s.DeleteMatchScores(ctx, matchID)
+	scoreResult, err := tx.ExecContext(ctx, `DELETE FROM suspicion_scores WHERE scope = ? AND match_id = ?`, ScoreScopeMatch, matchID)
 	if err != nil {
-		return events, 0, fmt.Errorf("deleting scores: %w", err)
+		return 0, 0, fmt.Errorf("deleting scores: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	events, _ := eventResult.RowsAffected()
+	scores, _ := scoreResult.RowsAffected()
 	return events, scores, nil
 }
 

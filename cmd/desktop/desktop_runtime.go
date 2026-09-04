@@ -1,0 +1,587 @@
+package main
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
+)
+
+const githubRepoAPI = "https://api.github.com/repos/MyGuyChromium/nevr-anticheat"
+
+type desktopSettings struct {
+	WatchFolder      string            `json:"watch_folder"`
+	WatchEnabled     bool              `json:"watch_enabled"`
+	AutomaticUpdates bool              `json:"automatic_update_checks"`
+	SeenFiles        map[string]string `json:"seen_files,omitempty"`
+}
+
+type desktopRuntime struct {
+	mu           sync.Mutex
+	engine       *replay.Engine
+	settingsPath string
+	pendingDir   string
+	supportDir   string
+	settings     desktopSettings
+	watchStatus  string
+	watchError   string
+	watchLast    time.Time
+	watchCount   int
+	recovering   bool
+	recovered    int
+	recoveryErr  string
+	updateURL    string
+	httpClient   *http.Client
+	analyzeMu    *sync.Mutex
+	stopped      chan struct{}
+	resume       chan struct{}
+}
+
+func newDesktopRuntime(engine *replay.Engine, done <-chan struct{}) *desktopRuntime {
+	base := filepath.Dir(engine.Store().Path())
+	rt := &desktopRuntime{
+		engine: engine, settingsPath: filepath.Join(base, "nevr-desktop-settings.json"),
+		pendingDir: filepath.Join(base, ".nevr-pending"), supportDir: filepath.Join(base, "support-bundles"),
+		updateURL: githubRepoAPI, httpClient: &http.Client{Timeout: 8 * time.Second},
+		settings:    desktopSettings{AutomaticUpdates: true, SeenFiles: make(map[string]string)},
+		watchStatus: "idle", analyzeMu: &sync.Mutex{}, stopped: make(chan struct{}), resume: make(chan struct{}, 1),
+	}
+	_ = os.MkdirAll(rt.pendingDir, 0o700)
+	_ = rt.loadSettings()
+	go rt.loop(done)
+	return rt
+}
+
+func (rt *desktopRuntime) loadSettings() error {
+	doc, err := os.ReadFile(rt.settingsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var settings desktopSettings
+	if err := json.Unmarshal(doc, &settings); err != nil {
+		return err
+	}
+	if settings.SeenFiles == nil {
+		settings.SeenFiles = make(map[string]string)
+	}
+	rt.settings = settings
+	return nil
+}
+
+func (rt *desktopRuntime) saveSettingsLocked() error {
+	doc, err := json.MarshalIndent(rt.settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := rt.settingsPath + ".tmp"
+	if err := os.WriteFile(tmp, doc, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, rt.settingsPath)
+}
+
+func (rt *desktopRuntime) loop(done <-chan struct{}) {
+	defer close(rt.stopped)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	// Give the HTTP server time to start, then recover files that had already
+	// completed upload when a previous process exited.
+	timer := time.NewTimer(750 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return
+	case <-timer.C:
+	}
+	rt.resumePending(ctx)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-rt.resume:
+			rt.resumePending(ctx)
+		case <-ticker.C:
+			rt.mu.Lock()
+			enabled := rt.settings.WatchEnabled
+			rt.mu.Unlock()
+			if enabled {
+				rt.scanWatchFolder(ctx)
+			}
+		}
+	}
+}
+
+func fileFingerprint(path string, info fs.FileInfo) string {
+	h := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(path)) + "\x00" + fmt.Sprint(info.Size()) + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano)))
+	return hex.EncodeToString(h[:12])
+}
+
+func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
+	rt.mu.Lock()
+	folder := rt.settings.WatchFolder
+	if rt.watchStatus == "scanning" {
+		rt.mu.Unlock()
+		return 0, errors.New("watch scan already running")
+	}
+	rt.watchStatus, rt.watchError = "scanning", ""
+	rt.mu.Unlock()
+	finish := func(count int, err error) {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		rt.watchLast, rt.watchCount = time.Now(), count
+		if err != nil {
+			rt.watchStatus, rt.watchError = "error", err.Error()
+		} else {
+			rt.watchStatus = "ready"
+		}
+	}
+	if folder == "" {
+		err := errors.New("choose a replay watch folder first")
+		finish(0, err)
+		return 0, err
+	}
+	if st, err := os.Stat(folder); err != nil || !st.IsDir() {
+		if err == nil {
+			err = errors.New("path is not a folder")
+		}
+		finish(0, err)
+		return 0, err
+	}
+	var files []string
+	err := filepath.WalkDir(folder, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if path != folder && strings.HasPrefix(entry.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".echoreplay") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		finish(0, err)
+		return 0, err
+	}
+	sort.Strings(files)
+	count := 0
+	var failures []string
+	rt.analyzeMu.Lock()
+	defer rt.analyzeMu.Unlock()
+	for _, path := range files {
+		if ctx.Err() != nil {
+			finish(count, ctx.Err())
+			return count, ctx.Err()
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		// Avoid reading a file while Spark is still writing it.
+		if time.Since(info.ModTime()) < 3*time.Second {
+			continue
+		}
+		fp := fileFingerprint(path, info)
+		rt.mu.Lock()
+		seen := rt.settings.SeenFiles[path] == fp
+		rt.mu.Unlock()
+		if seen {
+			continue
+		}
+		results, analyzeErr := rt.engine.AnalyzeFileAll(ctx, path, true)
+		failure := analyzeErr
+		ok := analyzeErr == nil && len(results) > 0
+		for _, result := range results {
+			if result.PersistError() != nil {
+				ok = false
+				failure = result.PersistError()
+			}
+		}
+		if !ok {
+			if failure == nil {
+				failure = errors.New("no match was found in the recording")
+			}
+			// Remember this exact failed fingerprint so an invalid recording does
+			// not consume CPU every five seconds. Replacing or touching the file
+			// changes the fingerprint and makes it eligible again.
+			rt.mu.Lock()
+			rt.settings.SeenFiles[path] = fp
+			_ = rt.saveSettingsLocked()
+			rt.mu.Unlock()
+			failures = append(failures, filepath.Base(path)+": "+failure.Error())
+			continue
+		}
+		rt.mu.Lock()
+		rt.settings.SeenFiles[path] = fp
+		_ = rt.saveSettingsLocked()
+		rt.mu.Unlock()
+		count++
+	}
+	if len(failures) > 0 {
+		err := fmt.Errorf("%d replay(s) could not be analyzed; first error: %s", len(failures), failures[0])
+		finish(count, err)
+		return count, err
+	}
+	finish(count, nil)
+	return count, nil
+}
+
+func (rt *desktopRuntime) pendingFiles() []string {
+	var out []string
+	_ = filepath.WalkDir(rt.pendingDir, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext == ".echoreplay" || ext == ".json" {
+				out = append(out, path)
+			}
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+func (rt *desktopRuntime) resumePending(ctx context.Context) {
+	rt.mu.Lock()
+	if rt.recovering {
+		rt.mu.Unlock()
+		return
+	}
+	rt.recovering, rt.recoveryErr = true, ""
+	rt.mu.Unlock()
+	defer func() { rt.mu.Lock(); rt.recovering = false; rt.mu.Unlock() }()
+	rt.analyzeMu.Lock()
+	defer rt.analyzeMu.Unlock()
+	for _, path := range rt.pendingFiles() {
+		results, err := rt.engine.AnalyzeFileAll(ctx, path, true)
+		ok := err == nil && len(results) > 0
+		for _, result := range results {
+			if result.PersistError() != nil {
+				ok = false
+			}
+		}
+		if ok {
+			_ = os.Remove(path)
+			_ = os.Remove(filepath.Dir(path))
+			rt.mu.Lock()
+			rt.recovered++
+			rt.mu.Unlock()
+		} else if err != nil {
+			rt.mu.Lock()
+			rt.recoveryErr = err.Error()
+			rt.mu.Unlock()
+		}
+	}
+}
+
+func suggestedReplayFolders() []string {
+	home, _ := os.UserHomeDir()
+	local := os.Getenv("LOCALAPPDATA")
+	candidates := []string{
+		filepath.Join(home, "Documents", "EchoVR", "replays"),
+		filepath.Join(home, "Documents", "Ready At Dawn", "Echo VR", "replays"),
+		filepath.Join(home, "Documents", "Spark", "replays"),
+		filepath.Join(home, "Documents", "Replay Viewer", "replays"),
+		filepath.Join(local, "rad", "echovr", "replays"),
+	}
+	var out []string
+	for _, path := range candidates {
+		if st, err := os.Stat(path); err == nil && st.IsDir() {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func (s *server) handleSettings(w http.ResponseWriter, _ *http.Request) {
+	rt := s.runtime
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	writeJSON(w, 200, map[string]any{"watch_folder": rt.settings.WatchFolder,
+		"watch_enabled": rt.settings.WatchEnabled, "automatic_update_checks": rt.settings.AutomaticUpdates,
+		"watch_status": rt.watchStatus, "watch_error": rt.watchError, "watch_last_scan": fmtTime(rt.watchLast),
+		"watch_last_count": rt.watchCount, "suggested_watch_folders": suggestedReplayFolders()})
+}
+
+func (s *server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
+	var req desktopSettings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, 400, "invalid settings: %v", err)
+		return
+	}
+	req.WatchFolder = strings.TrimSpace(req.WatchFolder)
+	if req.WatchEnabled {
+		abs, err := filepath.Abs(req.WatchFolder)
+		if err != nil {
+			writeError(w, 400, "invalid watch folder: %v", err)
+			return
+		}
+		st, err := os.Stat(abs)
+		if err != nil || !st.IsDir() {
+			writeError(w, 400, "watch folder does not exist or is not a directory")
+			return
+		}
+		req.WatchFolder = abs
+	}
+	s.runtime.mu.Lock()
+	req.SeenFiles = s.runtime.settings.SeenFiles
+	s.runtime.settings = req
+	err := s.runtime.saveSettingsLocked()
+	s.runtime.mu.Unlock()
+	if err != nil {
+		writeError(w, 500, "saving settings: %v", err)
+		return
+	}
+	s.handleSettings(w, r)
+}
+
+func (s *server) handleWatchScan(w http.ResponseWriter, r *http.Request) {
+	count, err := s.runtime.scanWatchFolder(r.Context())
+	if err != nil {
+		writeError(w, 400, "%v", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "analyzed": count, "message": fmt.Sprintf("Watch-folder scan analyzed %d new replay(s).", count)})
+}
+
+func (s *server) handleRecovery(w http.ResponseWriter, _ *http.Request) {
+	rt := s.runtime
+	rt.mu.Lock()
+	recovering, recovered, recoveryErr := rt.recovering, rt.recovered, rt.recoveryErr
+	rt.mu.Unlock()
+	files := rt.pendingFiles()
+	writeJSON(w, 200, map[string]any{"recovering": recovering, "recovered": recovered, "pending": len(files), "error": recoveryErr})
+}
+
+func (s *server) handleRecoveryResume(w http.ResponseWriter, _ *http.Request) {
+	select {
+	case s.runtime.resume <- struct{}{}:
+		writeJSON(w, 202, map[string]any{"ok": true, "message": "Recovery started. Uploaded replays are reanalyzed from their durable queue."})
+	default:
+		writeJSON(w, 202, map[string]any{"ok": true, "message": "Recovery is already queued or running."})
+	}
+}
+
+func (s *server) handleRecoveryDiscard(w http.ResponseWriter, _ *http.Request) {
+	rt := s.runtime
+	// Do not remove a durable replay while the recovery worker is reading it.
+	rt.analyzeMu.Lock()
+	defer rt.analyzeMu.Unlock()
+	base, err := filepath.Abs(rt.pendingDir)
+	if err != nil {
+		writeError(w, 500, "resolving recovery directory: %v", err)
+		return
+	}
+	files := rt.pendingFiles()
+	for _, path := range files {
+		resolved, resolveErr := filepath.Abs(path)
+		rel, relErr := filepath.Rel(base, resolved)
+		if resolveErr != nil || relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			writeError(w, 500, "refusing to remove a file outside the recovery directory")
+			return
+		}
+		if err := os.Remove(resolved); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeError(w, 500, "removing pending upload: %v", err)
+			return
+		}
+	}
+	// Job directories contain only the durable copies enumerated above. The
+	// resolved containment check keeps this recursive cleanup narrowly scoped.
+	entries, _ := os.ReadDir(base)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		target, _ := filepath.Abs(filepath.Join(base, entry.Name()))
+		rel, relErr := filepath.Rel(base, target)
+		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			_ = os.RemoveAll(target)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "removed": len(files), "message": fmt.Sprintf("Discarded %d pending upload(s). Stored matches and evidence were not changed.", len(files))})
+}
+
+type updateStatus struct {
+	CurrentVersion string `json:"current_version"`
+	CurrentCommit  string `json:"current_commit"`
+	BuildTime      string `json:"build_time"`
+	LatestCommit   string `json:"latest_commit,omitempty"`
+	Available      bool   `json:"available"`
+	ReleaseURL     string `json:"release_url"`
+	CheckedAt      string `json:"checked_at"`
+	Error          string `json:"error,omitempty"`
+}
+
+func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	status := updateStatus{CurrentVersion: appVersion, CurrentCommit: buildCommit, BuildTime: buildTime,
+		ReleaseURL: "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest", CheckedAt: fmtTime(time.Now())}
+	// Follow the rolling-release tag instead of master. The workflow only moves
+	// this tag after every executable has built and the release ZIP is ready, so
+	// the desktop never advertises an un-downloadable commit as an update.
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, s.runtime.updateURL+"/git/ref/tags/windows-latest", nil)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "NEVR-Anticheat/"+appVersion)
+	if token := strings.TrimSpace(os.Getenv("NEVR_GITHUB_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.runtime.httpClient.Do(req)
+	if err != nil {
+		status.Error = err.Error()
+		writeJSON(w, 200, status)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		if resp.StatusCode == http.StatusNotFound {
+			status.Error = "Automatic checks require a public repository or NEVR_GITHUB_TOKEN; Open latest release still works with your signed-in browser."
+		} else {
+			status.Error = "GitHub returned " + resp.Status
+		}
+		writeJSON(w, 200, status)
+		return
+	}
+	var body struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		status.Error = err.Error()
+		writeJSON(w, 200, status)
+		return
+	}
+	status.LatestCommit = body.Object.SHA
+	status.Available = buildCommit != "" && buildCommit != "development" && body.Object.SHA != "" && !strings.HasPrefix(body.Object.SHA, buildCommit) && !strings.HasPrefix(buildCommit, body.Object.SHA)
+	writeJSON(w, 200, status)
+}
+
+func (s *server) handleOpenUpdate(w http.ResponseWriter, _ *http.Request) {
+	url := "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest"
+	if err := openBrowser(url); err != nil {
+		writeError(w, 500, "opening release page: %v", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "url": url, "message": "Opened the latest verified Windows release."})
+}
+
+func addZipJSON(zw *zip.Writer, name string, value any) error {
+	w, err := zw.Create(name)
+	if err != nil {
+		return err
+	}
+	doc, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(doc)
+	return err
+}
+
+func (s *server) createSupportBundle(ctx context.Context) (string, error) {
+	if err := os.MkdirAll(s.runtime.supportDir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(s.runtime.supportDir, "nevr-support-"+time.Now().UTC().Format("20060102-150405")+".zip")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	zw := zip.NewWriter(f)
+	fail := func(err error) (string, error) {
+		_ = zw.Close()
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	readme, err := zw.Create("README.txt")
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := io.WriteString(readme, "NEVR-Anticheat privacy-redacted support bundle\n\nContains app/schema health, aggregate detector statistics, and pseudonymized recent match metadata. It contains no raw replay ticks, normalized player frames, database file, watch-folder path, or executable.\n"); err != nil {
+		return fail(err)
+	}
+	stats, _ := s.engine.Store().GetStorageStats(ctx)
+	calibration, _ := s.engine.Store().ComputeCalibration(ctx, time.Time{})
+	observations, _ := s.engine.Store().ComputeObservationStats(ctx, time.Time{})
+	matches, _ := s.engine.Store().ListMatches(ctx, 25)
+	redactor := &diagnosticRedactor{}
+	matchData := make([]any, 0, len(matches))
+	for _, sm := range matches {
+		players := make([]string, 0, len(sm.Context.PlayerIDs))
+		for _, pid := range sm.Context.PlayerIDs {
+			players = append(players, redactor.pseudonym(pid))
+		}
+		matchData = append(matchData, map[string]any{"match": redactor.pseudonym(sm.Context.MatchID), "source": sm.Context.Source,
+			"game_mode": sm.Context.GameMode, "map": sm.Context.Map, "start": fmtTime(sm.Context.StartTime), "players": players, "frames": sm.FrameCount})
+	}
+	if err := addZipJSON(zw, "runtime.json", map[string]any{"app_version": appVersion, "build_commit": buildCommit,
+		"build_time": buildTime, "goos": runtime.GOOS, "goarch": runtime.GOARCH, "schema_version": sqlite.SchemaVersion(),
+		"storage": stats}); err != nil {
+		return fail(err)
+	}
+	if err := addZipJSON(zw, "calibration.json", calibration); err != nil {
+		return fail(err)
+	}
+	if err := addZipJSON(zw, "observations.json", observations); err != nil {
+		return fail(err)
+	}
+	if err := addZipJSON(zw, "recent_matches_redacted.json", matchData); err != nil {
+		return fail(err)
+	}
+	if err := addZipJSON(zw, "telemetry_contract.json", map[string]any{"disc_speed_cap": s.engine.Physics().DiscSpeedCap,
+		"supported_evidence_types": model.EvidenceTypes()}); err != nil {
+		return fail(err)
+	}
+	if err := zw.Close(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *server) handleSupportBundle(w http.ResponseWriter, r *http.Request) {
+	path, err := s.createSupportBundle(r.Context())
+	if err != nil {
+		writeError(w, 500, "creating support bundle: %v", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "path": path, "message": "Created a privacy-redacted support bundle."})
+}

@@ -131,6 +131,8 @@ Producers now report real sample intervals (bridge: HTTP sample time; replays: l
 ### Overfitting to synthetic data
 The test suite passes on synthetic telemetry (`internal/testutil/synthetic.go`: sinusoidal motion, deterministic jitter, idealised throws). Real gameplay has chaotic collisions, network reconciliation artifacts, tracking occlusion, playspace-dependent hand positions and controller-specific noise. **None of these are modelled.** The first real match will reveal false-positive patterns not seen in testing.
 
+The desktop regression lab now reduces repeat regressions: direct Correct / False positive event labels are matched to current detector output by match, player, detector and a small frame tolerance. It is still only as strong as the owner's reviewed replay library and cannot replace server-side ground truth.
+
 ### UNSAFE detectors that look safe
 THROW_004, PAT_001, PAT_002 and MOV_003 pass their tests because the tests avoid triggering them on legitimate data. **They will false-positive on real skilled players.** Keep them disabled until calibrated on thousands of real matches.
 

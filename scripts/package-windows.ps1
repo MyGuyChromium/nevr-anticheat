@@ -28,9 +28,16 @@ try {
     )
     Push-Location $repoRoot
     try {
+        $revision = (& git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
+        $buildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         foreach ($program in $programs) {
             $target = Join-Path $stage $program.Name
-            & go build -trimpath -ldflags "-s -w" -o $target $program.Package
+            $linkerFlags = "-s -w"
+            if ($program.Name -eq "nevr-desktop.exe") {
+                $linkerFlags += " -X main.buildCommit=$revision -X main.buildTime=$buildTime"
+            }
+            & go build -trimpath -ldflags $linkerFlags -o $target $program.Package
             if ($LASTEXITCODE -ne 0) {
                 throw "go build failed for $($program.Package)"
             }
@@ -46,6 +53,12 @@ try {
     [System.IO.Directory]::CreateDirectory($configTarget) | Out-Null
     Copy-Item -LiteralPath (Join-Path $repoRoot "configs\default.toml") -Destination $configTarget
     Copy-Item -LiteralPath (Join-Path $repoRoot "configs\shadow_deploy.toml") -Destination $configTarget
+    $installerTarget = Join-Path $stage "installer"
+    [System.IO.Directory]::CreateDirectory($installerTarget) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Install-NEVR.cmd") -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Install-NEVR.ps1") -Destination $installerTarget
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Uninstall-NEVR.cmd") -Destination $installerTarget
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Uninstall-NEVR.ps1") -Destination $installerTarget
 
     $zipPath = Join-Path $outputRoot "NEVR-Anticheat-Windows-x64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force

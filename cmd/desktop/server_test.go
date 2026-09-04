@@ -146,6 +146,14 @@ func newTestServer(t *testing.T) (*server, *httptest.Server) {
 	}
 	t.Cleanup(func() { store.Close() })
 	s := newServer(replay.NewEngine(cfg, store), testToken)
+	t.Cleanup(func() {
+		s.quitOnce.Do(func() { close(s.quit) })
+		select {
+		case <-s.runtime.stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("desktop runtime did not stop")
+		}
+	})
 	s.clipDir = t.TempDir()
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -610,7 +618,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Always re-analyze stored matches", `id="force" checked disabled`, "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by detector", "shadow review", "Neither status is a verified cheating verdict", "data-replay-frame", "data-throw-scroll", "Spark replay", "Diagnostic ZIP", "Physics inspector", "Telemetry &amp; schema health", "Calibration library", "Archive + remove active raw", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Health &amp; maintenance", "Back up database"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Always re-analyze stored matches", `id="force" checked disabled`, "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by detector", "shadow review", "Neither status is a verified cheating verdict", "data-replay-frame", "data-throw-scroll", "Spark replay", "Diagnostic ZIP", "Physics inspector", "Telemetry &amp; schema health", "Calibration library", "Archive + remove active raw", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Regression &amp; threshold lab", "Threshold sandbox", "Before / after", "Player history", "Replay watch folder", "Crash recovery", "Windows updates", "Support bundle", "Health &amp; maintenance", "Back up database"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
