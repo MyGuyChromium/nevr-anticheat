@@ -7,6 +7,8 @@ No detector is production-validated until it has enough independently reviewed, 
 1. Keep separate source folders for expected-clean play, suspicious play, and confirmed cheats. Do not infer a label from an anticheat score.
 2. Use the desktop folder queue to ingest the recordings. Replays may contain multiple sessions; label each stored match, not merely the file name.
 3. Open the match and choose **Known clean**, **Suspected**, or **Confirmed cheat**. Add a note describing who reviewed it and which clip or behavior supports the label. The app records its version and effective-config fingerprint with the label.
+4. Label individual observations **Correct**, **False positive**, or **Unsure**. Correct and False positive labels automatically become expectations in the desktop regression suite; Unsure stays excluded.
+5. After changing code or configuration, re-upload the replay and open **Before / after**. Removed false positives are a desired change; disappeared Correct signals and newly added signals require manual review.
 4. Inspect each detector observation in Spark and in the Physics inspector. Mark it **Correct**, **False positive**, or **Unsure**. A whole-match label never automatically becomes a detector label.
 5. Download a redacted Diagnostic ZIP when an event needs comparison or a bug report. Keep full-fidelity raw archives private; they retain player identity data so they can restore the source exactly.
 
@@ -15,6 +17,7 @@ No detector is production-validated until it has enough independently reviewed, 
 - The Physics inspector shows source values, extractor output, and an independent finite-difference audit. `Audit Δ` should normally be zero. A difference means the extractor path needs investigation; it does not mean the player cheated.
 - A possible head contact suppresses hand/wrist conclusions. Game-authored velocity can include legal boosting, grabs, block slaps, and stacking. Echo telemetry has no feet, guardian origin, or arena-object contact identifier, so room-scale steps and legal leans cannot always be separated from a replay alone.
 - Schema warnings mean detector results from that field are untrustworthy. Fix or understand the source before using those observations in calibration.
+- The Threshold sandbox runs a candidate numeric parameter entirely in memory over stored normalized frames. It does not write events, scores, cases, config, or labels. Use it to explore, then make and review an explicit config change separately.
 
 ## Promotion rule
 

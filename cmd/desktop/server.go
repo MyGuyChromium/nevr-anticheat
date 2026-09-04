@@ -49,6 +49,7 @@ type server struct {
 	mux          *http.ServeMux
 	clipDir      string
 	launchReplay replayLaunchFunc
+	runtime      *desktopRuntime
 
 	analyzeMu sync.Mutex // uploads are analyzed one at a time
 	activeMu  sync.Mutex
@@ -63,19 +64,35 @@ func newServer(engine *replay.Engine, token string) *server {
 		engine: engine, token: token, mux: http.NewServeMux(), quit: make(chan struct{}),
 		clipDir: defaultReplayClipDir(), launchReplay: launchSparkReplayViewer,
 	}
+	s.runtime = newDesktopRuntime(engine, s.quit)
+	s.runtime.analyzeMu = &s.analyzeMu
 	p := "/" + token
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
 	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
+	s.mux.HandleFunc("GET "+p+"/api/lab/regression", s.handleRegressionLab)
+	s.mux.HandleFunc("GET "+p+"/api/lab/thresholds", s.handleThresholdSpecs)
+	s.mux.HandleFunc("POST "+p+"/api/lab/thresholds/preview", s.handleThresholdPreview)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/open-data-folder", s.handleOpenDataFolder)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/clear-clips", s.handleClearClips)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/support-bundle", s.handleSupportBundle)
+	s.mux.HandleFunc("GET "+p+"/api/settings", s.handleSettings)
+	s.mux.HandleFunc("POST "+p+"/api/settings", s.handleSaveSettings)
+	s.mux.HandleFunc("POST "+p+"/api/watch/scan", s.handleWatchScan)
+	s.mux.HandleFunc("GET "+p+"/api/recovery", s.handleRecovery)
+	s.mux.HandleFunc("POST "+p+"/api/recovery/resume", s.handleRecoveryResume)
+	s.mux.HandleFunc("POST "+p+"/api/recovery/discard", s.handleRecoveryDiscard)
+	s.mux.HandleFunc("GET "+p+"/api/update", s.handleUpdateCheck)
+	s.mux.HandleFunc("POST "+p+"/api/update/open", s.handleOpenUpdate)
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
 	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/comparison", s.handleAnalysisComparison)
+	s.mux.HandleFunc("GET "+p+"/api/player/{id}/history", s.handlePlayerHistory)
 	s.mux.HandleFunc("POST "+p+"/api/match/{id}/label", s.handleMatchLabel)
 	s.mux.HandleFunc("POST "+p+"/api/event/{id}/review", s.handleEventReview)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/physics/frame/{frame}", s.handlePhysicsFrame)
@@ -159,6 +176,7 @@ type eventView struct {
 	Confidence      float64 `json:"confidence"`
 	ObservedValue   string  `json:"observed_value"`
 	ExpectedRange   string  `json:"expected_range"`
+	Explanation     string  `json:"explanation"`
 	IsShadow        bool    `json:"is_shadow"`
 	MergedCount     int     `json:"merged_count"`
 	ReviewVerdict   string  `json:"review_verdict,omitempty"`
@@ -439,6 +457,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 			Confidence:      ev.Confidence,
 			ObservedValue:   ev.ObservedValue,
 			ExpectedRange:   ev.ExpectedRange,
+			Explanation:     explainEvent(ev),
 			IsShadow:        ev.IsShadow,
 			MergedCount:     ev.MergedCount,
 		}
@@ -1019,17 +1038,28 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	force := isTrue(r.FormValue("force"))
 
-	tmp, err := os.MkdirTemp("", "nevr-desktop-")
+	// Uploads are spooled beside the database before analysis. If the process
+	// or laptop exits after upload, the next launch can resume these files
+	// instead of asking the user to upload them again.
+	tmp, err := os.MkdirTemp(s.runtime.pendingDir, "upload-")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "creating temp dir: %v", err)
+		writeError(w, http.StatusInternalServerError, "creating durable upload queue: %v", err)
 		return
 	}
-	defer os.RemoveAll(tmp)
+	allPersisted := true
 
 	// Analyses run one at a time; the engine's pipelines are per call but
 	// the results page is easier to read when files finish in upload order.
 	s.analyzeMu.Lock()
 	defer s.analyzeMu.Unlock()
+	// Register this after Unlock so Go's LIFO defer order removes a completed
+	// queue job while the lock is still held. Recovery can never observe the
+	// tiny interval between a successful analysis and cleanup and run it twice.
+	defer func() {
+		if allPersisted {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
 	analysisCtx, analysisID := s.beginAnalysis()
 	defer s.finishAnalysis(analysisID)
 
@@ -1038,6 +1068,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		entry := analyzeEntry{File: uploadName(fh.Filename)}
 		if analysisCtx.Err() != nil {
 			entry.Error = "analysis cancelled"
+			allPersisted = false
 			resp.Results = append(resp.Results, entry)
 			continue
 		}
@@ -1051,6 +1082,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		path, err := saveUpload(tmp, i, fh)
 		if err != nil {
 			entry.Error = "saving upload: " + err.Error()
+			allPersisted = false
 			resp.Results = append(resp.Results, entry)
 			continue
 		}
@@ -1062,6 +1094,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		entry.mirrorFirst()
 		if err != nil {
+			allPersisted = false
 			if errors.Is(err, context.Canceled) {
 				entry.Error = "analysis cancelled"
 			} else {
@@ -1069,6 +1102,11 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(results) == 0 {
 				entry.Diagnostic = diagnoseUpload(path)
+			}
+		}
+		for _, res := range results {
+			if res.PersistError() != nil {
+				allPersisted = false
 			}
 		}
 		resp.Results = append(resp.Results, entry)

@@ -114,6 +114,7 @@ var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
 	[2]string{"review_cases", "timestamp_end"},
 	[2]string{"event_reviews", "reviewed_at"},
 	[2]string{"match_labels", "reviewed_at"},
+	[2]string{"analysis_snapshots", "created_at"},
 )
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
@@ -124,7 +125,7 @@ var requiredTables = []string{
 	"review_cases", "moderator_decisions", "player_profiles", "population_baselines",
 	"replay_bundles", "anomaly_clusters", "enforcement_log", "telemetry_frames",
 	"match_contexts", "cross_match_review_cases", "match_ticks", "schema_migrations",
-	"event_reviews", "match_labels",
+	"event_reviews", "match_labels", "analysis_snapshots",
 }
 
 var migrations = []MigrationVersion{
@@ -406,6 +407,18 @@ var migrations = []MigrationVersion{
 			reviewed_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
 		);
 		CREATE INDEX IF NOT EXISTS idx_match_labels_label ON match_labels(label, reviewed_at);`,
+	},
+	{
+		Version: 15, Description: "pre-reprocess analysis snapshots for detector regression comparisons",
+		SQL: `CREATE TABLE IF NOT EXISTS analysis_snapshots (
+			snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			match_id    TEXT NOT NULL,
+			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			events_json TEXT NOT NULL,
+			scores_json TEXT NOT NULL DEFAULT '{}'
+		);
+		CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_match
+			ON analysis_snapshots(match_id, snapshot_id DESC);`,
 	},
 }
 

@@ -124,6 +124,15 @@
   .health-card b { display: block; margin-top: 7px; font-size: 17px; overflow-wrap: anywhere; }
   .health-path { margin-top: 14px; color: var(--muted); overflow-wrap: anywhere; }
   .maintenance { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .lab-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+  .lab-card { border: 1px solid var(--line); background: var(--panel); padding: 18px; min-width: 0; }
+  .lab-card h3 { margin-top: 0; }
+  .form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 9px; margin-top: 12px; }
+  .form-field { display: grid; gap: 5px; flex: 1; min-width: 150px; color: var(--muted); font: 10px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+  .form-field input, .form-field select { min-height: 38px; border: 1px solid var(--line-2); background: var(--panel-solid); color: var(--ink); padding: 7px 10px; font: 13px/1.3 var(--sans); text-transform: none; letter-spacing: normal; }
+  .form-field.path { min-width: min(430px,100%); }
+  .explain { display: block; margin-top: 6px; color: var(--ink-2); font-size: 11px; line-height: 1.45; max-width: 58ch; }
+  .regression-pass { color: var(--ok); } .regression-fail { color: var(--bad); }
   .review-cell { min-width: 218px; }
   .review-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
   .review-buttons .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
@@ -468,6 +477,7 @@
     .upload-console { padding: 15px; }
     .drop { min-height: 240px; padding: 24px; }
     .panel { padding: 14px; }
+    .lab-grid { grid-template-columns: 1fr; }
     .match, .fail { padding: 18px; }
   }
   @media print {
@@ -557,8 +567,20 @@
     <h2 id="h-calibration">Calibration library</h2>
     <div id="calibration" class="panel skeleton" aria-busy="true"><div class="sk" style="width:62%"></div><div class="sk" style="width:44%"></div></div>
   </section>
+  <section class="block" aria-labelledby="h-lab">
+    <div class="section-kicker"><span>06</span> Detector development</div>
+    <h2 id="h-lab">Regression &amp; threshold lab</h2>
+    <div class="lab-grid">
+      <div class="lab-card"><h3>Reviewed replay regression</h3><p class="help">Every Correct or False positive event label becomes a permanent local expectation. Re-run it after each detector change.</p><div id="regression" class="status">Loading reviewed expectations…</div><button id="run-regression" class="btn">Run regression suite</button></div>
+      <div class="lab-card"><h3>Threshold sandbox</h3><p class="help">Preview one numeric detector setting against stored telemetry. Nothing is written to the database or config.</p>
+        <div class="form-row"><label class="form-field">Match<select id="lab-match"></select></label><label class="form-field">Detector<select id="lab-detector"></select></label></div>
+        <div class="form-row"><label class="form-field">Parameter<select id="lab-param"></select></label><label class="form-field">Candidate value<input id="lab-value" type="number" step="any"></label><label class="check-inline"><input id="lab-enable" type="checkbox"> Enable in preview</label><button id="preview-threshold" class="btn">Preview</button></div>
+        <div id="threshold-result" class="status">Choose a stored match and parameter.</div>
+      </div>
+    </div>
+  </section>
   <section class="block" aria-labelledby="h-history">
-    <div class="section-kicker"><span>06</span> Preserved evidence</div>
+    <div class="section-kicker"><span>07</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
     <div class="filters" aria-label="History filters">
       <input id="history-search" type="search" placeholder="Search match, file, player, map…" aria-label="Search history">
@@ -570,8 +592,13 @@
     </div>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
   </section>
+  <section class="block" aria-labelledby="h-automation">
+    <div class="section-kicker"><span>08</span> Hands-free workflow</div>
+    <h2 id="h-automation">Automation, recovery &amp; updates</h2>
+    <div id="automation" class="panel skeleton" aria-busy="true"><div class="sk" style="width:62%"></div><div class="sk" style="width:48%"></div></div>
+  </section>
   <section class="block" aria-labelledby="h-system">
-    <div class="section-kicker"><span>07</span> Local system</div>
+    <div class="section-kicker"><span>09</span> Local system</div>
     <h2 id="h-system">Health &amp; maintenance</h2>
     <div id="health" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div></div>
   </section>
@@ -579,6 +606,10 @@
 <dialog id="physics-dialog" aria-labelledby="physics-title">
   <div class="inspector-head"><h2 id="physics-title">Physics inspector</h2><button id="close-physics" class="btn">Close</button></div>
   <div id="physics-content" class="inspector-body"></div>
+</dialog>
+<dialog id="lab-dialog" aria-labelledby="lab-dialog-title">
+  <div class="inspector-head"><h2 id="lab-dialog-title">Investigation</h2><button id="close-lab-dialog" class="btn">Close</button></div>
+  <div id="lab-dialog-content" class="inspector-body"></div>
 </dialog>
 
 <script>
@@ -736,7 +767,7 @@
         <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${playerSignalBadge(p, c)}</td>
         <td class="num">${fmtInt(c ? c.scored : p.detections)}</td><td class="num dim">${fmtInt(c ? c.shadow : p.shadow_detections)}</td>
         <td>${detectorID ? `${esc(detectorID)} (${fmtInt(c.scored + c.shadow)})` : (p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>')}</td>
-        <td>${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}</td></tr>`; }).join('') + '</tbody></table>' +
+        <td><span class="action-stack">${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}<button class="btn btn-sm" data-player-history="${esc(p.player_id)}">Player history</button></span></td></tr>`; }).join('') + '</tbody></table>' +
       '<p class="summary-note"><b>No signals</b> means no detector fired. <b>Shadow review</b> means a detector observed something but deliberately added zero score. Neither status is a verified cheating verdict.</p>' +
       (detectorID ? '<p class="summary-note">Detection counts and evidence follow this filter. Suspicion scores remain full-match totals.</p>' : '');
   }
@@ -850,7 +881,7 @@
       <td class="num">${fmtClock(e.timestamp)}</td>
       <td class="num">${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</td>
       <td class="num">${meter(e.confidence)}</td>
-      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
+      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span></td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
       <td class="review-cell">${reviewControls(e)}</td>
       <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
       <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>
@@ -905,7 +936,7 @@
     const button = (value) => `<button class="btn btn-sm ${m.calibration_label === value ? 'selected' : ''}" data-label-match="${esc(m.match_id)}" data-label="${value}">${esc(labelName(value))}</button>`;
     const st = m.storage || {};
     return `<div class="match-tools" data-match-tools="${esc(m.match_id)}"><span class="label">Replay ground truth</span>${button('known_clean')}${button('suspected')}${button('confirmed_cheat')}
-      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><span class="spacer"></span>
+      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><button class="btn btn-sm" data-compare-match="${esc(m.match_id)}">Before / after</button><button class="btn btn-sm" data-sandbox-match="${esc(m.match_id)}">Threshold sandbox</button><span class="spacer"></span>
       <button class="btn btn-sm" data-archive-match="${esc(m.match_id)}">Archive raw</button><button class="btn btn-sm" data-prune-match="${esc(m.match_id)}">Archive + remove active raw</button><button class="btn btn-sm" data-restore-match="${esc(m.match_id)}">Restore raw</button>
       <p class="storage-note">${m.calibration_label ? `Label: ${esc(labelName(m.calibration_label))}${m.calibration_comment ? ` · ${esc(m.calibration_comment)}` : ''}. ` : 'Replay is not labeled yet. '}${fmtInt(st.raw_ticks || 0)} raw ticks (${fmtBytes(st.raw_tick_bytes || 0)}) and ${fmtInt(st.normalized_frames || 0)} normalized player-frames. Pruning first writes and verifies a restorable full-fidelity ZIP; archives retain player identities and should stay private. Freed SQLite pages become reusable, but the DB file may not immediately shrink.</p></div>`;
   }
@@ -1178,6 +1209,83 @@
     } catch (e) { panelError(el, 'the calibration library', e); }
   }
 
+  function openLabDialog(title, html) {
+    $('lab-dialog-title').textContent = title;
+    $('lab-dialog-content').innerHTML = html;
+    if (!$('lab-dialog').open) $('lab-dialog').showModal();
+  }
+
+  function changeTable(changes) {
+    const important = (changes || []).filter((c) => c.status !== 'unchanged');
+    if (!important.length) return '<p class="empty">No detector output changed.</p>';
+    return `<div class="physics-table"><table><thead><tr><th>Status</th><th>Detector</th><th>Player</th><th class="num">Frame</th><th>Before</th><th>After</th></tr></thead><tbody>${important.map((c) => {
+      const b = c.before || {}, a = c.after || {}, e = c.after || c.before || {};
+      return `<tr><td><span class="tag ${c.status === 'added' ? 'warn' : c.status === 'removed' ? 'ok' : ''}">${esc(c.status)}</span></td><td class="mono">${esc(e.detector_id)}</td><td>${who(e.player_name, e.player_id)}</td><td class="num">${fmtInt(e.frame_index)}</td><td>${b.observed_value ? `${esc(b.observed_value)}<span class="explain">${esc(b.explanation || '')}</span>` : '—'}</td><td>${a.observed_value ? `${esc(a.observed_value)}<span class="explain">${esc(a.explanation || '')}</span>` : '—'}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+  }
+
+  async function loadRegression() {
+    const el = $('regression');
+    try {
+      const r = await getJSON('api/lab/regression');
+      el.className = '';
+      if (!r.total) {
+        el.innerHTML = '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
+        return;
+      }
+      const failed = (r.items || []).filter((x) => !x.passed);
+      el.innerHTML = `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div></div>
+        ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}</td><td><button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button></td></tr>`).join('')}</tbody></table></details>` : '<p class="summary-note regression-pass">Every reviewed expectation currently passes.</p>'}
+        <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.</p>`;
+    } catch (e) { panelError(el, 'the replay regression suite', e); }
+  }
+
+  let labSpecs = [];
+  function populateLabMatches(preferred = '') {
+    const select = $('lab-match');
+    const current = preferred || select.value;
+    select.innerHTML = historyMatches.length ? historyMatches.map((m) => `<option value="${esc(m.match_id)}">${esc(m.source_file || m.match_id)}</option>`).join('') : '<option value="">No stored matches</option>';
+    if (historyMatches.some((m) => m.match_id === current)) select.value = current;
+  }
+  function populateLabParams() {
+    const detector = labSpecs.find((d) => d.id === $('lab-detector').value);
+    $('lab-param').innerHTML = detector ? detector.params.map((p) => `<option value="${esc(p.key)}">${esc(p.key)} (${esc(p.unit || 'unitless')})</option>`).join('') : '';
+    const param = detector && detector.params[0];
+	$('lab-enable').checked = !!(detector && detector.enabled);
+    $('lab-value').value = param ? param.value : '';
+    $('lab-value').step = param && param.type === 'int' ? '1' : 'any';
+  }
+  function syncLabValue() {
+    const detector = labSpecs.find((d) => d.id === $('lab-detector').value);
+    const param = detector && detector.params.find((p) => p.key === $('lab-param').value);
+    if (param) { $('lab-value').value = param.value; $('lab-value').step = param.type === 'int' ? '1' : 'any'; $('lab-value').title = param.doc || ''; }
+  }
+  async function loadLabSpecs() {
+    try {
+      const data = await getJSON('api/lab/thresholds'); labSpecs = data.detectors || [];
+      $('lab-detector').innerHTML = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
+      populateLabParams(); populateLabMatches();
+    } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
+  }
+
+  async function loadAutomation() {
+    const el = $('automation');
+    try {
+      const settings = await getJSON('api/settings');
+      const recovery = await getJSON('api/recovery');
+      let update = { error: 'Automatic checks are off.', available: false, current_version: '—' };
+      if (settings.automatic_update_checks) update = await getJSON('api/update');
+      const suggestions = settings.suggested_watch_folders || [];
+      el.className = ''; el.removeAttribute('aria-busy');
+      el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay files are detected recursively and reanalyzed once. The folder and file fingerprints stay on this PC.</p>
+        <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
+        <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
+        <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>
+        <div class="lab-card"><h3>Windows updates</h3><p class="help">Installed releases embed their source revision. The app compares it with the last successfully packaged Windows release; downloads still require your click.</p><p><span class="tag ${update.available ? 'warn' : update.error ? '' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="open-update" class="btn">Open latest release</button></div></div>
+        <div class="lab-card"><h3>Support bundle</h3><p class="help">Creates a ZIP with app health and pseudonymized aggregate diagnostics. It excludes raw ticks, frames, the database, player identities, and your watch-folder path.</p><button id="support-bundle" class="btn">Create support bundle</button></div></div>`;
+    } catch (e) { panelError(el, 'automation and recovery settings', e); }
+  }
+
   let historyMatches = [];
   function renderHistory() {
     const el = $('history');
@@ -1223,7 +1331,7 @@
       const selected = prefs.historyDetector || '';
       $('history-detector').innerHTML = '<option value="">All detectors</option>' + detectors.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
       if (detectors.includes(selected)) $('history-detector').value = selected;
-      renderHistory();
+      renderHistory(); populateLabMatches();
     } catch (e) { panelError(el, 'the history', e); }
   }
 
@@ -1286,6 +1394,10 @@
 
   $('close-physics').addEventListener('click', () => $('physics-dialog').close());
   $('physics-dialog').addEventListener('click', (e) => { if (e.target === $('physics-dialog')) $('physics-dialog').close(); });
+  $('close-lab-dialog').addEventListener('click', () => $('lab-dialog').close());
+  $('lab-dialog').addEventListener('click', (e) => { if (e.target === $('lab-dialog')) $('lab-dialog').close(); });
+  $('lab-detector').addEventListener('change', populateLabParams);
+  $('lab-param').addEventListener('change', syncLabValue);
 
   document.addEventListener('change', (e) => {
     const select = e.target.closest('select[data-cheat-filter]');
@@ -1304,6 +1416,66 @@
   });
 
   document.addEventListener('click', async (e) => {
+    if (e.target.closest('#run-regression')) { await loadRegression(); return; }
+    if (e.target.closest('#preview-threshold')) {
+      const button = e.target.closest('#preview-threshold'), resultEl = $('threshold-result');
+      button.disabled = true; resultEl.className = 'status'; resultEl.textContent = 'Running candidate detector in memory…';
+      try {
+        const result = await postJSON('api/lab/thresholds/preview', { match_id: $('lab-match').value, detector_id: $('lab-detector').value, parameter: $('lab-param').value, value: Number($('lab-value').value), enabled: $('lab-enable').checked });
+        resultEl.className = 'status ok'; resultEl.innerHTML = `${esc(result.detector_id)}: ${fmtInt(result.current_events)} → ${fmtInt(result.candidate_events)} events · ${fmtInt(result.summary.added)} added, ${fmtInt(result.summary.removed)} removed, ${fmtInt(result.summary.changed)} changed. <button class="btn btn-text btn-sm" id="show-threshold-details">View details</button>`;
+        resultEl.dataset.preview = JSON.stringify(result);
+      } catch (err) { resultEl.className = 'status err'; resultEl.textContent = `Preview failed: ${err.message}`; }
+      finally { button.disabled = false; }
+      return;
+    }
+    if (e.target.closest('#show-threshold-details')) {
+      const result = JSON.parse($('threshold-result').dataset.preview || '{}');
+      openLabDialog(`${result.detector_id || 'Detector'} threshold preview`, `<p class="notice">Preview only: ${esc(result.parameter)} = ${esc(result.value)} ${esc(result.unit || '')}. The database and config were not changed.</p>${changeTable(result.changes)}`); return;
+    }
+    const compareButton = e.target.closest('button[data-compare-match]');
+    if (compareButton) {
+      compareButton.disabled = true;
+      try {
+        const result = await getJSON(`api/match/${encodeURIComponent(compareButton.dataset.compareMatch)}/comparison`);
+        if (!result.available) openLabDialog('Before / after analysis', `<p class="empty">${esc(result.message)}</p>`);
+        else openLabDialog('Before / after analysis', `<div class="health-grid"><div class="health-card"><span>Previous</span><b>${fmtInt(result.before_events)} events</b><small class="muted">${esc(fmtStart(result.before_at))}</small></div><div class="health-card"><span>Current</span><b>${fmtInt(result.after_events)} events</b></div><div class="health-card"><span>Removed</span><b class="regression-pass">${fmtInt(result.summary.removed)}</b></div><div class="health-card"><span>Added</span><b class="regression-fail">${fmtInt(result.summary.added)}</b></div></div>${changeTable(result.changes)}`);
+      } catch (err) { setStatus(`Could not compare analyses: ${err.message}`, 'err'); }
+      finally { compareButton.disabled = false; }
+      return;
+    }
+    const sandboxButton = e.target.closest('button[data-sandbox-match]');
+    if (sandboxButton) { populateLabMatches(sandboxButton.dataset.sandboxMatch); $('h-lab').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth' }); return; }
+    const playerButton = e.target.closest('button[data-player-history]');
+    if (playerButton) {
+      playerButton.disabled = true;
+      try {
+        const p = await getJSON(`api/player/${encodeURIComponent(playerButton.dataset.playerHistory)}/history`);
+        const detectorRows = Object.entries(p.detectors || {}).sort((a,b) => b[1]-a[1]).map(([id,n]) => `<span class="tag">${esc(id)} ${fmtInt(n)}</span>`).join(' ') || '<span class="muted">No signals</span>';
+        const rows = (p.matches || []).map((m) => `<tr><td><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">${esc(m.match_id)}</button></td><td>${esc(fmtStart(m.start_time))}</td><td>${team(m.team)}</td><td class="num">${fmtInt(m.throws)}</td><td class="num">${m.throws ? fmtNum(m.mean_throw_speed,2) : '—'} / ${m.throws ? fmtNum(m.max_throw_speed,2) : '—'}</td><td class="num">${fmtInt(m.events)} <span class="muted">(${fmtInt(m.shadow_events)} shadow)</span></td><td class="num regression-pass">${fmtInt(m.reviewed_valid)}</td><td class="num regression-fail">${fmtInt(m.reviewed_false)}</td></tr>`).join('');
+        openLabDialog(`Player history — ${p.name || p.player_id}`, `<div class="health-grid"><div class="health-card"><span>Matches</span><b>${fmtInt(p.match_count)}</b></div><div class="health-card"><span>Throws</span><b>${fmtInt(p.throws)}</b><small class="muted">${fmtNum(p.mean_throw_speed,2)} avg / ${fmtNum(p.max_throw_speed,2)} max m/s</small></div><div class="health-card"><span>Signals</span><b>${fmtInt(p.events)}</b><small class="muted">${fmtInt(p.shadow_events)} shadow</small></div></div><p>${detectorRows}</p><div class="physics-table"><table><thead><tr><th>Match</th><th>Start</th><th>Team</th><th class="num">Throws</th><th class="num">Avg / max m/s</th><th class="num">Signals</th><th class="num">Correct</th><th class="num">False +</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+      } catch (err) { setStatus(`Could not load player history: ${err.message}`, 'err'); }
+      finally { playerButton.disabled = false; }
+      return;
+    }
+    if (e.target.closest('#save-watch')) {
+      const button = e.target.closest('#save-watch'); button.disabled = true;
+      try { await postJSON('api/settings', { watch_folder: $('watch-folder').value, watch_enabled: $('watch-enabled').checked, automatic_update_checks: $('auto-updates').checked }); setStatus('Watch-folder settings saved.', 'ok'); await loadAutomation(); }
+      catch (err) { setStatus(`Could not save watch folder: ${err.message}`, 'err'); } finally { button.disabled = false; } return;
+    }
+    if (e.target.closest('#scan-watch')) {
+      const button = e.target.closest('#scan-watch'); button.disabled = true; button.textContent = 'Scanning…';
+      try { const result = await postJSON('api/watch/scan'); setStatus(result.message, 'ok'); await loadHistory(); await loadAutomation(); }
+      catch (err) { setStatus(`Watch scan failed: ${err.message}`, 'err'); } finally { button.disabled = false; button.textContent = 'Scan now'; } return;
+    }
+    if (e.target.closest('#resume-recovery')) { try { const r = await postJSON('api/recovery/resume'); setStatus(r.message, 'ok'); setTimeout(loadAutomation, 1200); } catch (err) { setStatus(`Recovery failed: ${err.message}`, 'err'); } return; }
+    if (e.target.closest('#discard-recovery')) { if (!confirm('Discard only the pending uploaded copies? Stored matches, original replays, and the database are not affected.')) return; try { const r = await postJSON('api/recovery/discard'); setStatus(r.message, 'ok'); await loadAutomation(); } catch (err) { setStatus(`Could not discard pending uploads: ${err.message}`, 'err'); } return; }
+    if (e.target.closest('#check-update')) { await loadAutomation(); setStatus('Update check finished.', 'ok'); return; }
+    if (e.target.closest('#open-update')) { try { const r = await postJSON('api/update/open'); setStatus(r.message, 'ok'); } catch (err) { setStatus(`Could not open release: ${err.message}`, 'err'); } return; }
+    if (e.target.closest('#support-bundle')) {
+      const button = e.target.closest('#support-bundle'); button.disabled = true; button.textContent = 'Creating…';
+      try { const r = await postJSON('api/maintenance/support-bundle'); setStatus(`${r.message} ${r.path}`, 'ok'); } catch (err) { setStatus(`Support bundle failed: ${err.message}`, 'err'); }
+      finally { button.disabled = false; button.textContent = 'Create support bundle'; } return;
+    }
     const physics = e.target.closest('button[data-physics-event], button[data-physics-frame]');
     if (physics) { await openPhysics(physics); return; }
 
@@ -1422,7 +1594,7 @@
           if (row.dataset.eventRow === eventID) row.querySelector('.review-cell').innerHTML = reviewControls(event);
         });
         setStatus(`Saved ${event.detector_id} as ${saved.verdict === 'yes' ? 'correct' : saved.verdict === 'no' ? 'a false positive' : 'unsure'}.`, 'ok');
-        loadHealth();
+        loadHealth(); loadRegression();
       } catch (err) {
         setStatus(`Could not save detector verdict: ${err.message}`, 'err');
       } finally { reviewButton.disabled = false; }
@@ -1526,7 +1698,7 @@
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
 
-  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadHealth(); }
+  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); }
   refreshPanels();
   setInterval(probeConnection, 5000);
 })();

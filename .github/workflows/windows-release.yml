@@ -35,13 +35,17 @@ jobs:
           set -euo pipefail
           package="dist/NEVR-Anticheat-Windows-x64"
           mkdir -p "$package/configs"
-          go build -trimpath -ldflags "-s -w" -o "$package/nevr-desktop.exe" ./cmd/desktop
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath -ldflags "-s -w -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-ac.exe" ./cmd/anticheat
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-server.exe" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-compat.exe" ./cmd/compat
           cp README.md packaging/README-WINDOWS.txt "$package/"
           cp configs/default.toml configs/shadow_deploy.toml "$package/configs/"
+          mkdir -p "$package/installer"
+          cp packaging/Install-NEVR.cmd "$package/"
+          cp packaging/Install-NEVR.ps1 packaging/Uninstall-NEVR.cmd packaging/Uninstall-NEVR.ps1 "$package/installer/"
           (cd dist && zip -r NEVR-Anticheat-Windows-x64.zip NEVR-Anticheat-Windows-x64)
           (cd dist && sha256sum NEVR-Anticheat-Windows-x64.zip > NEVR-Anticheat-Windows-x64.zip.sha256)
 
@@ -67,12 +71,21 @@ jobs:
             fi
           else
             release_tag="windows-latest"
-            git tag --force "$release_tag" "$GITHUB_SHA"
-            git push origin "refs/tags/$release_tag" --force
             if gh release view "$release_tag" >/dev/null 2>&1; then
               gh release edit "$release_tag" --latest --title "Latest Windows build" \
                 --notes "Ready-to-run Windows x64 package from the latest successful master build. This rolling release is replaced after every merge to master."
+              # Replace the downloadable assets first. Moving the tag is the
+              # final publish signal consumed by the desktop update checker.
+              gh release upload "$release_tag" \
+                dist/NEVR-Anticheat-Windows-x64.zip \
+                dist/NEVR-Anticheat-Windows-x64.zip.sha256 \
+                --clobber
+              git tag --force "$release_tag" "$GITHUB_SHA"
+              git push origin "refs/tags/$release_tag" --force
+              exit 0
             else
+              git tag --force "$release_tag" "$GITHUB_SHA"
+              git push origin "refs/tags/$release_tag" --force
               gh release create "$release_tag" --latest --title "Latest Windows build" \
                 --notes "Ready-to-run Windows x64 package from the latest successful master build. This rolling release is replaced after every merge to master."
             fi

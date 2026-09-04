@@ -17,6 +17,9 @@ nevr-compat
 *.db-journal
 *.jsonl
 tests/replays/
+.nevr-pending/
+support-bundles/
+nevr-desktop-settings.json
 
 # Bridge --dump-dir artifacts
 dump/

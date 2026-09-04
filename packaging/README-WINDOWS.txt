@@ -4,11 +4,14 @@ NEVR-Anticheat for Windows (x64)
 START HERE
 
 1. Extract the entire ZIP. Do not run an EXE from inside the ZIP.
-2. Double-click nevr-desktop.exe.
-3. Drop one or more .echoreplay files onto the local app window.
+2. Recommended: double-click Install-NEVR.cmd. It installs for your Windows
+   account, creates shortcuts, and keeps evidence outside the program folder.
+3. Or run nevr-desktop.exe directly for portable mode.
+4. Drop one or more .echoreplay files onto the local app window.
 
-The database is stored beside nevr-desktop.exe. Windows Firewall does not need
-to expose it: the desktop app listens only on 127.0.0.1 (this computer).
+Installed mode keeps the database under LocalAppData\NEVR-Anticheat. Portable
+mode stores it beside nevr-desktop.exe. Windows Firewall does not need to expose
+it: the desktop app listens only on 127.0.0.1 (this computer).
 
 SPARK REPLAY VIEWER
 
