@@ -177,6 +177,9 @@ func classifyInspectorFrame(frame *model.PlayerTelemetryFrame, ps *model.PlayerS
 	if frame.ShieldActive {
 		signals = append(signals, "shield/block is active")
 	}
+	if ps.LegalContext.PrimaryExplanation != "" && ps.LegalContext.PrimaryExplanation != "no special legal-motion context identified" {
+		signals = append(signals, ps.LegalContext.PrimaryExplanation)
+	}
 	if len(signals) == 0 {
 		signals = []string{"no special state transition identified"}
 	}

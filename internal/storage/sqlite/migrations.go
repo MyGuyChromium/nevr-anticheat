@@ -115,6 +115,13 @@ var timestampColumns = append(append([][2]string{}, timestampColumnsV10...),
 	[2]string{"event_reviews", "reviewed_at"},
 	[2]string{"match_labels", "reviewed_at"},
 	[2]string{"analysis_snapshots", "created_at"},
+	[2]string{"investigation_notes", "created_at"},
+	[2]string{"investigation_notes", "updated_at"},
+	[2]string{"analysis_runs", "created_at"},
+	[2]string{"config_profiles", "created_at"},
+	[2]string{"config_profiles", "updated_at"},
+	[2]string{"saved_filters", "created_at"},
+	[2]string{"saved_filters", "updated_at"},
 )
 
 // requiredTables is the schema surface the Store depends on. NewStore verifies
@@ -125,7 +132,8 @@ var requiredTables = []string{
 	"review_cases", "moderator_decisions", "player_profiles", "population_baselines",
 	"replay_bundles", "anomaly_clusters", "enforcement_log", "telemetry_frames",
 	"match_contexts", "cross_match_review_cases", "match_ticks", "schema_migrations",
-	"event_reviews", "match_labels", "analysis_snapshots",
+	"event_reviews", "match_labels", "analysis_snapshots", "investigation_notes",
+	"analysis_runs", "config_profiles", "saved_filters",
 }
 
 var migrations = []MigrationVersion{
@@ -419,6 +427,55 @@ var migrations = []MigrationVersion{
 		);
 		CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_match
 			ON analysis_snapshots(match_id, snapshot_id DESC);`,
+	},
+	{
+		Version: 16, Description: "investigation notes, analysis provenance, configuration profiles, and saved filters",
+		SQL: `CREATE TABLE IF NOT EXISTS investigation_notes (
+			note_id     TEXT PRIMARY KEY,
+			match_id    TEXT NOT NULL,
+			player_id   TEXT NOT NULL DEFAULT '',
+			frame_index INTEGER NOT NULL DEFAULT -1,
+			kind        TEXT NOT NULL CHECK (kind IN ('note','bookmark')),
+			body        TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			updated_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_investigation_notes_match ON investigation_notes(match_id, frame_index);
+
+		CREATE TABLE IF NOT EXISTS analysis_runs (
+			run_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			match_id           TEXT NOT NULL,
+			source             TEXT NOT NULL,
+			app_version        TEXT NOT NULL,
+			build_commit       TEXT NOT NULL,
+			config_fingerprint TEXT NOT NULL,
+			profile_name       TEXT NOT NULL DEFAULT '',
+			telemetry_quality  REAL NOT NULL DEFAULT 0,
+			quality_grade      TEXT NOT NULL DEFAULT '',
+			quality_gated      INTEGER NOT NULL DEFAULT 0,
+			wall_milliseconds  INTEGER NOT NULL DEFAULT 0,
+			pipeline_milliseconds INTEGER NOT NULL DEFAULT 0,
+			frames_processed   INTEGER NOT NULL DEFAULT 0,
+			events_produced    INTEGER NOT NULL DEFAULT 0,
+			created_at         TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE INDEX IF NOT EXISTS idx_analysis_runs_match ON analysis_runs(match_id, run_id DESC);
+
+		CREATE TABLE IF NOT EXISTS config_profiles (
+			name           TEXT PRIMARY KEY COLLATE NOCASE,
+			detectors_json TEXT NOT NULL,
+			description    TEXT NOT NULL DEFAULT '',
+			active         INTEGER NOT NULL DEFAULT 0,
+			created_at     TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			updated_at     TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+
+		CREATE TABLE IF NOT EXISTS saved_filters (
+			name        TEXT PRIMARY KEY COLLATE NOCASE,
+			filter_json TEXT NOT NULL,
+			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			updated_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);`,
 	},
 }
 

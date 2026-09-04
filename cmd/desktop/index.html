@@ -158,6 +158,24 @@
   .physics-table table { min-width: 1120px; }
   .physics-table tr.focus td { background: var(--accent-bg); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
   .signal-list { max-width: 280px; color: var(--muted); font-size: 10px; }
+  .studio-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+  .studio-card { border:1px solid var(--line); background:var(--panel); padding:18px; min-width:0; }
+  .studio-card h3 { margin-top:0; }
+  .studio-card.wide { grid-column:span 2; }
+  .studio-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+  .chart-shell { overflow:auto; border:1px solid var(--line); background:#07111e; padding:12px; }
+  .speed-chart { width:100%; min-width:720px; height:210px; display:block; }
+  .speed-chart .grid { stroke:#26384c; stroke-width:1; }
+  .speed-chart .pose { fill:none; stroke:#62c6be; stroke-width:2; }
+  .speed-chart .game { fill:none; stroke:#82abff; stroke-width:1.5; }
+  .speed-chart .disc { fill:none; stroke:#f2a45c; stroke-width:2; }
+  .speed-chart text { fill:#8ea0b5; font:10px var(--mono); }
+  .legend { display:flex; gap:16px; color:var(--muted); font:11px var(--mono); margin:8px 0; }
+  .legend i { display:inline-block; width:14px; height:2px; margin:0 5px 3px 0; }
+  .playlist { max-height:320px; overflow:auto; border:1px solid var(--line); }
+  .playlist tr.active td { background:var(--accent-bg); }
+  .quality-score { font-size:34px; letter-spacing:-.04em; }
+  .metric-note { color:var(--muted); font-size:11px; margin-top:8px; }
 
   /* tables */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -477,7 +495,8 @@
     .upload-console { padding: 15px; }
     .drop { min-height: 240px; padding: 24px; }
     .panel { padding: 14px; }
-    .lab-grid { grid-template-columns: 1fr; }
+    .lab-grid, .studio-grid { grid-template-columns: 1fr; }
+    .studio-card.wide { grid-column:auto; }
     .match, .fail { padding: 18px; }
   }
   @media print {
@@ -602,6 +621,12 @@
     <h2 id="h-system">Health &amp; maintenance</h2>
     <div id="health" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div></div>
   </section>
+  <section class="block" aria-labelledby="h-studio">
+    <div class="section-kicker"><span>10</span> Research operations</div>
+    <h2 id="h-studio">Investigation &amp; reliability studio</h2>
+    <p class="help">Calibration, dataset splits, configuration provenance, evidence portability, queue performance, setup, and recovery in one place.</p>
+    <div id="studio" class="panel skeleton" aria-busy="true"><div class="sk" style="width:70%"></div><div class="sk" style="width:54%"></div></div>
+  </section>
 </main>
 <dialog id="physics-dialog" aria-labelledby="physics-title">
   <div class="inspector-head"><h2 id="physics-title">Physics inspector</h2><button id="close-physics" class="btn">Close</button></div>
@@ -705,6 +730,12 @@
       throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
     }
     setConnectionState(true);
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+    return body;
+  }
+  async function deleteJSON(url) {
+    const r = await fetch(url, { method: 'DELETE', cache: 'no-store' });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
     return body;
@@ -936,7 +967,7 @@
     const button = (value) => `<button class="btn btn-sm ${m.calibration_label === value ? 'selected' : ''}" data-label-match="${esc(m.match_id)}" data-label="${value}">${esc(labelName(value))}</button>`;
     const st = m.storage || {};
     return `<div class="match-tools" data-match-tools="${esc(m.match_id)}"><span class="label">Replay ground truth</span>${button('known_clean')}${button('suspected')}${button('confirmed_cheat')}
-      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><button class="btn btn-sm" data-compare-match="${esc(m.match_id)}">Before / after</button><button class="btn btn-sm" data-sandbox-match="${esc(m.match_id)}">Threshold sandbox</button><span class="spacer"></span>
+      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><button class="btn btn-sm" data-investigation-match="${esc(m.match_id)}">Investigation studio</button><a class="btn btn-sm" href="api/match/${encodeURIComponent(m.match_id)}/report">Case report</a><button class="btn btn-sm" data-compare-match="${esc(m.match_id)}">Before / after</button><button class="btn btn-sm" data-sandbox-match="${esc(m.match_id)}">Threshold sandbox</button><span class="spacer"></span>
       <button class="btn btn-sm" data-archive-match="${esc(m.match_id)}">Archive raw</button><button class="btn btn-sm" data-prune-match="${esc(m.match_id)}">Archive + remove active raw</button><button class="btn btn-sm" data-restore-match="${esc(m.match_id)}">Restore raw</button>
       <p class="storage-note">${m.calibration_label ? `Label: ${esc(labelName(m.calibration_label))}${m.calibration_comment ? ` · ${esc(m.calibration_comment)}` : ''}. ` : 'Replay is not labeled yet. '}${fmtInt(st.raw_ticks || 0)} raw ticks (${fmtBytes(st.raw_tick_bytes || 0)}) and ${fmtInt(st.normalized_frames || 0)} normalized player-frames. Pruning first writes and verifies a restorable full-fidelity ZIP; archives retain player identities and should stay private. Freed SQLite pages become reusable, but the DB file may not immediately shrink.</p></div>`;
   }
@@ -1215,6 +1246,81 @@
     if (!$('lab-dialog').open) $('lab-dialog').showModal();
   }
 
+  let activePlaylist = [], activePlaylistIndex = -1, activeInvestigationMatch = '';
+  function speedChart(points) {
+    if (!points.length) return '<p class="empty">No normalized timeline points are available.</p>';
+    const player = points[0].player_id;
+    const rows = points.filter((p) => p.player_id === player);
+    const maxT = Math.max(...rows.map((p) => p.time), 1), maxV = Math.max(20, ...rows.flatMap((p) => [p.pose_speed, p.game_speed, p.disc_speed]));
+    const path = (key) => rows.map((p, i) => `${i ? 'L' : 'M'} ${(p.time / maxT * 900).toFixed(1)} ${(185 - (Number(p[key]) || 0) / maxV * 170).toFixed(1)}`).join(' ');
+    return `<div class="legend"><span><i style="background:#62c6be"></i>pose speed</span><span><i style="background:#82abff"></i>game speed</span><span><i style="background:#f2a45c"></i>disc speed</span><span>${esc(rows[0].player_name || player)}</span></div>
+      <div class="chart-shell"><svg class="speed-chart" viewBox="0 0 900 210" role="img" aria-label="Synchronized player and disc speed chart">
+      <path class="grid" d="M0 185H900 M0 100H900 M0 15H900"/><text x="4" y="12">${fmtNum(maxV,1)} m/s</text><text x="4" y="182">0</text>
+      <path class="pose" d="${path('pose_speed')}"/><path class="game" d="${path('game_speed')}"/><path class="disc" d="${path('disc_speed')}"/></svg></div>`;
+  }
+
+  function renderInvestigation(d) {
+    const q = d.quality || {}, progress = d.review_progress || {};
+    activePlaylist = d.playlist || []; activePlaylistIndex = -1; activeInvestigationMatch = d.match.match_id;
+    const incidents = (d.incidents || []).map((x) => `<tr><td class="mono">${esc(x.id)}</td><td>${who(x.player_name,x.player_id)}</td><td class="num">${fmtInt(x.start_frame)}–${fmtInt(x.end_frame)}</td><td><span class="tag ${x.agreement > 1 ? 'warn' : ''}">${fmtInt(x.agreement)} detector${x.agreement === 1 ? '' : 's'}</span></td><td class="mono">${esc((x.detectors||[]).join(', '))}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-event="${esc((x.event_ids||[])[0])}">Open incident</button></td></tr>`).join('');
+    const throws = (d.throws || []).map((t) => `<tr class="${t.certain_breach ? 'cap-breach-row' : ''}"><td class="mono">${esc(t.clock || fmtClock(t.time))}</td><td>${who(t.player,t.player_id)}</td><td class="num">${fmtNum(t.speed,2)} ± ${fmtNum(t.uncertainty,2)}</td><td>${t.certain_breach ? '<span class="tag bad">certainly over cap</span>' : t.near_boundary ? '<span class="tag warn">boundary</span>' : '<span class="tag ok">within envelope</span>'}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(t.frame_index)}">Open throw</button></td></tr>`).join('');
+    const playlist = activePlaylist.map((x,i) => `<tr data-playlist-row="${i}"><td class="num">${i+1}</td><td>${esc(x.kind)}</td><td>${who(x.player_name,x.player_id)}</td><td class="mono">${esc(x.label)}</td><td class="num">${fmtInt(x.frame)}</td><td><button class="btn btn-sm" data-playlist-index="${i}" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(x.frame)}">Open</button></td></tr>`).join('');
+    const notes = (d.notes || []).map((n) => `<li><span class="tag">${esc(n.kind)}</span> ${n.frame_index >= 0 ? `frame ${fmtInt(n.frame_index)} · ` : ''}${esc(n.body || 'Bookmark')} <button class="btn btn-text btn-sm" data-delete-note="${esc(n.note_id)}">Delete</button></li>`).join('') || '<li class="muted">No investigator notes yet.</li>';
+    const contexts = Object.entries(d.legal_context_counts || {}).sort((a,b)=>b[1]-a[1]).map(([name,n])=>`<span class="tag">${esc(name || 'unclassified')} ${fmtInt(n)}</span>`).join(' ');
+    const runs = (d.analysis_runs || []).map((run) => `<tr><td>${esc(run.source)}</td><td class="mono">v${esc(run.app_version)} / ${esc(run.config_fingerprint)}</td><td>${esc(run.profile_name || 'default')}</td><td class="num">${fmtNum(run.telemetry_quality,1)}</td><td class="num">${fmtInt(run.pipeline_milliseconds)} ms</td><td>${timeAgo(run.created_at)}</td></tr>`).join('');
+    return `<div class="inspector-grid"><div><span>Telemetry quality</span><b class="quality-score">${fmtNum(q.score,0)}</b><small class="muted">${esc(q.grade)}${q.gated ? ' · hard gated' : ''}</small></div><div><span>Review progress</span><b>${fmtNum(progress.percent,0)}%</b><small class="muted">${fmtInt(progress.reviewed)} of ${fmtInt(progress.total)} observations</small></div><div><span>Grouped incidents</span><b>${fmtInt((d.incidents||[]).length)}</b><small class="muted">overlapping signals become one review unit</small></div><div><span>Throws reconstructed</span><b>${fmtInt((d.throws||[]).length)}</b><small class="muted">measurement envelopes shown</small></div></div>
+      <p class="notice ${q.gated ? 'bad' : ''}">${esc((q.reasons||[]).join(' · ') || 'Telemetry passed the pre-detector quality checks.')}</p>
+      <h3>Synchronized physics chart</h3>${speedChart(d.timeline || [])}
+      <h3>Legal-action context</h3><p>${contexts || '<span class="muted">No classified context.</span>'}</p>
+      <details class="sub" open><summary><span class="tog"></span><h3>Incident groups<span class="count">${fmtInt((d.incidents||[]).length)}</span></h3></summary><div class="physics-table"><table><thead><tr><th>ID</th><th>Player</th><th>Frames</th><th>Agreement</th><th>Detectors</th><th></th></tr></thead><tbody>${incidents || '<tr><td colspan="6" class="muted">No detector incidents.</td></tr>'}</tbody></table></div></details>
+      <details class="sub" open><summary><span class="tog"></span><h3>Throw reconstruction<span class="count">${fmtInt((d.throws||[]).length)}</span></h3></summary><div class="physics-table"><table><thead><tr><th>Clock</th><th>Player</th><th>Speed envelope</th><th>Assessment</th><th></th></tr></thead><tbody>${throws || '<tr><td colspan="5" class="muted">No reconstructed throws.</td></tr>'}</tbody></table></div></details>
+      <details class="sub"><summary><span class="tog"></span><h3>Replay clip playlist<span class="count">J/K + Enter</span></h3></summary><div class="playlist"><table><thead><tr><th>#</th><th>Kind</th><th>Player</th><th>Signal</th><th>Frame</th><th></th></tr></thead><tbody>${playlist || '<tr><td colspan="6" class="muted">No clip anchors.</td></tr>'}</tbody></table></div></details>
+      <details class="sub" open><summary><span class="tog"></span><h3>Bookmarks &amp; investigator notes</h3></summary><ul class="health-list" id="investigation-notes">${notes}</ul><div class="form-row"><label class="form-field">Frame (-1 = match)<input id="note-frame" type="number" value="-1" min="-1"></label><label class="form-field path">Note<input id="note-body" maxlength="8000" placeholder="What did you verify?"></label><button class="btn" data-add-note="${esc(d.match.match_id)}">Add note</button><button class="btn" data-add-bookmark="${esc(d.match.match_id)}">Bookmark frame</button></div></details>
+      <details class="sub"><summary><span class="tog"></span><h3>Detector/config provenance</h3></summary><div class="physics-table"><table><thead><tr><th>Source</th><th>Build / config</th><th>Profile</th><th>Quality</th><th>Runtime</th><th>Analyzed</th></tr></thead><tbody>${runs || '<tr><td colspan="6" class="muted">Provenance begins with v0.5 analyses.</td></tr>'}</tbody></table></div></details>
+      <details class="sub"><summary><span class="tog"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(d.limits||[]).map(x=>`<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
+  }
+
+  async function openInvestigation(matchID) {
+    openLabDialog('Investigation studio', '<p class="status">Building the unified timeline and physics views…</p>');
+    const data = await getJSON(`api/match/${encodeURIComponent(matchID)}/investigation`);
+    $('lab-dialog-content').innerHTML = renderInvestigation(data);
+  }
+
+  async function loadStudio() {
+    const el = $('studio');
+    try {
+      const [v,p,f,q,s,b,synth] = await Promise.all([getJSON('api/lab/validation'),getJSON('api/profiles'),getJSON('api/filters'),getJSON('api/queue'),getJSON('api/setup'),getJSON('api/maintenance/backups'),getJSON('api/lab/synthetic')]);
+      el.className=''; el.removeAttribute('aria-busy');
+      const metricRows=(v.detectors||[]).map(d=>`<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(d.confirmed)}</td><td class="num">${fmtInt(d.false_positive)}</td><td class="num">${d.has_precision ? fmtNum(d.precision*100,1)+'%' : '—'}</td><td>${esc(d.recommendation)}</td></tr>`).join('');
+      const split=v.splits||{}, drift=v.drift||{}, backups=b.backups||[], profiles=p.profiles||[], filters=f.filters||[];
+      const queueRows=(q.items||[]).slice(0,8).map(x=>`<tr><td>${esc(x.file)}</td><td>${esc(x.source)}</td><td><span class="tag ${x.status==='failed'?'bad':x.status==='complete'?'ok':'warn'}">${esc(x.status)}</span></td><td class="num">${fmtInt(x.duration_ms)} ms</td></tr>`).join('');
+      const players=[...new Map(historyMatches.flatMap(m=>(m.players||[]).map(x=>[x.player_id,x])).filter(x=>x[0])).values()];
+      const playerOptions=players.map(x=>`<option value="${esc(x.player_id)}">${esc(x.name||x.player_id)}</option>`).join('');
+      const firstMatrixParam=labSpecs[0]?.params?.[0], firstMatrixValue=Number(firstMatrixParam?.value);
+      const matrixDefaults=Number.isFinite(firstMatrixValue) ? [firstMatrixValue*.9,firstMatrixValue,firstMatrixValue*1.1].map(x=>Number(x.toPrecision(6))).join(', ') : '';
+      el.innerHTML=`<div class="studio-grid">
+        <div class="studio-card wide"><h3>Precision, recall &amp; recommendations</h3><div class="health-grid"><div class="health-card"><span>Match recall</span><b>${v.match_recall.available ? fmtNum(v.match_recall.recall*100,1)+'%' : 'not available'}</b><small class="muted">${fmtInt(v.match_recall.with_any_signal)} / ${fmtInt(v.match_recall.confirmed_matches)} confirmed matches had any signal</small></div><div class="health-card"><span>Training</span><b>${fmtInt((split.training||[]).length)}</b></div><div class="health-card"><span>Validation</span><b>${fmtInt((split.validation||[]).length)}</b></div><div class="health-card"><span>Locked holdout</span><b>${fmtInt((split.holdout||[]).length)}</b></div></div><div class="physics-table"><table><thead><tr><th>Detector</th><th>Correct</th><th>False +</th><th>Precision</th><th>Recommendation</th></tr></thead><tbody>${metricRows || '<tr><td colspan="5" class="muted">Label observations to unlock detector metrics.</td></tr>'}</tbody></table></div><p class="metric-note">${esc(v.notice)}</p></div>
+        <div class="studio-card"><h3>Drift monitor</h3>${drift.available ? `<p><b>Quality</b> ${fmtNum(drift.change.quality,1)} · <b>Events/run</b> ${fmtNum(drift.change.events,1)} · <b>Runtime</b> ${fmtNum(drift.change.pipeline_ms,0)} ms</p>` : `<p class="empty">${esc(drift.message)}</p>`}<p class="metric-note">Recent analyses are compared with the preceding analysis window.</p></div>
+        <div class="studio-card"><h3>Label disagreements</h3><p><b>${fmtInt((v.disagreements||[]).length)}</b> known-clean matches still contain observations.</p><div class="studio-actions"><button class="btn" id="show-disagreements">Review disagreements</button></div></div>
+        <div class="studio-card"><h3>Configuration profiles</h3><p>Active: <span class="tag">${esc(p.active)}</span><br><span class="mono muted">${esc(p.current_fingerprint)}</span></p><label class="form-field">New profile name<input id="profile-name" maxlength="80" placeholder="Conservative v1"></label><div class="studio-actions"><button class="btn" id="save-profile">Save current</button>${profiles.map(x=>`<button class="btn btn-sm ${x.active?'selected':''}" data-activate-profile="${esc(x.name)}" ${x.active?'disabled':''}>${esc(x.name)}</button>`).join('')}</div><p class="metric-note">Activations apply after restart and remain shadow-only.</p></div>
+        <div class="studio-card"><h3>Experiment matrix</h3><label class="form-field">Match<select id="matrix-match">${historyMatches.map(m=>`<option value="${esc(m.match_id)}">${esc(m.source_file||m.match_id)}</option>`).join('')}</select></label><label class="form-field">Detector<select id="matrix-detector">${labSpecs.map(d=>`<option value="${esc(d.id)}">${esc(d.id)}</option>`).join('')}</select></label><label class="form-field">Parameter<input id="matrix-param" value="${esc(firstMatrixParam?.key||'')}"></label><label class="form-field">Values<input id="matrix-values" value="${esc(matrixDefaults)}" title="Absolute candidate values, comma separated"></label><div class="studio-actions"><button class="btn" id="run-matrix" ${historyMatches.length&&firstMatrixParam?'':'disabled'}>Run matrix</button></div></div>
+        <div class="studio-card"><h3>Side-by-side players</h3><div class="form-row"><label class="form-field">Player A<select id="compare-a">${playerOptions}</select></label><label class="form-field">Player B<select id="compare-b">${playerOptions}</select></label></div><div class="studio-actions"><button class="btn" id="compare-players" ${players.length<2?'disabled':''}>Compare</button></div></div>
+        <div class="studio-card wide"><h3>Queue &amp; performance</h3><div class="health-grid"><div class="health-card"><span>Running</span><b>${fmtInt(q.running)}</b></div><div class="health-card"><span>Failed</span><b>${fmtInt(q.failed)}</b></div><div class="health-card"><span>Average duration</span><b>${fmtInt(q.average_duration_ms)} ms</b></div></div><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Duration</th></tr></thead><tbody>${queueRows || '<tr><td colspan="4" class="muted">No v0.5 queue jobs yet.</td></tr>'}</tbody></table></div>
+        <div class="studio-card"><h3>First-run readiness</h3><p><span class="tag ${s.ready?'ok':'warn'}">${s.ready?'ready':'attention needed'}</span></p><p>Evidence folder ${s.writable?'writable':'not writable'} · Spark ${s.spark_installed?'ready':'not found'} · ${fmtInt(s.stored_matches)} matches</p><div class="studio-actions"><button class="btn" id="show-setup">Setup guide</button></div></div>
+        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports labels, direct reviews, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div></div>
+        <div class="studio-card"><h3>Saved investigation views</h3><div class="studio-actions">${filters.map(x=>`<button class="btn btn-sm" data-load-filter="${esc(x.filter_json)}">${esc(x.name)}</button>`).join('') || '<span class="muted">No saved filters.</span>'}</div><div class="studio-actions"><button class="btn" id="save-filter">Save current History filter</button></div></div>
+        <div class="studio-card"><h3>Backup &amp; restore</h3><label class="form-field">Verified backup<select id="restore-backup">${backups.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} · ${fmtBytes(x.bytes)}</option>`).join('')}</select></label><div class="studio-actions"><button class="btn" id="backup-db-studio">Create backup</button><button class="btn" id="restore-db" ${backups.length?'':'disabled'}>Restore on restart</button></div><p class="metric-note">Restore first creates a safety backup and preserves the replaced database.</p></div>
+        <div class="studio-card"><h3>Adversarial probes</h3><p>${(synth.probes||[]).map(x=>`<span class="tag" title="${esc(x.expected)}">${esc(x.id)}</span>`).join(' ')}</p><p class="metric-note">Deterministic synthetic scenarios cover legal motion, contact ambiguity, tracking loss, clock corruption, and disc-cap breaches.</p></div>
+      </div>`;
+      el.dataset.validation=JSON.stringify(v);el.dataset.setup=JSON.stringify(s);
+      if ($('compare-b') && players.length>1) $('compare-b').selectedIndex=1;
+      if (!prefs.v05SetupSeen) {
+        prefs.v05SetupSeen = true; savePrefs();
+        openLabDialog('Welcome to NEVR v0.5', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Nothing in this app automatically punishes a player. Build labeled evidence before trusting a detector.</p>`);
+      }
+    } catch(e){ panelError(el,'the investigation studio',e); }
+  }
+
   function changeTable(changes) {
     const important = (changes || []).filter((c) => c.status !== 'unchanged');
     if (!important.length) return '<p class="empty">No detector output changed.</p>';
@@ -1264,7 +1370,7 @@
     try {
       const data = await getJSON('api/lab/thresholds'); labSpecs = data.detectors || [];
       $('lab-detector').innerHTML = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
-      populateLabParams(); populateLabMatches();
+      populateLabParams(); populateLabMatches(); setTimeout(loadStudio, 0);
     } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
   }
 
@@ -1416,6 +1522,57 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const investigationButton = e.target.closest('button[data-investigation-match]');
+    if (investigationButton) {
+      investigationButton.disabled = true;
+      try { await openInvestigation(investigationButton.dataset.investigationMatch); }
+      catch (err) { setStatus(`Could not build investigation: ${err.message}`, 'err'); }
+      finally { investigationButton.disabled = false; }
+      return;
+    }
+    const noteButton = e.target.closest('button[data-add-note], button[data-add-bookmark]');
+    if (noteButton) {
+      const bookmark = !!noteButton.dataset.addBookmark, matchID = noteButton.dataset.addNote || noteButton.dataset.addBookmark;
+      const body = $('note-body').value.trim(), frame = Number($('note-frame').value);
+      if (!bookmark && !body) { setStatus('Write a note first.', 'err'); return; }
+      try { await postJSON(`api/match/${encodeURIComponent(matchID)}/notes`, { kind: bookmark ? 'bookmark' : 'note', body, frame_index: Number.isInteger(frame) ? frame : -1 }); await openInvestigation(matchID); setStatus(bookmark ? 'Frame bookmarked.' : 'Investigator note saved.', 'ok'); }
+      catch (err) { setStatus(`Could not save note: ${err.message}`, 'err'); }
+      return;
+    }
+    const deleteNote = e.target.closest('button[data-delete-note]');
+    if (deleteNote) {
+      try { await deleteJSON(`api/note/${encodeURIComponent(deleteNote.dataset.deleteNote)}`); await openInvestigation(activeInvestigationMatch); setStatus('Note removed.', 'ok'); }
+      catch (err) { setStatus(`Could not remove note: ${err.message}`, 'err'); }
+      return;
+    }
+    const playlistButton = e.target.closest('button[data-playlist-index]');
+    if (playlistButton) {
+      activePlaylistIndex = +playlistButton.dataset.playlistIndex;
+      document.querySelectorAll('[data-playlist-row]').forEach((row) => row.classList.toggle('active', +row.dataset.playlistRow === activePlaylistIndex));
+    }
+    if (e.target.closest('#show-disagreements')) {
+      const v=JSON.parse($('studio').dataset.validation||'{}'), rows=(v.disagreements||[]).map(x=>`<tr><td><button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)}</button></td><td>${esc(labelName(x.label))}</td><td class="num">${fmtInt(x.events)}</td><td>${esc(x.reason)}</td></tr>`).join('');
+      openLabDialog('Label disagreements', `<div class="physics-table"><table><thead><tr><th>Match</th><th>Human label</th><th>Signals</th><th>Why listed</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">No disagreements found.</td></tr>'}</tbody></table></div>`); return;
+    }
+    if (e.target.closest('#show-setup')) {
+      const s=JSON.parse($('studio').dataset.setup||'{}'); openLabDialog('First-run setup', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Writable':'Needs attention'}</b></div><div><span>Spark viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety mode</span><b>${(s.unsafe_detectors||[]).length?'Check config':'Shadow only'}</b></div></div><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="mono muted">${esc(s.data_folder)}</p>`); return;
+    }
+    if (e.target.closest('#save-profile')) {
+      const name=$('profile-name').value.trim(); if(!name){setStatus('Enter a profile name.','err');return}
+      try{await postJSON('api/profiles',{name,description:'Saved from the desktop investigation studio'});setStatus(`Saved profile ${name}.`,'ok');await loadStudio()}catch(err){setStatus(`Could not save profile: ${err.message}`,'err')} return;
+    }
+    const activateProfile=e.target.closest('button[data-activate-profile]');
+    if(activateProfile){if(!confirm(`Activate ${activateProfile.dataset.activateProfile} after the next app restart?`))return;try{await postJSON(`api/profiles/${encodeURIComponent(activateProfile.dataset.activateProfile)}/activate`);setStatus('Profile selected. Restart the desktop app to apply it.','ok');await loadStudio()}catch(err){setStatus(`Could not activate profile: ${err.message}`,'err')}return}
+    if (e.target.closest('#run-matrix')) {
+      const values=$('matrix-values').value.split(',').map(Number).filter(Number.isFinite);
+      try{const result=await postJSON('api/lab/experiments',{MatchID:$('matrix-match').value,DetectorID:$('matrix-detector').value,Parameter:$('matrix-param').value,Values:values});openLabDialog('Threshold experiment matrix',`<p class="notice">Preview only; no database or config changes.</p><table><thead><tr><th>Value</th><th>Events</th><th>Runtime</th></tr></thead><tbody>${result.rows.map(x=>`<tr><td>${esc(x.value)} ${esc(x.unit)}</td><td>${fmtInt(x.events)}</td><td>${fmtInt(x.pipeline_ms)} ms</td></tr>`).join('')}</tbody></table>`)}catch(err){setStatus(`Matrix failed: ${err.message}`,'err')}return;
+    }
+    if(e.target.closest('#compare-players')){try{const result=await getJSON(`api/players/compare?a=${encodeURIComponent($('compare-a').value)}&b=${encodeURIComponent($('compare-b').value)}`);openLabDialog('Player comparison',`<div class="team-grid">${result.players.map(p=>`<div class="team-card"><div class="team-title"><strong>${esc(p.name||p.player_id)}</strong></div><div class="team-stats"><div><span>Matches</span><b>${fmtInt(p.matches)}</b></div><div><span>Signals</span><b>${fmtInt(p.events)}</b></div><div><span>Throws</span><b>${fmtInt(p.throws)}</b></div><div><span>Fastest</span><b>${fmtNum(p.max_throw_speed,2)} m/s</b></div></div></div>`).join('')}</div><p class="metric-note">${esc(result.notice)}</p>`)}catch(err){setStatus(`Comparison failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#save-filter')){const name=prompt('Name this History filter preset:');if(!name)return;const filter={search:$('history-search').value,detector:$('history-detector').value,label:$('history-label').value,sort:$('history-sort').value,flagged:$('history-flagged').checked};try{await postJSON('api/filters',{name,filter_json:JSON.stringify(filter)});setStatus('Saved History filter preset.','ok');await loadStudio()}catch(err){setStatus(`Could not save filter: ${err.message}`,'err')}return}
+    const loadFilter=e.target.closest('button[data-load-filter]');if(loadFilter){try{const f=JSON.parse(loadFilter.dataset.loadFilter);$('history-search').value=f.search||'';$('history-detector').value=f.detector||'';$('history-label').value=f.label||'';$('history-sort').value=f.sort||'newest';$('history-flagged').checked=!!f.flagged;renderHistory();$('h-history').scrollIntoView({behavior:reduced?'auto':'smooth'})}catch(err){setStatus('Saved filter is invalid.','err')}return}
+    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text()));setStatus(`Imported ${Object.values(result.imported||{}).reduce((a,b)=>a+b,0)} evidence records.`,'ok');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#backup-db-studio')){try{const result=await postJSON('api/maintenance/backup');setStatus(`Backup created: ${result.path}`,'ok');await loadStudio()}catch(err){setStatus(`Backup failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok')}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
     if (e.target.closest('#run-regression')) { await loadRegression(); return; }
     if (e.target.closest('#preview-threshold')) {
       const button = e.target.closest('#preview-threshold'), resultEl = $('threshold-result');
@@ -1697,8 +1854,23 @@
 
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
+  document.addEventListener('keydown',(e)=>{
+    if(!$('lab-dialog').open || !activePlaylist.length || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    if(e.key==='j'||e.key==='ArrowDown') activePlaylistIndex=Math.min(activePlaylist.length-1,activePlaylistIndex+1);
+    else if(e.key==='k'||e.key==='ArrowUp') activePlaylistIndex=Math.max(0,activePlaylistIndex-1);
+    else if(e.key==='Enter'&&activePlaylistIndex>=0){document.querySelector(`button[data-playlist-index="${activePlaylistIndex}"]`)?.click();return}
+    else return;
+    e.preventDefault();document.querySelectorAll('[data-playlist-row]').forEach(row=>row.classList.toggle('active',+row.dataset.playlistRow===activePlaylistIndex));document.querySelector(`[data-playlist-row="${activePlaylistIndex}"]`)?.scrollIntoView({block:'nearest'});
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.id !== 'matrix-detector') return;
+    const detector = labSpecs.find((item) => item.id === e.target.value);
+    if ($('matrix-param')) $('matrix-param').value = detector?.params?.[0]?.key || '';
+    const value = Number(detector?.params?.[0]?.value);
+    if ($('matrix-values') && Number.isFinite(value)) $('matrix-values').value = [value * .9, value, value * 1.1].map((x) => Number(x.toPrecision(6))).join(', ');
+  });
 
-  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); }
+  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); loadStudio(); }
   refreshPanels();
   setInterval(probeConnection, 5000);
 })();

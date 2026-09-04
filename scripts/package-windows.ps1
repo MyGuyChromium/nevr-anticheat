@@ -59,6 +59,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Install-NEVR.ps1") -Destination $installerTarget
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Uninstall-NEVR.cmd") -Destination $installerTarget
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Uninstall-NEVR.ps1") -Destination $installerTarget
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Rollback-NEVR.cmd") -Destination $installerTarget
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Rollback-NEVR.ps1") -Destination $installerTarget
 
     $zipPath = Join-Path $outputRoot "NEVR-Anticheat-Windows-x64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force

@@ -37,6 +37,13 @@ type PlayerState struct {
 	PlayspaceTrackedHands int     `json:"playspace_tracked_hands"`
 	PlayspaceValid        bool    `json:"playspace_valid"`
 	MovementOrigin        string  `json:"movement_origin,omitempty"`
+	// LegalContext is a conservative, shared interpretation of legitimate
+	// Echo movement visible in the current sample. Every detector receives the
+	// same PlayerState, so this prevents each detector from inventing a
+	// different definition of a lean, playspace step, boost, or contact burst.
+	// Candidates are review context, never proof that a particular collision
+	// occurred (the replay API carries no arena-object contact identifiers).
+	LegalContext LegalMotionContext `json:"legal_context"`
 
 	// Hand kinematics
 	// LeftHandVelocity/RightHandVelocity are world-space velocities. The
@@ -123,6 +130,21 @@ type PlayerState struct {
 	// Stun tracking
 	WasStunned     bool `json:"-"`
 	StunRecoveries int  `json:"-"`
+}
+
+// LegalMotionContext describes legitimate explanations that can account for
+// unusual pose, hand, or body kinematics at the current frame.
+type LegalMotionContext struct {
+	Leaning                  bool    `json:"leaning"`
+	PlayspaceStep            bool    `json:"playspace_step"`
+	GameLocomotion           bool    `json:"game_locomotion"`
+	Boosting                 bool    `json:"boosting"`
+	PossibleSlapOrPush       bool    `json:"possible_slap_or_push"`
+	PossibleHeadContact      bool    `json:"possible_head_contact"`
+	TrackingLimited          bool    `json:"tracking_limited"`
+	Confidence               float64 `json:"confidence"`
+	PrimaryExplanation       string  `json:"primary_explanation,omitempty"`
+	CannotDistinguishContact bool    `json:"cannot_distinguish_contact"`
 }
 
 const DefaultHistoryWindow = 30

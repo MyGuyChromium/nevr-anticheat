@@ -52,6 +52,38 @@ type desktopRuntime struct {
 	analyzeMu    *sync.Mutex
 	stopped      chan struct{}
 	resume       chan struct{}
+	queue        []analysisQueueItem
+	nextQueueID  int64
+}
+
+type analysisQueueItem struct {
+	ID           int64  `json:"id"`
+	File         string `json:"file"`
+	Source       string `json:"source"`
+	Status       string `json:"status"`
+	Progress     int    `json:"progress"`
+	Matches      int    `json:"matches"`
+	Error        string `json:"error,omitempty"`
+	StartedAt    string `json:"started_at,omitempty"`
+	FinishedAt   string `json:"finished_at,omitempty"`
+	DurationMS   int64  `json:"duration_ms,omitempty"`
+	startedClock time.Time
+}
+
+func (s *server) handleQueue(w http.ResponseWriter, _ *http.Request) {
+	items, averageMS := s.runtime.queueSnapshot()
+	running, failed := 0, 0
+	for _, item := range items {
+		switch item.Status {
+		case "running":
+			running++
+		case "failed":
+			failed++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "running": running, "failed": failed, "average_duration_ms": averageMS,
+	})
 }
 
 func newDesktopRuntime(engine *replay.Engine, done <-chan struct{}) *desktopRuntime {
@@ -67,6 +99,56 @@ func newDesktopRuntime(engine *replay.Engine, done <-chan struct{}) *desktopRunt
 	_ = rt.loadSettings()
 	go rt.loop(done)
 	return rt
+}
+
+func (rt *desktopRuntime) queueStart(file, source string) int64 {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.nextQueueID++
+	item := analysisQueueItem{ID: rt.nextQueueID, File: filepath.Base(file), Source: source,
+		Status: "running", Progress: 10, StartedAt: fmtTime(time.Now()), startedClock: time.Now()}
+	rt.queue = append([]analysisQueueItem{item}, rt.queue...)
+	if len(rt.queue) > 100 {
+		rt.queue = rt.queue[:100]
+	}
+	return item.ID
+}
+
+func (rt *desktopRuntime) queueFinish(id int64, matches int, err error) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for i := range rt.queue {
+		if rt.queue[i].ID != id {
+			continue
+		}
+		rt.queue[i].Matches = matches
+		rt.queue[i].Progress = 100
+		rt.queue[i].FinishedAt = fmtTime(time.Now())
+		rt.queue[i].DurationMS = time.Since(rt.queue[i].startedClock).Milliseconds()
+		if err != nil {
+			rt.queue[i].Status, rt.queue[i].Error = "failed", err.Error()
+		} else {
+			rt.queue[i].Status = "complete"
+		}
+		return
+	}
+}
+
+func (rt *desktopRuntime) queueSnapshot() ([]analysisQueueItem, int64) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	out := append([]analysisQueueItem(nil), rt.queue...)
+	var total, count int64
+	for _, item := range out {
+		if item.Status == "complete" && item.DurationMS > 0 {
+			total += item.DurationMS
+			count++
+		}
+	}
+	if count > 0 {
+		return out, total / count
+	}
+	return out, 0
 }
 
 func (rt *desktopRuntime) loadSettings() error {
@@ -221,7 +303,10 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 		if seen {
 			continue
 		}
+		queueID := rt.queueStart(path, "watch folder")
+		started := time.Now()
 		results, analyzeErr := rt.engine.AnalyzeFileAll(ctx, path, true)
+		recordAnalysisResults(ctx, rt.engine, results, "watch", time.Since(started))
 		failure := analyzeErr
 		ok := analyzeErr == nil && len(results) > 0
 		for _, result := range results {
@@ -242,8 +327,10 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 			_ = rt.saveSettingsLocked()
 			rt.mu.Unlock()
 			failures = append(failures, filepath.Base(path)+": "+failure.Error())
+			rt.queueFinish(queueID, len(results), failure)
 			continue
 		}
+		rt.queueFinish(queueID, len(results), nil)
 		rt.mu.Lock()
 		rt.settings.SeenFiles[path] = fp
 		_ = rt.saveSettingsLocked()
@@ -286,7 +373,10 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 	rt.analyzeMu.Lock()
 	defer rt.analyzeMu.Unlock()
 	for _, path := range rt.pendingFiles() {
+		queueID := rt.queueStart(path, "crash recovery")
+		started := time.Now()
 		results, err := rt.engine.AnalyzeFileAll(ctx, path, true)
+		recordAnalysisResults(ctx, rt.engine, results, "recovery", time.Since(started))
 		ok := err == nil && len(results) > 0
 		for _, result := range results {
 			if result.PersistError() != nil {
@@ -294,15 +384,19 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 			}
 		}
 		if ok {
+			rt.queueFinish(queueID, len(results), nil)
 			_ = os.Remove(path)
 			_ = os.Remove(filepath.Dir(path))
 			rt.mu.Lock()
 			rt.recovered++
 			rt.mu.Unlock()
 		} else if err != nil {
+			rt.queueFinish(queueID, len(results), err)
 			rt.mu.Lock()
 			rt.recoveryErr = err.Error()
 			rt.mu.Unlock()
+		} else {
+			rt.queueFinish(queueID, len(results), errors.New("recovery did not persist a complete match"))
 		}
 	}
 }

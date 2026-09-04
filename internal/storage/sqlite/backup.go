@@ -52,7 +52,13 @@ func (s *Store) Backup(ctx context.Context, destination string) (err error) {
 
 	// Verify the copy independently before reporting success. This is a read-
 	// only connection and does not run migrations or mutate the snapshot.
-	dsn := "file:" + filepath.ToSlash(abs) + "?mode=ro&_busy_timeout=5000"
+	return VerifyDatabase(ctx, abs)
+}
+
+// VerifyDatabase opens path read-only and runs SQLite's quick integrity
+// check. It is shared by backup creation and the desktop restore wizard.
+func VerifyDatabase(ctx context.Context, path string) error {
+	dsn := "file:" + filepath.ToSlash(path) + "?mode=ro&_busy_timeout=5000"
 	copyDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return fmt.Errorf("sqlite: opening backup for verification: %w", err)
@@ -63,7 +69,7 @@ func (s *Store) Backup(ctx context.Context, destination string) (err error) {
 		return fmt.Errorf("sqlite: verifying backup: %w", err)
 	}
 	if result != "ok" {
-		return fmt.Errorf("sqlite: backup integrity check returned %q", result)
+		return fmt.Errorf("sqlite: database integrity check returned %q", result)
 	}
 	return nil
 }
