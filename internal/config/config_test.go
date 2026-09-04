@@ -337,13 +337,17 @@ func TestValidate_TiersMustBeMonotonic(t *testing.T) {
 	}
 }
 
-func TestValidate_ReviewAndEnforceModesWarn(t *testing.T) {
+func TestValidate_ReviewAndEnforceModes(t *testing.T) {
 	cfg := mustLoad(t, "[detector.MOV_001]\nmode = \"review\"\n")
-	if !hasWarning(cfg, "MOV_001.mode=\"review\"") || !hasWarning(cfg, "will be SCORED") {
-		t.Fatalf("expected scored-mode warning: %v", cfg.Warnings)
+	if hasWarning(cfg, "MOV_001.mode=\"review\"") {
+		t.Fatalf("review is the intentional scored-review mode and should not warn: %v", cfg.Warnings)
 	}
 	if cfg.IsDetectorShadow("MOV_001") {
 		t.Fatal("review mode must not be shadow")
+	}
+	cfg = mustLoad(t, "[detector.MOV_001]\nmode = \"enforce\"\n")
+	if !hasWarning(cfg, "MOV_001.mode=\"enforce\"") || !hasWarning(cfg, "automatic enforcement is not wired") {
+		t.Fatalf("enforce mode must explain its real review-only behaviour: %v", cfg.Warnings)
 	}
 	// shadow.shadow_detectors wins over the per-detector mode, and the
 	// warning must say so instead of promising scoring.
@@ -351,7 +355,7 @@ func TestValidate_ReviewAndEnforceModesWarn(t *testing.T) {
 	if !cfg.IsDetectorShadow("MOV_001") {
 		t.Fatal("shadow_detectors must force shadow")
 	}
-	if hasWarning(cfg, "will be SCORED") || !hasWarning(cfg, "will NOT be scored") {
+	if !hasWarning(cfg, "will NOT be scored") {
 		t.Fatalf("forced-shadow detector warned as scored: %v", cfg.Warnings)
 	}
 }

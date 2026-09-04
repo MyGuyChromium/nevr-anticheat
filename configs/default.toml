@@ -24,11 +24,11 @@
 #   a replay carries whatever rate it recorded), never milliseconds.
 #
 # VALIDATION STATUS
-#   No detector has been validated against real Echo VR telemetry. Every
-#   threshold below is derived from game physics constants and synthetic data.
-#   All detectors ship in shadow mode: their events are stored with
-#   is_shadow=1 and never scored, so a default deployment produces no scores,
-#   no review cases and no enforcement recommendations.
+#   No detector has been validated against labelled real Echo VR telemetry.
+#   Every threshold still needs calibration. All detectors except MOV_006
+#   ship in shadow mode. MOV_006 is a scored review signal because physical
+#   playspace walking is treated as cheating, but it cannot auto-enforce. Use
+#   configs/shadow_deploy.toml when every detector must be observation-only.
 
 # =============================================================================
 # General
@@ -371,6 +371,23 @@ max_consecutive       = 5      # consecutive activations without a recharge paus
 recharge_pause_frames = 10     # frames of pause that close a sequence
 min_sequences         = 2      # suspicious sequences before an event
 sigmoid_steepness     = 0.5
+
+[detector.MOV_006]
+# Physical Playspace Walking. EchoTools-grounded: subtracts Echo VR's raw
+# player.velocity from tracked rig motion, separating room-scale steps from
+# ordinary locomotion and stacking. This is a scored review signal (not
+# shadow), but never auto-enforces because deliberate lunges and tracking
+# corrections still require a moderator to inspect the generated replay clip.
+enabled            = true
+enforcement_weight = 0.75
+auto_enforce       = false
+mode               = "review"
+[detector.MOV_006.params]
+min_playspace_speed    = 0.8    # m/s game-velocity-subtracted rig speed
+min_playspace_distance = 0.25   # m accumulated room-scale displacement
+min_rig_coherence      = 0.35   # head/hand translation agreement [0,1]
+min_sustained_frames   = 3      # consecutive qualifying frames
+max_ping_ms            = 250.0  # skip less trustworthy samples above this latency; 0 disables
 
 # ----------------------------------------------------------------------------- state
 

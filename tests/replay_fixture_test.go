@@ -79,6 +79,12 @@ func TestReplayFixture_ParserAndPipeline(t *testing.T) {
 	// learned from the score, the punch increments reach PlayerState, and
 	// no production-enabled detector fires on a legitimate session.
 	h := testutil.NewHarness(t).WithEnabledDetectors().WithMatchContext(mc)
+	// This fixture predates raw velocity fidelity: it moves poses while every
+	// player.velocity remains zero, which is intentionally the MOV_006 signal.
+	// Exclude that new detector from this older fixture's broad clean assertion.
+	walking := h.Config().Detectors["MOV_006"]
+	walking.Enabled = false
+	h.Config().Detectors["MOV_006"] = walking
 	p, _ := h.NewPipeline()
 	result, err := p.ProcessMatch(t.Context(), mc, frames)
 	if err != nil {

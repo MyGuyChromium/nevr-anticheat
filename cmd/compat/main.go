@@ -119,12 +119,24 @@ func runReplayMode(paths []string, maxFrames int) {
 			minX, minY, minZ = 1e9, 1e9, 1e9
 			maxX, maxY, maxZ = -1e9, -1e9, -1e9
 			for _, f := range frames[:frameCount] {
-				if f.Position[0] < minX { minX = f.Position[0] }
-				if f.Position[0] > maxX { maxX = f.Position[0] }
-				if f.Position[1] < minY { minY = f.Position[1] }
-				if f.Position[1] > maxY { maxY = f.Position[1] }
-				if f.Position[2] < minZ { minZ = f.Position[2] }
-				if f.Position[2] > maxZ { maxZ = f.Position[2] }
+				if f.Position[0] < minX {
+					minX = f.Position[0]
+				}
+				if f.Position[0] > maxX {
+					maxX = f.Position[0]
+				}
+				if f.Position[1] < minY {
+					minY = f.Position[1]
+				}
+				if f.Position[1] > maxY {
+					maxY = f.Position[1]
+				}
+				if f.Position[2] < minZ {
+					minZ = f.Position[2]
+				}
+				if f.Position[2] > maxZ {
+					maxZ = f.Position[2]
+				}
 			}
 			fmt.Println("=== Position Ranges ===")
 			fmt.Printf("  X: [%.1f, %.1f]\n", minX, maxX)
@@ -168,8 +180,9 @@ func runReplayMode(paths []string, maxFrames int) {
 			}
 		}
 		checkField("position", "ALL detectors")
-		checkField("lhand.pos", "BIO_002, BIO_003, STATE_001, PAT_005")
-		checkField("rhand.pos", "BIO_002, BIO_003, STATE_001, PAT_005")
+		checkField("lhand.pos", "BIO_002, BIO_003, STATE_001, PAT_005, MOV_006")
+		checkField("rhand.pos", "BIO_002, BIO_003, STATE_001, PAT_005, MOV_006")
+		checkField("velocity", "MOV_006")
 		checkField("lhand.forward", "BIO_001, BIO_004")
 		checkField("rhand.forward", "BIO_001, BIO_004")
 		checkField("disc.position", "THROW_001-008, STATE_001")

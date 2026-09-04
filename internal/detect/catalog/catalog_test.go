@@ -8,8 +8,8 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// ExpectedDetectorCount is the documented detector count (README: 29).
-const ExpectedDetectorCount = 29
+// ExpectedDetectorCount is the documented detector count (README: 30).
+const ExpectedDetectorCount = 30
 
 func allEnabled() *config.Config {
 	cfg := config.DefaultConfig()
@@ -20,7 +20,7 @@ func allEnabled() *config.Config {
 	return cfg
 }
 
-func TestCatalogHas29UniqueDetectors(t *testing.T) {
+func TestCatalogHas30UniqueDetectors(t *testing.T) {
 	dets := detect.BuildAll(nil)
 	if len(dets) != ExpectedDetectorCount {
 		t.Fatalf("BuildAll built %d detectors, want %d", len(dets), ExpectedDetectorCount)
@@ -38,7 +38,7 @@ func TestCatalogHas29UniqueDetectors(t *testing.T) {
 	for _, prefix := range []struct {
 		prefix string
 		n      int
-	}{{"THROW_", 8}, {"BIO_", 4}, {"MOV_", 5}, {"STATE_", 7}, {"PAT_", 5}} {
+	}{{"THROW_", 8}, {"BIO_", 4}, {"MOV_", 6}, {"STATE_", 7}, {"PAT_", 5}} {
 		got := 0
 		for id := range seen {
 			if len(id) > len(prefix.prefix) && id[:len(prefix.prefix)] == prefix.prefix {

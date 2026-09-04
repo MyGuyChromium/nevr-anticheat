@@ -94,6 +94,13 @@ func TestTelemetry_RawTicksStoredOncePerFrame(t *testing.T) {
 	if len(got) != 3 || got[2] != raw[2] {
 		t.Fatalf("GetMatchRawTicks = %v", got)
 	}
+	timestamps, err := s.GetMatchTickTimestamps(ctx, "M1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timestamps) != 5 || timestamps[1] != 0.067 || timestamps[3] != 0.201 {
+		t.Fatalf("GetMatchTickTimestamps = %v", timestamps)
+	}
 	tc, _ := s.GetMatchTickCount(ctx, "M1")
 	if tc != 5 {
 		t.Errorf("tick count = %d", tc)

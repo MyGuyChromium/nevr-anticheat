@@ -44,3 +44,29 @@ func TestAppWindowCandidatesSkipMissingAndKeepMacApps(t *testing.T) {
 		t.Errorf("macOS candidates: %+v", mac)
 	}
 }
+
+func TestReplayViewerCandidatesPreferSparkInstallAndOverride(t *testing.T) {
+	env := map[string]string{
+		"NEVR_REPLAY_VIEWER": `D:\Portable\Replay Viewer.exe`,
+		"USERPROFILE":        `C:\Users\tester`,
+		"OneDrive":           `C:\Users\tester\OneDrive`,
+		"ProgramFiles":       `C:\Program Files`,
+	}
+	candidates := replayViewerCandidates("windows", func(k string) string { return env[k] }, `C:\NEVR`)
+	if got, want := candidates[0], env["NEVR_REPLAY_VIEWER"]; got != want {
+		t.Fatalf("first viewer candidate = %q, want override %q", got, want)
+	}
+	wantSpark := filepath.Join(env["USERPROFILE"], "Documents", "Replay Viewer", "Replay Viewer.exe")
+	if candidates[1] != wantSpark {
+		t.Errorf("Spark install candidate = %q, want %q", candidates[1], wantSpark)
+	}
+	seenSibling := false
+	for _, candidate := range candidates {
+		if candidate == filepath.Join(`C:\NEVR`, "Replay Viewer.exe") {
+			seenSibling = true
+		}
+	}
+	if !seenSibling {
+		t.Errorf("portable sibling viewer missing from %+v", candidates)
+	}
+}

@@ -24,6 +24,13 @@ const (
 	// is set. Override with SetHighPingThreshold (config high_ping_threshold_ms).
 	DefaultHighPingThresholdMs = 150.0
 
+	// playspaceMaxDt mirrors EchoTools' reconstruction guard. A wider gap is
+	// too stale to distinguish physical movement from a recorder/network jump.
+	playspaceMaxDt = 0.1
+	// playspaceRecenteringMPS slowly pulls the predicted anchor toward the
+	// tracked head so long-term drift does not accumulate forever.
+	playspaceRecenteringMPS = 0.05
+
 	// preReleaseSnapshotCount is how many frames before a release are captured.
 	preReleaseSnapshotCount = 5
 
@@ -172,6 +179,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	prevRightHand := ps.RightHand
 	prevLeftHandRot := ps.LeftHandRot
 	prevRightHandRot := ps.RightHandRot
+	prevPlayspaceAnchor := ps.PlayspaceAnchor
 	prevTimestamp := ps.LastTimestamp
 	prevHasDisc := ps.HasDisc
 	prevBlueScore := ps.PrevBlueScore
@@ -190,6 +198,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// Update raw state from frame
 	ps.Position = frame.Position
 	ps.Rotation = frame.Rotation
+	ps.HasReportedVelocity = frame.ReportedVelocity != nil
+	if frame.ReportedVelocity != nil {
+		ps.ReportedVelocity = *frame.ReportedVelocity
+	} else {
+		ps.ReportedVelocity = model.Vec3{}
+	}
 	ps.LeftHand = frame.LeftHandPosition
 	ps.RightHand = frame.RightHandPosition
 	ps.LeftHandRot = frame.LeftHandRotation
@@ -306,6 +320,56 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.RightWristAngularRate = 0
 	}
 
+	// EchoTools/Spark reconstructs physical playspace motion by advancing an
+	// arena-space anchor with the game's reported velocity, then comparing the
+	// actual tracked pose with that prediction. Stacking and ordinary game
+	// movement are present in ReportedVelocity and subtract away; physical
+	// room-scale steps remain in the residual.
+	playspaceValid := kinematicsValid && ps.HasReportedVelocity && rawDt < playspaceMaxDt &&
+		matchCtx.IsActivePhase(frame.GamePhase)
+	if !playspaceValid {
+		ps.PlayspaceAnchor = frame.Position
+		ps.PlayspaceOffset = model.Vec3{}
+		ps.PlayspaceDistance = 0
+		ps.PlayspaceVelocity = model.Vec3{}
+		ps.PlayspaceSpeed = 0
+		ps.PlayspaceRigCoherence = 0
+		ps.PlayspaceTrackedHands = 0
+		ps.PlayspaceValid = false
+		ps.MovementOrigin = ""
+	} else {
+		anchor := prevPlayspaceAnchor.Add(ps.ReportedVelocity.Scale(dt))
+		offset := frame.Position.Sub(anchor)
+		if distance := offset.Magnitude(); distance > 0 {
+			step := math.Min(distance, playspaceRecenteringMPS*dt)
+			anchor = anchor.Add(offset.Normalized().Scale(step))
+		}
+		ps.PlayspaceAnchor = anchor
+		ps.PlayspaceOffset = frame.Position.Sub(anchor)
+		ps.PlayspaceDistance = ps.PlayspaceOffset.Magnitude()
+		ps.PlayspaceVelocity = ps.Velocity.Sub(ps.ReportedVelocity)
+		ps.PlayspaceSpeed = ps.PlayspaceVelocity.Magnitude()
+		ps.PlayspaceRigCoherence, ps.PlayspaceTrackedHands = playspaceRigCoherence(
+			frame.Position.Sub(prevPos).Sub(ps.ReportedVelocity.Scale(dt)),
+			prevLeftHand, frame.LeftHandPosition,
+			prevRightHand, frame.RightHandPosition,
+			ps.ReportedVelocity.Scale(dt),
+		)
+		ps.PlayspaceValid = true
+		const movementFloor = 0.25
+		physical, game := ps.PlayspaceSpeed >= movementFloor, ps.ReportedVelocity.Magnitude() >= movementFloor
+		switch {
+		case physical && game:
+			ps.MovementOrigin = "mixed"
+		case physical:
+			ps.MovementOrigin = "playspace_step"
+		case game:
+			ps.MovementOrigin = "game_velocity"
+		default:
+			ps.MovementOrigin = "stationary"
+		}
+	}
+
 	// Learn which goal each team attacks from score increments (needs the
 	// disc position at the moment a score changed).
 	if !firstFrame {
@@ -387,6 +451,34 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	}
 
 	ps.FrameCount++
+}
+
+// playspaceRigCoherence measures whether tracked hands translated with the
+// head after game velocity was removed. A physical step normally moves the
+// whole tracked rig; independent controller swings do not. The returned
+// score is [0,1], averaged across available hands, plus the hand count.
+func playspaceRigCoherence(bodyResidual, prevLeft, left, prevRight, right, expectedGameDelta model.Vec3) (float64, int) {
+	var sum float64
+	tracked := 0
+	add := func(prev, current model.Vec3) {
+		if prev.IsZero() || current.IsZero() {
+			return
+		}
+		handResidual := current.Sub(prev).Sub(expectedGameDelta)
+		difference := handResidual.Sub(bodyResidual).Magnitude()
+		// Twelve centimetres covers controller jitter and ordinary small arm
+		// motion. Scale with the body residual so a large coherent step is not
+		// rejected for a proportionally larger tracking discrepancy.
+		tolerance := math.Max(0.12, bodyResidual.Magnitude()*0.75)
+		sum += model.Clamp(1.0-difference/(2.0*tolerance), 0, 1)
+		tracked++
+	}
+	add(prevLeft, left)
+	add(prevRight, right)
+	if tracked == 0 {
+		return 0, 0
+	}
+	return sum / float64(tracked), tracked
 }
 
 // pushDiscHistory advances the disc velocity history on PlayerState and the

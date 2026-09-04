@@ -22,6 +22,22 @@ type PlayerState struct {
 	Acceleration          Vec3    `json:"acceleration"`
 	AccelerationMagnitude float64 `json:"acceleration_magnitude"`
 
+	// Echo VR game velocity and reconstructed physical playspace motion.
+	// Velocity above is derived from arena-space pose deltas; ReportedVelocity
+	// comes directly from the game. Their residual is physical room-scale
+	// motion, reconstructed with the same anchor method used by EchoTools.
+	ReportedVelocity      Vec3    `json:"reported_velocity"`
+	HasReportedVelocity   bool    `json:"has_reported_velocity"`
+	PlayspaceAnchor       Vec3    `json:"playspace_anchor"`
+	PlayspaceOffset       Vec3    `json:"playspace_offset"`
+	PlayspaceDistance     float64 `json:"playspace_distance"`
+	PlayspaceVelocity     Vec3    `json:"playspace_velocity"`
+	PlayspaceSpeed        float64 `json:"playspace_speed"`
+	PlayspaceRigCoherence float64 `json:"playspace_rig_coherence"`
+	PlayspaceTrackedHands int     `json:"playspace_tracked_hands"`
+	PlayspaceValid        bool    `json:"playspace_valid"`
+	MovementOrigin        string  `json:"movement_origin,omitempty"`
+
 	// Hand kinematics
 	// LeftHandVelocity/RightHandVelocity are world-space velocities. The
 	// relative variants subtract body translation and describe controller

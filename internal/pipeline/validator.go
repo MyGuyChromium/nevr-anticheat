@@ -60,6 +60,10 @@ const (
 	// SanitizedGameLastThrow: an incomplete or non-finite engine throw record
 	// was removed so it cannot override a valid sampled disc speed.
 	SanitizedGameLastThrow = "invalid_game_last_throw"
+	// SanitizedReportedVelocity: a non-finite game-authored velocity was
+	// removed. Nil means unavailable, so playspace reconstruction safely
+	// disables itself for that frame.
+	SanitizedReportedVelocity = "invalid_reported_velocity"
 )
 
 // ValidationError describes why a frame was rejected.
@@ -226,6 +230,10 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 	if frame.GameLastThrow != nil && !frame.GameLastThrow.Valid() {
 		frame.GameLastThrow = nil
 		sanitized = append(sanitized, SanitizedGameLastThrow)
+	}
+	if frame.ReportedVelocity != nil && (frame.ReportedVelocity.HasNaN() || frame.ReportedVelocity.HasInf()) {
+		frame.ReportedVelocity = nil
+		sanitized = append(sanitized, SanitizedReportedVelocity)
 	}
 	// Disc state: drop it rather than the whole frame when it is not finite
 	// or not physically plausible.

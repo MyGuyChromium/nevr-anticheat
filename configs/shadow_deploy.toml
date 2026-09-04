@@ -76,6 +76,14 @@ enforcement_weight = 0.8
 auto_enforce       = false
 mode               = "shadow"
 
+[detector.MOV_006]
+# Keep the normally scored walking detector observation-only in this explicit
+# all-shadow deployment profile.
+enabled            = true
+enforcement_weight = 0.75
+auto_enforce       = false
+mode               = "shadow"
+
 [detector.STATE_002]
 # Stun Recovery Exploit: 2-incident minimum; real stun duration UNVERIFIED.
 enabled            = true

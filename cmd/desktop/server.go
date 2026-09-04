@@ -39,9 +39,11 @@ var indexHTML []byte
 // every route under a per-run random token so other local pages cannot
 // reach it.
 type server struct {
-	engine *replay.Engine
-	token  string
-	mux    *http.ServeMux
+	engine       *replay.Engine
+	token        string
+	mux          *http.ServeMux
+	clipDir      string
+	launchReplay replayLaunchFunc
 
 	analyzeMu sync.Mutex // uploads are analyzed one at a time
 	quitOnce  sync.Once
@@ -49,7 +51,10 @@ type server struct {
 }
 
 func newServer(engine *replay.Engine, token string) *server {
-	s := &server{engine: engine, token: token, mux: http.NewServeMux(), quit: make(chan struct{})}
+	s := &server{
+		engine: engine, token: token, mux: http.NewServeMux(), quit: make(chan struct{}),
+		clipDir: defaultReplayClipDir(), launchReplay: launchSparkReplayViewer,
+	}
 	p := "/" + token
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
@@ -59,6 +64,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/replay/{event}", s.handleReplayClip)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/evidence/{player}", s.handleMatchEvidence)
 	s.mux.HandleFunc("GET "+p+"/api/case/{id}/evidence", s.handleCaseEvidence)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
@@ -1159,6 +1165,49 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(sum.PlayersCSV())
+}
+
+func (s *server) handleReplayClip(w http.ResponseWriter, r *http.Request) {
+	matchID, eventID := r.PathValue("id"), r.PathValue("event")
+	events, err := s.engine.Store().GetMatchEvents(r.Context(), matchID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading match events: %v", err)
+		return
+	}
+	var event *model.DetectionEvent
+	for i := range events {
+		if events[i].EventID == eventID {
+			event = &events[i]
+			break
+		}
+	}
+	if event == nil {
+		writeError(w, http.StatusNotFound, "no detection event %q in match %q", eventID, matchID)
+		return
+	}
+	clip, err := buildSparkReplayClip(r.Context(), s.engine.Store(), s.clipDir, *event)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errRawReplayUnavailable) {
+			status = http.StatusUnprocessableEntity
+		}
+		writeError(w, status, "building Spark replay clip: %v", err)
+		return
+	}
+	viewer, err := s.launchReplay(clip.Path)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "%v (the incident clip was still saved to %s)", err, clip.Path)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"message":     fmt.Sprintf("Opened frames %d–%d in Spark Replay Viewer", clip.FrameStart, clip.FrameEnd),
+		"clip_file":   clip.Path,
+		"viewer":      viewer,
+		"frame_start": clip.FrameStart,
+		"frame_end":   clip.FrameEnd,
+		"frames":      clip.Frames,
+	})
 }
 
 func (s *server) handleMatchEvidence(w http.ResponseWriter, r *http.Request) {

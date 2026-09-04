@@ -624,6 +624,7 @@ func (dr *DiagnosticReport) CompatibilityReport() string {
 		{"BIO_004", []string{"lhand.forward", "rhand.forward"}, ""},
 		{"MOV_001", []string{"position"}, ""},
 		{"MOV_002", []string{"position"}, ""},
+		{"MOV_006", []string{"position", "velocity", "lhand.pos", "rhand.pos"}, "game velocity is subtracted from tracked-rig motion"},
 		{"MOV_004", []string{"blocking"}, "Needs IsBoosting (ABSENT)"},
 		{"MOV_005", []string{"blocking"}, "Needs IsBoosting (ABSENT)"},
 		{"STATE_001", []string{"disc.position", "lhand.pos", "rhand.pos", "possession"}, ""},

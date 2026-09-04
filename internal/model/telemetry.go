@@ -18,6 +18,12 @@ type PlayerTelemetryFrame struct {
 
 	Position Vec3 `json:"position"`
 	Rotation Quat `json:"rotation"`
+	// ReportedVelocity is Echo VR's game-authored player velocity. It is a
+	// pointer because [0,0,0] is a valid stationary value while nil means the
+	// producer did not supply the field. Keeping this separate from the
+	// position-derived velocity lets the pipeline isolate physical playspace
+	// translation from ordinary locomotion and stacking.
+	ReportedVelocity *Vec3 `json:"reported_velocity,omitempty"`
 
 	LeftHandPosition  Vec3 `json:"left_hand_position"`
 	RightHandPosition Vec3 `json:"right_hand_position"`

@@ -4,7 +4,7 @@ Every stage below uses only features that exist in the binaries today. Where the
 
 ## What exists
 
-- Detection: 29 detectors, all shipping in `mode = "shadow"` (events stored with `is_shadow = 1`, never scored). Scoring happens only for detectors whose mode is `review` or `enforce` (both simply mean "scored"; there is no separate enforcement path).
+- Detection: 30 detectors. `configs/shadow_deploy.toml` ships all 30 in `mode = "shadow"` (events stored with `is_shadow = 1`, never scored); the built-in/default config makes only MOV_006 a scored `review` signal. Scoring happens only in `review` or `enforce` mode (both simply mean "scored"; there is no separate automatic-enforcement path).
 - Cases: single-match `RC-<match>-<player>` cases for match scores ≥ `review_threshold` (60), cross-match `XM-<player>` cases for decayed scores ≥ 60 across ≥ 3 matches (`nevr-ac cross-match`).
 - Moderator tools: `flagged`, `report`, `cross-match-report`, `player-history`, `verdict` (with per-detector feedback), `calibration-report`.
 - Reprocessing: `reprocess-match`, `reprocess-player`, `reprocess-timerange` (half-open on match time) replace derived outputs from stored telemetry under any config.

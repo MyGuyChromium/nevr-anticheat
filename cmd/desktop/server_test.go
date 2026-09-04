@@ -133,12 +133,20 @@ func newTestServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.General.LogLevel = "error"
+	// The legacy synthetic replay moves players while declaring raw Echo
+	// velocity zero, which is precisely MOV_006's cheating signature. Keep
+	// unrelated desktop fixture assertions focused by disabling that detector;
+	// MOV_006 has dedicated extractor/detector tests with coherent telemetry.
+	walking := cfg.Detectors["MOV_006"]
+	walking.Enabled = false
+	cfg.Detectors["MOV_006"] = walking
 	store, err := sqlite.NewStore(filepath.Join(t.TempDir(), "desktop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
 	s := newServer(replay.NewEngine(cfg, store), testToken)
+	s.clipDir = t.TempDir()
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts
@@ -400,6 +408,54 @@ func TestDesktop_MatchSummaryDownloads(t *testing.T) {
 		}
 	}
 
+	var launched string
+	s.launchReplay = func(path string) (string, error) {
+		launched = path
+		return `C:\Users\tester\Documents\Replay Viewer\Replay Viewer.exe`, nil
+	}
+	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/desktop-evidence", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var clipResult struct {
+		OK         bool   `json:"ok"`
+		Message    string `json:"message"`
+		ClipFile   string `json:"clip_file"`
+		FrameStart int    `json:"frame_start"`
+		FrameEnd   int    `json:"frame_end"`
+		Frames     int    `json:"frames"`
+	}
+	if err := json.Unmarshal(raw, &clipResult); err != nil {
+		t.Fatalf("decode clip response %s: %v", raw, err)
+	}
+	if resp.StatusCode != http.StatusOK || !clipResult.OK || clipResult.ClipFile == "" || launched != clipResult.ClipFile ||
+		clipResult.FrameStart != 0 || clipResult.FrameEnd != 56 || clipResult.Frames != 57 || !strings.Contains(clipResult.Message, "Spark Replay Viewer") {
+		t.Fatalf("clip response: status=%d body=%s launched=%q", resp.StatusCode, raw, launched)
+	}
+	clipBytes, err := os.ReadFile(clipResult.ClipFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(clipBytes), []byte{'\n'})
+	if len(lines) != 57 || !bytes.Contains(lines[0], []byte{'\t'}) || !bytes.Contains(lines[0], []byte(`"sessionid":"SYN-FIXTURE-001"`)) {
+		t.Fatalf("unexpected Spark clip: lines=%d first=%s", len(lines), lines[0])
+	}
+	parts := bytes.SplitN(lines[0], []byte{'\t'}, 2)
+	if _, err := time.Parse("2006/01/02 15:04:05.000", string(parts[0])); err != nil || !json.Valid(parts[1]) {
+		t.Fatalf("invalid Spark replay line %q: timestamp=%v json=%v", lines[0], err, json.Valid(parts[1]))
+	}
+
+	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/no-such-event", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown replay event status %d", resp.StatusCode)
+	}
+
 	for _, suffix := range []string{"summary.json", "export.csv", "evidence/player"} {
 		if resp := getJSON(t, base+"/api/match/NOPE/"+suffix, nil); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("unknown %s status %d", suffix, resp.StatusCode)
@@ -416,7 +472,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Review replay", "Detector observations"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Spark replay", "Detector observations"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
