@@ -82,22 +82,24 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 		t.Errorf("history %+v", hist.Matches)
 	}
 
-	// Both stored: the entry mirrors the first match's refusal.
+	// Both stored: desktop intake transparently refreshes both matches even
+	// when an older client does not send the legacy force field.
 	resp, out = upload(t, ts, false, map[string]string{"rematch.echoreplay": two})
 	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
 		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
 	}
 	r = out.Results[0]
-	if r.OK || !r.AlreadyStored || r.MatchID != "SYN-FIXTURE-001" || !strings.Contains(r.Error, "already stored") || r.Match != nil || len(r.Matches) != 2 {
+	if !out.Force || !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || len(r.Matches) != 2 {
 		t.Fatalf("second upload %+v", r)
 	}
 	for i, m := range r.Matches {
-		if m.OK || !m.AlreadyStored || m.Match != nil || !strings.Contains(m.Error, "already stored") {
+		if !m.OK || m.AlreadyStored || m.Error != "" || m.Match == nil || !m.Match.Replaced {
 			t.Errorf("second upload match %d: %+v", i, m)
 		}
 	}
 
-	// First match stored, a new second one: the entry mirrors the analyzed match.
+	// First match stored, a new second one: the stored match is refreshed and
+	// the new match is inserted in the same ordinary successful response.
 	mixed := filepath.Join(dir, "mixed.echoreplay")
 	if _, _, err := testutil.SplitReplaySessions(fixturePath, mixed, "SYN-FIXTURE-003", 10*time.Minute); err != nil {
 		t.Fatal(err)
@@ -107,8 +109,9 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
 	}
 	r = out.Results[0]
-	if !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-003" || r.Match == nil || len(r.Matches) != 2 ||
-		!r.Matches[0].AlreadyStored || r.Matches[0].MatchID != "SYN-FIXTURE-001" || !r.Matches[1].OK || r.Matches[1].MatchID != "SYN-FIXTURE-003" {
+	if !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || len(r.Matches) != 2 ||
+		!r.Matches[0].OK || r.Matches[0].MatchID != "SYN-FIXTURE-001" || r.Matches[0].Match == nil || !r.Matches[0].Match.Replaced ||
+		!r.Matches[1].OK || r.Matches[1].MatchID != "SYN-FIXTURE-003" || r.Matches[1].Match == nil || r.Matches[1].Match.Replaced {
 		t.Errorf("mixed upload %+v", r)
 	}
 
@@ -306,8 +309,8 @@ func TestDesktop_EventReviewAPI(t *testing.T) {
 
 // TestDesktop_AnalyzeFixture: the synthetic replay goes through the API and
 // comes back as a match card: id, four rostered players with teams and
-// names, no review cases; a second upload is refused until force is set;
-// the match then shows up in the history and can be re-opened.
+// names, no review cases; a second upload transparently refreshes the
+// analysis; the match then shows up in the history and can be re-opened.
 func TestDesktop_AnalyzeFixture(t *testing.T) {
 	_, ts := newTestServer(t)
 	base := ts.URL + "/" + testToken
@@ -373,13 +376,13 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 		t.Errorf("match summary %+v", m.Summary)
 	}
 
-	// Second upload without force: already stored.
+	// Second upload without the legacy force field: refreshed without an error.
 	resp, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
 	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
 		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
 	}
 	r = out.Results[0]
-	if r.OK || !r.AlreadyStored || r.MatchID != "SYN-FIXTURE-001" || !strings.Contains(r.Error, "already stored") {
+	if !out.Force || !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || !r.Match.Replaced {
 		t.Errorf("second upload %+v", r)
 	}
 
@@ -618,13 +621,13 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Always re-analyze stored matches", `id="force" checked disabled`, "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by detector", "shadow review", "Neither status is a verified cheating verdict", "data-replay-frame", "data-throw-scroll", "Spark replay", "Diagnostic ZIP", "Physics inspector", "Telemetry &amp; schema health", "Calibration library", "Archive + remove active raw", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Regression &amp; threshold lab", "Threshold sandbox", "Before / after", "Player history", "Replay watch folder", "Crash recovery", "Windows updates", "Support bundle", "Health &amp; maintenance", "Back up database"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Stored replays refresh automatically", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by detector", "shadow review", "Neither status is a verified cheating verdict", "data-replay-frame", "data-throw-scroll", "Spark replay", "Diagnostic ZIP", "Physics inspector", "Telemetry &amp; schema health", "Calibration library", "Archive + remove active raw", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Regression &amp; threshold lab", "Threshold sandbox", "Before / after", "Player history", "Replay watch folder", "Crash recovery", "Windows updates", "Support bundle", "Health &amp; maintenance", "Back up database"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
 	}
-	if !strings.Contains(page, "fd.append('force', '1')") || strings.Contains(page, "queueForce") {
-		t.Error("desktop uploads must unconditionally request re-analysis")
+	if strings.Contains(page, `id="force"`) || strings.Contains(page, "fd.append('force'") || strings.Contains(page, "queueForce") {
+		t.Error("desktop replay refresh is server-enforced and must not expose a force toggle")
 	}
 }
 
@@ -800,10 +803,10 @@ func TestDesktop_FailureDiagnostics(t *testing.T) {
 		t.Errorf("zip findings %q", d.Findings)
 	}
 
-	// A stored match refused without force is not a parse failure.
+	// A stored match is accepted as an ordinary refresh, not a parse failure.
 	_, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
-	if len(out.Results) != 1 || !out.Results[0].AlreadyStored || out.Results[0].Diagnostic != nil {
-		t.Errorf("already stored %+v", out.Results)
+	if !out.Force || len(out.Results) != 1 || !out.Results[0].OK || out.Results[0].AlreadyStored || out.Results[0].Error != "" || out.Results[0].Diagnostic != nil || out.Results[0].Match == nil || !out.Results[0].Match.Replaced {
+		t.Errorf("stored replay refresh %+v", out.Results)
 	}
 }
 
@@ -846,8 +849,5 @@ func TestUploadName(t *testing.T) {
 		if got := uploadName(in); got != want {
 			t.Errorf("uploadName(%q) = %q, want %q", in, got, want)
 		}
-	}
-	if !isTrue("1") || !isTrue("true") || !isTrue(" on ") || isTrue("") || isTrue("0") {
-		t.Error("isTrue")
 	}
 }

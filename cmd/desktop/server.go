@@ -950,14 +950,6 @@ type analyzeResponse struct {
 	Results []analyzeEntry `json:"results"`
 }
 
-func isTrue(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "on", "yes":
-		return true
-	}
-	return false
-}
-
 // uploadName reduces a client file name to a safe base name that keeps its
 // extension (the parser picks the format from it).
 func uploadName(name string) string {
@@ -1059,7 +1051,11 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no files uploaded (field \"files\")")
 		return
 	}
-	force := isTrue(r.FormValue("force"))
+	// Desktop intake is deliberately idempotent from the user's point of view:
+	// uploading a replay that is already in the database refreshes its derived
+	// analysis instead of surfacing an "already stored" refusal. The CLI keeps
+	// its explicit --force safety switch for automation and scripting.
+	const force = true
 
 	// Uploads are spooled beside the database before analysis. If the process
 	// or laptop exits after upload, the next launch can resume these files

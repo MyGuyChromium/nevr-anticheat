@@ -2,6 +2,16 @@ name: Windows package
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-release.yml"
+      - "cmd/**"
+      - "configs/**"
+      - "internal/**"
+      - "packaging/**"
+      - "scripts/build-installer.ps1"
+      - "go.mod"
+      - "go.sum"
   push:
     branches:
       - master
@@ -9,10 +19,10 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  package:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,9 +33,9 @@ jobs:
           cache: true
 
       - name: Install Windows C cross-compiler
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 zip
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
 
-      - name: Build Windows executables
+      - name: Build branded Windows executables
         env:
           GOOS: windows
           GOARCH: amd64
@@ -34,36 +44,226 @@ jobs:
         run: |
           set -euo pipefail
           package="dist/NEVR-Anticheat-Windows-x64"
-          mkdir -p "$package/configs"
+          mkdir -p "$package/configs" "$package/installer"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          app_version="$(sed -n 's/^const appVersion = "\([0-9.]*\)"/\1/p' cmd/desktop/main.go)"
+          test -n "$app_version"
+          IFS=. read -r version_major version_minor version_patch <<< "$app_version"
+          x86_64-w64-mingw32-windres -I . \
+            -DNEVR_VERSION_MAJOR="$version_major" \
+            -DNEVR_VERSION_MINOR="$version_minor" \
+            -DNEVR_VERSION_PATCH="$version_patch" \
+            packaging/nevr-version.rc -O coff -o cmd/desktop/resource_windows_amd64.syso
+
           go build -trimpath -ldflags "-s -w -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-ac.exe" ./cmd/anticheat
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-server.exe" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-compat.exe" ./cmd/compat
+
           cp README.md packaging/README-WINDOWS.txt "$package/"
           cp configs/default.toml configs/shadow_deploy.toml "$package/configs/"
-          mkdir -p "$package/installer"
           cp packaging/Install-NEVR.cmd "$package/"
           cp packaging/Install-NEVR.ps1 packaging/Uninstall-NEVR.cmd packaging/Uninstall-NEVR.ps1 "$package/installer/"
-          (cd dist && zip -r NEVR-Anticheat-Windows-x64.zip NEVR-Anticheat-Windows-x64)
-          (cd dist && sha256sum NEVR-Anticheat-Windows-x64.zip > NEVR-Anticheat-Windows-x64.zip.sha256)
+          cp packaging/Rollback-NEVR.cmd packaging/Rollback-NEVR.ps1 "$package/installer/"
 
-      - name: Upload Windows package artifact
+      - name: Upload unsigned program files
         uses: actions/upload-artifact@v4
         with:
-          name: NEVR-Anticheat-Windows-x64
+          name: nevr-windows-unsigned
+          path: dist/NEVR-Anticheat-Windows-x64
+          if-no-files-found: error
+
+  package:
+    needs: build
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download program files
+        uses: actions/download-artifact@v4
+        with:
+          name: nevr-windows-unsigned
+          path: dist/NEVR-Anticheat-Windows-x64
+
+      - name: Import optional Authenticode certificate
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          $enabled = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE) -and
+            -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)
+          "NEVR_SIGNING_ENABLED=$($enabled.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not $enabled) {
+            Write-Host "Authenticode certificate is not configured; producing an unsigned development installer."
+            exit 0
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "nevr-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if ($null -eq $certificate) { throw "The Authenticode certificate could not be imported." }
+
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signTool) { throw "signtool.exe was not found." }
+          "NEVR_PFX_PATH=$pfxPath" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "NEVR_CERT_THUMBPRINT=$($certificate.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "NEVR_SIGNTOOL=$signTool" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Sign application executables
+        if: env.NEVR_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\NEVR-Anticheat-Windows-x64\*.exe | ForEach-Object {
+            & $env:NEVR_SIGNTOOL sign /sha1 $env:NEVR_CERT_THUMBPRINT /fd SHA256 /td SHA256 `
+              /tr http://timestamp.digicert.com /d "NEVR-Anticheat" $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($_.Name)" }
+          }
+
+      - name: Build portable ZIP and one-click installer
+        shell: pwsh
+        run: |
+          $main = Get-Content -Raw cmd\desktop\main.go
+          $version = [regex]::Match($main, 'const appVersion = "([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
+          if (-not $version) { throw "Could not determine the application version." }
+
+          $zip = Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64.zip"
+          Compress-Archive -Path dist\NEVR-Anticheat-Windows-x64 -DestinationPath $zip -CompressionLevel Optimal -Force
+          $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          Set-Content ($zip + ".sha256") ($zipHash + "  NEVR-Anticheat-Windows-x64.zip") -Encoding ascii
+
+          $signCommand = ""
+          if ($env:NEVR_SIGNING_ENABLED -eq "true") {
+            $signCommand = '$q' + $env:NEVR_SIGNTOOL + '$q sign /sha1 ' + $env:NEVR_CERT_THUMBPRINT +
+              ' /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /d $qNEVR-Anticheat$q $f'
+          }
+          & .\scripts\build-installer.ps1 -PackageZip $zip -OutputDirectory (Join-Path $PWD "dist") `
+            -Version $version -SignToolCommand $signCommand
+
+      - name: Scan release files with Microsoft Defender
+        shell: pwsh
+        run: |
+          $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($null -eq $status -or -not $status.AMServiceEnabled) {
+            Write-Warning "Microsoft Defender is unavailable on this runner; the release scan was skipped."
+            exit 0
+          }
+          $started = Get-Date
+          Start-MpScan -ScanType CustomScan -ScanPath (Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64")
+          Start-MpScan -ScanType CustomScan -ScanPath (Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe")
+          $detections = @(Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -ge $started })
+          if ($detections.Count -gt 0) {
+            $detections | Format-List | Out-String | Write-Error
+            throw "Microsoft Defender detected a threat in the release artifacts."
+          }
+
+      - name: Smoke-test setup and uninstall
+        shell: pwsh
+        run: |
+          $setup = Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe"
+          $install = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Silent install exited with $($install.ExitCode)" }
+
+          $installRoot = Join-Path $env:LOCALAPPDATA "Programs\NEVR-Anticheat"
+          foreach ($file in @(
+            "nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe",
+            "installed.toml", "nevr.ico", "configs\default.toml", "configs\shadow_deploy.toml",
+            "Rollback-NEVR.cmd", "Rollback-NEVR.ps1"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file))) { throw "Installed file is missing: $file" }
+          }
+          $installedConfig = Join-Path $installRoot "installed.toml"
+          if ((Get-Content -Raw $installedConfig) -notmatch "nevr-anticheat.db") {
+            throw "Installed configuration does not point at the evidence database."
+          }
+
+          $dataRoot = Join-Path $env:LOCALAPPDATA "NEVR-Anticheat"
+          New-Item -ItemType Directory -Force $dataRoot | Out-Null
+          $evidenceMarker = Join-Path $dataRoot "installer-preservation-test.txt"
+          Set-Content -LiteralPath $evidenceMarker -Value "preserve"
+          Add-Content -LiteralPath $installedConfig -Value "# preserve-upgrade-settings"
+
+          $upgrade = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+          if ($upgrade.ExitCode -ne 0) { throw "Silent upgrade exited with $($upgrade.ExitCode)" }
+          if ((Get-Content -Raw $installedConfig) -notmatch "preserve-upgrade-settings") {
+            throw "Upgrade replaced the existing installed configuration."
+          }
+          if (-not (Test-Path -LiteralPath $evidenceMarker)) { throw "Upgrade removed the evidence directory." }
+          $snapshots = @(Get-ChildItem -LiteralPath (Join-Path $dataRoot "program-rollbacks") -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+          if ($snapshots.Count -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $snapshots[0].FullName "nevr-desktop.exe"))) {
+            throw "Upgrade did not create a usable program rollback snapshot."
+          }
+
+          $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" | Select-Object -First 1
+          if ($null -eq $uninstaller) { throw "Windows uninstall entry was not created." }
+          $uninstall = Start-Process $uninstaller.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Silent uninstall exited with $($uninstall.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $evidenceMarker)) { throw "Uninstall removed the evidence directory." }
+          Remove-Item -LiteralPath $evidenceMarker -Force
+
+      - name: Upload verified Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEVR-Anticheat-Windows
           path: |
+            dist/NEVR-Anticheat-Setup.exe
+            dist/NEVR-Anticheat-Setup.exe.sha256
             dist/NEVR-Anticheat-Windows-x64.zip
             dist/NEVR-Anticheat-Windows-x64.zip.sha256
           if-no-files-found: error
 
-      - name: Publish GitHub Release
+      - name: Attest release build provenance
         if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/NEVR-Anticheat-Setup.exe
+            dist/NEVR-Anticheat-Windows-x64.zip
+
+      - name: Remove temporary signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:NEVR_CERT_THUMBPRINT) {
+            Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $env:NEVR_CERT_THUMBPRINT) -Force -ErrorAction SilentlyContinue
+          }
+          if ($env:NEVR_PFX_PATH) {
+            Remove-Item -LiteralPath $env:NEVR_PFX_PATH -Force -ErrorAction SilentlyContinue
+          }
+
+  publish:
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download verified release files
+        uses: actions/download-artifact@v4
+        with:
+          name: NEVR-Anticheat-Windows
+          path: dist
+
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          assets=(
+            dist/NEVR-Anticheat-Setup.exe
+            dist/NEVR-Anticheat-Setup.exe.sha256
+            dist/NEVR-Anticheat-Windows-x64.zip
+            dist/NEVR-Anticheat-Windows-x64.zip.sha256
+          )
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             release_tag="$GITHUB_REF_NAME"
             if ! gh release view "$release_tag" >/dev/null 2>&1; then
@@ -73,13 +273,8 @@ jobs:
             release_tag="windows-latest"
             if gh release view "$release_tag" >/dev/null 2>&1; then
               gh release edit "$release_tag" --latest --title "Latest Windows build" \
-                --notes "Ready-to-run Windows x64 package from the latest successful master build. This rolling release is replaced after every merge to master."
-              # Replace the downloadable assets first. Moving the tag is the
-              # final publish signal consumed by the desktop update checker.
-              gh release upload "$release_tag" \
-                dist/NEVR-Anticheat-Windows-x64.zip \
-                dist/NEVR-Anticheat-Windows-x64.zip.sha256 \
-                --clobber
+                --notes "Download NEVR-Anticheat-Setup.exe for the simplest install. The portable ZIP remains available for advanced use. This rolling release is replaced after every successful master build."
+              gh release upload "$release_tag" "${assets[@]}" --clobber
               git tag --force "$release_tag" "$GITHUB_SHA"
               git push origin "refs/tags/$release_tag" --force
               exit 0
@@ -87,10 +282,7 @@ jobs:
               git tag --force "$release_tag" "$GITHUB_SHA"
               git push origin "refs/tags/$release_tag" --force
               gh release create "$release_tag" --latest --title "Latest Windows build" \
-                --notes "Ready-to-run Windows x64 package from the latest successful master build. This rolling release is replaced after every merge to master."
+                --notes "Download NEVR-Anticheat-Setup.exe for the simplest install. The portable ZIP remains available for advanced use."
             fi
           fi
-          gh release upload "$release_tag" \
-            dist/NEVR-Anticheat-Windows-x64.zip \
-            dist/NEVR-Anticheat-Windows-x64.zip.sha256 \
-            --clobber
+          gh release upload "$release_tag" "${assets[@]}" --clobber
