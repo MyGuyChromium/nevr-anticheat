@@ -223,7 +223,7 @@ jobs:
           foreach ($path in $signedFiles) {
             $signature = Get-AuthenticodeSignature -LiteralPath $path
             if ($signature.Status -ne "Valid") {
-              throw "Invalid publisher signature on $path: $($signature.Status) $($signature.StatusMessage)"
+              throw "Invalid publisher signature on ${path}: $($signature.Status) $($signature.StatusMessage)"
             }
             Write-Host "$([IO.Path]::GetFileName($path)): $($signature.SignerCertificate.Subject)"
           }
