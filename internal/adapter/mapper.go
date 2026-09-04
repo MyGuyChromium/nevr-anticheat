@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -420,9 +421,7 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 	writeF := func(v float64) {
 		b := math.Float64bits(v)
 		var buf [8]byte
-		for i := 0; i < 8; i++ {
-			buf[i] = byte(b >> (8 * i))
-		}
+		binary.LittleEndian.PutUint64(buf[:], b)
 		h.Write(buf[:])
 	}
 	writeV := func(v [3]float64) { writeF(v[0]); writeF(v[1]); writeF(v[2]) }

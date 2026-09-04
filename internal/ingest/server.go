@@ -131,6 +131,7 @@ type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
 	metrics    *metrics.Metrics
+	serverMu   sync.RWMutex
 
 	// Rate limiting per player
 	playerRates   map[string]*rateLimiter // key: matchID:playerID
@@ -236,13 +237,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Note: http.Server deadlines do not apply to hijacked WebSocket
 	// connections; the read loop sets its own idle deadline.
-	s.httpServer = &http.Server{Handler: mux}
+	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	s.serverMu.Lock()
+	s.httpServer = httpServer
+	s.serverMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Preserve context values but intentionally detach cancellation so a
+			// cancelled parent cannot prevent the graceful-shutdown budget.
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_ = s.Shutdown(shutdownCtx)
 		case <-done:
@@ -250,7 +256,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	s.logger.Info("telemetry server starting", "addr", s.listener.Addr().String())
-	err := s.httpServer.Serve(s.listener)
+	err := httpServer.Serve(s.listener)
 	close(done)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -264,8 +270,11 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.closing.Store(true)
 	var err error
-	if s.httpServer != nil {
-		err = s.httpServer.Shutdown(ctx)
+	s.serverMu.RLock()
+	httpServer := s.httpServer
+	s.serverMu.RUnlock()
+	if httpServer != nil {
+		err = httpServer.Shutdown(ctx)
 	} else if s.listener != nil {
 		err = s.listener.Close()
 	}

@@ -3,6 +3,7 @@ package replay
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
+
+// DefaultMaxLegacyReplayBytes caps the older single-document JSON format.
+// Modern .echoreplay files use adapter.EchoReplayParser and are streamed, but
+// accepting an unbounded io.ReadAll here would let a corrupt or hostile file
+// exhaust the desktop process before JSON decoding even begins.
+const DefaultMaxLegacyReplayBytes int64 = 512 * 1024 * 1024
+
+var ErrLegacyReplayTooLarge = errors.New("legacy JSON replay exceeds size limit")
 
 // FrameParser is the interface for parsing raw replay data.
 // The actual protobuf parser depends on the nevr-common/v4 library.
@@ -263,13 +272,22 @@ func convertFrame(raw *RawFrame, prevTimestamp float64, first bool) []model.Play
 
 // JSONFrameParser reads JSON-encoded frame files (for testing).
 type JSONFrameParser struct {
-	frames []RawFrame
-	header *ReplayHeader
-	idx    int
+	frames   []RawFrame
+	header   *ReplayHeader
+	idx      int
+	maxBytes int64
 }
 
 func NewJSONFrameParser() *JSONFrameParser {
-	return &JSONFrameParser{}
+	return &JSONFrameParser{maxBytes: DefaultMaxLegacyReplayBytes}
+}
+
+// SetMaxBytes overrides the legacy JSON document limit. It is primarily useful
+// to give importers and tests a stricter bound; non-positive values are ignored.
+func (p *JSONFrameParser) SetMaxBytes(n int64) {
+	if n > 0 {
+		p.maxBytes = n
+	}
 }
 
 type jsonReplay struct {
@@ -278,14 +296,27 @@ type jsonReplay struct {
 }
 
 func (p *JSONFrameParser) Open(path string) error {
+	p.frames = nil
+	p.header = nil
+	p.idx = 0
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	maxBytes := p.maxBytes
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxLegacyReplayBytes
+	}
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > maxBytes {
+		return fmt.Errorf("%w: %d bytes (max %d)", ErrLegacyReplayTooLarge, info.Size(), maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return err
+	}
+	if int64(len(data)) > maxBytes {
+		return fmt.Errorf("%w: more than %d bytes", ErrLegacyReplayTooLarge, maxBytes)
 	}
 	var replay jsonReplay
 	if err := json.Unmarshal(data, &replay); err != nil {

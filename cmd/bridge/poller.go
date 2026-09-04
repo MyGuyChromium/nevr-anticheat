@@ -28,7 +28,7 @@ const (
 )
 
 // pollerState is the poller's lifecycle phase.
-type pollerState int
+type pollerState int32
 
 const (
 	stateActive pollerState = iota

@@ -92,6 +92,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/lab/thresholds/preview", s.handleThresholdPreview)
 	s.mux.HandleFunc("POST "+p+"/api/lab/experiments", s.handleExperimentMatrix)
 	s.mux.HandleFunc("GET "+p+"/api/lab/validation", s.handleValidationDashboard)
+	s.mux.HandleFunc("GET "+p+"/api/lab/calibration-report", s.handleCalibrationReport)
 	s.mux.HandleFunc("GET "+p+"/api/calibration/opportunities", s.handleCalibrationOpportunities)
 	s.mux.HandleFunc("POST "+p+"/api/calibration/opportunities", s.handleStoreCalibrationOpportunity)
 	s.mux.HandleFunc("DELETE "+p+"/api/calibration/opportunities/{id}", s.handleDeleteCalibrationOpportunity)
@@ -892,7 +893,7 @@ func (d *fileDiagnostic) diagnoseZip(path string) {
 	var entry *zip.File
 	for i, zf := range zr.File {
 		if i < 10 {
-			d.ZipEntries = append(d.ZipEntries, fmt.Sprintf("%s (%s)", zf.Name, fmtBytes(int64(zf.UncompressedSize64))))
+			d.ZipEntries = append(d.ZipEntries, fmt.Sprintf("%s (%d bytes uncompressed)", zf.Name, zf.UncompressedSize64))
 		}
 		if entry == nil && !zf.FileInfo().IsDir() {
 			entry = zf
@@ -952,16 +953,6 @@ func hexBytes(b []byte) string {
 	return sb.String()
 }
 
-func fmtBytes(n int64) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
-	}
-	return fmt.Sprintf("%d B", n)
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -998,8 +989,14 @@ func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err
 	if err := os.MkdirAll(sub, 0o700); err != nil {
 		return "", err
 	}
-	path = filepath.Join(sub, uploadName(part.FileName()))
-	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	root, err := os.OpenRoot(sub)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	name := uploadName(part.FileName())
+	path = filepath.Join(sub, name)
+	dst, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
@@ -1008,7 +1005,7 @@ func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err
 			err = closeErr
 		}
 		if err != nil {
-			_ = os.Remove(path)
+			_ = root.Remove(name)
 		}
 	}()
 	written, err := io.Copy(dst, io.LimitReader(part, maxUploadFileBytes+1))
@@ -1684,6 +1681,7 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- csv.Writer produced an attachment, not executable HTML.
 	_, _ = w.Write(sum.PlayersCSV())
 }
 
@@ -1799,5 +1797,6 @@ func (s *server) writeEvidenceHTML(w http.ResponseWriter, bundle *evidence.Repla
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- MarshalHTML escapes embedded evidence and CSP blocks all external content.
 	_, _ = w.Write(doc)
 }

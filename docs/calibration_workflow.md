@@ -1,6 +1,6 @@
 # Replay calibration and promotion workflow
 
-No detector is production-validated until independently reviewed real Echo VR examples show how often it fires, misses, and stays quiet. Synthetic fixtures prove code behavior; they do not validate a threshold. NEVR v0.8 therefore permits only a staged move from shadow mode to scored human review. Automatic enforcement remains disabled.
+No detector is production-validated until independently reviewed real Echo VR examples show how often it fires, misses, and stays quiet. Synthetic fixtures prove code behavior; they do not validate a threshold. NEVR v0.9 therefore permits only a staged move from shadow mode to scored human review. Automatic enforcement remains disabled.
 
 ## Build ground truth
 
@@ -42,6 +42,7 @@ Precision, recall, false-positive rate, false positives per 100 legitimate oppor
 4. Save the value as a shadow candidate, restart NEVR, and re-analyze the library so the normal detector path produces durable evidence under that exact profile.
 5. Review disagreements and quality strata. Add evidence instead of weakening the gate to make a candidate pass.
 6. Promote only when the desktop gate marks the detector eligible.
+7. Export the **calibration packet** before promotion and after the monitored review period. Verify its payload SHA-256 and retain it with the evidence-library export; this freezes the effective thresholds, physics constants, data splits, build revision, confidence intervals, and drift summary used for the decision.
 
 The built-in gate requires at least 30 positive and 300 legitimate opportunities, 5 distinct players, 10 matches, at least 5 positive and 50 legitimate examples in each of validation and holdout, precision of at least 95%, recall of at least 50%, and false-positive rate of at most 1% overall, on validation, and on holdout. Every decisive sample must also have been re-analyzed by the current app build and detector-behavior configuration. Known-unsafe, stub, suspended, telemetry-dependent, cross-match, and meta detectors have explicit promotion blocks.
 

@@ -12,9 +12,9 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -28,8 +28,28 @@ jobs:
       - name: Static analysis
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Workflow lint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
+
+      - name: Reachable vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+      - name: Security static analysis
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -severity medium -exclude G201,G202,G204,G304 -nosec-require-justification -nosec-require-rules ./...
+
+      - name: Test and enforce coverage floor
+        run: |
+          go test ./... -coverprofile=coverage.out
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%", "", $3); print $3 }')"
+          echo "total statement coverage: ${total}%"
+          awk -v total="$total" 'BEGIN { if (total + 0 < 72.0) exit 1 }'
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-coverage
+          path: coverage.out
+          if-no-files-found: error
 
       - name: Race
         timeout-minutes: 15

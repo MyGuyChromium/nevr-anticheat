@@ -608,7 +608,7 @@ func writeEvidenceFile(path string, data []byte, force bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving evidence output: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return "", fmt.Errorf("creating evidence output directory: %w", err)
 	}
 	flags := os.O_WRONLY | os.O_CREATE

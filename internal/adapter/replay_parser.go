@@ -231,7 +231,7 @@ func (p *EchoReplayParser) parseZipReplay(path string, fn func(*ParsedTick) erro
 
 	// The central-directory size is advisory (a crafted file can understate
 	// it), so the stream itself is bounded as well.
-	if int64(entry.UncompressedSize64) > p.maxReplayBytes {
+	if p.maxReplayBytes > 0 && entry.UncompressedSize64 > uint64(p.maxReplayBytes) {
 		return nil, nil, fmt.Errorf("replay too large: %d bytes (max %d)", entry.UncompressedSize64, p.maxReplayBytes)
 	}
 

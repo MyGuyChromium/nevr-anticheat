@@ -53,11 +53,15 @@ func (t LevelTable) IsZero() bool {
 func (t LevelTable) Validate() error {
 	bounds := []float64{t.Informational, t.Suspicious, t.HighRisk, t.Critical, t.ActionWorthy}
 	names := []string{"informational", "suspicious", "high_risk", "critical", "action_worthy"}
-	for i, b := range bounds {
+	if bounds[0] <= 0 {
+		return fmt.Errorf("level table: %s boundary must be > 0, got %.2f", names[0], bounds[0])
+	}
+	for i := 1; i < len(bounds); i++ {
+		b := bounds[i]
 		if b <= 0 {
 			return fmt.Errorf("level table: %s boundary must be > 0, got %.2f", names[i], b)
 		}
-		if i > 0 && b < bounds[i-1] {
+		if b < bounds[i-1] {
 			return fmt.Errorf("level table: %s (%.2f) must be >= %s (%.2f)", names[i], b, names[i-1], bounds[i-1])
 		}
 	}

@@ -17,7 +17,7 @@ func dumpJSON(dumpDir, filename string, v any, logger *slog.Logger) {
 	if dumpDir == "" {
 		return
 	}
-	if err := os.MkdirAll(dumpDir, 0755); err != nil {
+	if err := os.MkdirAll(dumpDir, 0700); err != nil {
 		logger.Warn("dump: failed to create directory", "dir", dumpDir, "error", err)
 		return
 	}
@@ -27,7 +27,7 @@ func dumpJSON(dumpDir, filename string, v any, logger *slog.Logger) {
 		return
 	}
 	path := filepath.Join(dumpDir, filename)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		logger.Warn("dump: failed to write file", "path", path, "error", err)
 		return
 	}
@@ -39,12 +39,12 @@ func dumpRaw(dumpDir, filename string, data []byte, logger *slog.Logger) {
 	if dumpDir == "" {
 		return
 	}
-	if err := os.MkdirAll(dumpDir, 0755); err != nil {
+	if err := os.MkdirAll(dumpDir, 0700); err != nil {
 		logger.Warn("dump: failed to create directory", "dir", dumpDir, "error", err)
 		return
 	}
 	path := filepath.Join(dumpDir, filename)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		logger.Warn("dump: failed to write file", "path", path, "error", err)
 		return
 	}
