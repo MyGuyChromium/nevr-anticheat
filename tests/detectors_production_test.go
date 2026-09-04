@@ -11,7 +11,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
 
-// Per-detector production-parameter tests: every one of the 29 catalogued
+// Per-detector production-parameter tests: every one of the 30 catalogued
 // detectors is built by the catalog from DefaultConfig params (no threshold
 // overrides anywhere in this file) and run on one cheat generator that must
 // fire and one legit generator that must stay silent. Detectors that
@@ -26,7 +26,7 @@ var detectorStatus = map[string]string{
 	"THROW_001": "enabled", "THROW_002": "unverified", "THROW_003": "enabled", "THROW_004": "unsafe",
 	"THROW_005": "enabled", "THROW_006": "enabled", "THROW_007": "stub", "THROW_008": "enabled",
 	"BIO_001": "enabled", "BIO_002": "enabled", "BIO_003": "enabled", "BIO_004": "enabled",
-	"MOV_001": "enabled", "MOV_002": "enabled", "MOV_003": "unsafe", "MOV_004": "telemetry_dependent", "MOV_005": "telemetry_dependent",
+	"MOV_001": "enabled", "MOV_002": "enabled", "MOV_003": "unsafe", "MOV_004": "telemetry_dependent", "MOV_005": "telemetry_dependent", "MOV_006": "enabled",
 	"STATE_001": "enabled", "STATE_002": "enabled", "STATE_003": "telemetry_dependent", "STATE_004": "telemetry_dependent",
 	"STATE_005": "telemetry_dependent", "STATE_006": "suspended", "STATE_007": "telemetry_dependent",
 	"PAT_001": "unsafe", "PAT_002": "unsafe", "PAT_003": "cross_match_dependent", "PAT_004": "enabled", "PAT_005": "enabled",
@@ -37,7 +37,7 @@ var detectorStatus = map[string]string{
 // every detector in this file has a status.
 func TestDetectorStatus_MatchesDefaultConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
-	if len(detectorStatus) != 29 || len(cfg.Detectors) != 29 {
+	if len(detectorStatus) != 30 || len(cfg.Detectors) != 30 {
 		t.Fatalf("%d statuses, %d config blocks", len(detectorStatus), len(cfg.Detectors))
 	}
 	built := map[string]bool{}

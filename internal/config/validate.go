@@ -201,11 +201,15 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 		}
 		switch dc.Mode {
 		case "shadow":
-		case "review", "enforce":
+		case "review":
+			if forcedShadow[id] {
+				warn("detector.%s.mode=%q but shadow.shadow_detectors forces it into shadow; this detector's events will NOT be scored", id, dc.Mode)
+			}
+		case "enforce":
 			if forcedShadow[id] {
 				warn("detector.%s.mode=%q but shadow.shadow_detectors forces it into shadow; this detector's events will NOT be scored", id, dc.Mode)
 			} else {
-				warn("detector.%s.mode=%q: only \"shadow\" changes behaviour; this detector's events will be SCORED", id, dc.Mode)
+				warn("detector.%s.mode=%q: automatic enforcement is not wired; events are scored for moderator review only", id, dc.Mode)
 			}
 		case "":
 			if dc.Enabled {

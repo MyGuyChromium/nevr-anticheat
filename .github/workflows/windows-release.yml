@@ -1,0 +1,62 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Windows C cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 zip
+
+      - name: Build Windows executables
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+          CC: x86_64-w64-mingw32-gcc
+        run: |
+          set -euo pipefail
+          package="dist/NEVR-Anticheat-Windows-x64"
+          mkdir -p "$package/configs"
+          go build -trimpath -ldflags "-s -w" -o "$package/nevr-desktop.exe" ./cmd/desktop
+          go build -trimpath -ldflags "-s -w" -o "$package/nevr-ac.exe" ./cmd/anticheat
+          go build -trimpath -ldflags "-s -w" -o "$package/nevr-server.exe" ./cmd/server
+          go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
+          go build -trimpath -ldflags "-s -w" -o "$package/nevr-compat.exe" ./cmd/compat
+          cp README.md packaging/README-WINDOWS.txt "$package/"
+          cp configs/default.toml configs/shadow_deploy.toml "$package/configs/"
+          (cd dist && zip -r NEVR-Anticheat-Windows-x64.zip NEVR-Anticheat-Windows-x64)
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEVR-Anticheat-Windows-x64
+          path: dist/NEVR-Anticheat-Windows-x64.zip
+          if-no-files-found: error
+
+      - name: Attach package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/NEVR-Anticheat-Windows-x64.zip --clobber

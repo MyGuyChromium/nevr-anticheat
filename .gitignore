@@ -29,6 +29,7 @@ cover.html
 
 # Temp
 /tmp/
+/dist/
 
 # Environment / secrets
 .env

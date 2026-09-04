@@ -34,6 +34,68 @@ func feFrame(pid string, idx int, ts float64, pos model.Vec3) model.PlayerTeleme
 
 func approx(a, b, tol float64) bool { return math.Abs(a-b) <= tol }
 
+func vecPtr(v model.Vec3) *model.Vec3 { return &v }
+
+func TestExtractor_PlayspaceMotionSubtractsGameVelocity(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	dt := 0.067
+
+	// Pure game motion (including stacking) advances the pose exactly by the
+	// raw velocity and therefore leaves no physical playspace residual.
+	for i := 0; i < 4; i++ {
+		pos := model.Vec3{1 + 2*dt*float64(i), 1.6, 1}
+		f := feFrame("p1", i, dt*float64(i), pos)
+		f.ReportedVelocity = vecPtr(model.Vec3{2, 0, 0})
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+	if !ps.PlayspaceValid || ps.PlayspaceSpeed > 1e-9 || ps.PlayspaceDistance > 1e-9 || ps.MovementOrigin != "game_velocity" {
+		t.Fatalf("pure game motion classified as playspace: %+v", ps)
+	}
+}
+
+func TestExtractor_PlayspaceWalkMovesWholeTrackedRig(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	dt := 0.067
+
+	// The game contributes 2 m/s while the player physically steps another
+	// 0.10 m per tick. Head and both hands translate together.
+	for i := 0; i < 5; i++ {
+		pos := model.Vec3{1 + (2*dt+0.10)*float64(i), 1.6, 1}
+		f := feFrame("p1", i, dt*float64(i), pos)
+		f.ReportedVelocity = vecPtr(model.Vec3{2, 0, 0})
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+	if !ps.PlayspaceValid || ps.PlayspaceSpeed < 1.45 || ps.PlayspaceDistance < 0.35 ||
+		ps.PlayspaceRigCoherence < 0.99 || ps.PlayspaceTrackedHands != 2 || ps.MovementOrigin != "mixed" {
+		t.Fatalf("physical step was not isolated: speed=%.3f distance=%.3f coherence=%.3f hands=%d origin=%q",
+			ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence, ps.PlayspaceTrackedHands, ps.MovementOrigin)
+	}
+}
+
+func TestExtractor_PlayspaceRequiresRawVelocityAndContinuousSamples(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	f0 := feFrame("p1", 0, 0, model.Vec3{1, 1.6, 1})
+	f0.ReportedVelocity = vecPtr(model.Vec3{})
+	fe.UpdatePlayerState(ps, &f0, mc)
+	f1 := feFrame("p1", 1, 0.067, model.Vec3{1.1, 1.6, 1})
+	fe.UpdatePlayerState(ps, &f1, mc)
+	if ps.PlayspaceValid {
+		t.Fatal("missing raw player.velocity must disable playspace reconstruction")
+	}
+	f2 := feFrame("p1", 2, 0.2, model.Vec3{1.2, 1.6, 1})
+	f2.ReportedVelocity = vecPtr(model.Vec3{})
+	fe.UpdatePlayerState(ps, &f2, mc)
+	if ps.PlayspaceValid || ps.PlayspaceDistance != 0 {
+		t.Fatal("sample gap at or above 100 ms must reset the playspace anchor")
+	}
+}
+
 // throwSequence feeds `hold` frames of possession with a distinct disc
 // velocity per frame, then a release frame with the given velocity.
 // Returns the release frame index.

@@ -14,7 +14,7 @@ import (
 // ownedIDs are the detectors registered by the packages under test here.
 var ownedIDs = []string{
 	"BIO_001", "BIO_002", "BIO_003", "BIO_004",
-	"MOV_001", "MOV_002", "MOV_003", "MOV_004", "MOV_005",
+	"MOV_001", "MOV_002", "MOV_003", "MOV_004", "MOV_005", "MOV_006",
 	"STATE_001", "STATE_002", "STATE_003", "STATE_004", "STATE_005", "STATE_006", "STATE_007",
 	"PAT_001", "PAT_002", "PAT_003", "PAT_004", "PAT_005",
 }

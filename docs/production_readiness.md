@@ -1,6 +1,6 @@
 # NEVR-Anticheat Production Readiness Assessment
 
-**Bottom line: 0 of 29 detectors are validated on real Echo VR telemetry.** Every threshold comes from game physics constants, community documentation and synthetic test data. The system is ready for a *shadow* deployment whose purpose is to collect real data; it is not ready to act on anyone.
+**Bottom line: 0 of 30 detectors are validated on labelled real Echo VR telemetry.** Every threshold still needs calibration. The system is ready for the all-shadow configuration whose purpose is to collect real data; MOV_006 is a scored review signal in the normal default only because physical playspace walking is explicitly treated as cheating, and it can never auto-enforce.
 
 ## 1. Telemetry Compatibility Audit
 
@@ -63,6 +63,7 @@
 | MOV_003 | **UNSAFE** | Log only | No | Wall bounces produce legitimate 180° reversals (collision radius + heading confirmation help, not enough) |
 | MOV_004 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | IsBoosting not in standard API |
 | MOV_005 | **TELEMETRY_DEPENDENT** | Only if IsBoosting present | No | Same; counts activations, `max_consecutive` limit unvalidated |
+| MOV_006 | **PHYSICS_GROUNDED** | Yes | Review only; calibrate before action | Reconstructs the arena-space anchor from Echo's raw `player.velocity` and subtracts it from tracked head/body motion, so normal locomotion and stacking cancel while physical room-scale translation remains. Requires sustained displacement, speed, hand/head coherence and acceptable ping. Thresholds remain unvalidated; never auto-enforces. |
 | STATE_001 | **UNVERIFIED** | Yes (observation only) | After calibration | Network desync inflates grab distance; grab range unquantified |
 | STATE_002 | **PHYSICS_GROUNDED** | Yes | Not until stun duration validated | 2-incident minimum; real stun duration UNVERIFIED (measured in seconds against tick rate) |
 | STATE_003 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | ShieldActive not confirmed in any source |
@@ -78,13 +79,13 @@
 
 ### Summary
 
-0 validated · 8 physics-grounded (incl. the PAT_004 meta-detector) · 8 unverified (incl. THROW_002, whose BROKEN mechanism was removed) · 4 unsafe · 6 telemetry-dependent · 1 cross-match-dependent · 1 stub · 1 suspended = 29.
+0 validated · 9 physics-grounded (incl. the PAT_004 meta-detector) · 8 unverified (incl. THROW_002, whose BROKEN mechanism was removed) · 4 unsafe · 6 telemetry-dependent · 1 cross-match-dependent · 1 stub · 1 suspended = 30.
 
 ### Recommended initial enable list (shadow mode)
 
 In shadow mode `enforcement_weight` has **no effect**: shadow events are never scored, whatever the weight. The split below is about which weight *would* apply after promotion, and it is what `configs/shadow_deploy.toml` encodes.
 
-- **Enabled, weight as configured for promotion:** THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, STATE_002, PAT_004, PAT_005
+- **Enabled, weight as configured for promotion:** THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, MOV_006, STATE_002, PAT_004, PAT_005
 - **Enabled at weight 0.0 (observation only):** THROW_003, THROW_005, THROW_008, BIO_001, BIO_003, BIO_004, STATE_001, STATE_007
 - **Disabled until telemetry fields confirmed:** MOV_004, MOV_005, STATE_003, STATE_004, STATE_005
 - **Disabled until calibrated:** THROW_004, MOV_003, PAT_001, PAT_002
@@ -137,7 +138,7 @@ THROW_004, PAT_001, PAT_002 and MOV_003 pass their tests because the tests avoid
 Scores are evidence pointers, not verdicts. The single-match and cross-match cases put the evidence in front of a moderator; `evidence-export` produces a self-contained frame-by-frame visual review artifact, `verdict` records the decision and `calibration-report` turns decisions into per-detector precision. **A moderator who acts on a score alone defeats the false-positive prevention design.** No automatic action exists: `enforce.Engine` and `enforce.Policy` are implemented but not wired into any binary.
 
 ### Single point of failure: feature extractor
-All 29 detectors depend on the feature extractor. A single bug in velocity or throw derivation silently breaks everything downstream. There is no independent cross-validation of derived features.
+All 30 detectors depend on the feature extractor. A single bug in velocity or throw derivation silently breaks everything downstream. There is no independent cross-validation of derived features.
 
 ### THROW_002
 The BROKEN multi-frame mechanism is gone; the v2.0.0 replacement (last pre-release speed vs release speed) is untested on real data, hence UNVERIFIED and disabled. It stays that way until a real replay shows the pre-release snapshot carries a genuine, non-identical disc velocity and `max_speed_delta` is calibrated on it.

@@ -227,6 +227,14 @@ var detectorSpecs = map[string]DetectorSpec{
 			"max_consecutive_boosts":   "documented in frames; the detector counts activations (max_consecutive)",
 			"recharge_pause_threshold": "documented in seconds; replaced by recharge_pause_frames",
 		}},
+	"MOV_006": {ID: "MOV_006", Name: "Physical Playspace Walking", Category: "movement",
+		Params: []ParamSpec{
+			f("min_playspace_speed", 0.8, "m/s", "minimum game-velocity-subtracted tracked-rig speed"),
+			f("min_playspace_distance", 0.25, "m", "minimum accumulated physical playspace displacement"),
+			f("min_rig_coherence", 0.35, "ratio", "minimum head/hand translation agreement"),
+			i("min_sustained_frames", 3, "frames", "consecutive qualifying frames before an event"),
+			f("max_ping_ms", 250.0, "ms", "skip samples above this latency; 0 disables the hard cap"),
+		}},
 	"STATE_001": {ID: "STATE_001", Name: "Impossible Grab Distance", Category: "state",
 		Params: []ParamSpec{
 			f("grab_distance_threshold", 3.0, "m", "hand-to-disc distance at possession gain above which a grab is impossible"),

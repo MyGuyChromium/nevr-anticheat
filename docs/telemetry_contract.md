@@ -44,6 +44,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
       "delta_time": 0.067,
       "position": [1.5, 1.6, -3.2],
       "rotation": [0.0, 0.707, 0.0, 0.707],
+      "reported_velocity": [2.0, 0.0, -0.5],
       "left_hand_position": [1.2, 1.9, -3.0],
       "right_hand_position": [1.8, 1.9, -3.4],
       "left_hand_rotation": [0.0, 0.1, 0.0, 0.995],
@@ -106,6 +107,7 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `delta_time` | float64 | seconds | desired | `0` = unknown (first frame); `0 < dt < 0.005` (`pipeline.min_frame_dt / 2`) or `dt > 60` (`pipeline.MaxProducerDt`, a clock jump) → frame rejected (`dt_out_of_range`) | Seconds since **this player's** previous frame; report the real sample spacing. A long gap (stall, reconnect) is accepted: the feature extractor treats a known dt above `pipeline.max_frame_dt` (0.5 s) as a gap, updating raw state but clearing kinematics and histories, and clamps smaller known values to [0.005, `max_frame_dt`] for finite differences. `max_frame_dt` never rejects a frame. |
 | `position` | [3]float64 | metres | **yes** | not the zero vector, finite; `|X| ≤ 21`, `|Y| ≤ 15`, `|Z| ≤ 82` | Body/head centre, Y-up. Bounds are `DefaultPhysics` arena extents (32 × 20 × 154 m, measured on real recordings) plus 5 m tolerance; real data spans X ±16, Y −9..+9.5, Z ±78 with goals at Z ≈ ±36.078. Zero → `zero_position`, out of bounds → `out_of_arena_bounds`. |
 | `rotation` | [4]float64 | quaternion (x,y,z,w) | **yes** | unit; near-unit is normalised (`|q| > 0.1`), NaN/Inf → zeroed | Body/head orientation. |
+| `reported_velocity` | [3]float64 | m/s | desired | finite; `[0,0,0]` is valid and distinct from an absent field; NaN/Inf removes it (`invalid_reported_velocity`) | Echo's raw per-player `velocity`, not a finite difference. MOV_006 advances an arena-space anchor with this value and subtracts it from tracked rig translation so ordinary movement/stacking cancels and physical playspace walking remains. The official bridge/adapter supplies it. |
 | `left_hand_position` | [3]float64 | metres | **yes** | finite | Left controller in arena coordinates. **Tracking loss = the zero vector** (NaN/Inf is replaced by it). |
 | `right_hand_position` | [3]float64 | metres | **yes** | finite | Right controller. Same tracking-loss sentinel. |
 | `left_hand_rotation` | [4]float64 | quaternion | desired | unit, or **`[0,0,0,0]` for tracking loss** | Do **not** send the identity when tracking is lost: identity is a real orientation and would be measured by BIO_001/BIO_004; the zero quaternion is skipped. |
@@ -281,13 +283,18 @@ Send the zero vector for a lost hand position and the zero quaternion `[0,0,0,0]
 | `shield_active` | STATE_003, STATE_005 inert |
 | `is_immune` | STATE_004 inert |
 | `is_boosting` | MOV_004, MOV_005 inert |
+| `reported_velocity` | MOV_006 physical playspace reconstruction is invalid and the detector stays inert; it is never inferred from position because that would confuse walking with stacking |
 | `blue_score` / `orange_score` | MOV_002 has no goal cooldown; goal side cannot be learned (throw goal selection falls back to release direction) |
 | `stuns` | STATE_007 inert (it needs per-frame stun count increments) |
 | `game_phase` | detectors run during resets and lobbies; expect MOV_002 false positives |
 | `team` | `team_assignments` empty for live matches; STATE_007 cannot exclude teammates |
 | `disc` | every throw/disc detector inert (THROW_001–THROW_008, STATE_001) |
 
-### 9. Server metrics
+### 9. Physical playspace walking
+
+MOV_006 compares two simultaneous motion signals. The tracked pose delta is the player's total arena-space movement, while `reported_velocity × delta_time` is the movement authored by Echo's locomotion physics. The extractor advances a persistent anchor by the latter and treats the residual as physical room-scale translation. Stacking, boosting and ordinary arena movement therefore stay in game velocity; a real-world step moves the head and controllers relative to the anchor. The detector requires at least 0.25 m accumulated offset, 0.8 m/s residual speed for three consecutive sub-100 ms samples, one coherently translating tracked hand, and ping no higher than 250 ms. It emits a scored review event but has `auto_enforce = false`.
+
+### 10. Server metrics
 
 Exported in Prometheus text format on the metrics port (`--metrics :9090`, `/metrics`):
 

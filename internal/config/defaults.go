@@ -5,9 +5,10 @@ import "time"
 // DefaultConfig returns a fully populated Config with conservative defaults.
 // It is byte-for-byte the same configuration as configs/default.toml
 // (tests/config-docs_config_test.go asserts the two never drift). All
-// detectors default to shadow mode. No detector has been validated against
-// real Echo VR telemetry: thresholds are derived from game physics constants
-// and synthetic test data only.
+// detectors default to shadow mode except MOV_006, which is a scored review
+// signal with auto-enforcement disabled. No detector has been validated
+// against labelled real Echo VR telemetry; use configs/shadow_deploy.toml for
+// an all-shadow calibration deployment.
 func DefaultConfig() *Config {
 	return &Config{
 		General: GeneralConfig{
@@ -154,6 +155,13 @@ func defaultDetectors() map[string]DetectorConfig {
 		"MOV_005": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"window_seconds": 10.0, "max_boosts_per_window": 25, "max_consecutive": 5,
 			"recharge_pause_frames": 10, "min_sequences": 2, "sigmoid_steepness": 0.5,
+		}},
+		// EchoTools-grounded: game velocity is removed from arena pose motion,
+		// then coherent physical rig translation is scored as playspace walking.
+		// It is review-only and can never auto-enforce.
+		"MOV_006": {Enabled: true, EnforcementWeight: 0.75, AutoEnforce: false, Mode: "review", Params: map[string]any{
+			"min_playspace_speed": 0.8, "min_playspace_distance": 0.25, "min_rig_coherence": 0.35,
+			"min_sustained_frames": 3, "max_ping_ms": 250.0,
 		}},
 		"STATE_001": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
 			"grab_distance_threshold": 3.0, "closing_velocity_scale": 0.25, "desync_margin": 3.0,

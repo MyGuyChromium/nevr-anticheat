@@ -8,7 +8,7 @@
 //   - Game servers emit telemetry to a profiler. They run NO detection logic.
 //   - The profiler database stores ALL telemetry as the canonical source of truth.
 //   - This pipeline reads telemetry from the database (or from replay files during
-//     initial ingestion) and runs 29 detectors to produce detection events.
+//     initial ingestion) and runs 30 detectors to produce detection events.
 //   - Detection results are DERIVED DATA, recomputable from stored telemetry at
 //     any time by reprocessing with updated detector logic or thresholds.
 //   - Replay files are an ingestion format, not the primary analysis substrate.

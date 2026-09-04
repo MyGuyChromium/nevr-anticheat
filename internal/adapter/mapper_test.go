@@ -72,6 +72,7 @@ func TestMapper_RealTimestamps(t *testing.T) {
 	m := NewMapper()
 	a := testPlayer("A", 1, [3]float64{1, 1.6, -10})
 	b := testPlayer("B", 2, [3]float64{-1, 1.6, 10})
+	a.Velocity = [3]float64{2, 0, -1}
 	t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 	r0 := m.MapSessionAt(twoTeamSession("m", []EchoVRPlayer{a}, []EchoVRPlayer{b}), t0)
@@ -85,6 +86,12 @@ func TestMapper_RealTimestamps(t *testing.T) {
 	}
 	if !r0.MatchCtx.StartTime.Equal(t0) {
 		t.Errorf("match StartTime = %v, want first sample time %v", r0.MatchCtx.StartTime, t0)
+	}
+	if f := frameByPlayer(r0.Frames, "echovr:1"); f == nil || f.ReportedVelocity == nil || *f.ReportedVelocity != (model.Vec3{2, 0, -1}) {
+		t.Errorf("reported Echo velocity was not mapped: %+v", f)
+	}
+	if f := frameByPlayer(r0.Frames, "echovr:2"); f == nil || f.ReportedVelocity == nil || *f.ReportedVelocity != (model.Vec3{}) {
+		t.Errorf("zero reported velocity must remain present, not missing: %+v", f)
 	}
 
 	// 200 ms recorder hiccup: dt must be 0.2, not a fabricated 0.067.

@@ -218,7 +218,7 @@ func TestConfigDocs_ShadowDeployLoadsAndIsShadowOnly(t *testing.T) {
 		}
 	}
 	sort.Strings(enabled)
-	want := []string{"BIO_001", "BIO_002", "BIO_003", "BIO_004", "MOV_001", "MOV_002", "PAT_004", "PAT_005",
+	want := []string{"BIO_001", "BIO_002", "BIO_003", "BIO_004", "MOV_001", "MOV_002", "MOV_006", "PAT_004", "PAT_005",
 		"STATE_001", "STATE_002", "STATE_007", "THROW_001", "THROW_003", "THROW_005", "THROW_006", "THROW_008"}
 	if !reflect.DeepEqual(enabled, want) {
 		t.Errorf("enabled detectors = %v\nwant %v", enabled, want)

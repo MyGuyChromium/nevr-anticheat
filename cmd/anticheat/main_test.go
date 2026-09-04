@@ -22,7 +22,7 @@ func TestRunAnalyze_TwoSessions(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.toml")
 	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
-	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n[detector.MOV_006]\nenabled = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	replayPath := filepath.Join(dir, "rematch.echoreplay")
@@ -166,7 +166,7 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.toml")
 	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
-	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n[detector.MOV_006]\nenabled = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	replayPath := filepath.Join("..", "..", "tests", "fixtures", "synthetic_session.echoreplay")

@@ -567,6 +567,19 @@
     if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
     return body;
   }
+  async function postJSON(url) {
+    let r;
+    try {
+      r = await fetch(url, { method: 'POST', cache: 'no-store' });
+    } catch (_) {
+      setConnectionState(false);
+      throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
+    }
+    setConnectionState(true);
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
+    return body;
+  }
   async function probeConnection() {
     if (intentionallyStopped) return;
     try {
@@ -582,6 +595,16 @@
   const secId = (id) => 'match-' + encodeURIComponent(id);
   const EVENT_LIMIT = 50;
 
+  function strongestPlayerEvent(m, playerID) {
+    return (m.events || []).filter((e) => e.player_id === playerID)
+      .sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index))[0];
+  }
+
+  function replayButton(m, event, label = 'Open clip') {
+    if (!event) return '<span class="muted">—</span>';
+    return `<button class="btn btn-sm" data-replay-match="${esc(m.match_id)}" data-replay-event="${esc(event.event_id)}">${esc(label)}</button>`;
+  }
+
   function playersTable(m) {
     if (!m.players.length) return '<p class="empty">The replay carried no players on the blue or orange team.</p>';
     const cap = Math.max((m.levels && m.levels.action_worthy) || 0, ...m.players.map((p) => p.score || 0), 1);
@@ -592,7 +615,7 @@
         <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${badge(p.level)}</td>
         <td class="num">${fmtInt(p.detections)}</td><td class="num dim">${fmtInt(p.shadow_detections)}</td>
         <td>${p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>'}</td>
-        <td>${p.detections + p.shadow_detections > 0 ? `<a class="btn btn-sm" target="_blank" rel="noopener" href="api/match/${encodeURIComponent(m.match_id)}/evidence/${encodeURIComponent(p.player_id)}">Review replay</a>` : '<span class="muted">—</span>'}</td></tr>`).join('') + '</tbody></table>';
+        <td>${replayButton(m, strongestPlayerEvent(m, p.player_id), 'Open strongest clip')}</td></tr>`).join('') + '</tbody></table>';
   }
 
   const person = (name, id) => name || id ? who(name, id) : '<span class="muted">—</span>';
@@ -669,7 +692,7 @@
       <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Throw log<span class="count">${fmtInt((s.throws || []).length)}</span></h3></summary>${throwsTable(s, m.disc_speed_cap)}</details>`;
   }
 
-  function eventRows(events) {
+  function eventRows(events, matchID) {
     return events.map((e) => `<tr class="${e.is_shadow ? 'shadow' : ''}">
       <td class="det"><span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}</td>
       <td>${who(e.player_name, e.player_id)}</td>
@@ -677,7 +700,8 @@
       <td class="num">${fmtClock(e.timestamp)}</td>
       <td class="num">${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</td>
       <td class="num">${meter(e.confidence)}</td>
-      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td></tr>`).join('');
+      <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
+      <td><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button></td></tr>`).join('');
   }
 
   function eventsTable(m, idx, all) {
@@ -685,17 +709,17 @@
     if (!n) return '<p class="empty">No detector fired on this match.</p>';
     const sorted = m.events.slice().sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index));
     const shown = all ? sorted : sorted.slice(0, EVENT_LIMIT);
-    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="8">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
+    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="9">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
     return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
-      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th></tr></thead><tbody>${eventRows(shown)}</tbody>${foot}</table>`;
+      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Spark replay</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>`;
   }
 
   function casesList(m) {
     if (!m.cases.length) return '<p class="empty">No review case was created: no player reached the review threshold.</p>';
     return '<ul class="cases">' + m.cases.map((c) => `<li>${badge(c.level)}<span>${who(c.player_name, c.player_id)}</span>
       <span class="num">score ${fmtNum(c.suspicion_score)}</span><span class="act">${esc(lvlName(c.recommended_action))} · ${esc(c.status)}</span>
-      <span class="case mono">${esc(c.case_id)}</span><a class="btn btn-sm" target="_blank" rel="noopener" href="api/case/${encodeURIComponent(c.case_id)}/evidence">Review replay</a></li>`).join('') + '</ul>';
+      <span class="case mono">${esc(c.case_id)}</span>${replayButton(m, strongestPlayerEvent(m, c.player_id), 'Open strongest clip')}</li>`).join('') + '</ul>';
   }
 
   function diagBlock(m) {
@@ -957,6 +981,22 @@
   }
 
   document.addEventListener('click', async (e) => {
+    const replay = e.target.closest('button[data-replay-event]');
+    if (replay) {
+      const label = replay.textContent;
+      replay.disabled = true;
+      replay.textContent = 'Opening…';
+      try {
+        const result = await postJSON(`api/match/${encodeURIComponent(replay.dataset.replayMatch)}/replay/${encodeURIComponent(replay.dataset.replayEvent)}`);
+        setStatus(result.message || 'Opened the incident clip in Spark Replay Viewer.', 'ok');
+      } catch (err) {
+        setStatus(`Could not open replay: ${err.message}`, 'err');
+      } finally {
+        replay.disabled = false;
+        replay.textContent = label;
+      }
+      return;
+    }
     const open = e.target.closest('button[data-open]');
     if (open) {
       const id = open.dataset.open;

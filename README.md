@@ -1,8 +1,8 @@
 # NEVR-Anticheat
 
-Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 29 detectors analyse it there.
+Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 30 detectors analyse it there.
 
-**Validation status: 0 of 29 detectors have been validated on real Echo VR telemetry.** Every threshold is derived from game physics constants and synthetic data. All detectors ship in shadow mode. Read `docs/production_readiness.md` before deploying anything.
+**Validation status: 0 of 30 detectors have been validated on labelled real Echo VR telemetry.** Every threshold still requires calibration. `configs/shadow_deploy.toml` keeps every detector in shadow mode; the normal default makes only MOV_006 physical playspace walking a scored review signal, with automatic enforcement disabled. Read `docs/production_readiness.md` before deploying anything.
 
 ## Architecture
 
@@ -20,18 +20,30 @@ OFFLINE PATH
   .echoreplay / legacy JSON replay ──▶ nevr-ac analyze|batch (internal/adapter + internal/replay)
 
 BOTH PATHS
-  SQLite (source of truth) ──▶ feature extraction ──▶ 29 detectors ──▶ per-match scores
+  SQLite (source of truth) ──▶ feature extraction ──▶ 30 detectors ──▶ per-match scores
         ──▶ review cases (single-match RC-*, cross-match XM-*) ──▶ moderator verdicts ──▶ calibration
 ```
 
 Design rules:
 
 - **Database is truth.** Telemetry frames (`telemetry_frames`) and match context are immutable source data; detection events, scores and cases are derived and can be recomputed at any time with `reprocess-*`.
-- **Shadow mode by default.** A detector in `mode = "shadow"` stores its events with `is_shadow = 1` and they are never scored: no scores, no cases, no per-event log lines. Promotion out of shadow is a config change backed by moderator verdicts.
+- **Shadow-safe deployment.** A detector in `mode = "shadow"` stores its events with `is_shadow = 1` and they are never scored: no scores, no cases, no per-event log lines. Use `configs/shadow_deploy.toml` for that all-shadow posture. The built-in/default config treats MOV_006 as review-only cheating evidence but still cannot auto-enforce.
 - **Evidence, not scores.** Every event carries typed evidence, observed vs expected values and a causal frame range; moderators review evidence, never a number.
 - **Async, multi-pass.** Live inline detection exists for immediate feedback, but the canonical analysis is reprocessing stored telemetry.
 
 ## Toolchain
+
+### Windows download with EXEs
+
+GitHub's green **Code → Download ZIP** button is a source-code archive, so it intentionally does not contain ignored build outputs such as `.exe` files. Download `NEVR-Anticheat-Windows-x64.zip` from the repository's **Releases** page instead. Every merge to `master` and every manually started **Windows package** Actions run also publishes the same ZIP as a downloadable artifact.
+
+Maintainers can build that package locally from PowerShell with:
+
+```powershell
+.\scripts\package-windows.ps1
+```
+
+The result is `dist\NEVR-Anticheat-Windows-x64.zip` and includes all five Windows executables, both configs, and setup instructions.
 
 - Go **1.26+** (see `go.mod`).
 - **CGO is required** (`github.com/mattn/go-sqlite3`). Build with `CGO_ENABLED=1` and a C compiler on `PATH`: gcc on Linux, MinGW-w64 on Windows (for example `winget install BrechtSanders.WinLibs.POSIX.UCRT`). A binary built with `CGO_ENABLED=0` compiles but panics at the first `sql.Open`.
@@ -97,9 +109,9 @@ go build -o nevr-desktop.exe ./cmd/desktop     # CGO_ENABLED=1, like every binar
 ./nevr-desktop.exe                              # or double-click it
 ```
 
-On start it opens the database (`nevr-anticheat.db` next to the executable, or `general.db_path` with `--config <file>`), listens on **127.0.0.1 only** at a random free port behind a random per-run token, and prints the URL. It opens that page in a dedicated Edge/Chrome app window when available, falling back to the default browser (`--no-browser` only prints the URL; `--port` pins the port). Uploaded files are analyzed one after another through the same code as `nevr-ac analyze` (telemetry, raw ticks, detection events, scores and review cases are stored; a match that is already in the database is refused unless the **Re-analyze** box, i.e. `--force`, is ticked) and deleted afterwards. Each match card shows the scoreboard, team totals, complete player statistics, scoring timeline, throw log, anticheat assessment, detections, review cases, and adapter diagnostics. Its full summary can be downloaded as JSON, its player rows as CSV, and any player with detections can be opened in the offline frame-by-frame evidence reviewer. The page also shows detector-version-separated observation rates, confidence/severity tails, pending cases, and analyzed matches. **Quit** on the page or Ctrl+C in the console stops it. Nothing is reachable from other machines and nothing but this page can reach the app.
+On start it opens the database (`nevr-anticheat.db` next to the executable, or `general.db_path` with `--config <file>`), listens on **127.0.0.1 only** at a random free port behind a random per-run token, and prints the URL. It opens that page in a dedicated Edge/Chrome app window when available, falling back to the default browser (`--no-browser` only prints the URL; `--port` pins the port). Uploaded files are analyzed one after another through the same code as `nevr-ac analyze` (telemetry, raw ticks, detection events, scores and review cases are stored; a match that is already in the database is refused unless the **Re-analyze** box, i.e. `--force`, is ticked) and deleted afterwards. Each match card shows the scoreboard, team totals, complete player statistics, scoring timeline, throw log, anticheat assessment, detections, review cases, and adapter diagnostics. Its full summary can be downloaded as JSON and its player rows as CSV. **Open clip** reconstructs a short native `.echoreplay` from the original stored snapshots around that exact detection and starts it directly in Spark Replay Viewer—no browser evidence tab. Open Replay Viewer from Spark once so Spark installs `Documents\Replay Viewer\Replay Viewer.exe`; custom installs can be selected with `NEVR_REPLAY_VIEWER`. The page also shows detector-version-separated observation rates, confidence/severity tails, pending cases, and analyzed matches. **Quit** on the page or Ctrl+C in the console stops it. Nothing is reachable from other machines and nothing but this page can reach the app.
 
-The API behind the page (all under `/<token>/`): `POST api/analyze` (multipart `files[]`, optional `force=1`; each `results[i]` carries the file's matches in `matches[]`, one card each, while its `ok`/`match_id`/`match` mirror the first match analyzed), `GET api/flagged`, `GET api/observations`, `GET api/matches`, `GET api/match/{id}`, `GET api/match/{id}/summary.json`, `GET api/match/{id}/export.csv`, `GET api/match/{id}/evidence/{player}`, `GET api/case/{id}/evidence`, `GET quit`.
+The API behind the page (all under `/<token>/`): `POST api/analyze` (multipart `files[]`, optional `force=1`; each `results[i]` carries the file's matches in `matches[]`, one card each, while its `ok`/`match_id`/`match` mirror the first match analyzed), `GET api/flagged`, `GET api/observations`, `GET api/matches`, `GET api/match/{id}`, `GET api/match/{id}/summary.json`, `GET api/match/{id}/export.csv`, `POST api/match/{id}/replay/{event}` (build and launch the exact Spark clip), legacy offline evidence-export routes, and `GET quit`.
 
 ## Quick start: live (bridge + server)
 
@@ -173,6 +185,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | MOV_003 | Zero-Inertia Direction Change | movement | 0.5 | **UNSAFE** — FPs on wall bounces |
 | MOV_004 | Boost Speed Cap Violation | movement | 0.5 | Disabled — needs is_boosting field |
 | MOV_005 | Boost Spam | movement | 0.6 | Disabled — needs is_boosting field |
+| MOV_006 | Physical Playspace Walking | movement | 0.75 | EchoTools-grounded, scored review; never auto-enforces |
 | STATE_001 | Impossible Grab Distance | state | 0.5 | Unverified — needs grab range data |
 | STATE_002 | Stun Recovery Exploit | state | 0.7 | Physics-grounded |
 | STATE_003 | Shield Duration Abuse | state | 0.6 | Disabled — needs shield_active field |
@@ -217,7 +230,7 @@ Derived data: `detection_events` (`is_shadow`, `analysis_source` = initial/repro
 
 ## Shadow Mode
 
-`mode = "shadow"` (the default for all 29 detectors) means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. The only output of an all-shadow deployment is the `detection_events` table, which is the calibration surface: `verdict` on cases that do exist counts shadow events, and `calibration-report` shows per-detector precision. A detector is promoted by changing its `mode` in config.
+`mode = "shadow"` means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. The all-shadow deployment config uses this mode for all 30 detectors; the built-in/default config deliberately sets MOV_006 to `review`. `verdict` and `calibration-report` provide the calibration path before promoting anything else.
 
 Weights and `auto_enforce` come from config: the binaries build detectors through `detect.BuildAll`, which applies `enforcement_weight` via `SetWeight` and `auto_enforce` via `SetAutoEnforce`, so `MakeEvent` stamps the configured weight on every event.
 

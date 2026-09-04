@@ -134,6 +134,77 @@ func TestMov001_SustainedSpeedHackFires(t *testing.T) {
 	}
 }
 
+// ---- MOV_006 ----
+
+func TestMov006_CoherentPhysicalWalkFiresOncePerBurst(t *testing.T) {
+	d := NewMov006(nil)
+	mc := ctx()
+	var events []model.DetectionEvent
+	for fi := 0; fi < 8; fi++ {
+		ps := active("p1", fi)
+		ps.PlayspaceValid = true
+		ps.PlayspaceTrackedHands = 2
+		ps.PlayspaceSpeed = 1.4
+		ps.PlayspaceDistance = 0.4
+		ps.PlayspaceRigCoherence = 0.95
+		ps.ReportedVelocity = model.Vec3{0, 0, 2}
+		ps.Speed = 3.4
+		events = append(events, d.Evaluate(mc, players(ps), fi)...)
+	}
+	if len(events) != 1 {
+		t.Fatalf("coherent walk emitted %d events, want 1", len(events))
+	}
+	if event := events[0]; event.DetectorID != "MOV_006" || event.CausalKey.AnomalyType != "playspace_walking" || event.AutoEnforce {
+		t.Errorf("event = %+v", event)
+	}
+	metrics := events[0].Evidence.(model.MovementEvidence).Metrics
+	if metrics["tracked_hands"] != 2 || metrics["reported_game_speed"] != 2 || metrics["sustained_frames"] != 3 {
+		t.Errorf("metrics = %v", metrics)
+	}
+
+	// A clean frame closes the burst; a later sustained burst is a separate
+	// reviewable incident rather than being suppressed for the whole match.
+	clean := active("p1", 8)
+	d.Evaluate(mc, players(clean), 8)
+	for fi := 9; fi < 12; fi++ {
+		ps := active("p1", fi)
+		ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 1
+		ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1, 0.3, 0.8
+		events = append(events, d.Evaluate(mc, players(ps), fi)...)
+	}
+	if len(events) != 2 {
+		t.Fatalf("second walk burst not emitted: %d events", len(events))
+	}
+}
+
+func TestMov006_StackingAndUnreliableTrackingAreSilent(t *testing.T) {
+	tests := []struct {
+		name  string
+		alter func(*model.PlayerState)
+	}{
+		{"stacking residual is zero", func(ps *model.PlayerState) { ps.PlayspaceSpeed = 0 }},
+		{"too little displacement", func(ps *model.PlayerState) { ps.PlayspaceDistance = 0.1 }},
+		{"hands not tracked", func(ps *model.PlayerState) { ps.PlayspaceTrackedHands = 0 }},
+		{"incoherent rig", func(ps *model.PlayerState) { ps.PlayspaceRigCoherence = 0.1 }},
+		{"high ping", func(ps *model.PlayerState) { ps.EstimatedPingMs = 300 }},
+		{"invalid reconstruction", func(ps *model.PlayerState) { ps.PlayspaceValid = false }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewMov006(nil)
+			for fi := 0; fi < 6; fi++ {
+				ps := active("p1", fi)
+				ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 2
+				ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.4, 0.9
+				tt.alter(ps)
+				if events := d.Evaluate(ctx(), players(ps), fi); len(events) != 0 {
+					t.Fatalf("unexpected event at frame %d: %+v", fi, events)
+				}
+			}
+		})
+	}
+}
+
 // ---- MOV_002 ----
 
 func productionMov002(extra map[string]any) *Mov002 {

@@ -463,6 +463,7 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			p := &team.Players[i]
 			writeF(float64(p.UserID))
 			h.Write([]byte(p.Name))
+			writeV(p.Velocity)
 			writeV(p.Body.Position)
 			writeV(p.Body.Forward)
 			writeV(p.LHand.Position)
@@ -632,6 +633,7 @@ func (m *Mapper) mapPlayer(
 
 	// CONFIRMED: per-player ping exists in Echo VR API
 	pingMs := float64(p.Ping) // int ms to float64
+	reportedVelocity := model.Vec3(p.Velocity)
 
 	// Map game phase
 	gamePhase := mapGamePhase(session.GameStatus)
@@ -652,6 +654,7 @@ func (m *Mapper) mapPlayer(
 		DeltaTime:         dt,
 		Position:          pos,
 		Rotation:          bodyRot,
+		ReportedVelocity:  &reportedVelocity,
 		LeftHandPosition:  leftHandPos,
 		RightHandPosition: rightHandPos,
 		LeftHandRotation:  leftHandRot,

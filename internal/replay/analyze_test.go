@@ -23,6 +23,9 @@ func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.General.LogLevel = "error"
+	walking := cfg.Detectors["MOV_006"]
+	walking.Enabled = false // legacy fixture declares zero raw velocity while moving poses
+	cfg.Detectors["MOV_006"] = walking
 	store, err := sqlite.NewStore(filepath.Join(t.TempDir(), "engine.db"))
 	if err != nil {
 		t.Fatal(err)

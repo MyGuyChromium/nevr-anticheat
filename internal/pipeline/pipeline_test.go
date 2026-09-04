@@ -871,6 +871,23 @@ func TestValidatorDropsInvalidGameLastThrow(t *testing.T) {
 	}
 }
 
+func TestValidatorDropsInvalidReportedVelocity(t *testing.T) {
+	v := NewFrameValidator(testConfig("enforce"))
+	f := cleanFrame("P1", 0)
+	velocity := model.Vec3{1, math.Inf(1), 3}
+	f.ReportedVelocity = &velocity
+	codes, err := v.Validate(&f, matchCtx("P1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ReportedVelocity != nil {
+		t.Fatalf("invalid reported velocity survived validation: %+v", f.ReportedVelocity)
+	}
+	if len(codes) != 1 || codes[0] != SanitizedReportedVelocity {
+		t.Fatalf("sanitization codes = %v, want [%s]", codes, SanitizedReportedVelocity)
+	}
+}
+
 // TestInvalidEmissionsAreDropped covers F204: a detector that bypasses
 // MakeEvent cannot push NaN severities into the scorer.
 func TestInvalidEmissionsAreDropped(t *testing.T) {

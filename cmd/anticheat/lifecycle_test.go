@@ -21,7 +21,7 @@ func testApp(t *testing.T) *app {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.toml")
 	db := filepath.ToSlash(filepath.Join(dir, "app.db"))
-	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[general]\ndb_path = \""+db+"\"\nlog_level = \"error\"\n[detector.MOV_006]\nenabled = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a, err := openApp(cfgPath)
