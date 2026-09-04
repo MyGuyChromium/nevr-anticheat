@@ -68,7 +68,7 @@ func (d *discoverer) discover(ctx context.Context) ([]DiscoveredMatch, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Nakama API request failed: %w", err)
+		return nil, fmt.Errorf("nakama API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -82,7 +82,7 @@ func (d *discoverer) discover(ctx context.Context) ([]DiscoveredMatch, error) {
 		return nil, &nakamaAuthError{Status: resp.StatusCode, Body: truncate(string(body), 200), Mode: d.auth.mode()}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Nakama API returned %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("nakama API returned %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
 
 	var apiResp nakamaMatchListResponse

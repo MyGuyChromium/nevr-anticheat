@@ -208,7 +208,7 @@ func (a *nakamaAuth) authenticateDeviceLocked(ctx context.Context) error {
 	body, _ := json.Marshal(map[string]any{"id": deviceID})
 	sess, err := a.postSession(ctx, url, body)
 	if err != nil {
-		return fmt.Errorf("Nakama device authentication failed: %w", err)
+		return fmt.Errorf("nakama device authentication failed: %w", err)
 	}
 	a.adoptLocked(sess)
 	a.logger.Info("authenticated with Nakama",

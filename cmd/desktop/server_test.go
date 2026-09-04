@@ -118,7 +118,7 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 		t.Fatalf("forced upload: status %d %+v", resp.StatusCode, out)
 	}
 	for i, m := range out.Results[0].Matches {
-		if !m.OK || m.Match == nil || !m.Match.Replaced || m.Match.Telemetry.FramesIgnored != 240 || m.Match.Telemetry.TicksIgnored != 60 {
+		if !m.OK || m.Match == nil || !m.Match.Replaced || m.Match.Telemetry.FramesInserted != 240 || m.Match.Telemetry.TicksIgnored != 60 {
 			t.Errorf("forced match %d: %+v", i, m)
 		}
 	}
@@ -287,7 +287,7 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !out.Force || len(out.Results) != 1 || !out.Results[0].OK {
 		t.Fatalf("forced upload: status %d %+v", resp.StatusCode, out)
 	}
-	if fm := out.Results[0].Match; !fm.Replaced || fm.Telemetry.FramesIgnored != 480 {
+	if fm := out.Results[0].Match; !fm.Replaced || fm.Telemetry.FramesInserted != 480 || fm.Telemetry.TicksIgnored != 120 {
 		t.Errorf("forced match %+v", *fm)
 	}
 
@@ -376,6 +376,11 @@ func TestDesktop_MatchSummaryDownloads(t *testing.T) {
 	if _, err := s.engine.Store().StoreDetectionEvents(context.Background(), []model.DetectionEvent{ev}, "initial"); err != nil {
 		t.Fatal(err)
 	}
+	var eventMatch matchView
+	if resp := getJSON(t, base+"/api/match/SYN-FIXTURE-001", &eventMatch); resp.StatusCode != http.StatusOK ||
+		len(eventMatch.Events) != 1 || eventMatch.Events[0].DetectorName != "Impossible Player Speed" {
+		t.Fatalf("event detector names: status=%d events=%+v", resp.StatusCode, eventMatch.Events)
+	}
 	var observations struct {
 		Stats  []sqlite.DetectorObservationStats `json:"stats"`
 		Notice string                            `json:"notice"`
@@ -413,6 +418,16 @@ func TestDesktop_MatchSummaryDownloads(t *testing.T) {
 		launched = path
 		return `C:\Users\tester\Documents\Replay Viewer\Replay Viewer.exe`, nil
 	}
+	resp, err = http.Post(base+"/api/replay-viewer", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || launched != "" || !bytes.Contains(raw, []byte("Opened Spark Replay Viewer")) {
+		t.Fatalf("open viewer response: status=%d body=%s launched=%q", resp.StatusCode, raw, launched)
+	}
+
 	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/desktop-evidence", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -447,6 +462,36 @@ func TestDesktop_MatchSummaryDownloads(t *testing.T) {
 		t.Fatalf("invalid Spark replay line %q: timestamp=%v json=%v", lines[0], err, json.Valid(parts[1]))
 	}
 
+	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/frame/10", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	clipResult = struct {
+		OK         bool   `json:"ok"`
+		Message    string `json:"message"`
+		ClipFile   string `json:"clip_file"`
+		FrameStart int    `json:"frame_start"`
+		FrameEnd   int    `json:"frame_end"`
+		Frames     int    `json:"frames"`
+	}{}
+	if err := json.Unmarshal(raw, &clipResult); err != nil {
+		t.Fatalf("decode throw clip response %s: %v", raw, err)
+	}
+	if resp.StatusCode != http.StatusOK || !clipResult.OK || clipResult.ClipFile == "" || launched != clipResult.ClipFile ||
+		clipResult.FrameStart != 0 || clipResult.FrameEnd != 55 || clipResult.Frames != 56 {
+		t.Fatalf("throw clip response: status=%d body=%s launched=%q", resp.StatusCode, raw, launched)
+	}
+	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/frame/not-a-frame", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid replay frame status %d", resp.StatusCode)
+	}
+
 	resp, err = http.Post(base+"/api/match/SYN-FIXTURE-001/replay/no-such-event", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +517,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Spark replay", "Detector observations"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by cheat", "data-replay-frame", "data-throw-scroll", "Spark replay", "Detector observations"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
@@ -483,7 +528,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 // anything else is 404.
 func TestDesktop_TokenRequired(t *testing.T) {
 	_, ts := newTestServer(t)
-	for _, path := range []string{"/", "/api/flagged", "/api/observations", "/api/matches", "/quit", "/wrongtoken/api/flagged", "/" + testToken + "/nope"} {
+	for _, path := range []string{"/", "/api/flagged", "/api/observations", "/api/matches", "/api/replay-viewer", "/quit", "/wrongtoken/api/flagged", "/" + testToken + "/nope"} {
 		if resp := getJSON(t, ts.URL+path, nil); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET %s: status %d, want 404", path, resp.StatusCode)
 		}

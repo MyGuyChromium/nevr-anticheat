@@ -158,11 +158,6 @@ type fakeBroadcaster struct {
 	bytesOnly bool
 }
 
-func startFakeBroadcaster(t *testing.T, responseBody string, statusCode int) *httptest.Server {
-	t.Helper()
-	return newFakeBroadcaster(t, responseBody, statusCode).server
-}
-
 func newFakeBroadcaster(t *testing.T, responseBody string, statusCode int) *fakeBroadcaster {
 	t.Helper()
 	fb := &fakeBroadcaster{}
@@ -204,8 +199,6 @@ type fakeAnticheat struct {
 	batches  []FrameBatch
 	controls []model.ControlMessage
 	conns    []*websocket.Conn
-	accepted int64
-
 	// behaviour knobs (set before the bridge connects)
 	expectToken string // reject connections whose bearer token differs
 	refuseWith  string // send this error reason instead of hello (e.g. too_many_connections)
@@ -300,16 +293,6 @@ func (fa *fakeAnticheat) allBatches() []FrameBatch {
 	out := make([]FrameBatch, len(fa.batches))
 	copy(out, fa.batches)
 	return out
-}
-
-func (fa *fakeAnticheat) totalFrames() int {
-	fa.mu.Lock()
-	defer fa.mu.Unlock()
-	total := 0
-	for _, b := range fa.batches {
-		total += len(b.Frames)
-	}
-	return total
 }
 
 func (fa *fakeAnticheat) lastBatch() *FrameBatch {

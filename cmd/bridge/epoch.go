@@ -75,12 +75,6 @@ func (e *frameEpoch) setSession(id string) (changed bool) {
 	return changed
 }
 
-func (e *frameEpoch) session() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.sessionID
-}
-
 func (e *frameEpoch) snapshot() (nextIndex int, lastTS float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

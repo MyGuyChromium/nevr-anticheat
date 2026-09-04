@@ -229,11 +229,13 @@ var detectorSpecs = map[string]DetectorSpec{
 		}},
 	"MOV_006": {ID: "MOV_006", Name: "Physical Playspace Walking", Category: "movement",
 		Params: []ParamSpec{
-			f("min_playspace_speed", 0.8, "m/s", "minimum game-velocity-subtracted tracked-rig speed"),
-			f("min_playspace_distance", 0.25, "m", "minimum accumulated physical playspace displacement"),
-			f("min_rig_coherence", 0.35, "ratio", "minimum head/hand translation agreement"),
-			i("min_sustained_frames", 3, "frames", "consecutive qualifying frames before an event"),
-			f("max_ping_ms", 250.0, "ms", "skip samples above this latency; 0 disables the hard cap"),
+			f("min_playspace_speed", 1.0, "m/s", "minimum game-velocity-subtracted tracked-rig speed"),
+			f("min_playspace_distance", 0.55, "m", "minimum accumulated physical playspace displacement"),
+			f("min_observed_pose_speed", 0.35, "m/s", "minimum observed tracked-rig speed; rejects frozen remote poses with stale game velocity"),
+			f("min_rig_coherence", 0.65, "ratio", "minimum head/hand translation agreement"),
+			i("min_sustained_frames", 5, "frames", "minimum consecutive qualifying samples before an event"),
+			f("min_sustained_seconds", 0.3, "s", "minimum real elapsed time across qualifying samples"),
+			f("max_ping_ms", 150.0, "ms", "skip samples above this latency; 0 disables the hard cap"),
 		}},
 	"STATE_001": {ID: "STATE_001", Name: "Impossible Grab Distance", Category: "state",
 		Params: []ParamSpec{

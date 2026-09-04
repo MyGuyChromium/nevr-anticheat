@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -160,6 +161,62 @@ func (s *Store) StoreTelemetryFramesWithRaw(ctx context.Context, matchID string,
 		return TelemetryStoreResult{}, fmt.Errorf("commit: %w", err)
 	}
 	return res, nil
+}
+
+// ReplaceMatchTelemetryFrames atomically replaces the normalized player-frame
+// cache for one match. The original match_ticks rows are intentionally left
+// untouched: they are the immutable source used to regenerate these frames
+// after mapper/schema fixes. A serialization or insert failure rolls the
+// transaction back, preserving every previously normalized row.
+func (s *Store) ReplaceMatchTelemetryFrames(ctx context.Context, matchID string, frames []model.PlayerTelemetryFrame) (int, error) {
+	if matchID == "" {
+		return 0, errors.New("replace telemetry: empty match id")
+	}
+	if len(frames) == 0 {
+		return 0, errors.New("replace telemetry: no frames")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin replace telemetry: %w", err)
+	}
+	defer tx.Rollback()
+	// Databases from schema v8 can still carry their only raw snapshots in
+	// telemetry_frames.raw_json. Promote one exact copy per tick before the
+	// cache is deleted, so a mapper refresh also completes the v9 storage
+	// migration instead of destroying the source it just consumed.
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO match_ticks (match_id, frame_index, raw_json, ingested_at)
+		SELECT match_id, frame_index, MIN(raw_json), MIN(ingested_at)
+		FROM telemetry_frames
+		WHERE match_id = ? AND raw_json IS NOT NULL AND raw_json <> ''
+		GROUP BY match_id, frame_index`, matchID); err != nil {
+		return 0, fmt.Errorf("preserve legacy raw ticks for match %s: %w", matchID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM telemetry_frames WHERE match_id = ?`, matchID); err != nil {
+		return 0, fmt.Errorf("delete old telemetry for match %s: %w", matchID, err)
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO telemetry_frames (match_id, player_id, frame_index, timestamp, frame_json, ingested_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare replacement telemetry: %w", err)
+	}
+	defer stmt.Close()
+	ingestedAt := fmtDBTime(time.Now())
+	for _, f := range frames {
+		frameJSON, err := json.Marshal(f)
+		if err != nil {
+			return 0, fmt.Errorf("marshal replacement frame match=%s player=%s frame=%d: %w",
+				matchID, f.PlayerID, f.FrameIndex, err)
+		}
+		if _, err := stmt.ExecContext(ctx, matchID, f.PlayerID, f.FrameIndex, f.Timestamp, string(frameJSON), ingestedAt); err != nil {
+			return 0, fmt.Errorf("insert replacement frame match=%s player=%s frame=%d: %w",
+				matchID, f.PlayerID, f.FrameIndex, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit replacement telemetry: %w", err)
+	}
+	return len(frames), nil
 }
 
 // GetMatchRawTicks returns raw session payloads for frame indices in

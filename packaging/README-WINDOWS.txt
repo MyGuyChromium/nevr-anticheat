@@ -12,9 +12,10 @@ to expose it: the desktop app listens only on 127.0.0.1 (this computer).
 
 SPARK REPLAY VIEWER
 
-Detection rows have an Open clip button. It creates a short .echoreplay around
-the exact detector frame and launches Spark Replay Viewer. In Spark, open its
-Replay Viewer once first so Spark installs:
+Detection rows have an Open clip button and every throw-log row has an Open
+throw button. They create a short .echoreplay around the exact frame and launch
+Spark Replay Viewer. The desktop header can also open the viewer without a
+clip. In Spark, open its Replay Viewer once first so Spark installs:
 
   Documents\Replay Viewer\Replay Viewer.exe
 
@@ -36,6 +37,9 @@ configuration. See README.md for command-line and live-server instructions.
 IMPORTANT
 
 GitHub's green Code > Download ZIP button downloads source code only. It does
-not contain compiled EXEs. Download NEVR-Anticheat-Windows-x64.zip from the
-repository's Releases page (or the Windows package artifact from an Actions
-run) when you want ready-to-run programs.
+not contain compiled EXEs. Download the ready-to-run package here:
+
+  https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip
+
+The Windows package artifact from a successful Actions run contains the same
+ZIP and a SHA-256 checksum.

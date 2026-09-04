@@ -338,6 +338,44 @@ func TestExtractor_ThrowingHandUsesPriorHeldDiscAnchor(t *testing.T) {
 	if got.HandToDiscDistance > 1e-9 || got.HandAttributionConfidence < 0.9 {
 		t.Fatalf("aligned hand evidence distance=%v confidence=%v", got.HandToDiscDistance, got.HandAttributionConfidence)
 	}
+	if got.PossibleHeadContact {
+		t.Fatal("release sampled at a tracked hand was classified as a head contact")
+	}
+}
+
+func TestExtractor_MarksPossibleHeadContactAfterSampledRelease(t *testing.T) {
+	fe := NewFeatureExtractor(30)
+	mc := feTestCtx()
+	ps := &model.PlayerState{PlayerID: "p1"}
+	pos := model.Vec3{1, 1, 0}
+	for i := 0; i < 3; i++ {
+		f := feFrame("p1", i, float64(i)*0.067, pos)
+		f.HasPossession = true
+		f.Disc = &model.DiscState{Position: f.RightHandPosition, IsHeld: true, PossessorID: "p1"}
+		fe.UpdatePlayerState(ps, &f, mc)
+	}
+
+	// The recorder did not sample the instant of release. On its next tick the
+	// free disc is beside the head and farther from both controllers, which
+	// means its velocity may already include a headbutt.
+	release := feFrame("p1", 3, 3*0.067, pos)
+	release.LeftHandPosition = pos.Add(model.Vec3{-0.7, 0.2, 0})
+	release.RightHandPosition = pos.Add(model.Vec3{0.7, 0.2, 0})
+	release.Disc = &model.DiscState{
+		Position: pos.Add(model.Vec3{0, 0.08, 0.1}),
+		Velocity: model.Vec3{0, 0, -12}, Speed: 12,
+	}
+	fe.UpdatePlayerState(ps, &release, mc)
+	got := ps.LastThrow
+	if got == nil {
+		t.Fatal("release was not reconstructed")
+	}
+	if !got.PossibleHeadContact {
+		t.Fatalf("head contact not marked: head distance=%v hand distance=%v", got.HeadToDiscDistance, got.ReleaseHandToDiscDistance)
+	}
+	if got.HeadToDiscDistance >= got.ReleaseHandToDiscDistance {
+		t.Fatalf("bad contact geometry: head distance=%v hand distance=%v", got.HeadToDiscDistance, got.ReleaseHandToDiscDistance)
+	}
 }
 
 func TestExtractor_MissingHandsRemainUnknownOnThrow(t *testing.T) {

@@ -53,6 +53,15 @@ type ThrowEvent struct {
 	// that is the held disc position from the frame immediately before release;
 	// the current free-disc position is only a lower-quality fallback.
 	HandToDiscDistance float64 `json:"hand_to_disc_distance"`
+	// ReleaseHandToDiscDistance is measured on the first free-disc sample,
+	// rather than against the prior held-disc anchor. HeadToDiscDistance uses
+	// the nearer of the current and previous tracked head/body positions.
+	// PossibleHeadContact is deliberately conservative: it means the first
+	// observed free-disc velocity may already be post-headbutt, so hand/wrist
+	// release-angle detectors must not interpret that velocity as a hand throw.
+	ReleaseHandToDiscDistance float64 `json:"release_hand_to_disc_distance,omitempty"`
+	HeadToDiscDistance        float64 `json:"head_to_disc_distance,omitempty"`
+	PossibleHeadContact       bool    `json:"possible_head_contact,omitempty"`
 	// ReleaseAngle is the world-frame angle (degrees) between the throwing
 	// hand's velocity and the disc's release velocity. Because both vectors
 	// are measured in the world frame, body translation contributes to it;

@@ -96,6 +96,8 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `raw_json` | string containing JSON | bridge: **yes**; other producers: optional | Exact `/session` response bytes that produced the normalized frames, including whitespace and fields the current mapper does not know. The server validates the inner JSON and stores it once in `match_ticks`. When present, every frame in the batch must have the same `frame_index`; invalid, empty-frame or multi-index raw batches are rejected as a unit. |
 | `frames` | array | **yes** | 1–100 player frames. |
 
+`match_ticks` is the immutable source record. `telemetry_frames` is a normalized cache: forced replay analysis and raw-backed `reprocess-*` commands may atomically replace it after running the current adapter over the original snapshots. Reprocessing refuses malformed or discontinuous raw tick sequences rather than silently falling back to stale normalized data; only matches with no raw snapshots use that legacy fallback.
+
 #### Player frame fields
 
 | Field | Type | Unit | Required | Valid range / behaviour | Notes |
@@ -292,7 +294,9 @@ Send the zero vector for a lost hand position and the zero quaternion `[0,0,0,0]
 
 ### 9. Physical playspace walking
 
-MOV_006 compares two simultaneous motion signals. The tracked pose delta is the player's total arena-space movement, while `reported_velocity × delta_time` is the movement authored by Echo's locomotion physics. The extractor advances a persistent anchor by the latter and treats the residual as physical room-scale translation. Stacking, boosting and ordinary arena movement therefore stay in game velocity; a real-world step moves the head and controllers relative to the anchor. The detector requires at least 0.25 m accumulated offset, 0.8 m/s residual speed for three consecutive sub-100 ms samples, one coherently translating tracked hand, and ping no higher than 250 ms. It emits a scored review event but has `auto_enforce = false`.
+MOV_006 compares two simultaneous motion signals. The tracked pose delta is the player's total arena-space movement, while `reported_velocity × delta_time` is the movement authored by Echo's locomotion physics. The extractor advances a persistent anchor by the latter and treats the residual as physical room-scale translation. Stacking, boosting, slapping off geometry and ordinary arena movement therefore stay in game velocity; a real-world step moves the head and controllers relative to the anchor. The detector requires at least 0.55 m accumulated offset, 1.0 m/s residual speed, 0.35 m/s of actual observed pose motion, 0.65 rig coherence, five samples spanning at least 0.3 seconds, one coherently translating tracked hand, and ping no higher than 150 ms. Requiring continuous observed motion rejects a real replay artifact where a remote player's head and hands freeze while its last game velocity remains non-zero. Because the API exposes neither feet nor guardian origin, the detector cannot reliably distinguish every physical step from a legal lean/lunge and therefore emits shadow observations only by default.
+
+Throw reconstruction also compares the first free-disc sample with the current/previous tracked head and both current controllers. If the disc is within 0.42 m of the head and at least 0.08 m closer to it than either controller, `ThrowEvent.possible_head_contact` is set. This does not claim a proven headbutt; it marks the sampled velocity as potentially post-contact. THROW_003 consequently skips the sample instead of reporting its hand/disc angle as a wrist-release anomaly.
 
 ### 10. Server metrics
 
