@@ -66,6 +66,55 @@ func TestMigrations_AllTimestampColumnsExist(t *testing.T) {
 	}
 }
 
+func TestMigration17UpgradesExistingCalibrationData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v16.db")
+	raw, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.Version >= 17 {
+			break
+		}
+		if err := applyMigration(raw, migration); err != nil {
+			t.Fatalf("applying migration %d: %v", migration.Version, err)
+		}
+	}
+	if _, err := raw.Exec(`INSERT INTO event_reviews
+		(event_id, match_id, player_id, detector_id, detector_version, frame_index,
+		 timestamp, severity, confidence, observed_value, expected_range, evidence_type,
+		 evidence_json, verdict, comment, reviewer_id, reviewed_at)
+		VALUES ('E1','M1','P1','THROW_001','1',10,1,1,1,'x','y','','{}','yes','','local','2026-09-04T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO analysis_runs
+		(match_id, source, app_version, build_commit, config_fingerprint, profile_name,
+		 telemetry_quality, quality_grade, quality_gated, wall_milliseconds,
+		 pipeline_milliseconds, frames_processed, events_produced, created_at)
+		VALUES ('M1','upload','0.7.0','old','full','default',90,'good',0,1,1,10,1,'2026-09-04T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStoreAt(t, dbPath)
+	var blind int
+	if err := store.DB().QueryRow(`SELECT blind_review FROM event_reviews WHERE event_id='E1'`).Scan(&blind); err != nil || blind != 0 {
+		t.Fatalf("blind_review = %d, %v", blind, err)
+	}
+	var fingerprint string
+	if err := store.DB().QueryRow(`SELECT calibration_fingerprint FROM analysis_runs WHERE match_id='M1'`).Scan(&fingerprint); err != nil || fingerprint != "" {
+		t.Fatalf("calibration_fingerprint = %q, %v", fingerprint, err)
+	}
+	if version, err := AppliedSchemaVersion(store.DB()); err != nil || version != 17 {
+		t.Fatalf("schema version = %d, %v", version, err)
+	}
+}
+
 // A database bootstrapped by hand from migrations/001_initial.sql, holding rows
 // written in the legacy datetime('now') layout by an older binary, must upgrade
 // cleanly and end up with every timestamp normalized.

@@ -12,6 +12,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
 
+$resourcePath = Join-Path $repoRoot "cmd\desktop\resource_windows_amd64.syso"
+
 $stage = Join-Path $outputRoot ("NEVR-Anticheat-Windows-x64-" + [System.IO.Path]::GetRandomFileName())
 $stage = [System.IO.Path]::GetFullPath($stage)
 if (-not $stage.StartsWith($outputRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -20,6 +22,11 @@ if (-not $stage.StartsWith($outputRoot + [System.IO.Path]::DirectorySeparatorCha
 [System.IO.Directory]::CreateDirectory($stage) | Out-Null
 
 try {
+    $mainSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "cmd\desktop\main.go")
+    $versionMatch = [regex]::Match($mainSource, 'const appVersion = "([0-9]+)\.([0-9]+)\.([0-9]+)"')
+    if (-not $versionMatch.Success) { throw "Could not read appVersion from cmd/desktop/main.go" }
+    $windres = Get-Command windres.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($windres)) { throw "windres.exe is required to add the NEVR icon and version metadata" }
     $programs = @(
         @{ Name = "nevr-desktop.exe"; Package = "./cmd/desktop" },
         @{ Name = "nevr-ac.exe";      Package = "./cmd/anticheat" },
@@ -29,6 +36,13 @@ try {
     )
     Push-Location $repoRoot
     try {
+        & $windres -I . `
+            "-DNEVR_VERSION_MAJOR=$($versionMatch.Groups[1].Value)" `
+            "-DNEVR_VERSION_MINOR=$($versionMatch.Groups[2].Value)" `
+            "-DNEVR_VERSION_PATCH=$($versionMatch.Groups[3].Value)" `
+            "packaging\nevr-version.rc" -O coff -o "cmd\desktop\resource_windows_amd64.syso"
+        if ($LASTEXITCODE -ne 0) { throw "windres failed while creating desktop version metadata" }
+
         $revision = (& git rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
         $buildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -74,5 +88,8 @@ try {
 finally {
     if (Test-Path -LiteralPath $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $resourcePath) {
+        Remove-Item -LiteralPath $resourcePath -Force
     }
 }

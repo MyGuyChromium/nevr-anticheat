@@ -30,11 +30,29 @@ func applyActiveProfile(engine *replay.Engine) {
 		engine.Logger().Warn("could not decode active detector profile", "profile", profile.Name, "error", err)
 		return
 	}
+	promotions, promotionErr := engine.Store().ListDetectorPromotions(context.Background())
+	approvedID := ""
+	approvalValid := promotionErr == nil
+	for _, promotion := range promotions {
+		if promotion.Status != sqlite.PromotionActive || promotion.ProfileName != profile.Name {
+			continue
+		}
+		if approvedID != "" || promotion.ConfigFingerprint != shortHash([]byte(profile.DetectorsJSON)) {
+			approvalValid = false
+			break
+		}
+		approvedID = promotion.DetectorID
+	}
+	approvalValid = approvalValid && approvedID != ""
 	for id, detector := range detectors {
-		// The desktop remains evidence-only regardless of imported profile data.
-		detector.Mode = "shadow"
+		// Review mode is honored only for the one detector/profile approved by
+		// the promotion gate. Imported and hand-saved profiles fail closed.
+		approved := approvalValid && id == approvedID
+		if detector.Mode != "review" || !approved {
+			detector.Mode = "shadow"
+			detector.EnforcementWeight = 0
+		}
 		detector.AutoEnforce = false
-		detector.EnforcementWeight = 0
 		detectors[id] = detector
 	}
 	candidate := cloneConfig(engine.Config())
@@ -68,6 +86,7 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 		Levels    any `json:"levels"`
 	}{engine.Config().EffectiveTable(), engine.Physics(), engine.Levels()})
 	fingerprint := shortHash(data)
+	calibrationConfigFingerprint := calibrationFingerprint(engine.Config())
 	perMatchWall := wall.Milliseconds() / int64(len(results))
 	for _, result := range results {
 		if result == nil || result.Result == nil || result.MatchCtx == nil || result.PersistError() != nil {
@@ -76,7 +95,7 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 		quality := result.Result.TelemetryQuality
 		_, err := engine.Store().StoreAnalysisRun(ctx, sqlite.AnalysisRun{
 			MatchID: result.MatchCtx.MatchID, Source: strings.TrimSpace(source), AppVersion: appVersion,
-			BuildCommit: buildCommit, ConfigFingerprint: fingerprint, ProfileName: profileName,
+			BuildCommit: buildCommit, ConfigFingerprint: fingerprint, CalibrationFingerprint: calibrationConfigFingerprint, ProfileName: profileName,
 			TelemetryQuality: quality.Score, QualityGrade: quality.Grade, QualityGated: quality.Gated,
 			WallMilliseconds: perMatchWall, PipelineMilliseconds: result.Result.Duration.Milliseconds(),
 			FramesProcessed: result.Frames, EventsProduced: len(result.Result.DetectionEvents),
@@ -85,6 +104,35 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 			engine.Logger().Warn("could not record analysis provenance", "match_id", result.MatchCtx.MatchID, "error", err)
 		}
 	}
+}
+
+// calibrationFingerprint identifies settings that can change detector output
+// while deliberately excluding score/review posture. Moving an unchanged
+// threshold from shadow to review therefore does not invalidate its evidence.
+func calibrationFingerprint(cfg *config.Config) string {
+	type behaviorParam struct {
+		Key   string `json:"key"`
+		Value any    `json:"value"`
+	}
+	type behaviorDetector struct {
+		ID      string          `json:"id"`
+		Enabled bool            `json:"enabled"`
+		Params  []behaviorParam `json:"params"`
+	}
+	detectors := make([]behaviorDetector, 0, len(cfg.Detectors))
+	for _, row := range cfg.EffectiveTable() {
+		item := behaviorDetector{ID: row.ID, Enabled: row.Enabled, Params: make([]behaviorParam, 0, len(row.Params))}
+		for _, param := range row.Params {
+			item.Params = append(item.Params, behaviorParam{Key: param.Key, Value: param.Value})
+		}
+		detectors = append(detectors, item)
+	}
+	data, _ := json.Marshal(struct {
+		Physics   any                   `json:"physics"`
+		Pipeline  config.PipelineConfig `json:"pipeline"`
+		Detectors []behaviorDetector    `json:"detectors"`
+	}{cfg.Physics.Constants(), cfg.Pipeline, detectors})
+	return shortHash(data)
 }
 
 func shortHash(data []byte) string {

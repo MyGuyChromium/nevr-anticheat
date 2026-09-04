@@ -110,21 +110,22 @@ func (s *Store) DeleteInvestigationNote(ctx context.Context, noteID string) (boo
 // AnalysisRun records detector/config provenance and coarse performance for
 // one match analysis. It contains no raw telemetry.
 type AnalysisRun struct {
-	RunID                int64     `json:"run_id"`
-	MatchID              string    `json:"match_id"`
-	Source               string    `json:"source"`
-	AppVersion           string    `json:"app_version"`
-	BuildCommit          string    `json:"build_commit"`
-	ConfigFingerprint    string    `json:"config_fingerprint"`
-	ProfileName          string    `json:"profile_name,omitempty"`
-	TelemetryQuality     float64   `json:"telemetry_quality"`
-	QualityGrade         string    `json:"quality_grade"`
-	QualityGated         bool      `json:"quality_gated"`
-	WallMilliseconds     int64     `json:"wall_milliseconds"`
-	PipelineMilliseconds int64     `json:"pipeline_milliseconds"`
-	FramesProcessed      int       `json:"frames_processed"`
-	EventsProduced       int       `json:"events_produced"`
-	CreatedAt            time.Time `json:"created_at"`
+	RunID                  int64     `json:"run_id"`
+	MatchID                string    `json:"match_id"`
+	Source                 string    `json:"source"`
+	AppVersion             string    `json:"app_version"`
+	BuildCommit            string    `json:"build_commit"`
+	ConfigFingerprint      string    `json:"config_fingerprint"`
+	CalibrationFingerprint string    `json:"calibration_fingerprint"`
+	ProfileName            string    `json:"profile_name,omitempty"`
+	TelemetryQuality       float64   `json:"telemetry_quality"`
+	QualityGrade           string    `json:"quality_grade"`
+	QualityGated           bool      `json:"quality_gated"`
+	WallMilliseconds       int64     `json:"wall_milliseconds"`
+	PipelineMilliseconds   int64     `json:"pipeline_milliseconds"`
+	FramesProcessed        int       `json:"frames_processed"`
+	EventsProduced         int       `json:"events_produced"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 func (s *Store) StoreAnalysisRun(ctx context.Context, run AnalysisRun) (AnalysisRun, error) {
@@ -133,11 +134,11 @@ func (s *Store) StoreAnalysisRun(ctx context.Context, run AnalysisRun) (Analysis
 	}
 	run.CreatedAt = nowUTC()
 	res, err := s.db.ExecContext(ctx, `INSERT INTO analysis_runs
-		(match_id, source, app_version, build_commit, config_fingerprint, profile_name,
+		(match_id, source, app_version, build_commit, config_fingerprint, calibration_fingerprint, profile_name,
 		 telemetry_quality, quality_grade, quality_gated, wall_milliseconds,
 		 pipeline_milliseconds, frames_processed, events_produced, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.MatchID, run.Source, run.AppVersion, run.BuildCommit, run.ConfigFingerprint, run.ProfileName,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.MatchID, run.Source, run.AppVersion, run.BuildCommit, run.ConfigFingerprint, run.CalibrationFingerprint, run.ProfileName,
 		run.TelemetryQuality, run.QualityGrade, run.QualityGated, run.WallMilliseconds,
 		run.PipelineMilliseconds, run.FramesProcessed, run.EventsProduced, fmtDBTime(run.CreatedAt))
 	if err != nil {
@@ -147,7 +148,7 @@ func (s *Store) StoreAnalysisRun(ctx context.Context, run AnalysisRun) (Analysis
 	return run, nil
 }
 
-const analysisRunColumns = `run_id, match_id, source, app_version, build_commit, config_fingerprint,
+const analysisRunColumns = `run_id, match_id, source, app_version, build_commit, config_fingerprint, calibration_fingerprint,
 	profile_name, telemetry_quality, quality_grade, quality_gated, wall_milliseconds,
 	pipeline_milliseconds, frames_processed, events_produced, created_at`
 
@@ -156,7 +157,7 @@ func scanAnalysisRun(row rowScanner) (AnalysisRun, error) {
 	var gated int
 	var created string
 	err := row.Scan(&out.RunID, &out.MatchID, &out.Source, &out.AppVersion, &out.BuildCommit,
-		&out.ConfigFingerprint, &out.ProfileName, &out.TelemetryQuality, &out.QualityGrade,
+		&out.ConfigFingerprint, &out.CalibrationFingerprint, &out.ProfileName, &out.TelemetryQuality, &out.QualityGrade,
 		&gated, &out.WallMilliseconds, &out.PipelineMilliseconds, &out.FramesProcessed,
 		&out.EventsProduced, &created)
 	out.QualityGated, out.CreatedAt = gated != 0, parseDBTimeLenient(created)
@@ -354,13 +355,18 @@ func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error
 	if review.ReviewedAt.IsZero() {
 		review.ReviewedAt = nowUTC()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO event_reviews (`+eventReviewColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	blind := 0
+	if review.BlindReview {
+		blind = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO event_reviews (`+eventReviewColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_id) DO UPDATE SET verdict=excluded.verdict, comment=excluded.comment,
-		reviewer_id=excluded.reviewer_id, reviewed_at=excluded.reviewed_at`,
+		reviewer_id=excluded.reviewer_id, reviewed_at=excluded.reviewed_at,
+		blind_review=excluded.blind_review`,
 		review.EventID, review.MatchID, review.PlayerID, review.DetectorID, review.DetectorVersion,
 		review.FrameIndex, review.Timestamp, review.Severity, review.Confidence, review.ObservedValue,
 		review.ExpectedRange, review.EvidenceType, review.EvidenceJSON, review.Verdict,
-		review.Comment, review.ReviewerID, fmtDBTime(review.ReviewedAt))
+		review.Comment, review.ReviewerID, fmtDBTime(review.ReviewedAt), blind)
 	return err
 }
 

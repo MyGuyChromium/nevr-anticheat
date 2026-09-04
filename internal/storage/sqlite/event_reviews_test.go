@@ -21,6 +21,10 @@ func TestEventReviews_RoundTripUpdateAndCalibration(t *testing.T) {
 	if review.Verdict != "no" || review.Comment != "legal headbutt" || review.DetectorVersion != "2.1.0" || review.FrameIndex != 42 || review.ReviewedAt.IsZero() {
 		t.Fatalf("stored review = %+v", review)
 	}
+	review, err = s.StoreEventReviewWithBlind(ctx, ev.EventID, "no", "reviewed before reveal", "owner", true)
+	if err != nil || !review.BlindReview {
+		t.Fatalf("blind review = %+v, %v", review, err)
+	}
 
 	review, err = s.StoreEventReview(ctx, ev.EventID, "yes", "confirmed on replay", "")
 	if err != nil || review.ReviewerID != "local-owner" {

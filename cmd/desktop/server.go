@@ -71,6 +71,14 @@ func newServer(engine *replay.Engine, token string) *server {
 		engine: engine, token: token, mux: http.NewServeMux(), quit: make(chan struct{}),
 		clipDir: defaultReplayClipDir(), launchReplay: launchSparkReplayViewer,
 	}
+	if dashboard, err := s.buildCalibrationDashboard(context.Background(), nil); err != nil {
+		rolledBack := s.rollBackAllPromotions(context.Background())
+		if len(rolledBack) > 0 {
+			engine.Logger().Warn("calibration could not be verified; active promotions were returned to shadow", "detectors", rolledBack, "error", err)
+		}
+	} else {
+		s.reconcilePromotions(context.Background(), dashboard)
+	}
 	s.runtime = newDesktopRuntime(engine, s.quit)
 	s.runtime.analyzeMu = &s.analyzeMu
 	p := "/" + token
@@ -84,6 +92,13 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/lab/thresholds/preview", s.handleThresholdPreview)
 	s.mux.HandleFunc("POST "+p+"/api/lab/experiments", s.handleExperimentMatrix)
 	s.mux.HandleFunc("GET "+p+"/api/lab/validation", s.handleValidationDashboard)
+	s.mux.HandleFunc("GET "+p+"/api/calibration/opportunities", s.handleCalibrationOpportunities)
+	s.mux.HandleFunc("POST "+p+"/api/calibration/opportunities", s.handleStoreCalibrationOpportunity)
+	s.mux.HandleFunc("DELETE "+p+"/api/calibration/opportunities/{id}", s.handleDeleteCalibrationOpportunity)
+	s.mux.HandleFunc("GET "+p+"/api/lab/promotions", s.handlePromotions)
+	s.mux.HandleFunc("POST "+p+"/api/lab/candidate", s.handleStoreThresholdCandidate)
+	s.mux.HandleFunc("POST "+p+"/api/lab/promotions/{detector}", s.handlePromoteDetector)
+	s.mux.HandleFunc("POST "+p+"/api/lab/promotions/{detector}/rollback", s.handleRollbackDetector)
 	s.mux.HandleFunc("GET "+p+"/api/lab/synthetic", s.handleSyntheticProbes)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/checkpoint", s.handleCheckpoint)
@@ -211,6 +226,7 @@ type eventView struct {
 	MergedCount     int     `json:"merged_count"`
 	ReviewVerdict   string  `json:"review_verdict,omitempty"`
 	ReviewComment   string  `json:"review_comment,omitempty"`
+	BlindReview     bool    `json:"blind_review,omitempty"`
 	ReviewedAt      string  `json:"reviewed_at,omitempty"`
 }
 
@@ -494,6 +510,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 		if review, ok := d.eventReviews[ev.EventID]; ok {
 			evView.ReviewVerdict = review.Verdict
 			evView.ReviewComment = review.Comment
+			evView.BlindReview = review.BlindReview
 			evView.ReviewedAt = fmtTime(review.ReviewedAt)
 		}
 		v.Events = append(v.Events, evView)
@@ -1390,16 +1407,17 @@ func (s *server) handleClearClips(w http.ResponseWriter, _ *http.Request) {
 
 func (s *server) handleEventReview(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Verdict    string `json:"verdict"`
-		Comment    string `json:"comment"`
-		ReviewerID string `json:"reviewer_id"`
+		Verdict     string `json:"verdict"`
+		Comment     string `json:"comment"`
+		ReviewerID  string `json:"reviewer_id"`
+		BlindReview bool   `json:"blind_review"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid review: %v", err)
 		return
 	}
-	review, err := s.engine.Store().StoreEventReview(r.Context(), r.PathValue("id"), body.Verdict, body.Comment, body.ReviewerID)
+	review, err := s.engine.Store().StoreEventReviewWithBlind(r.Context(), r.PathValue("id"), body.Verdict, body.Comment, body.ReviewerID, body.BlindReview)
 	if errors.Is(err, sqlite.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "%v", err)
 		return
@@ -1408,6 +1426,7 @@ func (s *server) handleEventReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
+	s.reconcileCalibrationChange(r.Context())
 	writeJSON(w, http.StatusOK, review)
 }
 
