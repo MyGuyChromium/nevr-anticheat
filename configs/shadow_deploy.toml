@@ -77,8 +77,8 @@ auto_enforce       = false
 mode               = "shadow"
 
 [detector.MOV_006]
-# Keep the normally scored walking detector observation-only in this explicit
-# all-shadow deployment profile.
+# Physical translation is observation-only; feet/guardian origin are absent,
+# so the replay cannot prove walking rather than a legal lean.
 enabled            = true
 enforcement_weight = 0.75
 auto_enforce       = false

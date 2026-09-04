@@ -17,7 +17,10 @@ import (
 // so a player translating fast with a body-stationary hand can legitimately
 // read a large angle. The detector therefore requires the hand to move faster
 // than the body and scales confidence by how much of the hand motion cannot
-// be explained by body motion. The 177 degree threshold itself is UNVERIFIED.
+// be explained by body motion. A first free-disc sample that is closer to the
+// head than either controller is also skipped: it may contain a headbutt
+// between replay samples rather than the original hand-release vector. The
+// 177 degree threshold itself is UNVERIFIED.
 type Throw003 struct {
 	detect.BaseDetector
 	maxAngleDev   float64
@@ -28,7 +31,7 @@ type Throw003 struct {
 func NewThrow003(params map[string]any) *Throw003 {
 	return &Throw003{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_003", DetectorVersion: "1.2.0",
+			DetectorID: "THROW_003", DetectorVersion: "1.3.0",
 			DetectorName: "Unnatural Release Angle", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
 		},
@@ -55,6 +58,9 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
+			continue
+		}
+		if t.PossibleHeadContact {
 			continue
 		}
 		if t.HandSpeed < d.minHandSpeed || t.ReleaseSpeed < d.minThrowSpeed {

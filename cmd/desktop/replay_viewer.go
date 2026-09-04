@@ -228,7 +228,11 @@ func launchSparkReplayViewer(clipPath string) (string, error) {
 			}
 			command = resolved
 		}
-		cmd := exec.Command(command, clipPath)
+		var args []string
+		if strings.TrimSpace(clipPath) != "" {
+			args = append(args, clipPath)
+		}
+		cmd := exec.Command(command, args...)
 		if filepath.IsAbs(command) {
 			cmd.Dir = filepath.Dir(command)
 		}

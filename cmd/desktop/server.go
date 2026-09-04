@@ -15,11 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/evidence"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
@@ -64,6 +66,8 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
+	s.mux.HandleFunc("POST "+p+"/api/replay-viewer", s.handleReplayViewer)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/replay/frame/{frame}", s.handleReplayFrame)
 	s.mux.HandleFunc("POST "+p+"/api/match/{id}/replay/{event}", s.handleReplayClip)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/evidence/{player}", s.handleMatchEvidence)
 	s.mux.HandleFunc("GET "+p+"/api/case/{id}/evidence", s.handleCaseEvidence)
@@ -122,6 +126,7 @@ type playerView struct {
 type eventView struct {
 	EventID         string  `json:"event_id"`
 	DetectorID      string  `json:"detector_id"`
+	DetectorName    string  `json:"detector_name"`
 	DetectorVersion string  `json:"detector_version"`
 	PlayerID        string  `json:"player_id"`
 	PlayerName      string  `json:"player_name"`
@@ -375,9 +380,14 @@ func (s *server) buildMatchView(d matchData) matchView {
 		return a.DetectorID < b.DetectorID
 	})
 	for _, ev := range events {
+		detectorName := ev.DetectorID
+		if spec, ok := config.DetectorSpecFor(ev.DetectorID); ok {
+			detectorName = spec.Name
+		}
 		v.Events = append(v.Events, eventView{
 			EventID:         ev.EventID,
 			DetectorID:      ev.DetectorID,
+			DetectorName:    detectorName,
 			DetectorVersion: ev.DetectorVersion,
 			PlayerID:        ev.PlayerID,
 			PlayerName:      nameOf(mc, ev.PlayerID),
@@ -1167,6 +1177,19 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(sum.PlayersCSV())
 }
 
+func (s *server) handleReplayViewer(w http.ResponseWriter, _ *http.Request) {
+	viewer, err := s.launchReplay("")
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "Opened Spark Replay Viewer",
+		"viewer":  viewer,
+	})
+}
+
 func (s *server) handleReplayClip(w http.ResponseWriter, r *http.Request) {
 	matchID, eventID := r.PathValue("id"), r.PathValue("event")
 	events, err := s.engine.Store().GetMatchEvents(r.Context(), matchID)
@@ -1185,7 +1208,23 @@ func (s *server) handleReplayClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no detection event %q in match %q", eventID, matchID)
 		return
 	}
-	clip, err := buildSparkReplayClip(r.Context(), s.engine.Store(), s.clipDir, *event)
+	s.openReplayClip(w, r, *event)
+}
+
+func (s *server) handleReplayFrame(w http.ResponseWriter, r *http.Request) {
+	frame, err := strconv.Atoi(r.PathValue("frame"))
+	if err != nil || frame < 0 {
+		writeError(w, http.StatusBadRequest, "invalid replay frame %q", r.PathValue("frame"))
+		return
+	}
+	s.openReplayClip(w, r, model.DetectionEvent{
+		MatchID: r.PathValue("id"), DetectorID: "THROW_LOG", FrameIndex: frame,
+		FrameRangeStart: frame, FrameRangeEnd: frame,
+	})
+}
+
+func (s *server) openReplayClip(w http.ResponseWriter, r *http.Request, event model.DetectionEvent) {
+	clip, err := buildSparkReplayClip(r.Context(), s.engine.Store(), s.clipDir, event)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, errRawReplayUnavailable) {

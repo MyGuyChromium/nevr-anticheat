@@ -25,10 +25,9 @@
 #
 # VALIDATION STATUS
 #   No detector has been validated against labelled real Echo VR telemetry.
-#   Every threshold still needs calibration. All detectors except MOV_006
-#   ship in shadow mode. MOV_006 is a scored review signal because physical
-#   playspace walking is treated as cheating, but it cannot auto-enforce. Use
-#   configs/shadow_deploy.toml when every detector must be observation-only.
+#   Every threshold still needs calibration. All detectors ship in shadow
+#   mode, so observations cannot affect scores or cases until explicitly
+#   promoted after labelled-data review.
 
 # =============================================================================
 # General
@@ -375,19 +374,20 @@ sigmoid_steepness     = 0.5
 [detector.MOV_006]
 # Physical Playspace Walking. EchoTools-grounded: subtracts Echo VR's raw
 # player.velocity from tracked rig motion, separating room-scale steps from
-# ordinary locomotion and stacking. This is a scored review signal (not
-# shadow), but never auto-enforces because deliberate lunges and tracking
-# corrections still require a moderator to inspect the generated replay clip.
+# ordinary locomotion and stacking. Feet/guardian origin are unavailable, so
+# a legal lean or lunge cannot be excluded automatically. Strict gates reduce
+# noise, but this remains a shadow-only review candidate.
 enabled            = true
 enforcement_weight = 0.75
 auto_enforce       = false
-mode               = "review"
+mode               = "shadow"
 [detector.MOV_006.params]
-min_playspace_speed    = 0.8    # m/s game-velocity-subtracted rig speed
-min_playspace_distance = 0.25   # m accumulated room-scale displacement
-min_rig_coherence      = 0.35   # head/hand translation agreement [0,1]
-min_sustained_frames   = 3      # consecutive qualifying frames
-max_ping_ms            = 250.0  # skip less trustworthy samples above this latency; 0 disables
+min_playspace_speed    = 1.0    # m/s game-velocity-subtracted rig speed
+min_playspace_distance = 0.55   # m accumulated room-scale displacement
+min_rig_coherence      = 0.65   # head/hand translation agreement [0,1]
+min_sustained_frames   = 5      # minimum consecutive qualifying samples
+min_sustained_seconds  = 0.3    # real elapsed duration; avoids tick-rate-dependent bursts
+max_ping_ms            = 150.0  # skip less trustworthy samples above this latency; 0 disables
 
 # ----------------------------------------------------------------------------- state
 

@@ -34,6 +34,14 @@ const (
 	// preReleaseSnapshotCount is how many frames before a release are captured.
 	preReleaseSnapshotCount = 5
 
+	// A sampled release can contain a headbutt that happened between the last
+	// held-disc tick and the first free-disc tick. When the disc is within this
+	// combined head/disc/tracking envelope and materially closer to the head
+	// than either controller, its velocity cannot safely be treated as the
+	// throwing hand's release vector.
+	headContactDistanceM    = 0.42
+	headContactCloserMargin = 0.08
+
 	// goalDirectedMaxDeviationDeg: a throw deviating more than this from the
 	// chosen goal is not goal-directed (ThrowEvent.TargetPosition stays nil).
 	goalDirectedMaxDeviationDeg = 30.0
@@ -395,7 +403,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	if prevHasDisc && !ps.HasDisc && !firstFrame && dtKnown && !largeGap && matchCtx.IsActivePhase(frame.GamePhase) {
 		possessionFrames := frame.FrameIndex - ps.PossessionStartFrame
 		if possessionFrames >= 2 {
-			fe.detectThrow(ps, frame, matchCtx, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
+			fe.detectThrow(ps, frame, matchCtx, prevPos, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
 		}
 	}
 
@@ -712,6 +720,7 @@ func (fe *FeatureExtractor) detectThrow(
 	ps *model.PlayerState,
 	frame *model.PlayerTelemetryFrame,
 	matchCtx *model.MatchContext,
+	prevHead model.Vec3,
 	prevLeftHand, prevRightHand model.Vec3,
 	prevLeftHandRot, prevRightHandRot model.Quat,
 ) {
@@ -748,6 +757,13 @@ func (fe *FeatureExtractor) detectThrow(
 	handAnchor, handAnchorName, anchorQuality := fe.throwHandAnchor(ps.PlayerID, releasePos)
 	throwingHand, handPos, handToDiscDist, handAttributionConfidence :=
 		selectThrowingHand(prevLeftHand, prevRightHand, handAnchor, anchorQuality)
+	releaseHandDist := nearestTrackedHandDistance(releasePos, frame.LeftHandPosition, frame.RightHandPosition)
+	headDist := releasePos.Distance(ps.Position)
+	if !prevHead.IsZero() {
+		headDist = math.Min(headDist, releasePos.Distance(prevHead))
+	}
+	possibleHeadContact := headDist <= headContactDistanceM && releaseHandDist >= 0 &&
+		headDist+headContactCloserMargin < releaseHandDist
 
 	var handVel, handRelativeVel model.Vec3
 	var handSpeed, handRelativeSpeed, wristAngVel float64
@@ -838,6 +854,9 @@ func (fe *FeatureExtractor) detectThrow(
 		PlayerPosition:            ps.Position,
 		PlayerVelocity:            ps.Velocity,
 		HandToDiscDistance:        handToDiscDist,
+		ReleaseHandToDiscDistance: releaseHandDist,
+		HeadToDiscDistance:        headDist,
+		PossibleHeadContact:       possibleHeadContact,
 		ReleaseAngle:              releaseAngle,
 		GoalPosition:              goalPos,
 		GoalSelection:             goalSelection,
@@ -850,4 +869,20 @@ func (fe *FeatureExtractor) detectThrow(
 	ps.LastThrow = &throw
 	ps.ThrowHistory = append(ps.ThrowHistory, throw)
 	ps.ThrowCount++
+}
+
+// nearestTrackedHandDistance returns -1 when neither controller is tracked.
+// A zero position is the telemetry contract's tracking-loss sentinel.
+func nearestTrackedHandDistance(point, left, right model.Vec3) float64 {
+	distance := -1.0
+	if !left.IsZero() {
+		distance = point.Distance(left)
+	}
+	if !right.IsZero() {
+		rightDistance := point.Distance(right)
+		if distance < 0 || rightDistance < distance {
+			distance = rightDistance
+		}
+	}
+	return distance
 }

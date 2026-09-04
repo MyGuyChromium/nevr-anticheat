@@ -12,9 +12,10 @@ to expose it: the desktop app listens only on 127.0.0.1 (this computer).
 
 SPARK REPLAY VIEWER
 
-Detection rows have an Open clip button. It creates a short .echoreplay around
-the exact detector frame and launches Spark Replay Viewer. In Spark, open its
-Replay Viewer once first so Spark installs:
+Detection rows have an Open clip button and every throw-log row has an Open
+throw button. They create a short .echoreplay around the exact frame and launch
+Spark Replay Viewer. The desktop header can also open the viewer without a
+clip. In Spark, open its Replay Viewer once first so Spark installs:
 
   Documents\Replay Viewer\Replay Viewer.exe
 

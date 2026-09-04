@@ -145,7 +145,7 @@ func TestMov006_CoherentPhysicalWalkFiresOncePerBurst(t *testing.T) {
 		ps.PlayspaceValid = true
 		ps.PlayspaceTrackedHands = 2
 		ps.PlayspaceSpeed = 1.4
-		ps.PlayspaceDistance = 0.4
+		ps.PlayspaceDistance = 0.7
 		ps.PlayspaceRigCoherence = 0.95
 		ps.ReportedVelocity = model.Vec3{0, 0, 2}
 		ps.Speed = 3.4
@@ -158,7 +158,7 @@ func TestMov006_CoherentPhysicalWalkFiresOncePerBurst(t *testing.T) {
 		t.Errorf("event = %+v", event)
 	}
 	metrics := events[0].Evidence.(model.MovementEvidence).Metrics
-	if metrics["tracked_hands"] != 2 || metrics["reported_game_speed"] != 2 || metrics["sustained_frames"] != 3 {
+	if metrics["tracked_hands"] != 2 || metrics["reported_game_speed"] != 2 || metrics["sustained_frames"] != 6 || metrics["sustained_seconds"] < 0.3 {
 		t.Errorf("metrics = %v", metrics)
 	}
 
@@ -166,14 +166,38 @@ func TestMov006_CoherentPhysicalWalkFiresOncePerBurst(t *testing.T) {
 	// reviewable incident rather than being suppressed for the whole match.
 	clean := active("p1", 8)
 	d.Evaluate(mc, players(clean), 8)
-	for fi := 9; fi < 12; fi++ {
+	for fi := 9; fi < 16; fi++ {
 		ps := active("p1", fi)
 		ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 1
-		ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1, 0.3, 0.8
+		ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.6, 0.8
 		events = append(events, d.Evaluate(mc, players(ps), fi)...)
 	}
 	if len(events) != 2 {
 		t.Fatalf("second walk burst not emitted: %d events", len(events))
+	}
+}
+
+func TestMov006_LegalLeanAndShortBurstAreSilent(t *testing.T) {
+	tests := []struct {
+		name     string
+		frames   int
+		distance float64
+	}{
+		{name: "ordinary lean stays inside displacement gate", frames: 12, distance: 0.45},
+		{name: "quick lunge stays inside duration gate", frames: 4, distance: 0.7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewMov006(nil)
+			for fi := 0; fi < tt.frames; fi++ {
+				ps := active("p1", fi)
+				ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 2
+				ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.4, tt.distance, 0.95
+				if events := d.Evaluate(ctx(), players(ps), fi); len(events) != 0 {
+					t.Fatalf("legal movement emitted at frame %d: %+v", fi, events)
+				}
+			}
+		})
 	}
 }
 
@@ -195,7 +219,7 @@ func TestMov006_StackingAndUnreliableTrackingAreSilent(t *testing.T) {
 			for fi := 0; fi < 6; fi++ {
 				ps := active("p1", fi)
 				ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 2
-				ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.4, 0.9
+				ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.7, 0.9
 				tt.alter(ps)
 				if events := d.Evaluate(ctx(), players(ps), fi); len(events) != 0 {
 					t.Fatalf("unexpected event at frame %d: %+v", fi, events)

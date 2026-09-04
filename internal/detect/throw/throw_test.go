@@ -372,6 +372,13 @@ func TestThrow003_BodyMotionGuard(t *testing.T) {
 	if len(ev) != 1 || !near(ev[0].Confidence, events[0].Confidence*0.5, 1e-9) {
 		t.Fatalf("hand-attribution confidence was not propagated: %+v", ev)
 	}
+
+	// A low-rate replay can first show the free disc after it has already hit
+	// the player's head. That velocity is not a wrist-release vector.
+	players["p1"].LastThrow.PossibleHeadContact = true
+	if ev := d.Evaluate(mc, players, 100); len(ev) != 0 {
+		t.Fatalf("possible headbutt produced release-angle evidence: %+v", ev)
+	}
 }
 
 // ---- THROW_004 ----

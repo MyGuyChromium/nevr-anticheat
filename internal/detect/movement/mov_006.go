@@ -15,15 +15,17 @@ import (
 // remains in PlayspaceVelocity. At least one tracked hand must translate with
 // the head so an isolated pose glitch or controller swing cannot trigger it.
 //
-// The detector is scored as cheating but never auto-enforces: replay review is
-// still required because deliberate lunging and tracking corrections can look
-// similar without labelled raw calibration data.
+// Replay telemetry has no feet or guardian origin, so it cannot prove that a
+// residual came from walking rather than a legal lean/lunge. The shipped
+// configuration therefore keeps this detector in shadow mode and uses strict
+// displacement, duration and coherence gates for review candidates only.
 type Mov006 struct {
 	detect.BaseDetector
 	minPlayspaceSpeed    float64
 	minPlayspaceDistance float64
 	minRigCoherence      float64
 	minSustainedFrames   int
+	minSustainedSeconds  float64
 	maxPingMs            float64
 
 	bursts map[string]*playspaceBurst
@@ -31,6 +33,7 @@ type Mov006 struct {
 
 type playspaceBurst struct {
 	startFrame    int
+	startTime     float64
 	frames        int
 	maxSpeed      float64
 	maxDistance   float64
@@ -45,7 +48,7 @@ func NewMov006(params map[string]any) *Mov006 {
 	d := &Mov006{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_006",
-			DetectorVersion:  "1.0.0",
+			DetectorVersion:  "1.1.0",
 			DetectorName:     "Physical Playspace Walking",
 			DetectorCategory: "movement",
 			Inputs:           []string{"position", "reported_velocity", "lhand.pos", "rhand.pos"},
@@ -53,11 +56,12 @@ func NewMov006(params map[string]any) *Mov006 {
 			Weight:           0.75,
 			IsAutoEnforce:    false,
 		},
-		minPlayspaceSpeed:    detect.GetFloat(params, "min_playspace_speed", 0.8),
-		minPlayspaceDistance: detect.GetFloat(params, "min_playspace_distance", 0.25),
-		minRigCoherence:      detect.GetFloat(params, "min_rig_coherence", 0.35),
-		minSustainedFrames:   detect.GetInt(params, "min_sustained_frames", 3),
-		maxPingMs:            detect.GetFloat(params, "max_ping_ms", 250),
+		minPlayspaceSpeed:    detect.GetFloat(params, "min_playspace_speed", 1.0),
+		minPlayspaceDistance: detect.GetFloat(params, "min_playspace_distance", 0.55),
+		minRigCoherence:      detect.GetFloat(params, "min_rig_coherence", 0.65),
+		minSustainedFrames:   detect.GetInt(params, "min_sustained_frames", 5),
+		minSustainedSeconds:  detect.GetFloat(params, "min_sustained_seconds", 0.3),
+		maxPingMs:            detect.GetFloat(params, "max_ping_ms", 150),
 	}
 	d.sanitize()
 	d.Reset()
@@ -75,6 +79,9 @@ func (d *Mov006) sanitize() {
 	if d.minSustainedFrames < 2 {
 		d.minSustainedFrames = 2
 	}
+	if d.minSustainedSeconds < 0.1 {
+		d.minSustainedSeconds = 0.1
+	}
 	if d.maxPingMs < 0 {
 		d.maxPingMs = 0
 	}
@@ -87,6 +94,7 @@ func (d *Mov006) Configure(params map[string]any) error {
 	d.minPlayspaceDistance = detect.GetFloat(params, "min_playspace_distance", d.minPlayspaceDistance)
 	d.minRigCoherence = detect.GetFloat(params, "min_rig_coherence", d.minRigCoherence)
 	d.minSustainedFrames = detect.GetInt(params, "min_sustained_frames", d.minSustainedFrames)
+	d.minSustainedSeconds = detect.GetFloat(params, "min_sustained_seconds", d.minSustainedSeconds)
 	d.maxPingMs = detect.GetFloat(params, "max_ping_ms", d.maxPingMs)
 	d.sanitize()
 	return nil
@@ -110,7 +118,7 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 		burst := d.bursts[pid]
 		if burst == nil {
-			burst = &playspaceBurst{startFrame: frameIdx, minCoherence: ps.PlayspaceRigCoherence}
+			burst = &playspaceBurst{startFrame: frameIdx, startTime: ps.LastTimestamp, minCoherence: ps.PlayspaceRigCoherence}
 			d.bursts[pid] = burst
 		}
 		burst.frames++
@@ -125,7 +133,11 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		}
 		burst.reportedSpeed = ps.ReportedVelocity.Magnitude()
 		burst.poseSpeed = ps.Speed
-		if burst.frames < d.minSustainedFrames || burst.emitted {
+		duration := ps.LastTimestamp - burst.startTime
+		if duration < 0 {
+			duration = 0
+		}
+		if burst.frames < d.minSustainedFrames || duration < d.minSustainedSeconds || burst.emitted {
 			continue
 		}
 		burst.emitted = true
@@ -153,14 +165,15 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			"reported_game_speed":    burst.reportedSpeed,
 			"derived_pose_speed":     burst.poseSpeed,
 			"sustained_frames":       float64(burst.frames),
+			"sustained_seconds":      duration,
 			"estimated_ping_ms":      ps.EstimatedPingMs,
 		}
 		events = append(events, d.MakeEvent(
 			matchCtx, pid, frameIdx, ps.LastTimestamp, severity, confidence,
 			model.MovementEvidence{DetectorSpecific: "physical_playspace_walking", Metrics: metrics},
-			fmt.Sprintf("playspace step: %.2f m at %.2f m/s for %d frames (game velocity %.2f m/s)",
-				burst.maxDistance, burst.maxSpeed, burst.frames, burst.reportedSpeed),
-			fmt.Sprintf("playspace movement below %.2f m or %.2f m/s", d.minPlayspaceDistance, d.minPlayspaceSpeed),
+			fmt.Sprintf("playspace translation candidate: %.2f m at %.2f m/s for %.2f s / %d frames (game velocity %.2f m/s)",
+				burst.maxDistance, burst.maxSpeed, duration, burst.frames, burst.reportedSpeed),
+			fmt.Sprintf("playspace movement below %.2f m, %.2f m/s, or %.2f s", d.minPlayspaceDistance, d.minPlayspaceSpeed, d.minSustainedSeconds),
 			model.CausalKey{PlayerID: pid, FrameStart: burst.startFrame, FrameEnd: frameIdx, AnomalyType: "playspace_walking"},
 		))
 	}
