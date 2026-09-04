@@ -26,7 +26,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.2.0"
+const appVersion = "0.3.0"
 
 func main() {
 	configPath := flag.String("config", "", "Path to TOML config file (default: built-in defaults, database next to the executable)")

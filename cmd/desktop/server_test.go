@@ -610,7 +610,7 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(raw)
-	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by cheat", "data-replay-frame", "data-throw-scroll", "Spark replay", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Health &amp; maintenance", "Back up database"} {
+	for _, marker := range []string{"Every movement.", "LOCAL ENGINE", "offline-banner", "Full match report", "Player statistics", "Scoring timeline", "Throw log", "cap-breach", "Download JSON", "Export player CSV", "Open clip", "Open replay viewer", "Filter by cheat", "data-replay-frame", "data-throw-scroll", "Spark replay", "Diagnostic ZIP", "Physics inspector", "Telemetry &amp; schema health", "Calibration library", "Archive + remove active raw", "Detector observations", "scan a folder", "Cancel queue", "Detector verdict", "History filters", "Health &amp; maintenance", "Back up database"} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}

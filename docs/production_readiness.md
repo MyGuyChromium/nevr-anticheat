@@ -117,7 +117,7 @@ Unknown mapping points that only real data can settle: hand-basis handedness, di
 ## 5. Why This Could Still Fail in Production
 
 ### Telemetry drift
-Echo VR's API has changed between versions. A renamed or removed field makes the ingestion layer emit zero-valued data, and detectors go silent (false negatives) or fire on garbage (false positives). `nevr-compat --strict` and the bridge manifest (`errors_count`, `warnings_count`, `mapped_frames`) are the only schema checks; they are manual.
+Echo VR's API has changed between versions. A renamed or removed field makes the ingestion layer emit zero-valued data, and detectors go silent (false negatives) or fire on garbage (false positives). `nevr-compat --strict` and the bridge manifest (`errors_count`, `warnings_count`, `mapped_frames`) remain the pre-deployment checks. The desktop app now also evaluates stored raw ticks automatically when a match is analyzed or reopened and surfaces required fields that are missing, intermittent, invalid, or always inactive plus previously unknown JSON keys. These warnings never change scores; they stop a reviewer from treating incompatible source data as detector evidence.
 
 ### Coordinate space
 Y-up is confirmed from real replays (X ±5 m, Y −4..+7 m, Z ±77 m, goals at Z ≈ ±36.078). Handedness of the direction-vector bases is handled either way but unconfirmed (see §3).

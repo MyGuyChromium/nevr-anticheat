@@ -128,6 +128,27 @@
   .review-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
   .review-buttons .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
   .review-note { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; max-width: 30ch; }
+  .match-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0; padding: 14px; border: 1px solid var(--line); background: var(--panel); }
+  .match-tools .label { color: var(--muted); font: 10px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; margin-right: 4px; }
+  .match-tools .selected { border-color: var(--accent); color: #fff; background: var(--accent-bg); }
+  .match-tools .storage-note { width: 100%; color: var(--muted); font-size: 11px; margin: 2px 0 0; }
+  .health-list { margin: 12px 0 0; padding-left: 20px; }
+  .health-list li { margin: 5px 0; }
+  .health-list .error { color: var(--bad); } .health-list .warning { color: var(--warn); } .health-list .info { color: var(--muted); }
+  .action-stack { display: flex; flex-wrap: wrap; gap: 5px; min-width: 250px; }
+  dialog { width: min(1240px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line-2); color: var(--ink); background: #07111e; box-shadow: 0 40px 120px rgba(0,0,0,.72); }
+  dialog::backdrop { background: rgba(0,5,12,.8); backdrop-filter: blur(7px); }
+  .inspector-head { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: rgba(7,17,30,.96); }
+  .inspector-head h2 { margin: 0; font: 20px/1.2 var(--mono); letter-spacing: -.03em; }
+  .inspector-body { padding: 22px; overflow: auto; }
+  .inspector-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-bottom: 20px; }
+  .inspector-grid div { padding: 13px; border: 1px solid var(--line); background: var(--panel); }
+  .inspector-grid span { display: block; color: var(--muted); font: 9px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .inspector-grid b { display: block; margin-top: 6px; }
+  .physics-table { overflow: auto; max-height: 48vh; border: 1px solid var(--line); }
+  .physics-table table { min-width: 1120px; }
+  .physics-table tr.focus td { background: var(--accent-bg); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+  .signal-list { max-width: 280px; color: var(--muted); font-size: 10px; }
 
   /* tables */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -151,6 +172,8 @@
   }
   .tag { background: var(--neutral-bg); color: var(--ink-2); }
   .tag.bad { background: var(--bad-bg); color: var(--bad); }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.warn { background: var(--warn-bg); color: var(--warn); }
   .team-blue { color: var(--blue); background: var(--blue-bg); }
   .team-orange { color: var(--orange); background: var(--orange-bg); }
   .team-none { color: var(--muted); background: var(--neutral-bg); }
@@ -275,6 +298,7 @@
     .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
   @media (max-width: 620px) { .team-grid, .health-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) { .inspector-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
   @media (prefers-reduced-motion: reduce) {
     *, ::before, ::after { transition: none !important; animation: none !important; }
     .bar.wait > i { width: 100%; opacity: .45; }
@@ -528,12 +552,18 @@
     <h2 id="h-observations">Detector observations</h2>
     <div id="observations" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div><div class="sk" style="width:54%"></div></div>
   </section>
+  <section class="block" aria-labelledby="h-calibration">
+    <div class="section-kicker"><span>05</span> Ground-truth coverage</div>
+    <h2 id="h-calibration">Calibration library</h2>
+    <div id="calibration" class="panel skeleton" aria-busy="true"><div class="sk" style="width:62%"></div><div class="sk" style="width:44%"></div></div>
+  </section>
   <section class="block" aria-labelledby="h-history">
-    <div class="section-kicker"><span>05</span> Preserved evidence</div>
+    <div class="section-kicker"><span>06</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
     <div class="filters" aria-label="History filters">
       <input id="history-search" type="search" placeholder="Search match, file, player, map…" aria-label="Search history">
       <select id="history-detector" aria-label="Filter history by detector"><option value="">All detectors</option></select>
+      <select id="history-label" aria-label="Filter history by calibration label"><option value="">All replay labels</option><option value="unlabeled">Unlabeled</option><option value="known_clean">Known clean</option><option value="suspected">Suspected</option><option value="confirmed_cheat">Confirmed cheat</option></select>
       <select id="history-sort" aria-label="Sort history"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
       <label class="check-inline"><input id="history-flagged" type="checkbox"> Flagged only</label>
       <span id="history-count" class="history-count"></span>
@@ -541,11 +571,15 @@
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-system">
-    <div class="section-kicker"><span>06</span> Local system</div>
+    <div class="section-kicker"><span>07</span> Local system</div>
     <h2 id="h-system">Health &amp; maintenance</h2>
     <div id="health" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div></div>
   </section>
 </main>
+<dialog id="physics-dialog" aria-labelledby="physics-title">
+  <div class="inspector-head"><h2 id="physics-title">Physics inspector</h2><button id="close-physics" class="btn">Close</button></div>
+  <div id="physics-content" class="inspector-body"></div>
+</dialog>
 
 <script>
 (() => {
@@ -615,6 +649,7 @@
   $('history-search').value = prefs.historySearch || '';
   $('history-sort').value = prefs.historySort || 'newest';
   $('history-flagged').checked = !!prefs.historyFlagged;
+  $('history-label').value = prefs.historyLabel || '';
   $('force').addEventListener('change', () => { prefs.force = $('force').checked; savePrefs(); });
 
   const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
@@ -766,10 +801,12 @@
     }
     return `<div class="throw-log"><div class="throw-tools"><span class="scroll-label">Scrollable throw log · ${fmtInt(throws.length)} releases</span><span class="scroll-actions">
       <button class="btn btn-sm" data-throw-scroll="top">First throw</button><button class="btn btn-sm" data-throw-scroll="bottom">Last throw</button></span></div>
-      <div class="throw-table" tabindex="0" aria-label="Scrollable throw log"><table><thead><tr><th>Clock</th><th>Player</th><th>Team</th><th class="num">Speed</th><th>Result</th><th class="num">Frame</th><th>Spark replay</th></tr></thead><tbody>` +
+      <div class="throw-table" tabindex="0" aria-label="Scrollable throw log"><table><thead><tr><th>Clock</th><th>Player</th><th>Team</th><th class="num">Speed</th><th>Result</th><th class="num">Frame</th><th>Investigation / Spark replay</th></tr></thead><tbody>` +
       throws.map((th) => `<tr class="${discSpeedCap > 0 && th.speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
         <td class="num">${speedCell(th.speed, discSpeedCap)}</td><td>${th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'}</td><td class="num dim">${fmtInt(th.frame_index)}</td>
-        <td><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}">Open throw</button></td></tr>`).join('') +
+        <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}">Open throw</button>
+        <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}" data-physics-player="${esc(th.player_id)}">Inspect physics</button>
+        <a class="btn btn-sm" href="api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(th.frame_index) ? th.frame_index : 0}?player=${encodeURIComponent(th.player_id || '')}">Diagnostic ZIP</a></span></td></tr>`).join('') +
       `</tbody></table></div></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}. Speeds above the ${fmtNum(discSpeedCap, 1)} m/s engine cap are marked for review; the player-relative breakdown is stored with THROW_001 evidence. A throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
   }
 
@@ -803,7 +840,9 @@
       <td class="num">${meter(e.confidence)}</td>
       <td class="wide">${esc(e.observed_value) || '<span class="muted">—</span>'}</td><td class="wide dim">${esc(e.expected_range) || '—'}</td>
       <td class="review-cell">${reviewControls(e)}</td>
-      <td><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button></td></tr>`).join('');
+      <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
+      <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>
+      <a class="btn btn-sm" href="api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}">Diagnostic ZIP</a></span></td></tr>`).join('');
   }
 
   function eventsTable(m, idx, all, detectorID = '') {
@@ -815,7 +854,7 @@
     const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="10">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
     return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
-      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Detector verdict</th><th>Spark replay</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>
+      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Detector verdict</th><th>Investigation</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>
       <p class="summary-note">“Correct” means the detector observation is valid; “False positive” means the play was legal. These labels feed local calibration and never punish a player.</p>`;
   }
 
@@ -846,6 +885,28 @@
     </dl><pre>${esc(d.report)}</pre>`;
   }
 
+  function labelName(label) {
+    return ({ known_clean: 'Known clean', suspected: 'Suspected', confirmed_cheat: 'Confirmed cheat' })[label] || 'Unlabeled';
+  }
+
+  function calibrationControls(m) {
+    const button = (value) => `<button class="btn btn-sm ${m.calibration_label === value ? 'selected' : ''}" data-label-match="${esc(m.match_id)}" data-label="${value}">${esc(labelName(value))}</button>`;
+    const st = m.storage || {};
+    return `<div class="match-tools" data-match-tools="${esc(m.match_id)}"><span class="label">Replay ground truth</span>${button('known_clean')}${button('suspected')}${button('confirmed_cheat')}
+      <button class="btn btn-sm" data-label-note="${esc(m.match_id)}">Label note</button><span class="spacer"></span>
+      <button class="btn btn-sm" data-archive-match="${esc(m.match_id)}">Archive raw</button><button class="btn btn-sm" data-prune-match="${esc(m.match_id)}">Archive + remove active raw</button><button class="btn btn-sm" data-restore-match="${esc(m.match_id)}">Restore raw</button>
+      <p class="storage-note">${m.calibration_label ? `Label: ${esc(labelName(m.calibration_label))}${m.calibration_comment ? ` · ${esc(m.calibration_comment)}` : ''}. ` : 'Replay is not labeled yet. '}${fmtInt(st.raw_ticks || 0)} raw ticks (${fmtBytes(st.raw_tick_bytes || 0)}) and ${fmtInt(st.normalized_frames || 0)} normalized player-frames. Pruning first writes and verifies a restorable full-fidelity ZIP; archives retain player identities and should stay private. Freed SQLite pages become reusable, but the DB file may not immediately shrink.</p></div>`;
+  }
+
+  function telemetryHealthBlock(m) {
+    const h = m.telemetry_health;
+    if (!h) return '<p class="empty">No raw source ticks are active for this match. Restore an archive to run schema checks and raw-vs-derived inspection.</p>';
+    const tone = h.status === 'healthy' ? 'ok' : h.status === 'warning' ? 'warn' : 'bad';
+    const findings = (h.warnings || []).length ? `<ul class="health-list">${h.warnings.map((w) => `<li class="${esc(w.level)}"><span class="mono">${esc(w.code)}</span> — ${esc(w.message)}</li>`).join('')}</ul>` : '<p class="summary-note">All required fields were available and no mapping-quality warning was found.</p>';
+    return `<p><span class="tag ${tone}">${esc(h.status)}</span> <span class="muted">${fmtInt(h.snapshots)} raw snapshots checked automatically</span></p>${findings}
+      <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector compatibility</h3></summary><pre>${esc(h.compatibility || '')}</pre></details>`;
+  }
+
   function matchSection(m, source) {
     const idx = views.push(m) - 1;
     viewState[idx] = { detector: '', all: false };
@@ -869,6 +930,7 @@
         ${score}
       </summary>
       ${notices}
+      ${calibrationControls(m)}
       ${matchReport(m)}
       <section class="assessment" data-assessment="${idx}">
         <div class="assessment-head"><h3>Anticheat assessment</h3>${assessmentFilter(m, idx)}</div>
@@ -876,6 +938,7 @@
         <details class="sub" ${m.events.length ? 'open' : ''}><summary><span class="tog" aria-hidden="true"></span><h3>Detections<span class="count" data-detection-count>${fmtInt(m.events.length)}</span></h3></summary><div class="events">${eventsTable(m, idx, false)}</div></details>
       </section>
       <h3>Review cases<span class="count">${fmtInt(m.cases.length)}</span></h3>${casesList(m)}
+      <details class="sub" open><summary><span class="tog" aria-hidden="true"></span><h3>Telemetry &amp; schema health</h3></summary><div>${telemetryHealthBlock(m)}</div></details>
       <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Adapter diagnostics</h3></summary><div>${diagBlock(m)}</div></details>
       <p class="foot">Analyzed ${timeAgo(m.analyzed_at)}${sep}${fmtInt(m.frames_processed)} ticks, ${fmtInt(m.player_frames)} player-frames, ${fmtInt(m.invalid_frames)} invalid${tel}</p>
     </details>`;
@@ -1088,15 +1151,35 @@
     } catch (e) { panelError(el, 'the detector observations', e); }
   }
 
+  async function loadCalibration() {
+    const el = $('calibration');
+    try {
+      const c = await getJSON('api/calibration');
+      el.className = ''; el.removeAttribute('aria-busy');
+      const labels = c.match_labels || {};
+      const cards = `<div class="health-grid">
+        <div class="health-card"><span>Known clean</span><b>${fmtInt(labels.known_clean || 0)}</b><small class="muted">replays</small></div>
+        <div class="health-card"><span>Suspected</span><b>${fmtInt(labels.suspected || 0)}</b><small class="muted">replays</small></div>
+        <div class="health-card"><span>Confirmed cheat</span><b>${fmtInt(labels.confirmed_cheat || 0)}</b><small class="muted">replays</small></div>
+        <div class="health-card"><span>Still unlabeled</span><b>${fmtInt(c.unlabeled_matches || 0)}</b><small class="muted">of ${fmtInt(c.stored_matches || 0)} stored</small></div></div>`;
+      const detectors = c.detectors || [];
+      const table = detectors.length ? `<h3>Detector ground truth<span class="count">${fmtInt(detectors.length)} detectors</span></h3><table><thead><tr><th>Detector</th><th class="num">Correct</th><th class="num">False +</th><th class="num">Unsure</th><th class="num">Labels</th><th class="num">Precision</th></tr></thead><tbody>${detectors.map((d) => `<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(d.confirmed)}</td><td class="num">${fmtInt(d.false_positive)}</td><td class="num">${fmtInt((d.inconclusive || 0) + (d.needs_more_data || 0))}</td><td class="num">${fmtInt(d.direct_labels)}</td><td class="num">${d.has_precision ? `${fmtNum(d.precision * 100, 1)}%` : '<span class="muted">not enough data</span>'}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No detector observation has been labeled yet. Open a match and mark individual detections Correct, False positive, or Unsure.</p>';
+      el.innerHTML = cards + table + `<p class="summary-note warning">${esc(c.notice)}</p>`;
+    } catch (e) { panelError(el, 'the calibration library', e); }
+  }
+
   let historyMatches = [];
   function renderHistory() {
     const el = $('history');
     const query = $('history-search').value.trim().toLowerCase();
     const detector = $('history-detector').value;
+    const label = $('history-label').value;
     const flagged = $('history-flagged').checked;
     const oldest = $('history-sort').value === 'oldest';
     const rows = historyMatches.filter((m) => {
       if (detector && !(m.detector_ids || []).includes(detector)) return false;
+      if (label === 'unlabeled' && m.calibration_label) return false;
+      if (label && label !== 'unlabeled' && m.calibration_label !== label) return false;
       if (flagged && !m.flagged) return false;
       if (!query) return true;
       return [m.match_id, m.source_file, m.source, m.game_mode, m.map, ...(m.players || []).flatMap((p) => [p.name, p.player_id])].join(' ').toLowerCase().includes(query);
@@ -1116,7 +1199,7 @@
           <td>${esc(m.game_mode) || '<span class="muted">—</span>'}${m.map ? `<br><span class="muted">${esc(m.map)}</span>` : ''}</td>
           <td class="num">${esc(fmtStart(m.start_time))}</td><td class="num">${fmtDur(m.duration_seconds)}</td>
           <td>${m.players.map((p) => `<span style="color:var(--${p.team === 'orange' ? 'orange' : p.team === 'blue' ? 'blue' : 'muted'})">${esc(p.name || p.player_id)}</span>`).join(', ') || '<span class="muted">—</span>'}</td>
-          <td>${m.flagged ? '<span class="tag bad">flagged</span> ' : ''}${m.event_count ? `<span class="mono">${fmtInt(m.event_count)}</span> <span class="muted">events</span>` : '<span class="muted">clean</span>'}</td>
+          <td>${m.calibration_label ? `<span class="tag ${m.calibration_label === 'known_clean' ? 'ok' : m.calibration_label === 'suspected' ? 'warn' : 'bad'}">${esc(labelName(m.calibration_label))}</span> ` : ''}${m.flagged ? '<span class="tag bad">flagged</span> ' : ''}${m.event_count ? `<span class="mono">${fmtInt(m.event_count)}</span> <span class="muted">events</span>` : '<span class="muted">clean</span>'}</td>
           <td>${timeAgo(m.analyzed_at)}</td>
           <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">Open</button></td></tr>`).join('') + '</tbody></table>';
   }
@@ -1134,10 +1217,10 @@
     } catch (e) { panelError(el, 'the history', e); }
   }
 
-  ['history-search', 'history-detector', 'history-sort', 'history-flagged'].forEach((id) => {
+  ['history-search', 'history-detector', 'history-label', 'history-sort', 'history-flagged'].forEach((id) => {
     $(id).addEventListener(id === 'history-search' ? 'input' : 'change', () => {
       prefs.historySearch = $('history-search').value; prefs.historyDetector = $('history-detector').value;
-      prefs.historySort = $('history-sort').value; prefs.historyFlagged = $('history-flagged').checked; savePrefs(); renderHistory();
+      prefs.historyLabel = $('history-label').value; prefs.historySort = $('history-sort').value; prefs.historyFlagged = $('history-flagged').checked; savePrefs(); renderHistory();
     });
   });
 
@@ -1149,15 +1232,50 @@
       el.innerHTML = `<div class="health-grid">
         <div class="health-card"><span>Desktop</span><b>v${esc(h.version)}</b><small class="muted">schema ${fmtInt(h.schema_version)}</small></div>
         <div class="health-card"><span>Evidence store</span><b>${fmtInt(h.stored_matches)} matches</b><small class="muted">${fmtBytes(h.database_bytes)}</small></div>
-        <div class="health-card"><span>Detector labels</span><b>${fmtInt(h.direct_label_count)}</b><small class="muted">saved locally</small></div>
+        <div class="health-card"><span>Calibration library</span><b>${fmtInt(h.calibration_matches)} replays</b><small class="muted">${fmtInt(h.direct_label_count)} detector labels</small></div>
         <div class="health-card"><span>Spark Replay Viewer</span><b style="color:var(--${h.spark_installed ? 'ok' : 'warn'})">${h.spark_installed ? 'Ready' : 'Not found'}</b><small class="muted">${h.spark_installed ? esc(h.spark_path) : 'Open Spark once or set NEVR_REPLAY_VIEWER'}</small></div>
         <div class="health-card"><span>Replay clips</span><b>${fmtInt(h.clip_files)} files</b><small class="muted">${fmtBytes(h.clip_bytes)}</small></div>
+        <div class="health-card"><span>Raw telemetry</span><b>${fmtInt(h.raw_ticks)} ticks</b><small class="muted">${fmtBytes(h.raw_tick_bytes)}</small></div>
+        <div class="health-card"><span>Normalized cache</span><b>${fmtInt(h.normalized_frames)} frames</b><small class="muted">${fmtBytes(h.normalized_bytes)}</small></div>
+        <div class="health-card"><span>Raw archives</span><b>${fmtInt(h.archive_files)} files</b><small class="muted">${fmtBytes(h.archive_bytes)}</small></div>
         <div class="health-card"><span>Physics guardrail</span><b>${fmtNum(h.disc_speed_cap, 1)} m/s</b><small class="muted">maximum disc speed</small></div>
       </div>
-      <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span></p>
+      <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span><br><strong>Archives:</strong> <span class="mono">${esc(h.archive_directory)}</span></p>
       <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
     } catch (e) { panelError(el, 'system health', e); }
   }
+
+  const fmtVec = (v) => Array.isArray(v) ? `[${v.map((n) => fmtNum(Number(n), 2)).join(', ')}]` : '—';
+  function renderPhysics(p) {
+    const event = p.event ? `<div><span>Detector</span><b class="mono">${esc(p.event.detector_id)} v${esc(p.event.detector_version)}</b></div>` : '<div><span>Incident</span><b>Throw / selected frame</b></div>';
+    const health = p.telemetry_health ? `<span class="tag ${p.telemetry_health.status === 'healthy' ? 'ok' : p.telemetry_health.status === 'warning' ? 'warn' : 'bad'}">${esc(p.telemetry_health.status)}</span>` : '<span class="tag warn">raw unavailable</span>';
+    const rows = (p.frames || []).map((f) => { const d = f.derived || {}, a = f.independent_audit || {}, src = f.source || {}, disc = src.disc || {}; return `<tr class="${f.focus ? 'focus' : ''}">
+      <td class="num mono">${fmtInt(f.frame_index)}</td><td class="num mono">${fmtClock(f.timestamp)}</td><td>${esc(f.contact_classification)}</td>
+      <td class="num">${fmtNum(d.speed, 2)}</td><td class="num">${d.has_reported_velocity ? fmtNum(d.reported_speed, 2) : '—'}</td><td class="num">${d.playspace_valid ? fmtNum(d.playspace_speed, 2) : '—'}</td>
+      <td class="num">${fmtNum(d.acceleration_magnitude, 1)}</td><td class="num">${fmtNum(d.left_hand_relative_speed, 2)} / ${fmtNum(d.right_hand_relative_speed, 2)}</td><td class="num">${a.valid ? fmtNum(a.extractor_velocity_delta, 6) : '—'}</td>
+      <td class="num">${disc.speed !== undefined ? fmtNum(disc.speed, 2) : '—'}</td><td class="mono">${esc(d.movement_origin || 'unavailable')}</td><td class="signal-list">${(f.signals || []).map(esc).join('<br>')}</td></tr>`; }).join('');
+    const raw = p.raw_tick_present ? `<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Original focus tick</h3></summary><pre>${esc(JSON.stringify(p.raw_focus_tick, null, 2))}</pre></details>` : '<p class="notice bad">The original raw focus tick is not active. Normalized values remain available; restore the match archive for full raw inspection.</p>';
+    const evidence = p.event ? `<dl class="kv"><dt>Observed</dt><dd>${esc(p.event.observed_value || '—')}</dd><dt>Expected</dt><dd>${esc(p.event.expected_range || '—')}</dd><dt>Confidence</dt><dd>${fmtNum(p.event.confidence, 2)}</dd></dl><details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector evidence</h3></summary><pre>${esc(JSON.stringify(p.event.evidence || {}, null, 2))}</pre></details>` : '';
+    return `<div class="inspector-grid"><div><span>Match</span><b class="mono">${esc(p.match_id)}</b></div><div><span>Player</span><b>${esc(p.player_name || p.player_id)}</b></div><div><span>Focus frame</span><b class="mono">${fmtInt(p.focus_frame)}</b></div>${event}<div><span>Telemetry</span><b>${health}</b></div><div><span>Disc cap</span><b>${fmtNum(p.disc_speed_cap, 1)} m/s</b></div></div>
+      ${evidence}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th><th>Signals</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${raw}<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(p.limitations || []).map((x) => `<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
+  }
+
+  async function openPhysics(button) {
+    const dialog = $('physics-dialog'), content = $('physics-content');
+    const label = button.textContent; button.disabled = true; button.textContent = 'Loading…';
+    try {
+      const match = encodeURIComponent(button.dataset.physicsMatch);
+      const url = button.dataset.physicsEvent ? `api/match/${match}/physics/event/${encodeURIComponent(button.dataset.physicsEvent)}` : `api/match/${match}/physics/frame/${encodeURIComponent(button.dataset.physicsFrame)}?player=${encodeURIComponent(button.dataset.physicsPlayer || '')}`;
+      content.innerHTML = '<p class="status">Recomputing frame-level physics…</p>';
+      if (!dialog.open) dialog.showModal();
+      content.innerHTML = renderPhysics(await getJSON(url));
+    } catch (err) { content.innerHTML = `<p class="notice bad">Physics inspection failed: ${esc(err.message)}</p>`; }
+    finally { button.disabled = false; button.textContent = label; }
+  }
+
+  $('close-physics').addEventListener('click', () => $('physics-dialog').close());
+  $('physics-dialog').addEventListener('click', (e) => { if (e.target === $('physics-dialog')) $('physics-dialog').close(); });
 
   document.addEventListener('change', (e) => {
     const select = e.target.closest('select[data-cheat-filter]');
@@ -1176,6 +1294,60 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const physics = e.target.closest('button[data-physics-event], button[data-physics-frame]');
+    if (physics) { await openPhysics(physics); return; }
+
+    const labelButton = e.target.closest('button[data-label-match], button[data-label-note]');
+    if (labelButton) {
+      const matchID = labelButton.dataset.labelMatch || labelButton.dataset.labelNote;
+      const view = views.find((item) => item.match_id === matchID);
+      if (!view) return;
+      let label = labelButton.dataset.label || view.calibration_label;
+      let comment = view.calibration_comment || '';
+      if (labelButton.dataset.labelNote) {
+        if (!label) { setStatus('Choose a replay ground-truth label before adding a note.', 'err'); return; }
+        const entered = prompt('Calibration note (who verified it, what clip or behavior matters):', comment);
+        if (entered === null) return;
+        comment = entered;
+      }
+      labelButton.disabled = true;
+      try {
+        const saved = await postJSON(`api/match/${encodeURIComponent(matchID)}/label`, { label, comment });
+        for (const item of views) if (item.match_id === matchID) { item.calibration_label = saved.label; item.calibration_comment = saved.comment; item.calibration_reviewed_at = saved.reviewed_at; }
+        for (const item of historyMatches) if (item.match_id === matchID) { item.calibration_label = saved.label; item.calibration_comment = saved.comment; }
+        document.querySelectorAll(`[data-match-tools="${CSS.escape(matchID)}"]`).forEach((tool) => { tool.outerHTML = calibrationControls(view); });
+        setStatus(`Saved ${labelName(saved.label)} replay label.`, 'ok');
+        renderHistory(); loadCalibration(); loadHealth();
+      } catch (err) { setStatus(`Could not save replay label: ${err.message}`, 'err'); }
+      finally { labelButton.disabled = false; }
+      return;
+    }
+
+    const storageAction = e.target.closest('button[data-archive-match], button[data-prune-match], button[data-restore-match]');
+    if (storageAction) {
+      const matchID = storageAction.dataset.archiveMatch || storageAction.dataset.pruneMatch || storageAction.dataset.restoreMatch;
+      const prune = !!storageAction.dataset.pruneMatch;
+      const restore = !!storageAction.dataset.restoreMatch;
+      let payload;
+      if (prune) {
+        const typed = prompt(`This writes and verifies a full raw archive, then removes only raw ticks for this match from the active database. Normalized evidence stays available.\n\nType the exact match ID to continue:\n${matchID}`);
+        if (typed !== matchID) { if (typed !== null) setStatus('Match ID did not match; nothing was changed.', 'err'); return; }
+        payload = { prune_raw: true, confirmation: typed };
+      } else if (restore) {
+        if (!confirm(`Restore raw source ticks for ${matchID} from its newest verified archive?`)) return;
+        payload = {};
+      } else if (!confirm(`Create and verify a full-fidelity raw telemetry archive for ${matchID}? The database will remain unchanged.`)) return;
+      const old = storageAction.textContent; storageAction.disabled = true; storageAction.textContent = 'Working…';
+      try {
+        const endpoint = restore ? 'restore-raw' : 'archive';
+        const result = await postJSON(`api/match/${encodeURIComponent(matchID)}/${endpoint}`, payload);
+        setStatus(result.message || 'Storage action completed.', 'ok');
+        loadHealth();
+      } catch (err) { setStatus(`Storage action failed: ${err.message}`, 'err'); }
+      finally { storageAction.disabled = false; storageAction.textContent = old; }
+      return;
+    }
+
     const maintenance = e.target.closest('#backup-db, #open-data, #clear-clips');
     if (maintenance) {
       if (maintenance.id === 'clear-clips' && !confirm('Delete generated replay clips? Original replays and the anticheat database are not affected.')) return;
@@ -1344,7 +1516,7 @@
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
 
-  function refreshPanels() { loadFlagged(); loadObservations(); loadHistory(); loadHealth(); }
+  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadHealth(); }
   refreshPanels();
   setInterval(probeConnection, 5000);
 })();

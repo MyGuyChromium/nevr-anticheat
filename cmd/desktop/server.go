@@ -68,6 +68,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
+	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/open-data-folder", s.handleOpenDataFolder)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/clear-clips", s.handleClearClips)
@@ -75,7 +76,14 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
 	s.mux.HandleFunc("GET "+p+"/api/matches", s.handleMatches)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}", s.handleMatch)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/label", s.handleMatchLabel)
 	s.mux.HandleFunc("POST "+p+"/api/event/{id}/review", s.handleEventReview)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/physics/frame/{frame}", s.handlePhysicsFrame)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/physics/event/{event}", s.handlePhysicsEvent)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/diagnostic/frame/{frame}", s.handleDiagnosticFrame)
+	s.mux.HandleFunc("GET "+p+"/api/match/{id}/diagnostic/event/{event}", s.handleDiagnosticEvent)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/archive", s.handleArchiveMatch)
+	s.mux.HandleFunc("POST "+p+"/api/match/{id}/restore-raw", s.handleRestoreMatchRaw)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/summary.json", s.handleSummaryJSON)
 	s.mux.HandleFunc("GET "+p+"/api/match/{id}/export.csv", s.handleExportCSV)
 	s.mux.HandleFunc("POST "+p+"/api/replay-viewer", s.handleReplayViewer)
@@ -203,34 +211,49 @@ type diagView struct {
 	Report                  string         `json:"report"`
 }
 
+type telemetryHealthView struct {
+	Status          string                              `json:"status"`
+	Snapshots       int                                 `json:"snapshots"`
+	PresenceTracked bool                                `json:"presence_tracked"`
+	Warnings        []adapter.TelemetryWarning          `json:"warnings"`
+	UnknownFields   map[string]int                      `json:"unknown_fields"`
+	FieldPresence   map[string]*adapter.FieldDiagnostic `json:"field_presence"`
+	Compatibility   string                              `json:"compatibility"`
+}
+
 type matchView struct {
-	MatchID         string               `json:"match_id"`
-	Levels          model.LevelTable     `json:"levels"`
-	DiscSpeedCap    float64              `json:"disc_speed_cap"`
-	SourceFile      string               `json:"source_file"`
-	StartTime       string               `json:"start_time"`
-	DurationSeconds float64              `json:"duration_seconds"`
-	GameMode        string               `json:"game_mode"`
-	Map             string               `json:"map"`
-	IsPrivate       bool                 `json:"is_private"`
-	Source          string               `json:"source"`
-	HasScore        bool                 `json:"has_score"`
-	BlueScore       int                  `json:"blue_score"`
-	OrangeScore     int                  `json:"orange_score"`
-	FramesProcessed int                  `json:"frames_processed"`
-	InvalidFrames   int                  `json:"invalid_frames"`
-	PlayerFrames    int                  `json:"player_frames"`
-	AnalyzedAt      string               `json:"analyzed_at"`
-	Replaced        bool                 `json:"replaced"`
-	ClearedEvents   int64                `json:"cleared_events"`
-	ClearedScores   int64                `json:"cleared_scores"`
-	Telemetry       *telemetryView       `json:"telemetry,omitempty"`
-	Players         []playerView         `json:"players"`
-	Events          []eventView          `json:"events"`
-	Cases           []caseView           `json:"cases"`
-	Diagnostics     *diagView            `json:"diagnostics,omitempty"`
-	Warnings        []string             `json:"warnings"`
-	Summary         *replay.MatchSummary `json:"summary,omitempty"`
+	MatchID               string               `json:"match_id"`
+	Levels                model.LevelTable     `json:"levels"`
+	DiscSpeedCap          float64              `json:"disc_speed_cap"`
+	SourceFile            string               `json:"source_file"`
+	StartTime             string               `json:"start_time"`
+	DurationSeconds       float64              `json:"duration_seconds"`
+	GameMode              string               `json:"game_mode"`
+	Map                   string               `json:"map"`
+	IsPrivate             bool                 `json:"is_private"`
+	Source                string               `json:"source"`
+	HasScore              bool                 `json:"has_score"`
+	BlueScore             int                  `json:"blue_score"`
+	OrangeScore           int                  `json:"orange_score"`
+	FramesProcessed       int                  `json:"frames_processed"`
+	InvalidFrames         int                  `json:"invalid_frames"`
+	PlayerFrames          int                  `json:"player_frames"`
+	AnalyzedAt            string               `json:"analyzed_at"`
+	Replaced              bool                 `json:"replaced"`
+	ClearedEvents         int64                `json:"cleared_events"`
+	ClearedScores         int64                `json:"cleared_scores"`
+	Telemetry             *telemetryView       `json:"telemetry,omitempty"`
+	Players               []playerView         `json:"players"`
+	Events                []eventView          `json:"events"`
+	Cases                 []caseView           `json:"cases"`
+	Diagnostics           *diagView            `json:"diagnostics,omitempty"`
+	TelemetryHealth       *telemetryHealthView `json:"telemetry_health,omitempty"`
+	CalibrationLabel      string               `json:"calibration_label,omitempty"`
+	CalibrationComment    string               `json:"calibration_comment,omitempty"`
+	CalibrationReviewedAt string               `json:"calibration_reviewed_at,omitempty"`
+	Storage               *sqlite.StorageStats `json:"storage,omitempty"`
+	Warnings              []string             `json:"warnings"`
+	Summary               *replay.MatchSummary `json:"summary,omitempty"`
 }
 
 // matchData is what a match view is built from, whether the match was just
@@ -486,8 +509,30 @@ func diagnosticsView(diag *adapter.DiagnosticReport) *diagView {
 	return v
 }
 
+func telemetryHealth(diag *adapter.DiagnosticReport) *telemetryHealthView {
+	if diag == nil {
+		return nil
+	}
+	warnings := diag.HealthWarnings()
+	status := "healthy"
+	for _, warning := range warnings {
+		if warning.Level == "error" {
+			status = "incompatible"
+			break
+		}
+		if warning.Level == "warning" {
+			status = "warning"
+		}
+	}
+	return &telemetryHealthView{
+		Status: status, Snapshots: diag.Snapshots, PresenceTracked: diag.PresenceTracked,
+		Warnings: warnings, UnknownFields: diag.UnknownFields, FieldPresence: diag.FieldPresence,
+		Compatibility: diag.CompatibilityReport(),
+	}
+}
+
 // freshMatchView renders what AnalyzeFileAll just produced for one match.
-func (s *server) freshMatchView(res *replay.AnalyzeResult, sourceFile string) matchView {
+func (s *server) freshMatchView(ctx context.Context, res *replay.AnalyzeResult, sourceFile string) matchView {
 	v := s.buildMatchView(matchData{
 		ctx:             res.MatchCtx,
 		sourceFile:      sourceFile,
@@ -510,6 +555,8 @@ func (s *server) freshMatchView(res *replay.AnalyzeResult, sourceFile string) ma
 		TicksIgnored:   res.Telemetry.TicksIgnored,
 	}
 	v.Diagnostics = diagnosticsView(res.Diagnostics)
+	v.TelemetryHealth = telemetryHealth(res.Diagnostics)
+	s.decorateMatchMetadata(ctx, &v)
 	if w := res.Warnings(); len(w) > 0 {
 		v.Warnings = w
 	}
@@ -567,6 +614,11 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 		orange:          orange,
 	})
 	mv.Summary = s.loadSummary(ctx, sm.Context, scores, events)
+	diag, diagErr := storedTelemetryDiagnostics(ctx, store, matchID)
+	if diagErr == nil {
+		mv.TelemetryHealth = telemetryHealth(diag)
+	}
+	s.decorateMatchMetadata(ctx, &mv)
 	return mv, nil
 }
 
@@ -616,13 +668,13 @@ func (e *analyzeEntry) mirrorFirst() {
 }
 
 // matchEntry renders one AnalyzeFileAll result.
-func (s *server) matchEntry(res *replay.AnalyzeResult, sourceFile string) matchEntry {
+func (s *server) matchEntry(ctx context.Context, res *replay.AnalyzeResult, sourceFile string) matchEntry {
 	if res.AlreadyStored {
 		id := res.MatchCtx.MatchID
 		return matchEntry{AlreadyStored: true, MatchID: id,
 			Error: fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", id)}
 	}
-	mv := s.freshMatchView(res, sourceFile)
+	mv := s.freshMatchView(ctx, res, sourceFile)
 	return matchEntry{OK: true, MatchID: mv.MatchID, Match: &mv}
 }
 
@@ -1006,7 +1058,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		// but the explicit Cancel action can stop it at the next replay tick.
 		results, err := s.engine.AnalyzeFileAll(analysisCtx, path, force)
 		for _, res := range results {
-			entry.Matches = append(entry.Matches, s.matchEntry(res, entry.File))
+			entry.Matches = append(entry.Matches, s.matchEntry(analysisCtx, res, entry.File))
 		}
 		entry.mirrorFirst()
 		if err != nil {
@@ -1025,19 +1077,27 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 }
 
 type healthResponse struct {
-	Version          string  `json:"version"`
-	SchemaVersion    int     `json:"schema_version"`
-	DatabasePath     string  `json:"database_path"`
-	DatabaseBytes    int64   `json:"database_bytes"`
-	StoredMatches    int     `json:"stored_matches"`
-	ClipDirectory    string  `json:"clip_directory"`
-	ClipFiles        int     `json:"clip_files"`
-	ClipBytes        int64   `json:"clip_bytes"`
-	SparkInstalled   bool    `json:"spark_installed"`
-	SparkPath        string  `json:"spark_path,omitempty"`
-	DiscSpeedCap     float64 `json:"disc_speed_cap"`
-	AnalysisActive   bool    `json:"analysis_active"`
-	DirectLabelCount int     `json:"direct_label_count"`
+	Version            string  `json:"version"`
+	SchemaVersion      int     `json:"schema_version"`
+	DatabasePath       string  `json:"database_path"`
+	DatabaseBytes      int64   `json:"database_bytes"`
+	StoredMatches      int     `json:"stored_matches"`
+	ClipDirectory      string  `json:"clip_directory"`
+	ClipFiles          int     `json:"clip_files"`
+	ClipBytes          int64   `json:"clip_bytes"`
+	SparkInstalled     bool    `json:"spark_installed"`
+	SparkPath          string  `json:"spark_path,omitempty"`
+	DiscSpeedCap       float64 `json:"disc_speed_cap"`
+	AnalysisActive     bool    `json:"analysis_active"`
+	DirectLabelCount   int     `json:"direct_label_count"`
+	CalibrationMatches int     `json:"calibration_matches"`
+	RawTicks           int     `json:"raw_ticks"`
+	RawTickBytes       int64   `json:"raw_tick_bytes"`
+	NormalizedFrames   int     `json:"normalized_frames"`
+	NormalizedBytes    int64   `json:"normalized_bytes"`
+	ArchiveDirectory   string  `json:"archive_directory"`
+	ArchiveFiles       int     `json:"archive_files"`
+	ArchiveBytes       int64   `json:"archive_bytes"`
 }
 
 func directoryStats(path string) (files int, bytes int64) {
@@ -1062,6 +1122,8 @@ func (s *server) databasePath() string {
 	return path
 }
 
+func (s *server) schemaVersion() int { return sqlite.SchemaVersion() }
+
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	path := s.databasePath()
 	var dbBytes int64
@@ -1078,15 +1140,34 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "counting detector labels: %v", err)
 		return
 	}
+	labelCounts, err := s.engine.Store().MatchLabelCounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "counting calibration matches: %v", err)
+		return
+	}
+	calibrationMatches := 0
+	for _, count := range labelCounts {
+		calibrationMatches += count
+	}
+	storageStats, err := s.engine.Store().GetStorageStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "measuring telemetry storage: %v", err)
+		return
+	}
 	clipDir, _ := filepath.Abs(s.clipDir)
 	clipFiles, clipBytes := directoryStats(clipDir)
+	archiveDir, _ := filepath.Abs(s.archiveDir())
+	archiveFiles, archiveBytes := s.rawArchiveStats()
 	sparkPath, sparkErr := findSparkReplayViewer()
 	writeJSON(w, http.StatusOK, healthResponse{
 		Version: appVersion, SchemaVersion: sqlite.SchemaVersion(), DatabasePath: path,
 		DatabaseBytes: dbBytes, StoredMatches: matches, ClipDirectory: clipDir,
 		ClipFiles: clipFiles, ClipBytes: clipBytes, SparkInstalled: sparkErr == nil,
 		SparkPath: sparkPath, DiscSpeedCap: s.engine.Config().Physics.Constants().DiscSpeedCap,
-		AnalysisActive: s.analysisActive(), DirectLabelCount: labelCount,
+		AnalysisActive: s.analysisActive(), DirectLabelCount: labelCount, CalibrationMatches: calibrationMatches,
+		RawTicks: storageStats.RawTicks, RawTickBytes: storageStats.RawTickBytes,
+		NormalizedFrames: storageStats.NormalizedFrames, NormalizedBytes: storageStats.NormalizedBytes,
+		ArchiveDirectory: archiveDir, ArchiveFiles: archiveFiles, ArchiveBytes: archiveBytes,
 	})
 }
 
@@ -1292,19 +1373,21 @@ type rosterEntry struct {
 }
 
 type matchListEntry struct {
-	MatchID         string        `json:"match_id"`
-	SourceFile      string        `json:"source_file"`
-	StartTime       string        `json:"start_time"`
-	DurationSeconds float64       `json:"duration_seconds"`
-	GameMode        string        `json:"game_mode"`
-	Map             string        `json:"map"`
-	Source          string        `json:"source"`
-	FrameCount      int           `json:"frame_count"`
-	AnalyzedAt      string        `json:"analyzed_at"`
-	Players         []rosterEntry `json:"players"`
-	EventCount      int           `json:"event_count"`
-	DetectorIDs     []string      `json:"detector_ids"`
-	Flagged         bool          `json:"flagged"`
+	MatchID            string        `json:"match_id"`
+	SourceFile         string        `json:"source_file"`
+	StartTime          string        `json:"start_time"`
+	DurationSeconds    float64       `json:"duration_seconds"`
+	GameMode           string        `json:"game_mode"`
+	Map                string        `json:"map"`
+	Source             string        `json:"source"`
+	FrameCount         int           `json:"frame_count"`
+	AnalyzedAt         string        `json:"analyzed_at"`
+	Players            []rosterEntry `json:"players"`
+	EventCount         int           `json:"event_count"`
+	DetectorIDs        []string      `json:"detector_ids"`
+	Flagged            bool          `json:"flagged"`
+	CalibrationLabel   string        `json:"calibration_label,omitempty"`
+	CalibrationComment string        `json:"calibration_comment,omitempty"`
 }
 
 func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
@@ -1320,6 +1403,11 @@ func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
 	signals, err := s.engine.Store().GetMatchReviewSignals(r.Context(), matchIDs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "loading match review signals: %v", err)
+		return
+	}
+	labels, err := s.engine.Store().GetMatchLabels(r.Context(), matchIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading match calibration labels: %v", err)
 		return
 	}
 	out := make([]matchListEntry, 0, len(list))
@@ -1340,6 +1428,9 @@ func (s *server) handleMatches(w http.ResponseWriter, r *http.Request) {
 			EventCount:      signal.EventCount,
 			DetectorIDs:     signal.DetectorIDs,
 			Flagged:         signal.Flagged,
+		}
+		if label, ok := labels[mc.MatchID]; ok {
+			e.CalibrationLabel, e.CalibrationComment = label.Label, label.Comment
 		}
 		if mc.ReplayFile == "" {
 			e.SourceFile = ""

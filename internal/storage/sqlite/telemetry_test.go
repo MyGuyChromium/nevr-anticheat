@@ -84,6 +84,9 @@ func TestTelemetry_ReplaceNormalizedFramesIsAtomicAndPreservesRawTicks(t *testin
 	if ticks, err := s.GetMatchRawTicks(ctx, "M1", 0, 2); err != nil || len(ticks) != 3 || ticks[1] != raw[1] {
 		t.Fatalf("raw ticks changed: %v, %v", ticks, err)
 	}
+	if ticks, err := s.GetAllMatchRawTicks(ctx, "M1"); err != nil || len(ticks) != 3 || ticks[2] != raw[2] {
+		t.Fatalf("all raw ticks changed: %v, %v", ticks, err)
+	}
 
 	bad := append([]model.PlayerTelemetryFrame(nil), replacement...)
 	bad[1].Position[0] = math.NaN() // json.Marshal must fail after DELETE, rolling the transaction back.
