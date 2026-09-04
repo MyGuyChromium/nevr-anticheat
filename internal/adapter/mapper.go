@@ -126,6 +126,9 @@ type Mapper struct {
 	lastFingerprint uint64
 	haveFingerprint bool
 
+	lastThrow     EchoVRLastThrow
+	haveLastThrow bool
+
 	stats MapperStats
 
 	// Track which fields have been warned about (warn once per field)
@@ -168,6 +171,8 @@ func (m *Mapper) NewMatch() {
 	m.prevTimestamp = make(map[string]float64)
 	m.haveFingerprint = false
 	m.lastFingerprint = 0
+	m.lastThrow = EchoVRLastThrow{}
+	m.haveLastThrow = false
 }
 
 // SetPhysics sets the physics constants copied into every MatchContext this
@@ -227,6 +232,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 	}
 
 	timestamp, backwards := m.tickTimestamp(sampleTime, result)
+	reportedThrow := m.changedLastThrow(raw.LastThrow)
 
 	// Build ONE disc state per tick. Explicit hand-held item fields are the
 	// authoritative release signal; older sources fall back to Possession.
@@ -295,7 +301,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 				m.stats.NonMonotonicSamples++
 			}
 
-			frame, warnings, err := m.mapPlayer(player, raw, teamName, timestamp, dt, m.frameIndex, tickDisc)
+			frame, warnings, err := m.mapPlayer(player, raw, teamName, timestamp, dt, m.frameIndex, tickDisc, reportedThrow)
 			if err != nil {
 				result.Errors = append(result.Errors, *err)
 				m.stats.FramesRejected++
@@ -311,6 +317,35 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 	m.stats.Snapshots++
 	m.frameIndex++
 	return result
+}
+
+// changedLastThrow returns an engine throw record only on the snapshot where
+// it changes. The first value establishes a baseline because a replay can
+// begin after the local player has already thrown. Missing values do not
+// erase that baseline; all-zero reset records do, but are never emitted.
+func (m *Mapper) changedLastThrow(raw *EchoVRLastThrow) *model.GameThrowDetails {
+	if raw == nil {
+		return nil
+	}
+	changed := m.haveLastThrow && *raw != m.lastThrow
+	m.lastThrow = *raw
+	m.haveLastThrow = true
+	if !changed {
+		return nil
+	}
+	details := model.GameThrowDetails{
+		ArmSpeed: raw.ArmSpeed, TotalSpeed: raw.TotalSpeed,
+		OffAxisSpinDeg: raw.OffAxisSpinDeg, WristThrowPenalty: raw.WristThrowPenalty,
+		RotPerSec: raw.RotPerSec, PotentialSpeedFromRot: raw.PotentialSpeedFromRot,
+		SpeedFromArm: raw.SpeedFromArm, SpeedFromMovement: raw.SpeedFromMovement,
+		SpeedFromWrist: raw.SpeedFromWrist, WristAlignToThrowDeg: raw.WristAlignToThrowDeg,
+		ThrowAlignToMovementDeg: raw.ThrowAlignToMovementDeg,
+		OffAxisPenalty:          raw.OffAxisPenalty, ThrowMovePenalty: raw.ThrowMovePenalty,
+	}
+	if !details.Valid() {
+		return nil
+	}
+	return &details
 }
 
 // tickTimestamp converts a snapshot's sample time into the monotonic
@@ -406,6 +441,21 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 	}
 	writeF(float64(raw.BluePoints))
 	writeF(float64(raw.OrangePoints))
+	if raw.LastThrow != nil {
+		writeF(raw.LastThrow.ArmSpeed)
+		writeF(raw.LastThrow.TotalSpeed)
+		writeF(raw.LastThrow.OffAxisSpinDeg)
+		writeF(raw.LastThrow.WristThrowPenalty)
+		writeF(raw.LastThrow.RotPerSec)
+		writeF(raw.LastThrow.PotentialSpeedFromRot)
+		writeF(raw.LastThrow.SpeedFromArm)
+		writeF(raw.LastThrow.SpeedFromMovement)
+		writeF(raw.LastThrow.SpeedFromWrist)
+		writeF(raw.LastThrow.WristAlignToThrowDeg)
+		writeF(raw.LastThrow.ThrowAlignToMovementDeg)
+		writeF(raw.LastThrow.OffAxisPenalty)
+		writeF(raw.LastThrow.ThrowMovePenalty)
+	}
 	for _, team := range raw.Teams {
 		h.Write([]byte(team.TeamName))
 		writeF(float64(len(team.Players)))
@@ -512,6 +562,7 @@ func (m *Mapper) mapPlayer(
 	dt float64,
 	frameIdx int,
 	tickDisc *model.DiscState,
+	reportedThrow *model.GameThrowDetails,
 ) (*model.PlayerTelemetryFrame, []MappingWarning, *MappingError) {
 	var warnings []MappingWarning
 	pid := playerID(*p)
@@ -617,6 +668,10 @@ func (m *Mapper) mapPlayer(
 		OrangeScore:       orangeScore,
 		Goals:             goals,
 		Stuns:             stuns,
+	}
+	if reportedThrow != nil && session.ClientName != "" && p.Name == session.ClientName {
+		details := *reportedThrow
+		frame.GameLastThrow = &details
 	}
 
 	return frame, warnings, nil

@@ -855,6 +855,22 @@ func TestValidatorSanitizesPingBeforeDetectorUse(t *testing.T) {
 	}
 }
 
+func TestValidatorDropsInvalidGameLastThrow(t *testing.T) {
+	v := NewFrameValidator(testConfig("enforce"))
+	f := cleanFrame("P1", 0)
+	f.GameLastThrow = &model.GameThrowDetails{TotalSpeed: math.NaN(), SpeedFromArm: 12}
+	codes, err := v.Validate(&f, matchCtx("P1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.GameLastThrow != nil {
+		t.Fatalf("invalid engine throw survived validation: %+v", f.GameLastThrow)
+	}
+	if len(codes) != 1 || codes[0] != SanitizedGameLastThrow {
+		t.Fatalf("sanitization codes = %v, want [%s]", codes, SanitizedGameLastThrow)
+	}
+}
+
 // TestInvalidEmissionsAreDropped covers F204: a detector that bypasses
 // MakeEvent cannot push NaN severities into the scorer.
 func TestInvalidEmissionsAreDropped(t *testing.T) {

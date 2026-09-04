@@ -21,6 +21,13 @@ type ThrowEvent struct {
 	ReleasePosition Vec3    `json:"release_position"`
 	ReleaseVelocity Vec3    `json:"release_velocity"`
 	ReleaseSpeed    float64 `json:"release_speed"`
+	// SampledDiscSpeed is the magnitude reported on the disc snapshot at
+	// release. ReleaseSpeed uses the higher of this sample and the engine's
+	// last_throw.total_speed; both are retained so reviewers can compare them.
+	SampledDiscSpeed float64 `json:"sampled_disc_speed,omitempty"`
+	// GameLastThrow is the engine-authored component breakdown when this is a
+	// local-client throw and the source supplies Echo VR's last_throw object.
+	GameLastThrow *GameThrowDetails `json:"game_last_throw,omitempty"`
 
 	ThrowingHand string  `json:"throwing_hand"` // "left", "right", "unknown"
 	HandPosition Vec3    `json:"hand_position"`

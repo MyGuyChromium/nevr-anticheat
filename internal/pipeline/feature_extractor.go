@@ -628,12 +628,21 @@ func (fe *FeatureExtractor) detectThrow(
 		return
 	}
 
-	// Release speed comes from the game-reported disc velocity, never from
-	// position deltas, so it does not depend on the sampling interval.
+	// Release speed comes from game telemetry, never from position deltas, so
+	// it does not depend on the sampling interval. For local-client throws the
+	// engine's last_throw.total_speed is the authoritative value; the sampled
+	// disc magnitude is retained separately for corroboration.
 	releaseVel := disc.Velocity
-	releaseSpeed := disc.Speed
-	if releaseSpeed <= 0 {
-		releaseSpeed = releaseVel.Magnitude()
+	sampledDiscSpeed := disc.Speed
+	if sampledDiscSpeed <= 0 {
+		sampledDiscSpeed = releaseVel.Magnitude()
+	}
+	releaseSpeed := sampledDiscSpeed
+	var gameLastThrow *model.GameThrowDetails
+	if frame.GameLastThrow != nil && frame.GameLastThrow.Valid() {
+		details := *frame.GameLastThrow
+		gameLastThrow = &details
+		releaseSpeed = math.Max(releaseSpeed, details.TotalSpeed)
 	}
 	releasePos := disc.Position
 
@@ -702,17 +711,26 @@ func (fe *FeatureExtractor) detectThrow(
 		}
 	}
 
+	attribution := model.ThrowAttribution{
+		PlayerID: ps.PlayerID, Confidence: 0.9,
+		Method: "possession_track", LookbackDepth: 1,
+	}
+	if gameLastThrow != nil {
+		attribution.Confidence = 1
+		attribution.Method = "game_last_throw"
+		attribution.LookbackDepth = 0
+	}
+
 	throw := model.ThrowEvent{
-		ThrowerID: ps.PlayerID,
-		Attribution: model.ThrowAttribution{
-			PlayerID: ps.PlayerID, Confidence: 0.9,
-			Method: "possession_track", LookbackDepth: 1,
-		},
+		ThrowerID:                 ps.PlayerID,
+		Attribution:               attribution,
 		FrameIndex:                frame.FrameIndex,
 		Timestamp:                 frame.Timestamp,
 		ReleasePosition:           releasePos,
 		ReleaseVelocity:           releaseVel,
 		ReleaseSpeed:              releaseSpeed,
+		SampledDiscSpeed:          sampledDiscSpeed,
+		GameLastThrow:             gameLastThrow,
 		ThrowingHand:              throwingHand,
 		HandPosition:              handPos,
 		HandVelocity:              handVel,

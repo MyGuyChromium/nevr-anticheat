@@ -191,9 +191,10 @@ func (dr *DiagnosticReport) recordVec3(name string, v [3]float64, present bool) 
 
 // sessionPresence records which JSON keys existed in a raw payload.
 type sessionPresence struct {
-	top     map[string]bool
-	disc    map[string]bool
-	players [][]map[string]bool // [team][player] -> dotted key set
+	top       map[string]bool
+	disc      map[string]bool
+	lastThrow map[string]bool
+	players   [][]map[string]bool // [team][player] -> dotted key set
 }
 
 // probeSessionPresence decodes the raw payload into key sets. It is a second
@@ -204,7 +205,10 @@ func probeSessionPresence(data []byte) (*sessionPresence, error) {
 	if err := json.Unmarshal(data, &top); err != nil {
 		return nil, err
 	}
-	sp := &sessionPresence{top: make(map[string]bool, len(top)), disc: make(map[string]bool)}
+	sp := &sessionPresence{
+		top: make(map[string]bool, len(top)), disc: make(map[string]bool),
+		lastThrow: make(map[string]bool),
+	}
 	for k := range top {
 		sp.top[k] = true
 	}
@@ -213,6 +217,14 @@ func probeSessionPresence(data []byte) (*sessionPresence, error) {
 		if err := json.Unmarshal(raw, &disc); err == nil {
 			for k := range disc {
 				sp.disc[k] = true
+			}
+		}
+	}
+	if raw, ok := top["last_throw"]; ok && !isJSONNull(raw) {
+		var lastThrow map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &lastThrow); err == nil {
+			for k := range lastThrow {
+				sp.lastThrow[k] = true
 			}
 		}
 	}
@@ -256,6 +268,10 @@ func (sp *sessionPresence) hasTop(key string) bool {
 
 func (sp *sessionPresence) hasDisc(key string) bool {
 	return sp == nil || sp.disc[key]
+}
+
+func (sp *sessionPresence) hasLastThrow(key string) bool {
+	return sp == nil || sp.lastThrow[key]
 }
 
 func (sp *sessionPresence) hasPlayer(teamIdx, playerIdx int, key string) bool {
@@ -382,6 +398,27 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 	} else {
 		dr.getField("disc").Missing++
 	}
+
+	// Engine-authored local-player throw breakdown. Record every component so
+	// operators can distinguish a source that lacks last_throw from one where
+	// a component simply remained zero in the sampled matches.
+	lt := EchoVRLastThrow{}
+	if raw.LastThrow != nil {
+		lt = *raw.LastThrow
+	}
+	dr.recordFloat("last_throw.arm_speed", lt.ArmSpeed, presence.hasLastThrow("arm_speed"))
+	dr.recordFloat("last_throw.total_speed", lt.TotalSpeed, presence.hasLastThrow("total_speed"))
+	dr.recordFloat("last_throw.off_axis_spin_deg", lt.OffAxisSpinDeg, presence.hasLastThrow("off_axis_spin_deg"))
+	dr.recordFloat("last_throw.wrist_throw_penalty", lt.WristThrowPenalty, presence.hasLastThrow("wrist_throw_penalty"))
+	dr.recordFloat("last_throw.rot_per_sec", lt.RotPerSec, presence.hasLastThrow("rot_per_sec"))
+	dr.recordFloat("last_throw.pot_speed_from_rot", lt.PotentialSpeedFromRot, presence.hasLastThrow("pot_speed_from_rot"))
+	dr.recordFloat("last_throw.speed_from_arm", lt.SpeedFromArm, presence.hasLastThrow("speed_from_arm"))
+	dr.recordFloat("last_throw.speed_from_movement", lt.SpeedFromMovement, presence.hasLastThrow("speed_from_movement"))
+	dr.recordFloat("last_throw.speed_from_wrist", lt.SpeedFromWrist, presence.hasLastThrow("speed_from_wrist"))
+	dr.recordFloat("last_throw.wrist_align_to_throw_deg", lt.WristAlignToThrowDeg, presence.hasLastThrow("wrist_align_to_throw_deg"))
+	dr.recordFloat("last_throw.throw_align_to_movement_deg", lt.ThrowAlignToMovementDeg, presence.hasLastThrow("throw_align_to_movement_deg"))
+	dr.recordFloat("last_throw.off_axis_penalty", lt.OffAxisPenalty, presence.hasLastThrow("off_axis_penalty"))
+	dr.recordFloat("last_throw.throw_move_penalty", lt.ThrowMovePenalty, presence.hasLastThrow("throw_move_penalty"))
 
 	// Count possession holders per frame
 	possessionHolders := 0

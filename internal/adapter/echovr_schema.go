@@ -54,6 +54,29 @@ type EchoVRSessionResponse struct {
 
 	// Last score info
 	LastScore *EchoVRLastScore `json:"last_score"` // LIKELY
+
+	// CONFIRMED: Echo VR's engine-authored breakdown of the local client's
+	// latest throw. It changes on that player's release and is not populated
+	// for remote players.
+	LastThrow *EchoVRLastThrow `json:"last_throw"`
+}
+
+// EchoVRLastThrow mirrors the top-level last_throw object in /session and
+// .echoreplay snapshots. Field names match EchoTools/nevr-proto ThrowDetails.
+type EchoVRLastThrow struct {
+	ArmSpeed                float64 `json:"arm_speed"`
+	TotalSpeed              float64 `json:"total_speed"`
+	OffAxisSpinDeg          float64 `json:"off_axis_spin_deg"`
+	WristThrowPenalty       float64 `json:"wrist_throw_penalty"`
+	RotPerSec               float64 `json:"rot_per_sec"`
+	PotentialSpeedFromRot   float64 `json:"pot_speed_from_rot"`
+	SpeedFromArm            float64 `json:"speed_from_arm"`
+	SpeedFromMovement       float64 `json:"speed_from_movement"`
+	SpeedFromWrist          float64 `json:"speed_from_wrist"`
+	WristAlignToThrowDeg    float64 `json:"wrist_align_to_throw_deg"`
+	ThrowAlignToMovementDeg float64 `json:"throw_align_to_movement_deg"`
+	OffAxisPenalty          float64 `json:"off_axis_penalty"`
+	ThrowMovePenalty        float64 `json:"throw_move_penalty"`
 }
 
 // EchoVRDisc represents the disc state in the Echo VR API.

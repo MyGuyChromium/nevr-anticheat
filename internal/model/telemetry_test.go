@@ -92,7 +92,7 @@ func TestDiscState_ContractExamples(t *testing.T) {
 		t.Fatalf("expected the batch frame plus the two throw-transition frames, got %d", len(frames))
 	}
 
-	// Batch example: free disc with velocity [12.5, 1.0, -0.5].
+	// Batch example: free disc with velocity [19.91, 0, 0].
 	batch := frames[0]
 	if batch.Disc == nil {
 		t.Fatal("batch example disc missing")
@@ -100,8 +100,11 @@ func TestDiscState_ContractExamples(t *testing.T) {
 	if batch.Disc.IsHeld || batch.Disc.PossessorID != "" {
 		t.Errorf("batch disc should be free: %+v", batch.Disc)
 	}
-	if want := math.Sqrt(12.5*12.5 + 1 + 0.25); math.Abs(batch.Disc.Speed-want) > 1e-9 {
+	if want := 19.91; math.Abs(batch.Disc.Speed-want) > 1e-9 {
 		t.Errorf("batch disc speed = %v, want %v (derived from velocity)", batch.Disc.Speed, want)
+	}
+	if batch.GameLastThrow == nil || !batch.GameLastThrow.Valid() || batch.GameLastThrow.TotalSpeed != 19.91 || batch.GameLastThrow.SpeedFromMovement != 4.2 {
+		t.Errorf("batch game_last_throw did not decode: %+v", batch.GameLastThrow)
 	}
 
 	// Throw transition: frame N held by PLR-001, frame N+1 released.

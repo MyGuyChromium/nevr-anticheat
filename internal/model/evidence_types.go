@@ -2,24 +2,26 @@ package model
 
 // ThrowEvidence contains evidence from throw-speed related detectors.
 type ThrowEvidence struct {
-	ReleaseVelocity           Vec3    `json:"release_velocity"`
-	ReleaseSpeed              float64 `json:"release_speed"`
-	ReleasePosition           Vec3    `json:"release_position"`
-	PlayerVelocity            Vec3    `json:"player_velocity"`
-	PlayerSpeed               float64 `json:"player_speed"`
-	AlignedMovementSpeed      float64 `json:"aligned_movement_speed"`
-	PlayerRelativeVelocity    Vec3    `json:"player_relative_velocity"`
-	PlayerRelativeSpeed       float64 `json:"player_relative_speed"`
-	HandVelocity              Vec3    `json:"hand_velocity"`
-	HandSpeed                 float64 `json:"hand_speed"`
-	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`
-	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
-	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
-	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
-	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
-	SpeedRatio                float64 `json:"speed_ratio"`
-	EffectiveCap              float64 `json:"effective_cap"`
-	PingMs                    float64 `json:"ping_ms"`
+	ReleaseVelocity           Vec3              `json:"release_velocity"`
+	ReleaseSpeed              float64           `json:"release_speed"`
+	SampledDiscSpeed          float64           `json:"sampled_disc_speed,omitempty"`
+	GameLastThrow             *GameThrowDetails `json:"game_last_throw,omitempty"`
+	ReleasePosition           Vec3              `json:"release_position"`
+	PlayerVelocity            Vec3              `json:"player_velocity"`
+	PlayerSpeed               float64           `json:"player_speed"`
+	AlignedMovementSpeed      float64           `json:"aligned_movement_speed"`
+	PlayerRelativeVelocity    Vec3              `json:"player_relative_velocity"`
+	PlayerRelativeSpeed       float64           `json:"player_relative_speed"`
+	HandVelocity              Vec3              `json:"hand_velocity"`
+	HandSpeed                 float64           `json:"hand_speed"`
+	HandRelativeVelocity      Vec3              `json:"hand_relative_velocity"`
+	HandRelativeSpeed         float64           `json:"hand_relative_speed"`
+	HandKinematicsValid       bool              `json:"hand_kinematics_valid"`
+	HandAttributionConfidence float64           `json:"hand_attribution_confidence"`
+	HandAttributionAnchor     string            `json:"hand_attribution_anchor,omitempty"`
+	SpeedRatio                float64           `json:"speed_ratio"`
+	EffectiveCap              float64           `json:"effective_cap"`
+	PingMs                    float64           `json:"ping_ms"`
 	// ArtifactSuspected marks releases faster than twice the physics cap.
 	// Such values may be telemetry timing artifacts or blatant injection; they
 	// are reported at low severity and kept out of the cap-riding statistic

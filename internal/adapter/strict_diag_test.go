@@ -129,6 +129,29 @@ func TestDiagnostics_PresenceVsInactive(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_TracksLastThrowComponents(t *testing.T) {
+	diag := NewDiagnosticReport()
+	_, err := diag.RecordSessionJSON([]byte(`{
+		"last_throw":{"total_speed":19.91,"speed_from_movement":4.2},
+		"teams":[]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]float64{
+		"last_throw.total_speed":         19.91,
+		"last_throw.speed_from_movement": 4.2,
+	} {
+		fd := diag.FieldPresence[key]
+		if fd == nil || fd.Present != 1 || fd.Missing != 0 || fd.SampleValue == "" || fd.MaxValue != want {
+			t.Errorf("%s = %+v, want one present sample %.2f", key, fd, want)
+		}
+	}
+	if fd := diag.FieldPresence["last_throw.speed_from_arm"]; fd == nil || fd.Missing != 1 || fd.Present != 0 {
+		t.Errorf("missing nested last_throw field was not distinguished: %+v", fd)
+	}
+}
+
 func TestDiagnostics_SpectatorsExcluded(t *testing.T) {
 	data, err := os.ReadFile(fixtureDir + "echovr_session_three_teams.json")
 	if err != nil {
