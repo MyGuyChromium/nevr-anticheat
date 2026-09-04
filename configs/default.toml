@@ -160,6 +160,7 @@ persist_interval          = "2m"      # how often a live match context is re-per
 # does not enlarge the cap. Optional tolerances default to zero.
 # Releases above 2x the cap are reported as anomaly disc_speed_artifact at
 # severity 0.2 (timing artifact vs injection is unresolved on real data).
+# Repeatable throws at or below the cap are legal and never produce a signal.
 enabled            = true
 enforcement_weight = 0.8
 auto_enforce       = false   # keep off until the 22-96 m/s over-cap events in the calibration DB are explained
@@ -169,7 +170,6 @@ base_tolerance             = 0.0    # optional m/s added to physics.disc_speed_c
 ping_tolerance_scalar      = 0.0    # optional legacy m/s per second of estimated ping
 max_speed_ratio            = 3.0    # release/cap ratio at which severity saturates
 sigmoid_steepness          = 2.0
-cap_riding_cooldown_frames = 900    # frames; at most one cap-riding event per player per window (~60 s at 15 Hz)
 
 [detector.THROW_002]
 # Impossible Disc Acceleration. UNVERIFIED: v2.0.0 single-delta approach
@@ -539,6 +539,7 @@ sigmoid_steepness      = 2.0
 # scoring.cross_match_decay_factor                 -> removed (decay_half_life_hours)
 # scoring.clean_match_reset_count                  -> removed
 # THROW_001 speed_threshold                        -> removed (physics.disc_speed_cap)
+# THROW_001 cap_riding_cooldown_frames             -> removed (legal near-cap consistency is not a cheat signal)
 # THROW_002 max_release_acceleration / release_window_frames / max_accel_ratio -> removed (max_speed_delta)
 # THROW_003 min_angle_stddev / consistency_min_throws -> removed
 # THROW_004 min_bhattacharyya                      -> removed

@@ -24,8 +24,8 @@ type ThrowEvidence struct {
 	PingMs                    float64           `json:"ping_ms"`
 	// ArtifactSuspected marks releases faster than twice the physics cap.
 	// Such values may be telemetry timing artifacts or blatant injection; they
-	// are reported at low severity and kept out of the cap-riding statistic
-	// so calibration can see them. ArtifactCount is the per-player count so far.
+	// are reported at low severity so calibration can see them. ArtifactCount
+	// is the per-player count so far.
 	ArtifactSuspected bool `json:"artifact_suspected,omitempty"`
 	ArtifactCount     int  `json:"artifact_count,omitempty"`
 }

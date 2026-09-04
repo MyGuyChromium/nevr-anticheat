@@ -81,13 +81,8 @@ func TestDetector_THROW_001_ImpossibleReleaseVelocity(t *testing.T) {
 			t.Errorf("60 m/s release: %s sev %.2f", ev.CausalKey.AnomalyType, ev.Severity)
 		}
 	}
-	// Sub-cap releases pinned just under the cap: one cap-riding event.
-	hr = runOnly(t, player1().CapRidingThrows(10), "THROW_001")
-	hr.AssertDetectorFiredN("THROW_001", 1)
-	if ev := hr.Events[0]; ev.CausalKey.AnomalyType != "cap_riding" || math.Abs(ev.Severity-0.3) > 1e-9 {
-		t.Errorf("cap riding event: %s sev %.2f", ev.CausalKey.AnomalyType, ev.Severity)
-	}
-	// Negative: normal and elite throws.
+	// Negative: repeatable near-cap, normal, and elite throws are all legal.
+	runOnly(t, player1().NearCapThrows(10), "THROW_001").AssertNoDetections()
 	runOnly(t, player1().NormalThrowSequence(8), "THROW_001").AssertNoDetections()
 	runOnly(t, player1().EliteThrowSequence(10), "THROW_001").AssertNoDetections()
 }

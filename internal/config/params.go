@@ -81,10 +81,10 @@ var detectorSpecs = map[string]DetectorSpec{
 			f("ping_tolerance_scalar", 0.0, "m/s per s of ping", "optional legacy tolerance per second of estimated ping; zero by default because release speed comes from disc.velocity"),
 			f("max_speed_ratio", 3.0, "ratio", "release/cap ratio at which severity saturates"),
 			f("sigmoid_steepness", 2.0, "", sigmoidDoc),
-			i("cap_riding_cooldown_frames", 900, "frames", "at most one cap-riding event per player per window"),
 		},
 		Removed: map[string]string{
-			"speed_threshold": "the cap is physics.disc_speed_cap (via MatchContext.Physics), not a detector param",
+			"speed_threshold":            "the cap is physics.disc_speed_cap (via MatchContext.Physics), not a detector param",
+			"cap_riding_cooldown_frames": "the cap-riding heuristic was removed because repeatable legal near-cap throws are not evidence of cheating",
 		}},
 	"THROW_002": {ID: "THROW_002", Name: "Impossible Disc Acceleration", Category: "throw",
 		Params: []ParamSpec{

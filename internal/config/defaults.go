@@ -85,10 +85,11 @@ func defaultDetectors() map[string]DetectorConfig {
 	return map[string]DetectorConfig{
 		// PHYSICS_GROUNDED: Echo VR caps throws at 18.9 m/s. Release speed is
 		// read directly from disc.velocity, so network ping does not enlarge it.
-		// Keep this shadow-only until the replay telemetry is validated.
+		// Repeatable at-or-below-cap throws stay legal. Keep actual over-cap
+		// observations shadow-only until the replay telemetry is validated.
 		"THROW_001": {Enabled: true, EnforcementWeight: 0.8, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
 			"base_tolerance": 0.0, "ping_tolerance_scalar": 0.0, "max_speed_ratio": 3.0,
-			"sigmoid_steepness": 2.0, "cap_riding_cooldown_frames": 900,
+			"sigmoid_steepness": 2.0,
 		}},
 		// UNVERIFIED: v2.0.0 single-delta approach, needs real-data calibration
 		// (the BROKEN multi-frame mechanism was removed in 3ab978b).
