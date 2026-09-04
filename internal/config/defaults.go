@@ -161,7 +161,7 @@ func defaultDetectors() map[string]DetectorConfig {
 		// are unavailable, so legal leaning cannot be ruled out automatically.
 		"MOV_006": {Enabled: true, EnforcementWeight: 0.75, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
 			"min_playspace_speed": 1.0, "min_playspace_distance": 0.55, "min_rig_coherence": 0.65,
-			"min_sustained_frames": 5, "min_sustained_seconds": 0.3, "max_ping_ms": 150.0,
+			"min_observed_pose_speed": 0.35, "min_sustained_frames": 5, "min_sustained_seconds": 0.3, "max_ping_ms": 150.0,
 		}},
 		"STATE_001": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
 			"grab_distance_threshold": 3.0, "closing_velocity_scale": 0.25, "desync_margin": 3.0,

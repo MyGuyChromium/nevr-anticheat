@@ -170,10 +170,25 @@ func TestMov006_CoherentPhysicalWalkFiresOncePerBurst(t *testing.T) {
 		ps := active("p1", fi)
 		ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 1
 		ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.6, 0.8
+		ps.Speed = 1.2
 		events = append(events, d.Evaluate(mc, players(ps), fi)...)
 	}
 	if len(events) != 2 {
 		t.Fatalf("second walk burst not emitted: %d events", len(events))
+	}
+}
+
+func TestMov006_FrozenRemotePoseWithStaleGameVelocityIsSilent(t *testing.T) {
+	d := NewMov006(nil)
+	for fi := 0; fi < 12; fi++ {
+		ps := active("p1", fi)
+		ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 2
+		ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 4.99, 2.46, 1
+		ps.ReportedVelocity = model.Vec3{0, 0, 4.99}
+		ps.Speed = 0 // real replay pattern: head and both hands are byte-for-byte frozen
+		if events := d.Evaluate(ctx(), players(ps), fi); len(events) != 0 {
+			t.Fatalf("frozen remote pose emitted at frame %d: %+v", fi, events)
+		}
 	}
 }
 
@@ -212,6 +227,7 @@ func TestMov006_StackingAndUnreliableTrackingAreSilent(t *testing.T) {
 		{"incoherent rig", func(ps *model.PlayerState) { ps.PlayspaceRigCoherence = 0.1 }},
 		{"high ping", func(ps *model.PlayerState) { ps.EstimatedPingMs = 300 }},
 		{"invalid reconstruction", func(ps *model.PlayerState) { ps.PlayspaceValid = false }},
+		{"frozen observed pose", func(ps *model.PlayerState) { ps.Speed = 0 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,6 +236,7 @@ func TestMov006_StackingAndUnreliableTrackingAreSilent(t *testing.T) {
 				ps := active("p1", fi)
 				ps.PlayspaceValid, ps.PlayspaceTrackedHands = true, 2
 				ps.PlayspaceSpeed, ps.PlayspaceDistance, ps.PlayspaceRigCoherence = 1.2, 0.7, 0.9
+				ps.Speed = 1.2
 				tt.alter(ps)
 				if events := d.Evaluate(ctx(), players(ps), fi); len(events) != 0 {
 					t.Fatalf("unexpected event at frame %d: %+v", fi, events)
