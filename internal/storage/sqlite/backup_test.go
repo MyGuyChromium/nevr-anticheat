@@ -57,3 +57,18 @@ func TestBackupRejectsInvalidDestinationAndCleansCancelledCopy(t *testing.T) {
 		t.Fatalf("failed backup left a destination behind: %v", err)
 	}
 }
+
+func TestCheckAndCheckpointVerifiesLiveDatabase(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.StoreTelemetryFrames(ctx, "maintenance-match", mkFrames("p1", 0, 8)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.CheckAndCheckpoint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Integrity != "ok" || result.BusyConnections != 0 {
+		t.Fatalf("maintenance result = %+v", result)
+	}
+}

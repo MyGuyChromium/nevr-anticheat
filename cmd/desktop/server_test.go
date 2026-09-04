@@ -249,6 +249,17 @@ func TestDesktop_QoLHealthMaintenanceAndCancel(t *testing.T) {
 	if health.Version != appVersion || health.SchemaVersion != sqlite.SchemaVersion() || health.DatabasePath == "" || health.DiscSpeedCap != 18.9 {
 		t.Fatalf("health = %+v", health)
 	}
+	if health.DatabaseBytes != health.DatabaseMainBytes+health.DatabaseWALBytes+health.DatabaseSHMBytes || health.DatabaseMainBytes == 0 {
+		t.Fatalf("database footprint = %+v", health)
+	}
+
+	var maintained struct {
+		OK        bool   `json:"ok"`
+		Integrity string `json:"integrity"`
+	}
+	if resp := postAPI(t, base+"/api/maintenance/checkpoint", nil, &maintained); resp.StatusCode != http.StatusOK || !maintained.OK || maintained.Integrity != "ok" {
+		t.Fatalf("checkpoint: status %d, %+v", resp.StatusCode, maintained)
+	}
 
 	if err := os.WriteFile(filepath.Join(s.clipDir, "generated.echoreplay"), []byte("clip"), 0o600); err != nil {
 		t.Fatal(err)
