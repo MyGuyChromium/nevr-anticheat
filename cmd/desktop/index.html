@@ -123,6 +123,7 @@
   .health-card { border: 1px solid var(--line); background: var(--panel); padding: 16px; min-width: 0; }
   .health-card span { display: block; color: var(--muted); font: 10px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
   .health-card b { display: block; margin-top: 7px; font-size: 17px; overflow-wrap: anywhere; }
+  .storage-warn { color: var(--warn); }
   .health-path { margin-top: 14px; color: var(--muted); overflow-wrap: anywhere; }
   .maintenance { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
   .lab-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
@@ -547,7 +548,7 @@
           <div id="drop-idle">
             <span class="drop-mark" aria-hidden="true">↗</span>
             <div class="lead">Drop <code>.echoreplay</code> files</div>
-            <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · <a href="#" id="pick-folder">scan a folder</a> · up to 200 MB per file</div>
+            <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · <a href="#" id="pick-folder">scan a folder</a> · streamed safely up to 4 GB per file</div>
           </div>
         </div>
         <div class="controls">
@@ -1069,6 +1070,7 @@
   let queueStopped = false;
   let queue = [];
   let queuePanel = null;
+  const MAX_UPLOAD_FILE_BYTES = 4 * 1024 * 1024 * 1024;
   const drop = $('drop');
   function uploadList(files) {
     return `<div class="overall" id="overall"></div><ol class="uploads">${files.map((f, i) => `<li>
@@ -1156,16 +1158,20 @@
   function analyze(fileList) {
     if (busy) return;
     const all = Array.from(fileList || []);
-    const files = all.filter((f) => /\.(echoreplay|json)$/i.test(f.name));
+    const supported = all.filter((f) => /\.(echoreplay|json)$/i.test(f.name));
+    const tooLarge = supported.filter((f) => f.size > MAX_UPLOAD_FILE_BYTES);
+    const files = supported.filter((f) => f.size <= MAX_UPLOAD_FILE_BYTES);
     if (!files.length) {
-      if (all.length) setStatus('No supported .echoreplay or .json files were found.', 'err');
+      if (tooLarge.length) setStatus(`${tooLarge.length} replay${tooLarge.length === 1 ? '' : 's'} exceeded the 4 GB safety limit. Use the watched-folder workflow to analyze it directly without a browser upload.`, 'err');
+      else if (all.length) setStatus('No supported .echoreplay or .json files were found.', 'err');
       return;
     }
     queue = files.map((file) => ({ file, state: 'waiting' }));
     if (queuePanel) queuePanel.remove();
     queuePanel = document.createElement('div'); queuePanel.innerHTML = uploadList(files); drop.appendChild(queuePanel);
     drop.classList.add('busy'); $('drop-idle').hidden = true;
-    if (all.length !== files.length) setStatus(`Ignored ${all.length - files.length} unsupported file${all.length - files.length === 1 ? '' : 's'}.`);
+    if (tooLarge.length) setStatus(`Skipped ${tooLarge.length} replay${tooLarge.length === 1 ? '' : 's'} over 4 GB. The watch-folder workflow can analyze those files in place.`, 'err');
+    else if (all.length !== files.length) setStatus(`Ignored ${all.length - files.length} unsupported file${all.length - files.length === 1 ? '' : 's'}.`);
     runQueue(queue.map((_, i) => i));
   }
 
@@ -1454,9 +1460,10 @@
     try {
       const h = await getJSON('api/health');
       el.className = ''; el.removeAttribute('aria-busy');
+      const walLarge = h.database_wal_bytes > Math.max(64 * 1024 * 1024, h.database_main_bytes * .25);
       el.innerHTML = `<div class="health-grid">
         <div class="health-card"><span>Desktop</span><b>v${esc(h.version)}</b><small class="muted">schema ${fmtInt(h.schema_version)}</small></div>
-        <div class="health-card"><span>Evidence store</span><b>${fmtInt(h.stored_matches)} matches</b><small class="muted">${fmtBytes(h.database_bytes)}</small></div>
+        <div class="health-card"><span>Evidence store</span><b>${fmtInt(h.stored_matches)} matches</b><small class="${walLarge ? 'storage-warn' : 'muted'}">${fmtBytes(h.database_bytes)} total · ${fmtBytes(h.database_wal_bytes)} pending WAL</small></div>
         <div class="health-card"><span>Calibration library</span><b>${fmtInt(h.calibration_matches)} replays</b><small class="muted">${fmtInt(h.direct_label_count)} detector labels</small></div>
         <div class="health-card"><span>Spark Replay Viewer</span><b style="color:var(--${h.spark_installed ? 'ok' : 'warn'})">${h.spark_installed ? 'Ready' : 'Not found'}</b><small class="muted">${h.spark_installed ? esc(h.spark_path) : 'Open Spark once or set NEVR_REPLAY_VIEWER'}</small></div>
         <div class="health-card"><span>Replay clips</span><b>${fmtInt(h.clip_files)} files</b><small class="muted">${fmtBytes(h.clip_bytes)}</small></div>
@@ -1466,7 +1473,8 @@
         <div class="health-card"><span>Physics guardrail</span><b>${fmtNum(h.disc_speed_cap, 1)} m/s</b><small class="muted">maximum disc speed</small></div>
       </div>
       <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span><br><strong>Archives:</strong> <span class="mono">${esc(h.archive_directory)}</span></p>
-      <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
+      ${walLarge ? '<p class="notice">The write-ahead log is large. Check &amp; checkpoint verifies the database, then safely folds committed WAL data into the main evidence file.</p>' : ''}
+      <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="checkpoint-db" class="btn">Check &amp; checkpoint</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
     } catch (e) { panelError(el, 'system health', e); }
   }
 
@@ -1688,14 +1696,14 @@
       return;
     }
 
-    const maintenance = e.target.closest('#backup-db, #open-data, #clear-clips');
+    const maintenance = e.target.closest('#backup-db, #checkpoint-db, #open-data, #clear-clips');
     if (maintenance) {
       if (maintenance.id === 'clear-clips' && !confirm('Delete generated replay clips? Original replays and the anticheat database are not affected.')) return;
-      const endpoint = maintenance.id === 'backup-db' ? 'backup' : maintenance.id === 'open-data' ? 'open-data-folder' : 'clear-clips';
+      const endpoint = maintenance.id === 'backup-db' ? 'backup' : maintenance.id === 'checkpoint-db' ? 'checkpoint' : maintenance.id === 'open-data' ? 'open-data-folder' : 'clear-clips';
       const label = maintenance.textContent; maintenance.disabled = true; maintenance.textContent = 'Working…';
       try {
         const result = await postJSON('api/maintenance/' + endpoint);
-        setStatus(maintenance.id === 'backup-db' ? `Backup created: ${result.path}` : maintenance.id === 'clear-clips' ? `Cleared ${fmtInt(result.removed)} generated clip item(s).` : `Opened ${result.path}.`, 'ok');
+        setStatus(maintenance.id === 'backup-db' ? `Backup created: ${result.path}` : maintenance.id === 'checkpoint-db' ? `Database integrity OK. Checkpoint reclaimed ${fmtBytes(result.bytes_reclaimed)}.` : maintenance.id === 'clear-clips' ? `Cleared ${fmtInt(result.removed)} generated clip item(s).` : `Opened ${result.path}.`, 'ok');
         loadHealth();
       } catch (err) { setStatus(`Maintenance action failed: ${err.message}`, 'err'); }
       finally { maintenance.disabled = false; maintenance.textContent = label; }

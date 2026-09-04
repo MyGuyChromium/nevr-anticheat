@@ -7,6 +7,27 @@ import (
 	"testing"
 )
 
+func TestDesktopSingleInstanceHandsOffExistingURL(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "evidence.db")
+	first, existing := claimDesktopInstance(db)
+	if first == nil || existing != "" {
+		t.Fatalf("first claim = %#v, %q", first, existing)
+	}
+	defer first.close()
+	appURL := "http://127.0.0.1:54321/0123456789abcdef/"
+	first.publish(appURL)
+
+	second, existing := claimDesktopInstance(db)
+	if second != nil || existing != appURL {
+		t.Fatalf("second claim = %#v, %q; want existing URL", second, existing)
+	}
+	other, otherURL := claimDesktopInstance(filepath.Join(t.TempDir(), "other.db"))
+	if other == nil || otherURL != "" {
+		t.Fatalf("separate database claim = %#v, %q", other, otherURL)
+	}
+	_ = other.close()
+}
+
 func TestAppWindowCandidatesWindows(t *testing.T) {
 	env := map[string]string{
 		"ProgramFiles":      `C:\Program Files`,

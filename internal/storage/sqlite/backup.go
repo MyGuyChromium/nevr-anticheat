@@ -10,6 +10,16 @@ import (
 	"strings"
 )
 
+// MaintenanceResult describes a read-only integrity check followed by a WAL
+// checkpoint. The checkpoint copies committed WAL pages into the main database
+// and truncates the sidecar; it does not delete replay evidence.
+type MaintenanceResult struct {
+	Integrity       string `json:"integrity"`
+	BusyConnections int    `json:"busy_connections"`
+	WALFrames       int    `json:"wal_frames"`
+	Checkpointed    int    `json:"checkpointed_frames"`
+}
+
 // ErrBackupExists is returned instead of overwriting an existing backup.
 // Backups are evidence-preservation artifacts; silent replacement would make
 // it impossible to prove which database snapshot was reviewed.
@@ -72,4 +82,27 @@ func VerifyDatabase(ctx context.Context, path string) error {
 		return fmt.Errorf("sqlite: database integrity check returned %q", result)
 	}
 	return nil
+}
+
+// CheckAndCheckpoint verifies the live database and then requests a TRUNCATE
+// checkpoint. It is intentionally separate from VACUUM: checkpointing is a
+// quick, space-safe maintenance operation and never needs a second database-
+// sized temporary file.
+func (s *Store) CheckAndCheckpoint(ctx context.Context) (MaintenanceResult, error) {
+	var out MaintenanceResult
+	if err := s.db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&out.Integrity); err != nil {
+		return out, fmt.Errorf("sqlite: checking live database: %w", err)
+	}
+	if out.Integrity != "ok" {
+		return out, fmt.Errorf("sqlite: live database integrity check returned %q", out.Integrity)
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(
+		&out.BusyConnections, &out.WALFrames, &out.Checkpointed,
+	); err != nil {
+		return out, fmt.Errorf("sqlite: checkpointing live database: %w", err)
+	}
+	if out.BusyConnections != 0 {
+		return out, fmt.Errorf("sqlite: checkpoint could not finish because the database is busy")
+	}
+	return out, nil
 }

@@ -26,7 +26,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.6.0"
+const appVersion = "0.7.0"
 
 // Filled by the release workflow. Development builds intentionally retain
 // these values so the updater can say that their revision is unknown.
@@ -64,6 +64,19 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	if logLevel != "" {
 		cfg.General.LogLevel = logLevel
 	}
+	instance, existingURL := claimDesktopInstance(cfg.General.DBPath)
+	if existingURL != "" {
+		fmt.Printf("NEVR-Anticheat is already running: %s\n", existingURL)
+		if !noBrowser {
+			if err := openAppWindow(existingURL); err != nil {
+				return fmt.Errorf("opening the existing app window: %w", err)
+			}
+		}
+		return nil
+	}
+	if instance != nil {
+		defer instance.close()
+	}
 	if err := applyPendingRestore(cfg.General.DBPath); err != nil {
 		return fmt.Errorf("applying scheduled database restore: %w", err)
 	}
@@ -89,6 +102,9 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	go func() { serveErr <- hs.Serve(ln) }()
 
 	url := fmt.Sprintf("http://%s/%s/", ln.Addr(), token)
+	if instance != nil {
+		instance.publish(url)
+	}
 	fmt.Printf("NEVR-Anticheat desktop: open %s (press Ctrl+C to quit)\n", url)
 	if !noBrowser {
 		if err := openAppWindow(url); err != nil {

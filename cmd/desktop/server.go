@@ -30,9 +30,15 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-// maxUploadBytes bounds one /api/analyze request. The desktop queue submits
-// one file per request; API clients may still submit several within this cap.
-const maxUploadBytes = 200 << 20
+// Browser uploads are streamed straight into the durable recovery queue. A
+// Spark recording may be much larger than its compressed on-disk size, so the
+// desktop accepts multi-gigabyte files without buffering or making a second
+// temporary copy. The request limit still protects the loopback service from
+// an accidentally unbounded multipart body.
+const (
+	maxUploadFileBytes    int64 = 4 << 30
+	maxUploadRequestBytes int64 = 8 << 30
+)
 
 // historyLimit bounds the History panel and the flagged lists.
 const historyLimit = 200
@@ -80,6 +86,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/lab/validation", s.handleValidationDashboard)
 	s.mux.HandleFunc("GET "+p+"/api/lab/synthetic", s.handleSyntheticProbes)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/backup", s.handleBackup)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/checkpoint", s.handleCheckpoint)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/open-data-folder", s.handleOpenDataFolder)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/clear-clips", s.handleClearClips)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/support-bundle", s.handleSupportBundle)
@@ -967,26 +974,37 @@ func uploadName(name string) string {
 	return name
 }
 
-func saveUpload(dir string, idx int, fh *multipart.FileHeader) (string, error) {
-	src, err := fh.Open()
-	if err != nil {
-		return "", err
-	}
-	defer src.Close()
+var errUploadTooLarge = errors.New("replay exceeds the 4 GB desktop limit")
+
+func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err error) {
 	sub := filepath.Join(dir, fmt.Sprint(idx))
 	if err := os.MkdirAll(sub, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(sub, uploadName(fh.Filename))
-	dst, err := os.Create(path)
+	path = filepath.Join(sub, uploadName(part.FileName()))
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
+	defer func() {
+		if closeErr := dst.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	written, err := io.Copy(dst, io.LimitReader(part, maxUploadFileBytes+1))
+	if err != nil {
 		return "", err
 	}
-	return path, dst.Close()
+	if written > maxUploadFileBytes {
+		return "", errUploadTooLarge
+	}
+	if err := dst.Sync(); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (s *server) beginAnalysis() (context.Context, uint64) {
@@ -1031,24 +1049,10 @@ func (s *server) handleCancelAnalyze(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "upload exceeds %d MB", maxUploadBytes>>20)
-			return
-		}
-		writeError(w, http.StatusBadRequest, "bad upload: %v", err)
-		return
-	}
-	defer func() {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
-	}()
-	files := r.MultipartForm.File["files"]
-	if len(files) == 0 {
-		writeError(w, http.StatusBadRequest, "no files uploaded (field \"files\")")
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad multipart upload: %v", err)
 		return
 	}
 	// Desktop intake is deliberately idempotent from the user's point of view:
@@ -1056,6 +1060,12 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// analysis instead of surfacing an "already stored" refusal. The CLI keeps
 	// its explicit --force safety switch for automation and scripting.
 	const force = true
+
+	// Upload spooling, analysis and cleanup are one serialized transaction.
+	// Otherwise the background crash-recovery worker could discover a large
+	// file while the request is still writing it and queue the partial copy.
+	s.analyzeMu.Lock()
+	defer s.analyzeMu.Unlock()
 
 	// Uploads are spooled beside the database before analysis. If the process
 	// or laptop exits after upload, the next launch can resume these files
@@ -1065,43 +1075,84 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "creating durable upload queue: %v", err)
 		return
 	}
-	allPersisted := true
-
-	// Analyses run one at a time; the engine's pipelines are per call but
-	// the results page is easier to read when files finish in upload order.
-	s.analyzeMu.Lock()
-	defer s.analyzeMu.Unlock()
-	// Register this after Unlock so Go's LIFO defer order removes a completed
-	// queue job while the lock is still held. Recovery can never observe the
-	// tiny interval between a successful analysis and cleanup and run it twice.
+	cleanupAll := true
 	defer func() {
-		if allPersisted {
+		if cleanupAll {
 			_ = os.RemoveAll(tmp)
 		}
 	}()
+
+	type pendingUpload struct {
+		entry analyzeEntry
+		path  string
+	}
+	var uploads []pendingUpload
+	for {
+		part, nextErr := mr.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(nextErr, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "upload request exceeds 8 GB")
+			} else {
+				writeError(w, http.StatusBadRequest, "reading upload: %v", nextErr)
+			}
+			return
+		}
+		if part.FormName() != "files" || part.FileName() == "" {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+		entry := analyzeEntry{File: uploadName(part.FileName())}
+		switch strings.ToLower(filepath.Ext(entry.File)) {
+		case ".echoreplay", ".json":
+			path, saveErr := saveUploadPart(tmp, len(uploads), part)
+			if saveErr != nil {
+				if errors.Is(saveErr, errUploadTooLarge) {
+					entry.Error = errUploadTooLarge.Error()
+				} else {
+					var tooLarge *http.MaxBytesError
+					if errors.As(saveErr, &tooLarge) {
+						writeError(w, http.StatusRequestEntityTooLarge, "upload request exceeds 8 GB")
+						_ = part.Close()
+						return
+					}
+					entry.Error = "saving upload: " + saveErr.Error()
+				}
+			}
+			uploads = append(uploads, pendingUpload{entry: entry, path: path})
+		default:
+			_, _ = io.Copy(io.Discard, part)
+			entry.Error = "unsupported file type (expected .echoreplay or a legacy .json replay)"
+			uploads = append(uploads, pendingUpload{entry: entry})
+		}
+		_ = part.Close()
+	}
+	if len(uploads) == 0 {
+		writeError(w, http.StatusBadRequest, "no files uploaded (field \"files\")")
+		return
+	}
+	// From here on, keep any file whose analysis does not finish. The recovery
+	// worker can retry it after a power loss or explicit cancellation.
+	cleanupAll = false
+
+	// Analyses run one at a time; the engine's pipelines are per call and the
+	// results page stays in upload order.
 	analysisCtx, analysisID := s.beginAnalysis()
 	defer s.finishAnalysis(analysisID)
 
-	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(files))}
-	for i, fh := range files {
-		entry := analyzeEntry{File: uploadName(fh.Filename)}
+	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(uploads))}
+	for _, upload := range uploads {
+		entry, path := upload.entry, upload.path
+		if entry.Error != "" || path == "" {
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
 		if analysisCtx.Err() != nil {
 			entry.Error = "analysis cancelled"
-			allPersisted = false
-			resp.Results = append(resp.Results, entry)
-			continue
-		}
-		switch strings.ToLower(filepath.Ext(entry.File)) {
-		case ".echoreplay", ".json":
-		default:
-			entry.Error = "unsupported file type (expected .echoreplay or a legacy .json replay)"
-			resp.Results = append(resp.Results, entry)
-			continue
-		}
-		path, err := saveUpload(tmp, i, fh)
-		if err != nil {
-			entry.Error = "saving upload: " + err.Error()
-			allPersisted = false
 			resp.Results = append(resp.Results, entry)
 			continue
 		}
@@ -1126,7 +1177,6 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		entry.mirrorFirst()
 		if err != nil {
-			allPersisted = false
 			if errors.Is(err, context.Canceled) {
 				entry.Error = "analysis cancelled"
 			} else {
@@ -1136,12 +1186,14 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				entry.Diagnostic = diagnoseUpload(path)
 			}
 		}
-		for _, res := range results {
-			if res.PersistError() != nil {
-				allPersisted = false
-			}
+		if queueErr == nil {
+			_ = os.Remove(path)
+			_ = os.Remove(filepath.Dir(path))
 		}
 		resp.Results = append(resp.Results, entry)
+	}
+	if entries, readErr := os.ReadDir(tmp); readErr == nil && len(entries) == 0 {
+		_ = os.Remove(tmp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1151,6 +1203,9 @@ type healthResponse struct {
 	SchemaVersion      int     `json:"schema_version"`
 	DatabasePath       string  `json:"database_path"`
 	DatabaseBytes      int64   `json:"database_bytes"`
+	DatabaseMainBytes  int64   `json:"database_main_bytes"`
+	DatabaseWALBytes   int64   `json:"database_wal_bytes"`
+	DatabaseSHMBytes   int64   `json:"database_shm_bytes"`
 	StoredMatches      int     `json:"stored_matches"`
 	ClipDirectory      string  `json:"clip_directory"`
 	ClipFiles          int     `json:"clip_files"`
@@ -1196,10 +1251,10 @@ func (s *server) schemaVersion() int { return sqlite.SchemaVersion() }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	path := s.databasePath()
-	var dbBytes int64
-	if info, err := os.Stat(path); err == nil {
-		dbBytes = info.Size()
-	}
+	dbMainBytes := fileSize(path)
+	dbWALBytes := fileSize(path + "-wal")
+	dbSHMBytes := fileSize(path + "-shm")
+	dbBytes := dbMainBytes + dbWALBytes + dbSHMBytes
 	matches, err := s.engine.Store().GetStoredMatchCount(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "counting stored matches: %v", err)
@@ -1231,13 +1286,36 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	sparkPath, sparkErr := findSparkReplayViewer()
 	writeJSON(w, http.StatusOK, healthResponse{
 		Version: appVersion, SchemaVersion: sqlite.SchemaVersion(), DatabasePath: path,
-		DatabaseBytes: dbBytes, StoredMatches: matches, ClipDirectory: clipDir,
+		DatabaseBytes: dbBytes, DatabaseMainBytes: dbMainBytes, DatabaseWALBytes: dbWALBytes,
+		DatabaseSHMBytes: dbSHMBytes, StoredMatches: matches, ClipDirectory: clipDir,
 		ClipFiles: clipFiles, ClipBytes: clipBytes, SparkInstalled: sparkErr == nil,
 		SparkPath: sparkPath, DiscSpeedCap: s.engine.Config().Physics.Constants().DiscSpeedCap,
 		AnalysisActive: s.analysisActive(), DirectLabelCount: labelCount, CalibrationMatches: calibrationMatches,
 		RawTicks: storageStats.RawTicks, RawTickBytes: storageStats.RawTickBytes,
 		NormalizedFrames: storageStats.NormalizedFrames, NormalizedBytes: storageStats.NormalizedBytes,
 		ArchiveDirectory: archiveDir, ArchiveFiles: archiveFiles, ArchiveBytes: archiveBytes,
+	})
+}
+
+func (s *server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	// Keep maintenance and replay replacement mutually exclusive. The SQLite
+	// store also has one connection, but taking the analysis lock gives the UI
+	// a predictable all-or-nothing maintenance result.
+	s.analyzeMu.Lock()
+	defer s.analyzeMu.Unlock()
+	path := s.databasePath()
+	before := fileSize(path) + fileSize(path+"-wal") + fileSize(path+"-shm")
+	result, err := s.engine.Store().CheckAndCheckpoint(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "checking database: %v", err)
+		return
+	}
+	after := fileSize(path) + fileSize(path+"-wal") + fileSize(path+"-shm")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "integrity": result.Integrity, "wal_frames": result.WALFrames,
+		"checkpointed_frames": result.Checkpointed, "bytes_before": before, "bytes_after": after,
+		"bytes_reclaimed": max(int64(0), before-after),
+		"message":         "Database integrity is OK and committed WAL pages were checkpointed. Replay evidence was not removed.",
 	})
 }
 
