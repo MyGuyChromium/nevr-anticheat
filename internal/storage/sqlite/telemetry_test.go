@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +59,71 @@ func TestTelemetry_RoundTripAndInsertedCount(t *testing.T) {
 	cnt, err := s.GetStoredMatchCount(ctx)
 	if err != nil || cnt != 1 {
 		t.Errorf("GetStoredMatchCount = %d, %v", cnt, err)
+	}
+}
+
+func TestTelemetry_ReplaceNormalizedFramesIsAtomicAndPreservesRawTicks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	original := mkFrames("P1", 0, 3)
+	raw := map[int]string{0: `{"tick":0}`, 1: `{"tick":1}`, 2: `{"tick":2}`}
+	if _, err := s.StoreTelemetryFramesWithRaw(ctx, "M1", original, raw); err != nil {
+		t.Fatal(err)
+	}
+	replacement := mkFrames("P1", 0, 3)
+	for i := range replacement {
+		replacement[i].Position = model.Vec3{9, 8, float64(i)}
+	}
+	if n, err := s.ReplaceMatchTelemetryFrames(ctx, "M1", replacement); err != nil || n != 3 {
+		t.Fatalf("replace = %d, %v", n, err)
+	}
+	got, err := s.GetMatchFrames(ctx, "M1")
+	if err != nil || len(got) != 3 || got[0].Position.X() != 9 {
+		t.Fatalf("replacement frames = %+v, %v", got, err)
+	}
+	if ticks, err := s.GetMatchRawTicks(ctx, "M1", 0, 2); err != nil || len(ticks) != 3 || ticks[1] != raw[1] {
+		t.Fatalf("raw ticks changed: %v, %v", ticks, err)
+	}
+
+	bad := append([]model.PlayerTelemetryFrame(nil), replacement...)
+	bad[1].Position[0] = math.NaN() // json.Marshal must fail after DELETE, rolling the transaction back.
+	if _, err := s.ReplaceMatchTelemetryFrames(ctx, "M1", bad); err == nil {
+		t.Fatal("NaN replacement unexpectedly succeeded")
+	}
+	got, err = s.GetMatchFrames(ctx, "M1")
+	if err != nil || len(got) != 3 || got[0].Position.X() != 9 {
+		t.Fatalf("failed replacement did not roll back: %+v, %v", got, err)
+	}
+}
+
+func TestTelemetry_ReplacePromotesLegacyRawTicks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	old := mkFrames("P1", 0, 1)[0]
+	doc, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw := `{"sessionid":"M1","tick":0}`
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO telemetry_frames
+		(match_id, player_id, frame_index, timestamp, frame_json, raw_json, ingested_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, "M1", old.PlayerID, old.FrameIndex, old.Timestamp, string(doc), legacyRaw, fmtDBTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	replacement := mkFrames("P1", 0, 1)
+	replacement[0].Position = model.Vec3{7, 8, 9}
+	if n, err := s.ReplaceMatchTelemetryFrames(ctx, "M1", replacement); err != nil || n != 1 {
+		t.Fatalf("replace = %d, %v", n, err)
+	}
+	got, err := s.GetMatchRawTicks(ctx, "M1", 0, 0)
+	if err != nil || got[0] != legacyRaw {
+		t.Fatalf("promoted raw tick = %v, %v", got, err)
+	}
+	if n := countRows(t, s, "match_ticks", "match_id='M1'"); n != 1 {
+		t.Fatalf("promoted match_ticks rows = %d", n)
+	}
+	if n := countRows(t, s, "telemetry_frames", "match_id='M1' AND raw_json IS NOT NULL"); n != 0 {
+		t.Fatalf("replacement should not duplicate raw JSON, got %d rows", n)
 	}
 }
 

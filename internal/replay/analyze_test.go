@@ -105,12 +105,13 @@ func TestAnalyzeFile_SyntheticReplay(t *testing.T) {
 		t.Fatalf("second run: %v", err)
 	}
 
-	// Force: previous analysis cleared, telemetry already present.
+	// Force: previous analysis cleared and normalized telemetry regenerated;
+	// immutable raw ticks are already present.
 	res, err = e.AnalyzeFile(ctx, syntheticReplay, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Replaced || res.Telemetry.Ignored != 480 || res.Telemetry.TicksIgnored != 120 {
+	if !res.Replaced || res.Telemetry.Inserted != 480 || res.Telemetry.Ignored != 0 || res.Telemetry.TicksIgnored != 120 {
 		t.Errorf("forced run: replaced=%v telemetry=%+v", res.Replaced, res.Telemetry)
 	}
 }
@@ -370,7 +371,7 @@ func TestAnalyzeFileAll_TwoSessions(t *testing.T) {
 		}
 	}
 
-	// With force: both replaced, their source data already present.
+	// With force: both replaced, normalized rows refreshed, raw source retained.
 	results, err = e.AnalyzeFileAll(ctx, path, true)
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +380,7 @@ func TestAnalyzeFileAll_TwoSessions(t *testing.T) {
 		t.Fatalf("forced run: %d results", len(results))
 	}
 	for i, res := range results {
-		if res.AlreadyStored || !res.Replaced || res.Telemetry != (sqlite.TelemetryStoreResult{Ignored: 240, TicksIgnored: 60}) {
+		if res.AlreadyStored || !res.Replaced || res.Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) {
 			t.Errorf("forced run %d: replaced=%v telemetry=%+v", i, res.Replaced, res.Telemetry)
 		}
 	}
@@ -423,8 +424,8 @@ func TestAnalyzeFileAll_StoredCheckPerMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(results) != 2 || !results[0].Replaced || !results[1].Replaced ||
-		results[0].Telemetry != (sqlite.TelemetryStoreResult{Ignored: 240, TicksIgnored: 60}) ||
-		results[1].Telemetry != (sqlite.TelemetryStoreResult{Ignored: 240, TicksIgnored: 60}) {
+		results[0].Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) ||
+		results[1].Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) {
 		t.Errorf("forced run: %+v", results)
 	}
 }

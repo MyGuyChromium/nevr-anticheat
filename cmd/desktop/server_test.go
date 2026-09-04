@@ -118,7 +118,7 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 		t.Fatalf("forced upload: status %d %+v", resp.StatusCode, out)
 	}
 	for i, m := range out.Results[0].Matches {
-		if !m.OK || m.Match == nil || !m.Match.Replaced || m.Match.Telemetry.FramesIgnored != 240 || m.Match.Telemetry.TicksIgnored != 60 {
+		if !m.OK || m.Match == nil || !m.Match.Replaced || m.Match.Telemetry.FramesInserted != 240 || m.Match.Telemetry.TicksIgnored != 60 {
 			t.Errorf("forced match %d: %+v", i, m)
 		}
 	}
@@ -287,7 +287,7 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !out.Force || len(out.Results) != 1 || !out.Results[0].OK {
 		t.Fatalf("forced upload: status %d %+v", resp.StatusCode, out)
 	}
-	if fm := out.Results[0].Match; !fm.Replaced || fm.Telemetry.FramesIgnored != 480 {
+	if fm := out.Results[0].Match; !fm.Replaced || fm.Telemetry.FramesInserted != 480 || fm.Telemetry.TicksIgnored != 120 {
 		t.Errorf("forced match %+v", *fm)
 	}
 

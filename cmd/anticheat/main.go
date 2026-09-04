@@ -1111,14 +1111,27 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 	if err != nil {
 		return nil, fmt.Errorf("loading match context: %w", err)
 	}
-	if matchCtx.Physics == (model.PhysicsConstants{}) {
-		// Context stored without physics (older rows, synthesized contexts):
-		// analyze under the configured constants, as the original run did.
-		matchCtx.Physics = a.physics()
-	}
-	frames, err := store.GetMatchFrames(ctx, matchID)
-	if err != nil {
-		return nil, fmt.Errorf("loading frames: %w", err)
+	// Reprocessing means "run under the current configuration", including
+	// physics corrections such as the 18.9 m/s disc cap. Keeping constants
+	// frozen in an old match context would make detector threshold changes
+	// appear ineffective on historical data.
+	matchCtx.Physics = a.physics()
+	frames := []model.PlayerTelemetryFrame(nil)
+	remapped := false
+	if raw, remapErr := replay.RemapStoredTelemetry(ctx, store, matchCtx, a.physics()); remapErr == nil {
+		matchCtx, frames, remapped = raw.Context, raw.Frames, true
+		fmt.Printf("  Re-mapped %d raw ticks into %d current-schema player frames", raw.RawTicks, len(raw.Frames))
+		if raw.MappingWarnings > 0 || raw.MappingErrors > 0 {
+			fmt.Printf(" (%d mapping warnings, %d rejected player poses)", raw.MappingWarnings, raw.MappingErrors)
+		}
+		fmt.Println()
+	} else if errors.Is(remapErr, replay.ErrNoRawTicks) {
+		frames, err = store.GetMatchFrames(ctx, matchID)
+		if err != nil {
+			return nil, fmt.Errorf("loading frames: %w", err)
+		}
+	} else {
+		return nil, remapErr
 	}
 	if len(frames) == 0 {
 		return nil, fmt.Errorf("no telemetry frames stored for match %s", matchID)
@@ -1127,6 +1140,17 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 	result, err := p.ProcessMatch(ctx, matchCtx, frames)
 	if err != nil {
 		return nil, err
+	}
+	// Only publish the regenerated normalized cache after the mapper and full
+	// detection pipeline succeeded. ReplaceMatchTelemetryFrames is atomic and
+	// never touches the immutable raw ticks.
+	if remapped {
+		if _, err := store.ReplaceMatchTelemetryFrames(ctx, matchID, frames); err != nil {
+			return nil, fmt.Errorf("storing re-mapped telemetry: %w", err)
+		}
+	}
+	if err := store.StoreMatchContext(ctx, matchCtx, len(frames)); err != nil {
+		return nil, fmt.Errorf("storing current match context: %w", err)
 	}
 
 	deletedEvents, deletedScores, err := store.DeleteMatchAnalysis(ctx, matchID)
@@ -1142,6 +1166,18 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 	}
 	if stored.CasesClosed > 0 {
 		fmt.Printf("  Closed %d stale review case(s) for match %s\n", stored.CasesClosed, matchID)
+	}
+	// Refresh the human-facing document too. LoadMatchSummary reapplies the
+	// new scores/events to an existing raw-derived match report; storing it
+	// updates both its suspicion fields and the History "analyzed" timestamp.
+	if summary, err := a.engine.LoadMatchSummary(ctx, matchCtx, result.PlayerScores, result.DetectionEvents); err == nil {
+		if doc, marshalErr := json.Marshal(summary); marshalErr == nil {
+			if storeErr := store.StoreMatchSummaryJSON(ctx, summary.Meta(), doc); storeErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: storing refreshed match summary: %v\n", storeErr)
+			}
+		}
+	} else if !errors.Is(err, replay.ErrNoRawTicks) {
+		fmt.Fprintf(os.Stderr, "Warning: refreshing match summary: %v\n", err)
 	}
 	return result, nil
 }

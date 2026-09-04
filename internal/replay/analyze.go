@@ -515,11 +515,24 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 	a.results = append(a.results, res)
 
 	ctx, store := a.ctx, a.store
-	fr, err := store.StoreTelemetryFramesWithRaw(ctx, res.MatchCtx.MatchID, run.frames, nil)
-	if err != nil {
-		res.TelemetryErr = err
+	if run.replace {
+		// A forced replay analysis is also a mapper/schema refresh. Keeping the
+		// old normalized rows here would make a later database-only reprocess
+		// resurrect stale possession, hand or velocity mappings even though this
+		// run used the corrected frames. Raw match_ticks remain immutable.
+		n, err := store.ReplaceMatchTelemetryFrames(ctx, res.MatchCtx.MatchID, run.frames)
+		if err != nil {
+			res.TelemetryErr = err
+		} else {
+			res.Telemetry.Inserted = n
+		}
 	} else {
-		res.Telemetry.Inserted, res.Telemetry.Ignored = fr.Inserted, fr.Ignored
+		fr, err := store.StoreTelemetryFramesWithRaw(ctx, res.MatchCtx.MatchID, run.frames, nil)
+		if err != nil {
+			res.TelemetryErr = err
+		} else {
+			res.Telemetry.Inserted, res.Telemetry.Ignored = fr.Inserted, fr.Ignored
+		}
 	}
 	if err := store.StoreMatchContext(ctx, res.MatchCtx, len(run.frames)); err != nil {
 		res.ContextErr = err

@@ -96,6 +96,8 @@ Sent on every producer tick (the bridge polls `/session` at ~15 Hz). One batch c
 | `raw_json` | string containing JSON | bridge: **yes**; other producers: optional | Exact `/session` response bytes that produced the normalized frames, including whitespace and fields the current mapper does not know. The server validates the inner JSON and stores it once in `match_ticks`. When present, every frame in the batch must have the same `frame_index`; invalid, empty-frame or multi-index raw batches are rejected as a unit. |
 | `frames` | array | **yes** | 1–100 player frames. |
 
+`match_ticks` is the immutable source record. `telemetry_frames` is a normalized cache: forced replay analysis and raw-backed `reprocess-*` commands may atomically replace it after running the current adapter over the original snapshots. Reprocessing refuses malformed or discontinuous raw tick sequences rather than silently falling back to stale normalized data; only matches with no raw snapshots use that legacy fallback.
+
 #### Player frame fields
 
 | Field | Type | Unit | Required | Valid range / behaviour | Notes |

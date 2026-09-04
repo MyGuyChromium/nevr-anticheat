@@ -7,11 +7,11 @@ Every stage below uses only features that exist in the binaries today. Where the
 - Detection: 30 detectors. Both the built-in defaults and `configs/shadow_deploy.toml` ship all 30 in `mode = "shadow"` (events stored with `is_shadow = 1`, never scored). Scoring happens only after an operator promotes a detector to `review` or `enforce` mode (both simply mean "scored"; there is no separate automatic-enforcement path).
 - Cases: single-match `RC-<match>-<player>` cases for match scores ≥ `review_threshold` (60), cross-match `XM-<player>` cases for decayed scores ≥ 60 across ≥ 3 matches (`nevr-ac cross-match`).
 - Moderator tools: `flagged`, `report`, `cross-match-report`, `player-history`, `verdict` (with per-detector feedback), `calibration-report`.
-- Reprocessing: `reprocess-match`, `reprocess-player`, `reprocess-timerange` (half-open on match time) replace derived outputs from stored telemetry under any config.
+- Reprocessing: `reprocess-match`, `reprocess-player`, `reprocess-timerange` (half-open on match time) re-map preserved raw snapshots through the current adapter and physics, atomically refresh the normalized cache, then replace derived outputs under the selected config. Legacy matches without raw snapshots fall back to stored normalized telemetry.
 - Evidence export: `nevr-ac evidence-export` writes either the archival JSON bundle or a self-contained offline HTML reviewer with a top-down X/Z replay, event navigation, hand/disc state and typed evidence. Case exports contain scored events; `--match ... --player ... --include-shadow` supports pre-promotion review.
 - Observation dashboard: `nevr-ac observation-report` and the desktop app report event volume, shadow/scored counts, match/player spread and confidence/severity tails separately for every detector version. These are calibration inputs, never validation claims.
 - Database preservation: `nevr-ac backup <output.db>` makes a consistent SQLite snapshot, verifies it, and refuses to replace an existing snapshot.
-- Raw-source preservation: `.echoreplay` imports and the current live bridge store the original session JSON once per tick in `match_ticks`, alongside normalized `telemetry_frames`, so future mapper changes and disputed detections can be re-examined.
+- Raw-source preservation: `.echoreplay` imports and the current live bridge store the original session JSON once per tick in immutable `match_ticks`, alongside the rebuildable normalized `telemetry_frames` cache, so future mapper changes and disputed detections can be re-examined.
 - Not implemented / not wired: automatic enforcement (`enforce.Engine` exists but no binary constructs it), hot config reload, per-server dashboards.
 
 ## Rollout stages
@@ -83,7 +83,7 @@ Every stage below uses only features that exist in the binaries today. Where the
 
 ## Phase 1: data collection (stages 1–2)
 
-Every shadow match from `.echoreplay` or the current bridge stores normalized telemetry (`telemetry_frames`), exact source JSON once per tick (`match_ticks`), the match context and every detector's events with typed evidence. Per-player summaries (max/avg speed, throw speeds, hand speeds, wrist rates) are recomputable from the telemetry by reprocessing; nothing further needs to be collected. Legacy/custom WebSocket producers should add `raw_json` to reach the same standard.
+Every shadow match from `.echoreplay` or the current bridge stores a rebuildable normalized telemetry cache (`telemetry_frames`), exact immutable source JSON once per tick (`match_ticks`), the match context and every detector's events with typed evidence. Reprocessing re-runs the current mapper over that source before detection, so possession, pose, velocity and physics corrections apply to history. Per-player summaries (max/avg speed, throw speeds, hand speeds, wrist rates) remain recomputable; nothing further needs to be collected. Legacy/custom WebSocket producers should add `raw_json` to reach the same standard.
 
 Sample size targets: minimum 500 matches before any threshold change, 5,000 for a threshold anyone will defend, 50,000+ throws for the throw detectors.
 

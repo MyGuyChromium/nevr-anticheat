@@ -26,7 +26,7 @@ BOTH PATHS
 
 Design rules:
 
-- **Database is truth.** Telemetry frames (`telemetry_frames`) and match context are immutable source data; detection events, scores and cases are derived and can be recomputed at any time with `reprocess-*`.
+- **Raw data is truth.** Original Echo snapshots (`match_ticks`) are immutable source data. Normalized player frames (`telemetry_frames`) are a rebuildable cache; detection events, scores and cases are derived and can be recomputed at any time with `reprocess-*`.
 - **Shadow-safe deployment.** A detector in `mode = "shadow"` stores its events with `is_shadow = 1` and they are never scored: no scores, no cases, no per-event log lines. Both the built-in defaults and `configs/shadow_deploy.toml` use that posture until labelled replay calibration supports promotion.
 - **Evidence, not scores.** Every event carries typed evidence, observed vs expected values and a causal frame range; moderators review evidence, never a number.
 - **Async, multi-pass.** Live inline detection exists for immediate feedback, but the canonical analysis is reprocessing stored telemetry.
@@ -64,7 +64,7 @@ go build -o nevr-compat  ./cmd/compat      # /session payload compatibility chec
 ```bash
 # Ingest one replay: stores telemetry + raw ticks, runs detection, stores events/scores/cases.
 ./nevr-ac analyze match.echoreplay
-# A match that is already stored is skipped; --force clears its derived outputs and re-analyses.
+# A match that is already stored is skipped; --force refreshes normalized telemetry and replaces its derived outputs.
 # A recording whose session id changes mid-file (a rematch in the same lobby) holds two
 # matches: each is analyzed, stored and reported on its own, and the stored check is per match.
 ./nevr-ac analyze match.echoreplay --force
@@ -72,7 +72,7 @@ go build -o nevr-compat  ./cmd/compat      # /session payload compatibility chec
 # Ingest a directory (parallel, general.max_workers), then run cross-match aggregation.
 ./nevr-ac batch ./replays/ [--force]
 
-# Re-run detection on STORED telemetry (no replay file needed; replaces derived outputs).
+# Re-run the current mapper and detection on STORED data (no replay file needed).
 ./nevr-ac reprocess-match <match-id>
 ./nevr-ac reprocess-player <player-id>
 ./nevr-ac reprocess-timerange 2026-01-01T00:00:00Z 2026-03-01T00:00:00Z   # [since, until) on MATCH time
@@ -95,6 +95,8 @@ go build -o nevr-compat  ./cmd/compat      # /session payload compatibility chec
 ./nevr-ac backup backups/pre-review.db    # consistent, integrity-checked SQLite snapshot
 ./nevr-ac version
 ```
+
+`reprocess-*` uses the current adapter and configured physics. When immutable `match_ticks` are available, it re-maps those snapshots and atomically refreshes `telemetry_frames` before replacing derived analysis; this lets possession, pose and velocity mapper fixes apply to old matches. Legacy matches without raw snapshots fall back to their stored normalized frames. A malformed or incomplete raw stream fails safely instead of silently mixing old and new telemetry.
 
 Verdicts are `confirmed_cheat`, `false_positive`, `inconclusive` or `needs_more_data`. `--detector ID=yes|no|uncertain` records per-detector feedback that overrides the case verdict for that detector in the calibration report. Shadow events inside decided cases count on purpose: that is how a shadow detector earns promotion.
 
@@ -222,7 +224,7 @@ The per-match score stored in `suspicion_scores` (`scope = 'match'`) is **not** 
 
 SQLite in WAL mode (expect `.db-wal` / `.db-shm` sidecars). Every timestamp column is UTC RFC3339 with a literal `Z`.
 
-Immutable source data: `telemetry_frames` (one normalized frame per player per tick), `match_ticks` (the raw profiler/session JSON once per tick for `.echoreplay` imports and current live bridge traffic), `match_contexts` (roster, teams, physics, source, `match_start_time`, the anchor for decay and `reprocess-timerange`). Never pruned automatically.
+Immutable source data: `match_ticks` (the raw profiler/session JSON once per tick for `.echoreplay` imports and current live bridge traffic). Rebuildable source cache: `telemetry_frames` (one normalized frame per player per tick) and `match_contexts` (roster, teams, current physics, source, `match_start_time`, the anchor for decay and `reprocess-timerange`). These rows are never pruned automatically; forced replay analysis and raw-backed reprocessing atomically replace only the normalized cache, never the raw snapshots.
 
 `nevr-ac backup <output.db>` uses SQLite's consistent snapshot mechanism, verifies the copy with `PRAGMA quick_check`, and refuses to overwrite an existing artifact. Take a backup before reprocessing, threshold changes, moderator batches, or manual maintenance. Evidence exports are self-contained HTML or JSON files; they contain player identifiers and telemetry and should be handled as sensitive moderation data.
 

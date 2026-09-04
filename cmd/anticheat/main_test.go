@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -57,7 +58,7 @@ func TestRunAnalyze_TwoSessions(t *testing.T) {
 
 	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
 	if strings.Count(out, "Cleared previous analysis for") != 2 || strings.Count(out, "Match: ") != 2 ||
-		strings.Count(out, "Stored 0 telemetry frames (240 already present), 0 raw ticks (60 already present)") != 2 {
+		strings.Count(out, "Stored 240 telemetry frames (0 already present), 0 raw ticks (60 already present)") != 2 {
 		t.Errorf("forced analyze output:\n%s", out)
 	}
 }
@@ -181,12 +182,46 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 		t.Errorf("second analyze should refuse without --force:\n%s", out)
 	}
 	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
-	if !strings.Contains(out, "Cleared previous analysis") || !strings.Contains(out, "480 already present") {
+	if !strings.Contains(out, "Cleared previous analysis") || !strings.Contains(out, "Stored 480 telemetry frames (0 already present), 0 raw ticks (120 already present)") {
 		t.Errorf("forced analyze output:\n%s", out)
 	}
+	// Prove database-only reprocessing is a mapper refresh, not a replay of
+	// stale normalized rows. Corrupt one cached pose while leaving match_ticks
+	// intact; reprocess-match must reconstruct it from the raw snapshot.
+	check, err := openApp(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, err := check.store.GetMatchFrames(context.Background(), "SYN-FIXTURE-001")
+	if err != nil || len(frames) == 0 {
+		check.store.Close()
+		t.Fatalf("load telemetry before reprocess: %d frames, %v", len(frames), err)
+	}
+	frames[0].Position = model.Vec3{999, 999, 999}
+	if _, err := check.store.ReplaceMatchTelemetryFrames(context.Background(), "SYN-FIXTURE-001", frames); err != nil {
+		check.store.Close()
+		t.Fatal(err)
+	}
+	check.store.Close()
 	out = captureStdout(t, func() { runReprocessMatch(cfgPath, "SYN-FIXTURE-001") })
-	if !strings.Contains(out, "SYN-FIXTURE-001") {
+	if !strings.Contains(out, "SYN-FIXTURE-001") || !strings.Contains(out, "Re-mapped 120 raw ticks into 480 current-schema player frames") {
 		t.Errorf("reprocess output:\n%s", out)
+	}
+	check, err = openApp(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.store.Close()
+	frames, err = check.store.GetMatchFrames(context.Background(), "SYN-FIXTURE-001")
+	if err != nil || len(frames) == 0 {
+		t.Fatalf("load telemetry after reprocess: %d frames, %v", len(frames), err)
+	}
+	if frames[0].Position[0] == 999 {
+		t.Fatalf("normalized telemetry was not restored from raw: first=%+v", frames[0])
+	}
+	matchCtx, err := check.store.GetMatchContext(context.Background(), "SYN-FIXTURE-001")
+	if err != nil || matchCtx.Physics.DiscSpeedCap != 18.9 {
+		t.Fatalf("reprocessed context physics = %+v, %v", matchCtx, err)
 	}
 	out = captureStdout(t, func() { runFlagged(cfgPath) })
 	if out == "" {
