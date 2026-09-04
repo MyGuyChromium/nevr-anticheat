@@ -220,7 +220,10 @@ jobs:
           if-no-files-found: error
 
       - name: Attest release build provenance
-        if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+        # GitHub does not offer artifact attestations to user-owned private
+        # repositories. Keep them automatic when the repository is public,
+        # without blocking an otherwise verified private release.
+        if: ${{ !github.event.repository.private && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |

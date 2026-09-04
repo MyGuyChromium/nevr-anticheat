@@ -41,7 +41,7 @@ GitHub's green **Code → Download ZIP** button is a source-code archive, so it 
 
 Installed evidence lives under `%LOCALAPPDATA%\NEVR-Anticheat`, separate from the replaceable program files. Upgrades and normal uninstall preserve it. The [`NEVR-Anticheat-Windows-x64.zip`](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip) remains available for portable and advanced use.
 
-Each successful master build publishes SHA-256 checksums and GitHub provenance attestations, runs a clean install/uninstall preservation test, and scans the output with Microsoft Defender when it is available on the build runner. Authenticode publisher identity is enabled automatically when the repository's signing-certificate secrets are configured; see [`docs/windows_release_trust.md`](docs/windows_release_trust.md).
+Each successful master build publishes SHA-256 checksums, runs a clean install/uninstall preservation test, and scans the output with Microsoft Defender when it is available on the build runner. GitHub provenance attestations are added when the repository visibility supports them. Authenticode publisher identity is enabled automatically when the repository's signing-certificate secrets are configured; see [`docs/windows_release_trust.md`](docs/windows_release_trust.md).
 
 The desktop's update card follows the verified `windows-latest` release tag. Because this repository is private, set a read-only GitHub token in `NEVR_GITHUB_TOKEN` if you want automatic in-app update checks; opening the release page works through your already signed-in browser without a token.
 
