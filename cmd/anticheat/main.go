@@ -1154,16 +1154,12 @@ func reprocessMatchFromDB(ctx context.Context, a *app, p *pipeline.Pipeline, mat
 		return nil, fmt.Errorf("storing current match context: %w", err)
 	}
 
-	deletedEvents, deletedScores, err := store.DeleteMatchAnalysis(ctx, matchID)
-	if err != nil {
-		return nil, fmt.Errorf("clearing old analysis: %w", err)
-	}
-	if deletedEvents > 0 || deletedScores > 0 {
-		fmt.Printf("  Cleared %d old events and %d score snapshots for match %s\n", deletedEvents, deletedScores, matchID)
-	}
-	stored, err := replay.StoreMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions())
+	stored, err := replay.ReplaceMatchAnalysis(ctx, store, matchCtx, result, "reprocess", a.analysisOptions())
 	if err != nil {
 		return nil, err
+	}
+	if stored.ClearedEvents > 0 || stored.ClearedScores > 0 {
+		fmt.Printf("  Cleared %d old events and %d score snapshots for match %s\n", stored.ClearedEvents, stored.ClearedScores, matchID)
 	}
 	if stored.CasesClosed > 0 {
 		fmt.Printf("  Closed %d stale review case(s) for match %s\n", stored.CasesClosed, matchID)

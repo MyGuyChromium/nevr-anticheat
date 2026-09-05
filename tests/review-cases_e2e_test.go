@@ -98,10 +98,7 @@ func TestReviewCases_AnalyzeVerdictCalibration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.DeleteMatchAnalysis(ctx, mc.MatchID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := replay.StoreMatchAnalysis(ctx, store, mc, result2, "reprocess", opts); err != nil {
+	if _, err := replay.ReplaceMatchAnalysis(ctx, store, mc, result2, "reprocess", opts); err != nil {
 		t.Fatal(err)
 	}
 	var n int

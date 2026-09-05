@@ -204,6 +204,11 @@ func (p *EchoReplayParser) ParseFile(path string) (*model.MatchContext, []model.
 // error from fn aborts parsing with that error.
 func (p *EchoReplayParser) ParseFileStream(path string, fn func(tick *ParsedTick) error) (*model.MatchContext, *DiagnosticReport, error) {
 	p.matches = nil
+	clear(p.rawByFrame)
+	// A parser may be reused by tools and tests. The first session of a new
+	// file does not look like an in-file session change, so reset the mapper
+	// explicitly here instead of carrying frame/time/player history forward.
+	p.mapper.NewFile()
 	// Detect ZIP by reading first 4 bytes (PK\x03\x04 magic)
 	isZip, err := isZipFile(path)
 	if err != nil {

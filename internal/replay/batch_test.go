@@ -87,6 +87,15 @@ func testStore(t *testing.T) *sqlite.Store {
 	return s
 }
 
+func TestBatchAnalyzerReportsDirectoryWalkFailure(t *testing.T) {
+	store := testStore(t)
+	ba := NewBatchAnalyzer(emptyPipeline(), store, func() FrameParser { return NewJSONFrameParser() }, 1, quietLogger())
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := ba.AnalyzeDirectory(context.Background(), missing); err == nil {
+		t.Fatal("missing replay directory was silently accepted")
+	}
+}
+
 // writeLegacyReplay writes a minimal legacy JSON replay for matchID.
 func writeLegacyReplay(t *testing.T, dir, name, matchID string) string {
 	t.Helper()
@@ -173,10 +182,7 @@ func TestStoreMatchAnalysis_ClosesStaleCasesAndReopens(t *testing.T) {
 	}
 
 	// Threshold raised / detector fixed: p2 no longer scores.
-	if _, _, err := store.DeleteMatchAnalysis(ctx, "M1"); err != nil {
-		t.Fatal(err)
-	}
-	second, err := StoreMatchAnalysis(ctx, store, mc, matchResult("M1", map[string]float64{"p1": 70}), "reprocess", opts)
+	second, err := ReplaceMatchAnalysis(ctx, store, mc, matchResult("M1", map[string]float64{"p1": 70}), "reprocess", opts)
 	if err != nil || second.CasesStored != 1 || second.CasesClosed != 1 {
 		t.Fatalf("reprocess: %+v, %v", second, err)
 	}
@@ -193,10 +199,7 @@ func TestStoreMatchAnalysis_ClosesStaleCasesAndReopens(t *testing.T) {
 	}
 
 	// p2 flagged again: the stale closure is undone, p1's case untouched.
-	if _, _, err := store.DeleteMatchAnalysis(ctx, "M1"); err != nil {
-		t.Fatal(err)
-	}
-	third, err := StoreMatchAnalysis(ctx, store, mc, matchResult("M1", map[string]float64{"p1": 70, "p2": 75}), "reprocess", opts)
+	third, err := ReplaceMatchAnalysis(ctx, store, mc, matchResult("M1", map[string]float64{"p1": 70, "p2": 75}), "reprocess", opts)
 	if err != nil || third.CasesStored != 2 || third.CasesClosed != 0 {
 		t.Fatalf("re-flag: %+v, %v", third, err)
 	}
@@ -209,14 +212,49 @@ func TestStoreMatchAnalysis_ClosesStaleCasesAndReopens(t *testing.T) {
 	if err := store.StoreModeratorDecision(ctx, model.ModeratorDecision{CaseID: "RC-M1-p1", ModeratorID: "mod", Verdict: sqlite.VerdictConfirmedCheat}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.DeleteMatchAnalysis(ctx, "M1"); err != nil {
-		t.Fatal(err)
-	}
-	fourth, err := StoreMatchAnalysis(ctx, store, mc, matchResult("M1", nil), "reprocess", opts)
+	fourth, err := ReplaceMatchAnalysis(ctx, store, mc, matchResult("M1", nil), "reprocess", opts)
 	if err != nil || fourth.CasesStored != 0 || fourth.CasesClosed != 1 {
 		t.Fatalf("drop all: %+v, %v", fourth, err)
 	}
 	if p1, _ := store.GetReviewCase(ctx, "RC-M1-p1"); p1.Status != model.CaseStatusDecided {
 		t.Errorf("decided case changed by reprocess: %+v", p1)
+	}
+}
+
+func TestReplaceMatchAnalysisRollsBackEveryDerivedOutput(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	mc := &model.MatchContext{MatchID: "M-atomic", PlayerIDs: []string{"p1"}}
+	opts := AnalysisOptions{Logger: quietLogger()}
+	firstResult := matchResult(mc.MatchID, map[string]float64{"p1": 70})
+	if _, err := StoreMatchAnalysis(ctx, store, mc, firstResult, "initial", opts); err != nil {
+		t.Fatal(err)
+	}
+	oldEventID := firstResult.DetectionEvents[0].EventID
+	if _, err := store.DB().Exec(`CREATE TRIGGER fail_reprocess BEFORE INSERT ON detection_events
+		WHEN NEW.analysis_source = 'reprocess' BEGIN SELECT RAISE(ABORT, 'forced replacement failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReplaceMatchAnalysis(ctx, store, mc, matchResult(mc.MatchID, map[string]float64{"p1": 90}), "reprocess", opts); err == nil {
+		t.Fatal("replacement unexpectedly succeeded")
+	}
+	events, err := store.GetMatchEvents(ctx, mc.MatchID)
+	if err != nil || len(events) != 1 || events[0].EventID != oldEventID {
+		t.Fatalf("previous events not restored atomically: events=%+v err=%v", events, err)
+	}
+	scores, err := store.GetMatchScores(ctx, mc.MatchID)
+	if err != nil || scores["p1"].TotalScore != 70 {
+		t.Fatalf("previous score not preserved: scores=%+v err=%v", scores, err)
+	}
+	rc, err := store.GetReviewCase(ctx, "RC-M-atomic-p1")
+	if err != nil || rc.SuspicionScore != 70 || rc.Status != model.CaseStatusPending {
+		t.Fatalf("previous case not preserved: case=%+v err=%v", rc, err)
+	}
+	var snapshots int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM analysis_snapshots WHERE match_id = ?`, mc.MatchID).Scan(&snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 0 {
+		t.Fatalf("failed replacement committed %d snapshots", snapshots)
 	}
 }

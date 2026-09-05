@@ -48,11 +48,13 @@ type PlayerTelemetryFrame struct {
 	// Game phase: "playing", "round_start", "round_over", "pre_match", "post_match"
 	GamePhase string `json:"game_phase,omitempty"`
 
-	// Team scores for state validation
-	BlueScore   int `json:"blue_score,omitempty"`
-	OrangeScore int `json:"orange_score,omitempty"`
-	Goals       int `json:"goals,omitempty"`
-	Stuns       int `json:"stuns,omitempty"`
+	// Team scores for state validation. HasScore distinguishes a real 0-0
+	// snapshot from a source that did not provide team scores at all.
+	HasScore    bool `json:"has_score,omitempty"`
+	BlueScore   int  `json:"blue_score,omitempty"`
+	OrangeScore int  `json:"orange_score,omitempty"`
+	Goals       int  `json:"goals,omitempty"`
+	Stuns       int  `json:"stuns,omitempty"`
 }
 
 // GameThrowDetails is Echo VR's own breakdown of a completed local-player

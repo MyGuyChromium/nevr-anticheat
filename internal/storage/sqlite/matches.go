@@ -206,7 +206,7 @@ func (s *Store) GetMatchFinalScore(ctx context.Context, matchID string) (blue, o
 	if err := json.Unmarshal([]byte(frameJSON), &f); err != nil {
 		return 0, 0, false, fmt.Errorf("unmarshal last frame of %s: %w", matchID, err)
 	}
-	if f.BlueScore == 0 && f.OrangeScore == 0 {
+	if !f.HasScore && f.BlueScore == 0 && f.OrangeScore == 0 {
 		var n int
 		if err := s.db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?

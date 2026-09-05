@@ -212,7 +212,10 @@ func (ba *BatchAnalyzer) findReplayFiles(dir string) ([]string, int, error) {
 	var files []string
 	ignored := 0
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
@@ -374,23 +377,16 @@ func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *Ba
 	if err := ba.store.StoreMatchContext(ctx, pm.matchCtx, len(pm.frames)); err != nil {
 		return fmt.Errorf("storing match context: %w", err)
 	}
-	if pm.replaced {
-		// The previous derived outputs are only cleared once the replacement
-		// is fully analyzed and its source data is stored, immediately before
-		// the new outputs are written.
-		ev, sc, err := ba.store.DeleteMatchAnalysis(ctx, matchID)
-		if err != nil {
-			return fmt.Errorf("clearing previous analysis: %w", err)
-		}
-		if ev > 0 || sc > 0 {
-			ba.logger.Info("replaced previous analysis", "match_id", matchID, "events_deleted", ev, "scores_deleted", sc)
-		}
-	}
 	opts := ba.opts
 	if opts.Logger == nil {
 		opts.Logger = ba.logger
 	}
-	stored, err := StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source, opts)
+	var stored StoredAnalysis
+	if pm.replaced {
+		stored, err = ReplaceMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source, opts)
+	} else {
+		stored, err = StoreMatchAnalysis(ctx, ba.store, pm.matchCtx, pm.result, source, opts)
+	}
 
 	mu.Lock()
 	result.FramesInserted += tel.Inserted
@@ -404,6 +400,10 @@ func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *Ba
 	if err != nil {
 		return fmt.Errorf("storing analysis: %w", err)
 	}
+	if stored.ClearedEvents > 0 || stored.ClearedScores > 0 {
+		ba.logger.Info("replaced previous analysis", "match_id", matchID,
+			"events_deleted", stored.ClearedEvents, "scores_deleted", stored.ClearedScores)
+	}
 	return nil
 }
 
@@ -413,6 +413,8 @@ type StoredAnalysis struct {
 	ScoresStored   int
 	CasesStored    int
 	CasesClosed    int      // stale pending cases of this match closed (see sqlite.CloseStaleReviewCases)
+	ClearedEvents  int64    // previous rows removed by an atomic replacement
+	ClearedScores  int64    // previous rows removed by an atomic replacement
 	FlaggedPlayers []string // sorted
 }
 
@@ -432,11 +434,12 @@ type AnalysisOptions struct {
 // StoreMatchAnalysis persists a match's derived outputs: detection events
 // (tagged with source "initial" or "reprocess"), one per-match score snapshot
 // per scored player, and the single-match review cases produced by
-// review.CreateCasesFromResult (also written to result.ReviewCases).
+// review.BuildCasesFromResult (also written to result.ReviewCases).
 // Telemetry and context are stored by the caller. Players are processed in
 // sorted order for reproducibility.
 //
-// Cases are upserted under their deterministic ids, so a re-analysis
+// All outputs are committed together. Cases are upserted under their
+// deterministic ids, so a re-analysis
 // refreshes the cases of players still flagged and keeps any moderator
 // status. Pending cases of this match whose player is no longer flagged are
 // then closed with a close_reason (never deleted) so `flagged` and
@@ -448,53 +451,71 @@ type AnalysisOptions struct {
 // zero row would let GetPlayerScore regress a real score to 0 and shadow-only
 // players leave no trace either way.
 func StoreMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string, opts AnalysisOptions) (StoredAnalysis, error) {
+	return storeMatchAnalysis(ctx, store, matchCtx, result, source, opts, false)
+}
+
+// ReplaceMatchAnalysis snapshots and replaces a match's complete derived
+// output atomically. A failed replacement leaves the prior analysis and case
+// lifecycle state untouched.
+func ReplaceMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string, opts AnalysisOptions) (StoredAnalysis, error) {
+	return storeMatchAnalysis(ctx, store, matchCtx, result, source, opts, true)
+}
+
+func storeMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *model.MatchContext, result *pipeline.MatchResult, source string, opts AnalysisOptions, replace bool) (StoredAnalysis, error) {
 	var out StoredAnalysis
-	stored, err := store.StoreDetectionEvents(ctx, result.DetectionEvents, source)
-	out.EventsStored = stored
-	if err != nil {
-		return out, fmt.Errorf("storing events: %w", err)
+	if matchCtx == nil || matchCtx.MatchID == "" {
+		return out, fmt.Errorf("storing analysis: match context with id required")
+	}
+	if result == nil {
+		return out, fmt.Errorf("storing analysis: result required")
 	}
 	pids := make([]string, 0, len(result.PlayerScores))
 	for pid := range result.PlayerScores {
 		pids = append(pids, pid)
 	}
 	sort.Strings(pids)
+	scores := make([]model.SuspicionScore, 0, len(pids))
 	for _, pid := range pids {
 		score := result.PlayerScores[pid]
 		if score.TotalScore <= 0 || score.EventCount == 0 {
 			continue
 		}
-		if err := store.StoreMatchSuspicionScore(ctx, matchCtx.MatchID, score); err != nil {
-			return out, fmt.Errorf("storing score for %s: %w", pid, err)
-		}
-		out.ScoresStored++
+		scores = append(scores, score)
 	}
 
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	cases, caseErr := review.CreateCasesFromResult(ctx, store, matchCtx, result, opts.Levels,
+	cases := review.BuildCasesFromResult(matchCtx, result, opts.Levels,
 		review.WithDetectorNames(opts.DetectorNames), review.WithLogger(logger))
-	result.ReviewCases = cases
-	out.CasesStored = len(cases)
 	for _, rc := range cases {
 		out.FlaggedPlayers = append(out.FlaggedPlayers, rc.PlayerID)
 	}
 	sort.Strings(out.FlaggedPlayers)
-	if caseErr != nil {
-		// A case that failed to store keeps its old row; closing it as stale
-		// would hide the failure, so leave every case alone.
-		return out, fmt.Errorf("storing review cases: %w", caseErr)
-	}
-	closed, err := store.CloseStaleReviewCases(ctx, matchCtx.MatchID, out.FlaggedPlayers,
-		fmt.Sprintf("player no longer reaches the review tier after %s analysis", source))
+	written, err := store.WriteMatchAnalysis(ctx, sqlite.MatchAnalysisWrite{
+		MatchID: matchCtx.MatchID, Source: source, Replace: replace,
+		Events: result.DetectionEvents, Scores: scores, Cases: cases,
+		KeepPlayers: out.FlaggedPlayers,
+		CloseReason: fmt.Sprintf("player no longer reaches the review tier after %s analysis", source),
+	})
 	if err != nil {
-		return out, fmt.Errorf("closing stale review cases: %w", err)
+		return StoredAnalysis{}, err
 	}
-	out.CasesClosed = int(closed)
-	if closed > 0 {
-		logger.Info("closed stale review cases", "match_id", matchCtx.MatchID, "closed", closed, "source", source)
+	out.EventsStored = written.EventsStored
+	out.ScoresStored = written.ScoresStored
+	out.CasesStored = written.CasesStored
+	out.CasesClosed = int(written.CasesClosed)
+	out.ClearedEvents = written.ClearedEvents
+	out.ClearedScores = written.ClearedScores
+	result.ReviewCases = cases
+	for _, rc := range cases {
+		logger.Info("review case created", "case_id", rc.CaseID, "player_id", rc.PlayerID,
+			"match_id", rc.MatchID, "score", rc.SuspicionScore, "level", rc.Level,
+			"severity", rc.Severity, "detections", len(rc.DetectorsTriggered))
+	}
+	if written.CasesClosed > 0 {
+		logger.Info("closed stale review cases", "match_id", matchCtx.MatchID, "closed", written.CasesClosed, "source", source)
 	}
 	return out, nil
 }

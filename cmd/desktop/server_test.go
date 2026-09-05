@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -22,6 +23,29 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
+
+func TestSaveUploadPartFailureRemovesNumberedDirectory(t *testing.T) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("files", "too-large.echoreplay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("123456"))
+	_ = mw.Close()
+	mr := multipart.NewReader(&body, mw.Boundary())
+	upload, err := mr.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := saveUploadPartLimited(dir, 7, upload, 3); !errors.Is(err, errUploadTooLarge) {
+		t.Fatalf("save error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "7")); !os.IsNotExist(err) {
+		t.Fatalf("failed upload directory remains: %v", err)
+	}
+}
 
 // TestDesktop_AnalyzeTwoSessions: a recording whose session id changes
 // mid-file comes back as one upload entry carrying both matches (the

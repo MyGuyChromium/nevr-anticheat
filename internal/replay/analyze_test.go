@@ -148,6 +148,29 @@ func writeCorruptCopy(t *testing.T, n int) string {
 	return path
 }
 
+func TestAnalyzeFileCorruptReplayRollsBackStagedRawTicks(t *testing.T) {
+	e := newTestEngine(t)
+	data, err := os.ReadFile(syntheticReplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "corrupt-after-flush.echoreplay")
+	content := strings.Repeat(string(data), 5) + "2026/03/01 12:00:09.000\t" + strings.Repeat("x", 9*1024*1024) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.AnalyzeFile(context.Background(), path, false); err == nil || !strings.Contains(err.Error(), "reading echoreplay") {
+		t.Fatalf("corrupt analysis error = %v", err)
+	}
+	var ticks int
+	if err := e.Store().DB().QueryRow(`SELECT COUNT(*) FROM match_ticks WHERE match_id = 'SYN-FIXTURE-001'`).Scan(&ticks); err != nil {
+		t.Fatal(err)
+	}
+	if ticks != 0 {
+		t.Fatalf("corrupt replay committed %d partial raw ticks", ticks)
+	}
+}
+
 type derivedCounts struct{ events, scores, cases, pending int }
 
 func countDerived(t *testing.T, store *sqlite.Store, matchID string) derivedCounts {

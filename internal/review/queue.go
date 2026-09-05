@@ -2,11 +2,11 @@
 // review cases from pipeline results, assigning them, and recording
 // moderator decisions so per-detector precision can be measured.
 //
-// CreateCasesFromResult is the ONE mechanism that turns a match result into
-// single-match review cases. replay.StoreMatchAnalysis (analyze, batch,
-// reprocess-*) and ingest.MatchManager (live match end) both call it, with
-// the scorer's level table, so every path creates the same cases under the
-// same ids (CaseID: "RC-<match>-<player>", refreshed on reprocess).
+// BuildCasesFromResult is the one mechanism that turns a match result into
+// single-match review cases. CreateCasesFromResult stores those cases for the
+// live path; replay stores them with events and scores in one transaction.
+// Both use the scorer's level table and deterministic ids
+// (CaseID: "RC-<match>-<player>", refreshed on reprocess).
 // The lifecycle methods (Assign, Start, Decide) require a store implementing
 // LifecycleStore (*sqlite.Store does); a store without them returns
 // ErrLifecycleUnsupported rather than silently doing nothing.
@@ -126,6 +126,11 @@ func (q *Queue) Enqueue(
 	if err := q.store.StoreReviewCase(ctx, rc); err != nil {
 		return rc, err
 	}
+	q.logCreated(rc)
+	return rc, nil
+}
+
+func (q *Queue) logCreated(rc model.ReviewCase) {
 	q.logger.Info("review case created",
 		"case_id", rc.CaseID,
 		"player_id", rc.PlayerID,
@@ -135,7 +140,6 @@ func (q *Queue) Enqueue(
 		"severity", rc.Severity,
 		"detections", len(rc.DetectorsTriggered),
 	)
-	return rc, nil
 }
 
 // GetPending returns pending review cases.
@@ -280,21 +284,36 @@ func WithClock(now func() time.Time) Option {
 	return func(o *options) { o.now = now }
 }
 
-// CreateCasesFromResult builds, stores and returns one review case per player
-// whose score (classified with table) is at or above high_risk and who has at
-// least one non-shadow event in the result. Players are processed in sorted
-// PlayerID order. Store failures do not stop processing; all errors are
-// joined and returned alongside the cases that were created.
-func CreateCasesFromResult(
-	ctx context.Context,
-	store CaseStore,
+func configuredQueue(store CaseStore, table model.LevelTable, opts ...Option) *Queue {
+	o := options{minLevel: model.LevelHighRisk, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if table.IsZero() {
+		table = model.DefaultLevelTable()
+	}
+	q := NewQueue(store, o.logger)
+	q.SetLevels(table)
+	if o.names != nil {
+		q.SetDetectorNames(o.names)
+	}
+	if o.now != nil {
+		q.SetClock(o.now)
+	}
+	return q
+}
+
+// BuildCasesFromResult builds, but does not store, one review case per player
+// at or above the configured review level with at least one non-shadow event.
+// This pure phase lets SQLite persist events, scores and cases atomically.
+func BuildCasesFromResult(
 	matchCtx *model.MatchContext,
 	result *pipeline.MatchResult,
 	table model.LevelTable,
 	opts ...Option,
-) ([]model.ReviewCase, error) {
+) []model.ReviewCase {
 	if result == nil {
-		return nil, nil
+		return nil
 	}
 	o := options{minLevel: model.LevelHighRisk, logger: slog.Default()}
 	for _, opt := range opts {
@@ -304,14 +323,7 @@ func CreateCasesFromResult(
 		table = model.DefaultLevelTable()
 	}
 
-	q := NewQueue(store, o.logger)
-	q.SetLevels(table)
-	if o.names != nil {
-		q.SetDetectorNames(o.names)
-	}
-	if o.now != nil {
-		q.SetClock(o.now)
-	}
+	q := configuredQueue(nil, table, opts...)
 
 	// Non-shadow events per player.
 	byPlayer := make(map[string][]model.DetectionEvent)
@@ -329,7 +341,6 @@ func CreateCasesFromResult(
 	sort.Strings(ids)
 
 	var cases []model.ReviewCase
-	var errs []error
 	for _, pid := range ids {
 		score := result.PlayerScores[pid]
 		if len(byPlayer[pid]) == 0 {
@@ -338,11 +349,39 @@ func CreateCasesFromResult(
 		if !table.LevelFor(score.TotalScore).AtLeast(o.minLevel) {
 			continue
 		}
-		rc, err := q.Enqueue(ctx, pid, matchCtx, score, byPlayer[pid])
-		if err != nil {
-			errs = append(errs, fmt.Errorf("review: storing case for player %s: %w", pid, err))
+		rc := q.builder.Build(pid, matchCtx, score, byPlayer[pid])
+		if matchCtx != nil && matchCtx.MatchID != "" {
+			rc.CaseID = CaseID(matchCtx.MatchID, pid)
+		}
+		cases = append(cases, rc)
+	}
+	return cases
+}
+
+// CreateCasesFromResult builds, stores and returns one review case per player.
+// Store failures do not stop processing; all errors are joined and returned
+// alongside the cases that were successfully stored.
+func CreateCasesFromResult(
+	ctx context.Context,
+	store CaseStore,
+	matchCtx *model.MatchContext,
+	result *pipeline.MatchResult,
+	table model.LevelTable,
+	opts ...Option,
+) ([]model.ReviewCase, error) {
+	q := configuredQueue(store, table, opts...)
+	candidates := BuildCasesFromResult(matchCtx, result, table, opts...)
+	if candidates == nil {
+		return nil, nil
+	}
+	cases := make([]model.ReviewCase, 0, len(candidates))
+	var errs []error
+	for _, rc := range candidates {
+		if err := store.StoreReviewCase(ctx, rc); err != nil {
+			errs = append(errs, fmt.Errorf("review: storing case for player %s: %w", rc.PlayerID, err))
 			continue
 		}
+		q.logCreated(rc)
 		cases = append(cases, rc)
 	}
 	return cases, errors.Join(errs...)

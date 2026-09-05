@@ -105,3 +105,15 @@ func TestSummaryBuilderDoesNotCountRoundTransitionAsThrow(t *testing.T) {
 		t.Errorf("round transition produced throws: %+v", s.Throws)
 	}
 }
+
+func TestSummaryBuilderPreservesZeroZeroScore(t *testing.T) {
+	b := NewSummaryBuilder(&model.MatchContext{MatchID: "zero-zero"})
+	b.Add(&adapter.EchoVRSessionResponse{
+		SessionID: "zero-zero",
+		Teams:     []adapter.EchoVRTeam{{TeamName: "BLUE TEAM"}, {TeamName: "ORANGE TEAM"}},
+	}, 0, 0)
+	s := b.Finish()
+	if !s.HasScore || s.BlueScore != 0 || s.OrangeScore != 0 {
+		t.Fatalf("0-0 score lost: %+v", s)
+	}
+}

@@ -76,6 +76,7 @@ type RawPlayerFrame struct {
 	PingMs        float64    `json:"ping_ms"`
 	BlueScore     int        `json:"blue_score"`
 	OrangeScore   int        `json:"orange_score"`
+	HasScore      bool       `json:"-"`
 	Goals         int        `json:"goals"`
 	Stuns         int        `json:"stuns"`
 }
@@ -115,6 +116,13 @@ func (rp *RawPlayerFrame) UnmarshalJSON(data []byte) error {
 	if base.PingMs == 0 && alias.PingMs != nil {
 		base.PingMs = *alias.PingMs
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, bluePresent := fields["blue_score"]
+	_, orangePresent := fields["orange_score"]
+	base.HasScore = bluePresent || orangePresent
 	*rp = RawPlayerFrame(base)
 	return nil
 }
@@ -261,6 +269,7 @@ func convertFrame(raw *RawFrame, prevTimestamp float64, first bool) []model.Play
 			Disc:              disc,
 			EstimatedPingMs:   rp.PingMs,
 			GamePhase:         raw.GamePhase,
+			HasScore:          rp.HasScore || rp.BlueScore != 0 || rp.OrangeScore != 0,
 			BlueScore:         rp.BlueScore,
 			OrangeScore:       rp.OrangeScore,
 			Goals:             rp.Goals,
