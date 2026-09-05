@@ -176,6 +176,15 @@ func (m *Mapper) NewMatch() {
 	m.haveLastThrow = false
 }
 
+// NewFile resets both per-match state and file-level diagnostics. NewMatch
+// intentionally keeps counters across sessions in one recording; callers
+// starting another recording should use NewFile instead.
+func (m *Mapper) NewFile() {
+	m.NewMatch()
+	m.stats = MapperStats{}
+	m.warnedFields = make(map[string]bool)
+}
+
 // SetPhysics sets the physics constants copied into every MatchContext this
 // mapper produces (default: model.DefaultPhysics()). Callers that load a
 // [physics] config section should pass it here so detectors see it.
@@ -666,6 +675,7 @@ func (m *Mapper) mapPlayer(
 		Disc:              disc,
 		EstimatedPingMs:   pingMs,
 		GamePhase:         gamePhase,
+		HasScore:          true,
 		BlueScore:         blueScore,
 		OrangeScore:       orangeScore,
 		Goals:             goals,

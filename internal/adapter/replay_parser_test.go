@@ -30,6 +30,37 @@ func writeLines(t *testing.T, path string, lines []string) {
 	}
 }
 
+func TestReplayParserReuseResetsPerFileState(t *testing.T) {
+	const fixture = "../../tests/fixtures/synthetic_session.echoreplay"
+	p := NewEchoReplayParser()
+	if _, frames, _, err := p.ParseFile(fixture); err != nil || len(frames) == 0 {
+		t.Fatalf("first parse: frames=%d err=%v", len(frames), err)
+	}
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("fixture only has %d lines", len(lines))
+	}
+	short := filepath.Join(t.TempDir(), "short.echoreplay")
+	writeLines(t, short, lines[:5])
+	_, frames, diag, err := p.ParseFile(short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 || frames[0].FrameIndex != 0 {
+		t.Fatalf("second parse starts at frame %d; want 0", frames[0].FrameIndex)
+	}
+	if got := len(p.RawSessionByFrame()); got != 5 {
+		t.Fatalf("second parse retained raw ticks from first file: got %d, want 5", got)
+	}
+	if diag.MapperStats == nil || diag.MapperStats.Snapshots != 5 {
+		t.Fatalf("second parse retained first-file diagnostics: %+v", diag.MapperStats)
+	}
+}
+
 func TestParseReplayLineTime(t *testing.T) {
 	got, err := ParseReplayLineTime("2025/12/04 03:38:22.060")
 	if err != nil {

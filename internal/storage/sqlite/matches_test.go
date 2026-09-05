@@ -98,6 +98,13 @@ func TestMatches_ScoresCasesFramesAndScore(t *testing.T) {
 	if _, _, ok, err := s.GetMatchFinalScore(ctx, "empty"); err != nil || ok {
 		t.Errorf("empty match score ok=%v err=%v", ok, err)
 	}
+	zero := model.PlayerTelemetryFrame{PlayerID: "p1", FrameIndex: 100, HasScore: true}
+	if _, err := s.StoreTelemetryFrames(ctx, match, []model.PlayerTelemetryFrame{zero}); err != nil {
+		t.Fatal(err)
+	}
+	if blue, orange, ok, err := s.GetMatchFinalScore(ctx, match); err != nil || !ok || blue != 0 || orange != 0 {
+		t.Errorf("0-0 final score = %d-%d ok=%v err=%v", blue, orange, ok, err)
+	}
 
 	// Two snapshots for p1 (the later wins), one for p2, one for another match.
 	now := time.Now()

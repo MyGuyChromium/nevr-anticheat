@@ -985,15 +985,29 @@ func uploadName(name string) string {
 var errUploadTooLarge = errors.New("replay exceeds the 4 GB desktop limit")
 
 func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err error) {
+	return saveUploadPartLimited(dir, idx, part, maxUploadFileBytes)
+}
+
+func saveUploadPartLimited(dir string, idx int, part *multipart.Part, maxBytes int64) (path string, err error) {
 	sub := filepath.Join(dir, fmt.Sprint(idx))
 	if err := os.MkdirAll(sub, 0o700); err != nil {
 		return "", err
 	}
 	root, err := os.OpenRoot(sub)
 	if err != nil {
+		_ = os.Remove(sub)
 		return "", err
 	}
-	defer root.Close()
+	defer func() {
+		if closeErr := root.Close(); err == nil {
+			err = closeErr
+		}
+		// The file cleanup defer below runs first. Once the root handle is
+		// closed, remove the now-empty numbered directory as well.
+		if err != nil {
+			_ = os.Remove(sub)
+		}
+	}()
 	name := uploadName(part.FileName())
 	path = filepath.Join(sub, name)
 	dst, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -1008,11 +1022,11 @@ func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err
 			_ = root.Remove(name)
 		}
 	}()
-	written, err := io.Copy(dst, io.LimitReader(part, maxUploadFileBytes+1))
+	written, err := io.Copy(dst, io.LimitReader(part, maxBytes+1))
 	if err != nil {
 		return "", err
 	}
-	if written > maxUploadFileBytes {
+	if written > maxBytes {
 		return "", errUploadTooLarge
 	}
 	if err := dst.Sync(); err != nil {

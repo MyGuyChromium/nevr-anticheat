@@ -393,9 +393,8 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 
 	// Score and goals.
 	blue, orange := session.BluePoints, session.OrangePoints
-	if blue != 0 || orange != 0 {
-		s.HasScore = true
-	}
+	// Echo /session snapshots carry the score fields even when both are zero.
+	s.HasScore = true
 	s.BlueScore, s.OrangeScore = blue, orange
 	if b.havePrev {
 		if d := blue - b.prevBlue; d > 0 {

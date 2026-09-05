@@ -372,12 +372,10 @@ func AnalyzeFileAll(ctx context.Context, store *sqlite.Store, path string, opts 
 		return a.results, a.finish(run)
 	}
 
-	// Stream the replay so the raw profiler payloads are written to
-	// match_ticks (once per frame index) in bounded chunks instead of being
-	// held for the whole file. Frames are still accumulated per match:
-	// ProcessMatch needs the complete match. match_ticks is source data
-	// with ignore-on-conflict semantics, so writing it before the parse is
-	// known to succeed is harmless.
+	// Stream the replay so raw profiler payloads are staged in bounded chunks.
+	// The spool is copied to canonical storage only after a complete match parses;
+	// a truncated/corrupt match therefore cannot seed partial immutable ticks.
+	// Frames are still accumulated because ProcessMatch needs the whole match.
 	parser := adapter.NewEchoReplayParser()
 	if opts.Physics != (model.PhysicsConstants{}) {
 		parser.SetPhysics(opts.Physics)
@@ -400,6 +398,9 @@ func AnalyzeFileAll(ctx context.Context, store *sqlite.Store, path string, opts 
 	for _, res := range a.results {
 		res.Diagnostics = diag
 	}
+	if err != nil && run != nil {
+		run.abortRaw()
+	}
 	return a.results, err
 }
 
@@ -413,16 +414,17 @@ type fileAnalysis struct {
 	results []*AnalyzeResult
 }
 
-// matchRun is the match being accumulated: its frames, the raw ticks not yet
-// flushed to match_ticks, and how its outputs will be stored.
+// matchRun is the match being accumulated: its frames, raw ticks waiting in a
+// bounded memory buffer/on-disk spool, and how its outputs will be stored.
 type matchRun struct {
-	res     *AnalyzeResult
-	frames  []model.PlayerTelemetryFrame
-	pending map[int]string
-	source  string // "initial", or "reprocess" when replacing a stored match
-	replace bool
-	summary *SummaryBuilder
-	start   time.Time // first sample time, the zero of the summary's clock
+	res      *AnalyzeResult
+	frames   []model.PlayerTelemetryFrame
+	pending  map[int]string
+	rawSpool *rawTickSpool
+	source   string // "initial", or "reprocess" when replacing a stored match
+	replace  bool
+	summary  *SummaryBuilder
+	start    time.Time // first sample time, the zero of the summary's clock
 }
 
 // begin starts a match once its id is known: a stored match is refused
@@ -451,9 +453,9 @@ func (a *fileAnalysis) begin(mc *model.MatchContext) (*matchRun, error) {
 	return run, nil
 }
 
-// add keeps a tick's frames and raw payload (once per frame index), writing
-// the raw payloads to match_ticks every rawTickFlushEvery ticks. Nothing of
-// a refused match is kept.
+// add keeps a tick's frames and raw payload (once per frame index), spooling
+// raw payloads every rawTickFlushEvery ticks. Nothing of a refused match is
+// kept, and canonical match_ticks remain untouched until parsing succeeds.
 func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
 	if err := a.ctx.Err(); err != nil {
 		return err
@@ -477,20 +479,57 @@ func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
 	return nil
 }
 
-// flush writes the pending raw payloads to match_ticks.
+// flush stages pending raw payloads in a temporary spool. Canonical match_ticks
+// are untouched until the complete match has parsed.
 func (r *matchRun) flush(a *fileAnalysis) error {
 	if len(r.pending) == 0 {
 		return nil
 	}
-	tel, err := a.store.StoreTelemetryFramesWithRaw(a.ctx, r.res.MatchCtx.MatchID, nil, r.pending)
-	if err != nil {
+	if r.rawSpool == nil {
+		var err error
+		r.rawSpool, err = newRawTickSpool()
+		if err != nil {
+			return err
+		}
+	}
+	if err := r.rawSpool.write(r.pending); err != nil {
 		return err
 	}
-	r.res.Telemetry.TicksInserted += tel.TicksInserted
-	r.res.Telemetry.TicksIgnored += tel.TicksIgnored
-	r.res.RawStored = true
 	r.pending = make(map[int]string)
 	return nil
+}
+
+func (r *matchRun) finishRaw(a *fileAnalysis) error {
+	if err := r.flush(a); err != nil {
+		r.abortRaw()
+		return err
+	}
+	if r.rawSpool == nil {
+		return nil
+	}
+	spool := r.rawSpool
+	r.rawSpool = nil
+	defer spool.discard()
+	tel, err := spool.store(a.ctx, a.store, r.res.MatchCtx.MatchID)
+	if err != nil {
+		r.res.Telemetry.TicksInserted = tel.TicksInserted
+		r.res.Telemetry.TicksIgnored = tel.TicksIgnored
+		return err
+	}
+	r.res.Telemetry.TicksInserted = tel.TicksInserted
+	r.res.Telemetry.TicksIgnored = tel.TicksIgnored
+	r.res.RawStored = r.res.Telemetry.TicksInserted+r.res.Telemetry.TicksIgnored > 0
+	return nil
+}
+
+func (r *matchRun) abortRaw() {
+	if r == nil || r.rawSpool == nil {
+		return
+	}
+	r.rawSpool.discard()
+	r.rawSpool = nil
+	r.res.Telemetry.TicksInserted = 0
+	r.res.Telemetry.TicksIgnored = 0
 }
 
 // finish runs a complete match through a fresh pipeline and persists it:
@@ -504,7 +543,7 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		return nil
 	}
 	res := run.res
-	if err := run.flush(a); err != nil {
+	if err := run.finishRaw(a); err != nil {
 		res.RawTickErr = err
 	}
 	res.Frames = len(run.frames)
@@ -553,16 +592,15 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		return nil
 	}
 	if run.replace {
-		// The match parsed, the pipeline ran and the source data is stored:
-		// now, and only now, the previous derived outputs are replaced.
-		ev, sc, err := store.DeleteMatchAnalysis(ctx, res.MatchCtx.MatchID)
-		if err != nil {
-			res.AnalysisErr = fmt.Errorf("clearing previous analysis: %w", err)
-			return nil
+		res.Stored, res.AnalysisErr = ReplaceMatchAnalysis(ctx, store, res.MatchCtx, result, run.source, a.opts.Analysis)
+		if res.AnalysisErr == nil {
+			res.Replaced = true
+			res.ClearedEvents = res.Stored.ClearedEvents
+			res.ClearedScores = res.Stored.ClearedScores
 		}
-		res.Replaced, res.ClearedEvents, res.ClearedScores = true, ev, sc
+	} else {
+		res.Stored, res.AnalysisErr = StoreMatchAnalysis(ctx, store, res.MatchCtx, result, run.source, a.opts.Analysis)
 	}
-	res.Stored, res.AnalysisErr = StoreMatchAnalysis(ctx, store, res.MatchCtx, result, run.source, a.opts.Analysis)
 	if run.summary != nil {
 		sum := run.summary.Finish()
 		sum.ApplySuspicion(res.MatchCtx, result.PlayerScores, result.DetectionEvents, a.opts.Analysis.Levels)
@@ -646,7 +684,7 @@ func summarizeFrames(frames []model.PlayerTelemetryFrame) FrameSummary {
 		if f.Timestamp > s.LastTimestamp {
 			s.LastTimestamp = f.Timestamp
 		}
-		if f.BlueScore != 0 || f.OrangeScore != 0 {
+		if f.HasScore || f.BlueScore != 0 || f.OrangeScore != 0 {
 			s.HasScore = true
 		}
 	}
