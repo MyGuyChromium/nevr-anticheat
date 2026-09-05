@@ -26,7 +26,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.9.0"
+const appVersion = "0.10.0"
 
 // Filled by the release workflow. Development builds intentionally retain
 // these values so the updater can say that their revision is unknown.
@@ -36,6 +36,13 @@ var (
 )
 
 func main() {
+	if handled, err := maybeRunUpdateHelper(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	configPath := flag.String("config", "", "Path to TOML config file (default: built-in defaults, database next to the executable)")
 	noBrowser := flag.Bool("no-browser", false, "Do not open the app window; only print the URL")
 	port := flag.Int("port", 0, "Loopback port to listen on (default: a random free port)")

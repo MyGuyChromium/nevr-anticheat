@@ -1409,20 +1409,22 @@
     } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
   }
 
-  async function loadAutomation() {
+  async function loadAutomation(forceUpdate = false) {
     const el = $('automation');
     try {
       const settings = await getJSON('api/settings');
       const recovery = await getJSON('api/recovery');
       let update = { error: 'Automatic checks are off.', available: false, current_version: '—' };
-      if (settings.automatic_update_checks) update = await getJSON('api/update');
+      if (settings.automatic_update_checks || forceUpdate) update = await getJSON('api/update');
       const suggestions = settings.suggested_watch_folders || [];
+      const canInstall = !!(update.available && update.install_supported && !update.error);
+      const installNote = update.install_reason || (update.available ? 'The verified installer can still be downloaded and run manually.' : '');
       el.className = ''; el.removeAttribute('aria-busy');
       el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay files are detected recursively and reanalyzed once. The folder and file fingerprints stay on this PC.</p>
         <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
         <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
         <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>
-        <div class="lab-card"><h3>Windows updates</h3><p class="help">Installed releases embed their source revision. The app compares it with the last successfully packaged Windows release; downloading the verified installer still requires your click.</p><p><span class="tag ${update.available ? 'warn' : update.error ? '' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="open-update" class="btn">Download installer</button></div></div>
+        <div class="lab-card"><h3>Windows updates</h3><p class="help">NEVR checks the last successfully packaged Windows release. One click downloads the installer, verifies its revision, size, and SHA-256, closes NEVR cleanly, updates all five tools, and reopens the app. Your database, evidence, labels, and settings stay in place.</p><p><span class="tag ${update.available ? 'warn' : update.error ? 'bad' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}${update.last_install_error ? `<p class="status err">Last install failed safely: ${esc(update.last_install_error)}</p>` : ''}${installNote ? `<p class="summary-note">${esc(installNote)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="install-update" class="btn" ${canInstall ? '' : 'disabled'}>${update.available ? 'Install update' : update.error ? 'Unavailable' : 'Up to date'}</button><button id="open-update" class="btn btn-text">Manual download</button></div></div>
         <div class="lab-card"><h3>Support bundle</h3><p class="help">Creates a ZIP with app health and pseudonymized aggregate diagnostics. It excludes raw ticks, frames, the database, player identities, and your watch-folder path.</p><button id="support-bundle" class="btn">Create support bundle</button></div></div>`;
     } catch (e) { panelError(el, 'automation and recovery settings', e); }
   }
@@ -1706,7 +1708,26 @@
     }
     if (e.target.closest('#resume-recovery')) { try { const r = await postJSON('api/recovery/resume'); setStatus(r.message, 'ok'); setTimeout(loadAutomation, 1200); } catch (err) { setStatus(`Recovery failed: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#discard-recovery')) { if (!confirm('Discard only the pending uploaded copies? Stored matches, original replays, and the database are not affected.')) return; try { const r = await postJSON('api/recovery/discard'); setStatus(r.message, 'ok'); await loadAutomation(); } catch (err) { setStatus(`Could not discard pending uploads: ${err.message}`, 'err'); } return; }
-    if (e.target.closest('#check-update')) { await loadAutomation(); setStatus('Update check finished.', 'ok'); return; }
+    if (e.target.closest('#check-update')) { await loadAutomation(true); setStatus('Update check finished.', 'ok'); return; }
+    if (e.target.closest('#install-update')) {
+      const button = e.target.closest('#install-update'); button.disabled = true; button.textContent = 'Downloading & verifying…';
+      try {
+        const result = await postJSON('api/update/install');
+        intentionallyStopped = true; button.textContent = 'Restarting…';
+        setStatus(result.message, 'ok');
+        setTimeout(() => { document.querySelector('main').innerHTML = '<section class="stopped"><h2>Installing the verified update…</h2><p class="muted">NEVR will reopen automatically with your evidence and settings intact. This old window can be closed.</p></section>'; try { window.close(); } catch (_) {} }, 500);
+      } catch (err) { setStatus(`Update failed safely: ${err.message}`, 'err'); button.disabled = false; button.textContent = 'Install update'; }
+      return;
+    }
+    if (e.target.closest('#auto-updates')) {
+      const checkbox = e.target.closest('#auto-updates');
+      try {
+        await postJSON('api/settings', { watch_folder: $('watch-folder').value, watch_enabled: $('watch-enabled').checked, automatic_update_checks: checkbox.checked });
+        setStatus(checkbox.checked ? 'Automatic update checks enabled.' : 'Automatic update checks disabled.', 'ok');
+        await loadAutomation(checkbox.checked);
+      } catch (err) { checkbox.checked = !checkbox.checked; setStatus(`Could not save update preference: ${err.message}`, 'err'); }
+      return;
+    }
     if (e.target.closest('#open-update')) { try { const r = await postJSON('api/update/open'); setStatus(r.message, 'ok'); } catch (err) { setStatus(`Could not open installer: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#support-bundle')) {
       const button = e.target.closest('#support-bundle'); button.disabled = true; button.textContent = 'Creating…';

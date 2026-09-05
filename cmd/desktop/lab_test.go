@@ -159,20 +159,22 @@ func TestDesktopRegressionComparisonSandboxHistoryRuntimeAndSupport(t *testing.T
 }
 
 func TestDesktopUpdateCheckUsesEmbeddedRevision(t *testing.T) {
+	newCommit := strings.Repeat("a", 40)
+	oldCommit := strings.Repeat("b", 40)
 	s, ts := newTestServer(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/git/ref/tags/windows-latest" {
 			t.Fatalf("update request path = %q", r.URL.Path)
 		}
-		_, _ = io.WriteString(w, `{"object":{"sha":"new-commit"}}`)
+		_, _ = io.WriteString(w, `{"object":{"sha":"`+newCommit+`"}}`)
 	}))
 	defer api.Close()
 	s.runtime.updateURL = api.URL
 	old := buildCommit
-	buildCommit = "old-commit"
+	buildCommit = oldCommit
 	defer func() { buildCommit = old }()
 	var status updateStatus
-	if resp := getJSON(t, ts.URL+"/"+testToken+"/api/update", &status); resp.StatusCode != 200 || !status.Available || status.LatestCommit != "new-commit" {
+	if resp := getJSON(t, ts.URL+"/"+testToken+"/api/update", &status); resp.StatusCode != 200 || !status.Available || status.LatestCommit != newCommit {
 		t.Fatalf("update=%d %+v", resp.StatusCode, status)
 	}
 }

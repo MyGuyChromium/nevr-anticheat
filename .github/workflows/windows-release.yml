@@ -217,6 +217,28 @@ jobs:
             $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             Set-Content -LiteralPath ($path + ".sha256") -Value ($hash + "  " + $name) -Encoding ascii
           }
+          $main = Get-Content -Raw cmd\desktop\main.go
+          $version = [regex]::Match($main, 'const appVersion = "([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
+          if (-not $version) { throw "Could not determine the application version." }
+          $setupPath = Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe"
+          $setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $releaseTag = if ($env:GITHUB_REF -eq "refs/heads/master") { "windows-latest" } else { $env:GITHUB_REF_NAME }
+          $manifest = [ordered]@{
+            schema_version = 1
+            tag = $releaseTag
+            commit = $env:GITHUB_SHA
+            version = $version
+            installer = [ordered]@{
+              name = "NEVR-Anticheat-Setup.exe"
+              sha256 = $setupHash
+              size = (Get-Item -LiteralPath $setupPath).Length
+            }
+          } | ConvertTo-Json -Depth 4
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD "dist\NEVR-Anticheat-Update.json"),
+            $manifest + "`n",
+            [Text.UTF8Encoding]::new($false)
+          )
           if ($env:NEVR_RELEASE_SIGNING_ENABLED -ne "true") { exit 0 }
           $signedFiles = @((Get-ChildItem dist\NEVR-Anticheat-Windows-x64\*.exe).FullName)
           $signedFiles += (Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe")
@@ -296,6 +318,7 @@ jobs:
           path: |
             dist/NEVR-Anticheat-Setup.exe
             dist/NEVR-Anticheat-Setup.exe.sha256
+            dist/NEVR-Anticheat-Update.json
             dist/NEVR-Anticheat-Windows-x64.zip
             dist/NEVR-Anticheat-Windows-x64.zip.sha256
           if-no-files-found: error
@@ -345,6 +368,7 @@ jobs:
           assets=(
             dist/NEVR-Anticheat-Setup.exe
             dist/NEVR-Anticheat-Setup.exe.sha256
+            dist/NEVR-Anticheat-Update.json
             dist/NEVR-Anticheat-Windows-x64.zip
             dist/NEVR-Anticheat-Windows-x64.zip.sha256
           )
