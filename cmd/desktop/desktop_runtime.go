@@ -49,6 +49,12 @@ type desktopRuntime struct {
 	recoveryErr  string
 	updateURL    string
 	httpClient   *http.Client
+	updateClient *http.Client
+	updateDir    string
+	updateMu     sync.Mutex
+	updating     bool
+	updateReady  func() (bool, string)
+	launchUpdate func(updateLaunchRequest) error
 	analyzeMu    *sync.Mutex
 	stopped      chan struct{}
 	resume       chan struct{}
@@ -92,10 +98,13 @@ func newDesktopRuntime(engine *replay.Engine, done <-chan struct{}) *desktopRunt
 		engine: engine, settingsPath: filepath.Join(base, "nevr-desktop-settings.json"),
 		pendingDir: filepath.Join(base, ".nevr-pending"), supportDir: filepath.Join(base, "support-bundles"),
 		updateURL: githubRepoAPI, httpClient: &http.Client{Timeout: 8 * time.Second},
+		updateClient: &http.Client{Timeout: 10 * time.Minute}, updateDir: filepath.Join(base, "updates"),
+		updateReady: updateInstallSupport, launchUpdate: launchUpdateHelper,
 		settings:    desktopSettings{AutomaticUpdates: true, SeenFiles: make(map[string]string)},
 		watchStatus: "idle", analyzeMu: &sync.Mutex{}, stopped: make(chan struct{}), resume: make(chan struct{}, 1),
 	}
 	_ = os.MkdirAll(rt.pendingDir, 0o700)
+	cleanupOldUpdateArtifacts(rt.updateDir)
 	_ = rt.loadSettings()
 	go rt.loop(done)
 	return rt
@@ -228,6 +237,9 @@ func fileFingerprint(path string, info fs.FileInfo) string {
 }
 
 func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
+	if rt.updateInProgress() {
+		return 0, errors.New("an update is being installed")
+	}
 	rt.mu.Lock()
 	folder := rt.settings.WatchFolder
 	if rt.watchStatus == "scanning" {
@@ -283,6 +295,11 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 	var failures []string
 	rt.analyzeMu.Lock()
 	defer rt.analyzeMu.Unlock()
+	if rt.updateInProgress() {
+		err := errors.New("an update is being installed")
+		finish(0, err)
+		return 0, err
+	}
 	for _, path := range files {
 		if ctx.Err() != nil {
 			finish(count, ctx.Err())
@@ -362,6 +379,9 @@ func (rt *desktopRuntime) pendingFiles() []string {
 }
 
 func (rt *desktopRuntime) resumePending(ctx context.Context) {
+	if rt.updateInProgress() {
+		return
+	}
 	rt.mu.Lock()
 	if rt.recovering {
 		rt.mu.Unlock()
@@ -372,6 +392,9 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 	defer func() { rt.mu.Lock(); rt.recovering = false; rt.mu.Unlock() }()
 	rt.analyzeMu.Lock()
 	defer rt.analyzeMu.Unlock()
+	if ctx.Err() != nil || rt.updateInProgress() {
+		return
+	}
 	for _, path := range rt.pendingFiles() {
 		queueID := rt.queueStart(path, "crash recovery")
 		started := time.Now()
@@ -492,9 +515,17 @@ func (s *server) handleRecoveryResume(w http.ResponseWriter, _ *http.Request) {
 
 func (s *server) handleRecoveryDiscard(w http.ResponseWriter, _ *http.Request) {
 	rt := s.runtime
+	if rt.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 	// Do not remove a durable replay while the recovery worker is reading it.
 	rt.analyzeMu.Lock()
 	defer rt.analyzeMu.Unlock()
+	if rt.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 	base, err := filepath.Abs(rt.pendingDir)
 	if err != nil {
 		writeError(w, 500, "resolving recovery directory: %v", err)
@@ -530,57 +561,110 @@ func (s *server) handleRecoveryDiscard(w http.ResponseWriter, _ *http.Request) {
 }
 
 type updateStatus struct {
-	CurrentVersion string `json:"current_version"`
-	CurrentCommit  string `json:"current_commit"`
-	BuildTime      string `json:"build_time"`
-	LatestCommit   string `json:"latest_commit,omitempty"`
-	Available      bool   `json:"available"`
-	ReleaseURL     string `json:"release_url"`
-	CheckedAt      string `json:"checked_at"`
-	Error          string `json:"error,omitempty"`
+	CurrentVersion   string `json:"current_version"`
+	CurrentCommit    string `json:"current_commit"`
+	BuildTime        string `json:"build_time"`
+	LatestCommit     string `json:"latest_commit,omitempty"`
+	Available        bool   `json:"available"`
+	InstallSupported bool   `json:"install_supported"`
+	InstallReason    string `json:"install_reason,omitempty"`
+	ReleaseURL       string `json:"release_url"`
+	CheckedAt        string `json:"checked_at"`
+	Error            string `json:"error,omitempty"`
+	LastInstallError string `json:"last_install_error,omitempty"`
 }
 
 func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	status := updateStatus{CurrentVersion: appVersion, CurrentCommit: buildCommit, BuildTime: buildTime,
-		ReleaseURL: "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest", CheckedAt: fmtTime(time.Now())}
+		ReleaseURL: "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest", CheckedAt: fmtTime(time.Now()),
+		LastInstallError: s.runtime.lastUpdateError()}
+	status.InstallSupported, status.InstallReason = s.runtime.updateReady()
 	// Follow the rolling-release tag instead of master. The workflow only moves
 	// this tag after every executable, the installer, and the portable ZIP are ready, so
 	// the desktop never advertises an un-downloadable commit as an update.
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, s.runtime.updateURL+"/git/ref/tags/windows-latest", nil)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "NEVR-Anticheat/"+appVersion)
-	if token := strings.TrimSpace(os.Getenv("NEVR_GITHUB_TOKEN")); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := s.runtime.httpClient.Do(req)
+	commit, err := s.runtime.latestReleaseCommit(r.Context())
 	if err != nil {
 		status.Error = err.Error()
 		writeJSON(w, 200, status)
 		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == http.StatusNotFound {
-			status.Error = "Automatic checks require a public repository or NEVR_GITHUB_TOKEN; Download installer still works with your signed-in browser."
-		} else {
-			status.Error = "GitHub returned " + resp.Status
-		}
-		writeJSON(w, 200, status)
-		return
-	}
-	var body struct {
-		Object struct {
-			SHA string `json:"sha"`
-		} `json:"object"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		status.Error = err.Error()
-		writeJSON(w, 200, status)
-		return
-	}
-	status.LatestCommit = body.Object.SHA
-	status.Available = buildCommit != "" && buildCommit != "development" && body.Object.SHA != "" && !strings.HasPrefix(body.Object.SHA, buildCommit) && !strings.HasPrefix(buildCommit, body.Object.SHA)
+	status.LatestCommit = commit
+	status.Available = buildCommit != "" && buildCommit != "development" && !sameCommit(buildCommit, commit)
 	writeJSON(w, 200, status)
+}
+
+func (rt *desktopRuntime) beginUpdate() bool {
+	rt.updateMu.Lock()
+	defer rt.updateMu.Unlock()
+	if rt.updating {
+		return false
+	}
+	rt.updating = true
+	return true
+}
+
+func (rt *desktopRuntime) finishUpdate() {
+	rt.updateMu.Lock()
+	rt.updating = false
+	rt.updateMu.Unlock()
+}
+
+func (rt *desktopRuntime) updateInProgress() bool {
+	rt.updateMu.Lock()
+	defer rt.updateMu.Unlock()
+	return rt.updating
+}
+
+func (s *server) handleInstallUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.runtime.beginUpdate() {
+		writeError(w, http.StatusConflict, "an update is already being prepared")
+		return
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			s.runtime.finishUpdate()
+		}
+	}()
+	// This lock covers uploads, watched-folder analysis, and crash recovery.
+	// TryLock makes the update a deliberate retry instead of waiting invisibly
+	// behind a long replay, and holding it prevents new work during download.
+	if !s.analyzeMu.TryLock() {
+		writeError(w, http.StatusConflict, "finish or cancel the active replay analysis before updating")
+		return
+	}
+	defer s.analyzeMu.Unlock()
+	if s.analysisActive() {
+		writeError(w, http.StatusConflict, "finish or cancel the active replay analysis before updating")
+		return
+	}
+	if ok, reason := s.runtime.updateReady(); !ok {
+		writeError(w, http.StatusBadRequest, "%s", reason)
+		return
+	}
+	installer, commit, err := s.runtime.downloadVerifiedUpdate(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "preparing update: %v", err)
+		return
+	}
+	expectedHash, err := stagedInstallerSHA256(installer)
+	if err != nil {
+		_ = os.Remove(installer)
+		writeError(w, http.StatusInternalServerError, "reading staged update identity: %v", err)
+		return
+	}
+	if err := s.runtime.launchUpdate(updateLaunchRequest{InstallerPath: installer, UpdateDir: s.runtime.updateDir, LatestCommit: commit, ExpectedHash: expectedHash}); err != nil {
+		_ = os.Remove(installer)
+		writeError(w, http.StatusInternalServerError, "starting update helper: %v", err)
+		return
+	}
+	launched = true
+	writeJSON(w, http.StatusAccepted, updateInstallResult{LatestCommit: commit,
+		Message: "Update verified. NEVR will close, replace every program file, and reopen automatically; your evidence and settings stay in place."})
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		s.quitOnce.Do(func() { close(s.quit) })
+	}()
 }
 
 func (s *server) handleOpenUpdate(w http.ResponseWriter, _ *http.Request) {

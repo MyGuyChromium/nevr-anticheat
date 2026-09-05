@@ -114,6 +114,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("POST "+p+"/api/recovery/discard", s.handleRecoveryDiscard)
 	s.mux.HandleFunc("GET "+p+"/api/update", s.handleUpdateCheck)
 	s.mux.HandleFunc("GET "+p+"/api/queue", s.handleQueue)
+	s.mux.HandleFunc("POST "+p+"/api/update/install", s.handleInstallUpdate)
 	s.mux.HandleFunc("POST "+p+"/api/update/open", s.handleOpenUpdate)
 	s.mux.HandleFunc("GET "+p+"/api/flagged", s.handleFlagged)
 	s.mux.HandleFunc("GET "+p+"/api/observations", s.handleObservations)
@@ -1077,6 +1078,10 @@ func (s *server) handleCancelAnalyze(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
+	if s.runtime.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -1094,6 +1099,10 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// file while the request is still writing it and queue the partial copy.
 	s.analyzeMu.Lock()
 	defer s.analyzeMu.Unlock()
+	if s.runtime.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 
 	// Uploads are spooled beside the database before analysis. If the process
 	// or laptop exits after upload, the next launch can resume these files
@@ -1326,11 +1335,19 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if s.runtime.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 	// Keep maintenance and replay replacement mutually exclusive. The SQLite
 	// store also has one connection, but taking the analysis lock gives the UI
 	// a predictable all-or-nothing maintenance result.
 	s.analyzeMu.Lock()
 	defer s.analyzeMu.Unlock()
+	if s.runtime.updateInProgress() {
+		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
+		return
+	}
 	path := s.databasePath()
 	before := fileSize(path) + fileSize(path+"-wal") + fileSize(path+"-shm")
 	result, err := s.engine.Store().CheckAndCheckpoint(r.Context())
