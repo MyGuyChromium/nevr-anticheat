@@ -55,7 +55,10 @@ func (s *rawTickSpool) write(rawByFrame map[int]string) error {
 		if raw == "" {
 			continue
 		}
-		binary.LittleEndian.PutUint64(header[:8], uint64(int64(idx)))
+		if idx < 0 {
+			return fmt.Errorf("write raw tick spool: negative frame index %d", idx)
+		}
+		binary.LittleEndian.PutUint64(header[:8], uint64(idx))
 		binary.LittleEndian.PutUint64(header[8:], uint64(len(raw)))
 		if _, err := s.writer.Write(header[:]); err != nil {
 			return fmt.Errorf("write raw tick spool header: %w", err)
@@ -99,7 +102,12 @@ func (s *rawTickSpool) store(ctx context.Context, store *sqlite.Store, matchID s
 		if err != nil {
 			return total, fmt.Errorf("read raw tick spool header: %w", err)
 		}
-		idx := int(int64(binary.LittleEndian.Uint64(header[:8])))
+		encodedIndex := binary.LittleEndian.Uint64(header[:8])
+		maxInt := uint64(^uint(0) >> 1)
+		if encodedIndex > maxInt {
+			return total, fmt.Errorf("raw tick spool frame index exceeds platform limit: %d", encodedIndex)
+		}
+		idx := int(encodedIndex)
 		size := binary.LittleEndian.Uint64(header[8:])
 		if size > uint64(adapter.DefaultMaxLineBytes) {
 			return total, fmt.Errorf("raw tick spool record exceeds limit: %d bytes", size)
