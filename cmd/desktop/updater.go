@@ -346,23 +346,6 @@ func stagedInstallerSHA256(path string) (string, error) {
 	return strings.ToLower(digest), nil
 }
 
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	written, err := io.Copy(h, io.LimitReader(f, maxUpdateInstaller+1))
-	if err != nil {
-		return "", err
-	}
-	if written > maxUpdateInstaller {
-		return "", errors.New("staged installer exceeds the size safety limit")
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 func (rt *desktopRuntime) lastUpdateError() string {
 	f, err := os.Open(filepath.Join(rt.updateDir, "last-update-error.txt"))
 	if err != nil {

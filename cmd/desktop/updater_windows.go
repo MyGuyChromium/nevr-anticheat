@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,23 @@ import (
 )
 
 const updateHelperMode = "--nevr-update-helper"
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	written, err := io.Copy(h, io.LimitReader(f, maxUpdateInstaller+1))
+	if err != nil {
+		return "", err
+	}
+	if written > maxUpdateInstaller {
+		return "", errors.New("staged installer exceeds the size safety limit")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
 
 func updateInstallSupport() (bool, string) {
 	exe, err := os.Executable()
@@ -82,6 +100,8 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 		return err
 	}
 	relaunchArgs := base64.RawURLEncoding.EncodeToString(relaunchJSON)
+	// #nosec G702 -- helperPath is constructed from NEVR's private update directory
+	// and a validated hexadecimal release revision, then populated from this executable.
 	cmd := exec.Command(helperPath,
 		updateHelperMode,
 		"--installer", installer,
@@ -104,7 +124,7 @@ func copyUpdateHelper(source, target string) (err error) {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -186,11 +206,27 @@ func validateUpdateHelperPaths(installer, relaunchExe, updateDir, expectedHash s
 }
 
 func applyStagedUpdate(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, updateDir string) error {
-	if !waitForDesktopExit(waitPID, 30*time.Second) {
+	return applyStagedUpdateWith(installer, expectedHash, waitPID, relaunchExe, relaunchArgs, updateDir, waitForDesktopExit, relaunchUpdatedDesktop)
+}
+
+func applyStagedUpdateWith(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, updateDir string,
+	waitForExit func(int, time.Duration) bool, relaunchDesktop func(string, []string) error,
+) (resultErr error) {
+	if !waitForExit(waitPID, 30*time.Second) {
 		err := errors.New("NEVR did not close within 30 seconds; the installer was not started")
 		writeUpdateFailure(updateDir, err)
 		return err
 	}
+	// Once the original desktop has exited, every remaining path must attempt to
+	// reopen it. This includes a second-checksum failure and an installer error;
+	// otherwise a safe update refusal would still strand the user with no app.
+	defer func() {
+		if err := relaunchDesktop(relaunchExe, relaunchArgs); err != nil {
+			err = fmt.Errorf("relaunch NEVR: %w", err)
+			resultErr = errors.Join(resultErr, err)
+			writeUpdateFailure(updateDir, resultErr)
+		}
+	}()
 	actualHash, err := fileSHA256(installer)
 	if err != nil || !strings.EqualFold(actualHash, expectedHash) {
 		if err == nil {
@@ -213,16 +249,16 @@ func applyStagedUpdate(installer, expectedHash string, waitPID int, relaunchExe 
 		_ = os.Remove(filepath.Join(updateDir, "last-update-error.txt"))
 	}
 
+	return installErr
+}
+
+func relaunchUpdatedDesktop(relaunchExe string, relaunchArgs []string) error {
 	relaunch := exec.Command(relaunchExe, relaunchArgs...)
 	relaunch.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := relaunch.Start(); err != nil {
-		if installErr != nil {
-			return errors.Join(installErr, fmt.Errorf("relaunch NEVR: %w", err))
-		}
-		return fmt.Errorf("relaunch NEVR: %w", err)
+		return err
 	}
-	_ = relaunch.Process.Release()
-	return installErr
+	return relaunch.Process.Release()
 }
 
 func writeUpdateFailure(updateDir string, err error) {
