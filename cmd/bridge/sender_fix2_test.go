@@ -133,11 +133,16 @@ func TestWSSender_ImmediateAckLeavesNoPhantomInflight(t *testing.T) {
 		s.pending.Add(1)
 		s.deliver(ctx, outboundMsg{payload: &FrameBatch{MatchID: "m", Frames: make([]model.PlayerTelemetryFrame, 2)}, frames: 2, matchID: "m"})
 		want := int64(i)
-		if !waitFor(2*time.Second, func() bool { return stats.AcksReceived.Load() == want }) {
-			t.Fatalf("batch %d: ack not received", i)
-		}
-		if n, _ := s.inflightAge(time.Now()); n != 0 {
-			t.Fatalf("batch %d: phantom in-flight count %d after its ack", i, n)
+		// AcksReceived records receipt before handleControl settles the batch.
+		// Wait for both effects: observing the receipt counter alone can race
+		// with correct settlement, especially under the race detector. A real
+		// phantom count still fails within the same bounded deadline.
+		if !waitFor(2*time.Second, func() bool {
+			n, _ := s.inflightAge(time.Now())
+			return stats.AcksReceived.Load() == want && n == 0
+		}) {
+			n, _ := s.inflightAge(time.Now())
+			t.Fatalf("batch %d: ack processing did not settle: received=%d, in-flight=%d", i, stats.AcksReceived.Load(), n)
 		}
 	}
 	if stats.TotalFramesForwarded.Load() != 600 {
