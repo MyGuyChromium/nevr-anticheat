@@ -116,6 +116,31 @@ func TestAnalyzeFile_SyntheticReplay(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFileSummaryStorageFailureIsReported(t *testing.T) {
+	e := newTestEngine(t)
+	if _, err := e.Store().DB().Exec(`CREATE TRIGGER reject_summary BEFORE INSERT ON match_summaries
+		BEGIN SELECT RAISE(ABORT, 'summary storage unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.AnalyzeFile(context.Background(), syntheticReplay, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SummaryErr == nil {
+		t.Fatal("expected the injected summary write failure")
+	}
+	if !errors.Is(res.PersistError(), res.SummaryErr) {
+		t.Fatalf("summary failure is absent from persistence error: %v", res.PersistError())
+	}
+	warnings := res.Warnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "summary storage unavailable") {
+		t.Fatalf("summary failure is absent from upload warnings: %v", warnings)
+	}
+	if res.MatchSummary == nil || res.Result == nil || res.AnalysisErr != nil {
+		t.Fatalf("successful detection should remain available: %+v", res)
+	}
+}
+
 // writeCorruptCopy writes the first n lines of the synthetic fixture followed
 // by a line that exceeds the parser's line limit, so the replay parses its
 // first ticks (match id known, the stored match check has run) and then fails.

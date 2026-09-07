@@ -259,6 +259,9 @@ func (r *AnalyzeResult) Warnings() []string {
 	if r.AnalysisErr != nil {
 		out = append(out, r.AnalysisErr.Error())
 	}
+	if r.SummaryErr != nil {
+		out = append(out, "failed to store match summary: "+r.SummaryErr.Error())
+	}
 	return out
 }
 
@@ -279,6 +282,9 @@ func (r *AnalyzeResult) PersistError() error {
 	}
 	if r.AnalysisErr != nil {
 		errs = append(errs, r.AnalysisErr)
+	}
+	if r.SummaryErr != nil {
+		errs = append(errs, fmt.Errorf("storing match summary: %w", r.SummaryErr))
 	}
 	return errors.Join(errs...)
 }

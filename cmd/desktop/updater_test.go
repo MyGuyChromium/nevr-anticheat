@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,74 @@ import (
 	"testing"
 	"time"
 )
+
+type updateRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f updateRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGitHubGetRedirectSecurity(t *testing.T) {
+	t.Setenv("NEVR_GITHUB_TOKEN", "private-test-token")
+	for _, tt := range []struct {
+		name, target         string
+		wantToken, wantError bool
+	}{
+		{"same origin", "https://api.github.com/asset", true, false},
+		{"different port", "https://api.github.com:8443/asset", false, false},
+		{"subdomain", "https://assets.api.github.com/asset", false, false},
+		{"download host", "https://release-assets.githubusercontent.com/asset", false, false},
+		{"insecure downgrade", "http://api.github.com/asset", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := &http.Client{Transport: updateRoundTripper(func(r *http.Request) (*http.Response, error) {
+				requests++
+				if requests == 1 {
+					return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {tt.target}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				}
+				if got := r.Header.Get("Authorization") != ""; got != tt.wantToken {
+					t.Errorf("redirect forwarded private token = %v, want %v", got, tt.wantToken)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("asset")), Request: r}, nil
+			})}
+			rt := &desktopRuntime{updateURL: "https://api.github.com"}
+			resp, err := rt.githubGet(context.Background(), client, rt.updateURL+"/start", "")
+			if resp != nil {
+				resp.Body.Close()
+			}
+			if (err != nil) != tt.wantError {
+				t.Fatalf("redirect error = %v, want error %v", err, tt.wantError)
+			}
+			if tt.wantError && requests != 1 {
+				t.Fatal("insecure redirect was contacted")
+			}
+			if client.CheckRedirect != nil {
+				t.Fatal("shared HTTP client was modified")
+			}
+		})
+	}
+}
+
+func TestGitHubGetPreservesRedirectPolicy(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/again", http.StatusFound) }))
+	defer api.Close()
+	rt := &desktopRuntime{updateURL: api.URL}
+	blocked := errors.New("caller blocked redirect")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return blocked }}
+	resp, err := rt.githubGet(context.Background(), client, api.URL, "")
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if !errors.Is(err, blocked) {
+		t.Fatalf("caller redirect policy was ignored: %v", err)
+	}
+	resp, err = rt.githubGet(context.Background(), &http.Client{}, api.URL, "")
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "10 redirects") {
+		t.Fatalf("default redirect limit was lost: %v", err)
+	}
+}
 
 func TestSameHTTPOrigin(t *testing.T) {
 	tests := []struct {

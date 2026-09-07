@@ -91,15 +91,23 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	if _, err := hex.DecodeString(expectedHash); err != nil {
 		return errors.New("update helper received an invalid installer checksum")
 	}
-	helperPath := filepath.Join(updateDir, "nevr-update-helper-"+commit[:12]+".exe")
-	if err := copyUpdateHelper(currentExe, helperPath); err != nil {
-		return fmt.Errorf("stage update helper: %w", err)
+	// Refuse invalid helper inputs while the desktop is still running. A helper
+	// that exits during argument validation cannot bring the desktop back.
+	if err := validateUpdateHelperPaths(installer, currentExe, updateDir, expectedHash); err != nil {
+		return err
 	}
 	relaunchJSON, err := json.Marshal(os.Args[1:])
 	if err != nil {
 		return err
 	}
 	relaunchArgs := base64.RawURLEncoding.EncodeToString(relaunchJSON)
+	if len(relaunchArgs) > 64<<10 {
+		return errors.New("update helper relaunch arguments are too large")
+	}
+	helperPath := filepath.Join(updateDir, "nevr-update-helper-"+commit[:12]+".exe")
+	if err := copyUpdateHelper(currentExe, helperPath); err != nil {
+		return fmt.Errorf("stage update helper: %w", err)
+	}
 	// #nosec G702 -- helperPath is constructed from NEVR's private update directory
 	// and a validated hexadecimal release revision, then populated from this executable.
 	cmd := exec.Command(helperPath,
@@ -210,10 +218,10 @@ func applyStagedUpdate(installer, expectedHash string, waitPID int, relaunchExe 
 }
 
 func applyStagedUpdateWith(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, updateDir string,
-	waitForExit func(int, time.Duration) bool, relaunchDesktop func(string, []string) error,
+	waitForExit func(int, time.Duration) error, relaunchDesktop func(string, []string) error,
 ) (resultErr error) {
-	if !waitForExit(waitPID, 30*time.Second) {
-		err := errors.New("NEVR did not close within 30 seconds; the installer was not started")
+	if err := waitForExit(waitPID, 30*time.Second); err != nil {
+		err = fmt.Errorf("the installer was not started: %w", err)
 		writeUpdateFailure(updateDir, err)
 		return err
 	}
@@ -265,20 +273,44 @@ func writeUpdateFailure(updateDir string, err error) {
 	_ = os.WriteFile(filepath.Join(updateDir, "last-update-error.txt"), []byte(time.Now().Format(time.RFC3339)+" "+err.Error()+"\n"), 0o600)
 }
 
-func waitForDesktopExit(pid int, timeout time.Duration) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return true
+func waitForDesktopExit(pid int, timeout time.Duration) error {
+	if pid <= 0 || uint64(pid) > uint64(^uint32(0)) {
+		return errors.New("NEVR process ID is invalid")
 	}
-	done := make(chan struct{})
-	go func() {
-		_, _ = process.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
+	// Request only the right needed for waiting. os.Process.Wait also queries
+	// process details, whose failure is not evidence that the process exited.
+	handle, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		// A positive PID which no longer exists produces ERROR_INVALID_PARAMETER.
+		// The desktop may have already exited before its helper started.
+		const errorInvalidParameter syscall.Errno = 87
+		if errors.Is(err, errorInvalidParameter) {
+			return nil
+		}
+		return fmt.Errorf("could not open the NEVR process for exit verification: %w", err)
+	}
+	defer syscall.CloseHandle(handle)
+	return waitForDesktopHandle(handle, timeout)
+}
+
+func waitForDesktopHandle(handle syscall.Handle, timeout time.Duration) error {
+	// A bounded native wait leaves no goroutine or open process handle behind
+	// when the desktop fails to shut down. Never convert a timeout to INFINITE.
+	milliseconds := max(time.Duration(0), timeout/time.Millisecond)
+	if timeout > 0 && timeout%time.Millisecond != 0 {
+		milliseconds++
+	}
+	milliseconds = min(milliseconds, time.Duration(syscall.INFINITE-1))
+	event, err := syscall.WaitForSingleObject(handle, uint32(milliseconds))
+	if err != nil {
+		return fmt.Errorf("could not verify that NEVR exited: %w", err)
+	}
+	switch event {
+	case syscall.WAIT_OBJECT_0:
+		return nil
+	case syscall.WAIT_TIMEOUT:
+		return fmt.Errorf("NEVR did not close within %s", timeout)
+	default:
+		return fmt.Errorf("unexpected Windows process wait result: %d", event)
 	}
 }

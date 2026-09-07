@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,46 @@ func TestTelemetry_ReplacePromotesLegacyRawTicks(t *testing.T) {
 	}
 	if n := countRows(t, s, "telemetry_frames", "match_id='M1' AND raw_json IS NOT NULL"); n != 0 {
 		t.Fatalf("replacement should not duplicate raw JSON, got %d rows", n)
+	}
+}
+
+func TestTelemetry_MixedLegacyAndCanonicalRawTicks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	// An upgraded database retains old raw snapshots on player rows. A resumed
+	// ingest writes newer ticks to match_ticks before the old rows are promoted.
+	for idx := 0; idx < 3; idx++ {
+		for _, player := range []string{"P1", "P2"} {
+			if _, err := s.DB().ExecContext(ctx, `INSERT INTO telemetry_frames
+				(match_id, player_id, frame_index, timestamp, frame_json, raw_json, ingested_at)
+				VALUES ('MIXED', ?, ?, 0, '{}', ?, ?)`, player, idx,
+				`{"legacy":true}`, fmtDBTime(time.Now())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	canonical := `{"canonical":true}`
+	if _, err := s.StoreTelemetryFramesWithRaw(ctx, "MIXED", nil, map[int]string{1: canonical, 3: canonical}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{0: `{"legacy":true}`, 1: canonical, 2: `{"legacy":true}`, 3: canonical}
+	all, err := s.GetAllMatchRawTicks(ctx, "MIXED")
+	if err != nil || !reflect.DeepEqual(all, want) {
+		t.Errorf("all raw ticks = %v, err=%v, want %v", all, err, want)
+	}
+	rangeTicks, err := s.GetMatchRawTicks(ctx, "MIXED", 1, 2)
+	if err != nil || !reflect.DeepEqual(rangeTicks, map[int]string{1: want[1], 2: want[2]}) {
+		t.Errorf("range raw ticks = %v, err=%v", rangeTicks, err)
+	}
+	var indices []int
+	streamed := make(map[int]string)
+	n, err := s.ForEachMatchTick(ctx, "MIXED", func(idx int, raw string) error {
+		indices = append(indices, idx)
+		streamed[idx] = raw
+		return nil
+	})
+	if err != nil || n != 4 || !reflect.DeepEqual(indices, []int{0, 1, 2, 3}) || !reflect.DeepEqual(streamed, want) {
+		t.Fatalf("stream = %v, indices=%v, n=%d, err=%v", streamed, indices, n, err)
 	}
 }
 

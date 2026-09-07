@@ -135,6 +135,8 @@ Desktop v0.9 adds a hashed, revision-bound calibration packet; independent frame
 
 Desktop v0.10 adds a verified one-click Windows updater. It refuses to interrupt active replay analysis, authenticates private-release requests without leaking the token across origins, validates a commit-bound release manifest and SHA-256 before execution, shuts down SQLite cleanly, updates the complete installed toolset through the existing preservation-tested installer, and relaunches NEVR automatically.
 
+Desktop v0.10.1 fixes raw replay reads in databases containing both legacy and current tick storage, reports match-summary save failures, and strengthens updater redirect and shutdown checks. The Windows release workflow now runs the desktop test suite on Windows before packaging, including the Windows-only updater regressions.
+
 The [v0.9 hardening acceptance record](docs/hardening_v09.md) maps each of the eight tracks to its implemented evidence and clearly separates the remaining real-replay, independent-review, and publisher-identity gates.
 
 On an update, the Windows installer snapshots the previous program files under `%LOCALAPPDATA%\NEVR-Anticheat\program-rollbacks`. Run `Rollback-NEVR.cmd` from the installed program folder to restore the newest snapshot; the evidence database is never replaced by program rollback.

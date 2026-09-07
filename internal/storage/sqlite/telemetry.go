@@ -219,31 +219,27 @@ func (s *Store) ReplaceMatchTelemetryFrames(ctx context.Context, matchID string,
 	return len(frames), nil
 }
 
+// matchRawTicksSelect reads both storage generations in one snapshot. A
+// canonical tick takes precedence at its own index, without hiding legacy
+// ticks elsewhere in the match after an upgrade or a resumed ingest.
+const matchRawTicksSelect = `SELECT frame_index, raw_json FROM match_ticks WHERE match_id = ?
+	UNION ALL
+	SELECT t.frame_index, MIN(t.raw_json) AS raw_json FROM telemetry_frames t
+	WHERE t.match_id = ? AND t.raw_json IS NOT NULL AND t.raw_json <> ''
+	AND NOT EXISTS (SELECT 1 FROM match_ticks m
+		WHERE m.match_id = t.match_id AND m.frame_index = t.frame_index)
+	GROUP BY t.frame_index`
+
 // GetMatchRawTicks returns raw session payloads for frame indices in
-// [fromIdx, toIdx] (inclusive), keyed by frame_index. Reads match_ticks first
-// and falls back to the legacy telemetry_frames.raw_json column for matches
-// ingested before match_ticks existed. Returns an empty map when the source
-// carried no raw payload.
+// [fromIdx, toIdx] (inclusive), keyed by frame_index. Missing canonical ticks
+// fall back to legacy telemetry_frames.raw_json at each index. Returns an
+// empty map when the source carried no raw payload.
 func (s *Store) GetMatchRawTicks(ctx context.Context, matchID string, fromIdx, toIdx int) (map[int]string, error) {
 	out := make(map[int]string)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT frame_index, raw_json FROM match_ticks
-		 WHERE match_id = ? AND frame_index >= ? AND frame_index <= ? ORDER BY frame_index`,
-		matchID, fromIdx, toIdx)
-	if err != nil {
-		return nil, err
-	}
-	if err := collectTicks(rows, out); err != nil {
-		return nil, err
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-	rows, err = s.db.QueryContext(ctx,
-		`SELECT frame_index, raw_json FROM telemetry_frames
-		 WHERE match_id = ? AND raw_json IS NOT NULL AND frame_index >= ? AND frame_index <= ?
-		 GROUP BY frame_index ORDER BY frame_index`,
-		matchID, fromIdx, toIdx)
+		`SELECT frame_index, raw_json FROM (`+matchRawTicksSelect+`)
+		 WHERE frame_index >= ? AND frame_index <= ? ORDER BY frame_index`,
+		matchID, matchID, fromIdx, toIdx)
 	if err != nil {
 		return nil, err
 	}
@@ -259,20 +255,7 @@ func (s *Store) GetMatchRawTicks(ctx context.Context, matchID string, fromIdx, t
 func (s *Store) GetAllMatchRawTicks(ctx context.Context, matchID string) (map[int]string, error) {
 	out := make(map[int]string)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT frame_index, raw_json FROM match_ticks WHERE match_id = ? ORDER BY frame_index`, matchID)
-	if err != nil {
-		return nil, err
-	}
-	if err := collectTicks(rows, out); err != nil {
-		return nil, err
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-	rows, err = s.db.QueryContext(ctx,
-		`SELECT frame_index, raw_json FROM telemetry_frames
-		 WHERE match_id = ? AND raw_json IS NOT NULL
-		 GROUP BY frame_index ORDER BY frame_index`, matchID)
+		matchRawTicksSelect+` ORDER BY frame_index`, matchID, matchID)
 	if err != nil {
 		return nil, err
 	}
