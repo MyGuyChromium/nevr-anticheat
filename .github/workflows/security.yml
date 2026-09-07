@@ -41,6 +41,9 @@ jobs:
       - name: Fuzz legacy JSON replay boundary
         run: go test ./internal/replay -run '^$' -fuzz '^FuzzLegacyJSONReplay$' -fuzztime 20s
 
+      - name: Fuzz private regression manifest
+        run: go test ./internal/regression -run '^$' -fuzz '^FuzzRegressionManifest$' -fuzztime 20s
+
       - name: Generate CycloneDX SBOM
         run: go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0 mod -json -output nevr-sbom.cdx.json
 

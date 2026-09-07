@@ -42,6 +42,8 @@ type BaseDetector struct {
 	Warmup           int
 	Weight           float64
 	IsAutoEnforce    bool
+	TraceBranches    bool
+	decisionObserver DecisionObserver
 }
 
 func (b *BaseDetector) ID() string                        { return b.DetectorID }

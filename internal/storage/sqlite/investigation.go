@@ -115,6 +115,7 @@ type AnalysisRun struct {
 	Source                 string    `json:"source"`
 	AppVersion             string    `json:"app_version"`
 	BuildCommit            string    `json:"build_commit"`
+	ExecutableSHA256       string    `json:"executable_sha256"`
 	ConfigFingerprint      string    `json:"config_fingerprint"`
 	CalibrationFingerprint string    `json:"calibration_fingerprint"`
 	ProfileName            string    `json:"profile_name,omitempty"`
@@ -132,15 +133,18 @@ func (s *Store) StoreAnalysisRun(ctx context.Context, run AnalysisRun) (Analysis
 	if strings.TrimSpace(run.MatchID) == "" {
 		return run, fmt.Errorf("match id is required")
 	}
+	if run.ExecutableSHA256 != "" && !validSHA256(run.ExecutableSHA256) {
+		return run, fmt.Errorf("executable_sha256 must be empty legacy provenance or a lowercase SHA-256")
+	}
 	run.CreatedAt = nowUTC()
 	res, err := s.db.ExecContext(ctx, `INSERT INTO analysis_runs
 		(match_id, source, app_version, build_commit, config_fingerprint, calibration_fingerprint, profile_name,
 		 telemetry_quality, quality_grade, quality_gated, wall_milliseconds,
-		 pipeline_milliseconds, frames_processed, events_produced, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 pipeline_milliseconds, frames_processed, events_produced, created_at, executable_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.MatchID, run.Source, run.AppVersion, run.BuildCommit, run.ConfigFingerprint, run.CalibrationFingerprint, run.ProfileName,
 		run.TelemetryQuality, run.QualityGrade, run.QualityGated, run.WallMilliseconds,
-		run.PipelineMilliseconds, run.FramesProcessed, run.EventsProduced, fmtDBTime(run.CreatedAt))
+		run.PipelineMilliseconds, run.FramesProcessed, run.EventsProduced, fmtDBTime(run.CreatedAt), run.ExecutableSHA256)
 	if err != nil {
 		return run, fmt.Errorf("storing analysis provenance: %w", err)
 	}
@@ -150,7 +154,7 @@ func (s *Store) StoreAnalysisRun(ctx context.Context, run AnalysisRun) (Analysis
 
 const analysisRunColumns = `run_id, match_id, source, app_version, build_commit, config_fingerprint, calibration_fingerprint,
 	profile_name, telemetry_quality, quality_grade, quality_gated, wall_milliseconds,
-	pipeline_milliseconds, frames_processed, events_produced, created_at`
+	pipeline_milliseconds, frames_processed, events_produced, created_at,executable_sha256`
 
 func scanAnalysisRun(row rowScanner) (AnalysisRun, error) {
 	var out AnalysisRun
@@ -159,7 +163,7 @@ func scanAnalysisRun(row rowScanner) (AnalysisRun, error) {
 	err := row.Scan(&out.RunID, &out.MatchID, &out.Source, &out.AppVersion, &out.BuildCommit,
 		&out.ConfigFingerprint, &out.CalibrationFingerprint, &out.ProfileName, &out.TelemetryQuality, &out.QualityGrade,
 		&gated, &out.WallMilliseconds, &out.PipelineMilliseconds, &out.FramesProcessed,
-		&out.EventsProduced, &created)
+		&out.EventsProduced, &created, &out.ExecutableSHA256)
 	out.QualityGated, out.CreatedAt = gated != 0, parseDBTimeLenient(created)
 	return out, err
 }

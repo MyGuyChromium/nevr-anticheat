@@ -71,7 +71,17 @@ func representativeGateMetric() detectorCalibrationMetric {
 	half := confusionMetric{TruePositive: 100, TrueNegative: 500, PositiveOpportunities: 100,
 		NegativeOpportunities: 500, Players: 10, Matches: 10, Precision: 1, Recall: 1,
 		IndependentEvidence: 600, CurrentProvenance: 600}
-	return detectorCalibrationMetric{DetectorID: "THROW_001", Overall: full, Validation: half, Holdout: half}
+	full.Clusters = clusterDescription{Groups: 20, PositiveGroups: 10, NegativeGroups: 10, LargestGroupFraction: .05}
+	half.Clusters = clusterDescription{Groups: 10, PositiveGroups: 5, NegativeGroups: 5, LargestGroupFraction: .10}
+	strata := func(keys ...string) map[string]confusionMetric {
+		out := make(map[string]confusionMetric)
+		for _, key := range keys {
+			out[key] = confusionMetric{NegativeOpportunities: 20, Clusters: clusterDescription{NegativeGroups: 3}}
+		}
+		return out
+	}
+	return detectorCalibrationMetric{DetectorID: "THROW_001", Overall: full, Validation: half, Holdout: half,
+		ByPing: strata("low_under_80ms", "medium_80_150ms", "high_over_150ms"), ByCaptureRate: strata("low_under_12hz", "standard_12_22hz", "high_over_22hz"), ByLegalContext: strata("normal", "stack", "block_push", "slap", "headbutt")}
 }
 
 func TestPromotionGateRejectsWeakOrUnobservableEvidence(t *testing.T) {
@@ -89,13 +99,18 @@ func TestPromotionGateRejectsWeakOrUnobservableEvidence(t *testing.T) {
 			m.Holdout.FalsePositiveRate = .0025
 			m.Holdout.NegativeOpportunities = 400
 		},
-		"oneReviewer":         func(m *detectorCalibrationMetric) { m.Overall.IndependentEvidence-- },
-		"stale":               func(m *detectorCalibrationMetric) { m.Overall.StaleProvenance = 1 },
-		"badTelemetry":        func(m *detectorCalibrationMetric) { m.Overall.UnusableTelemetry = 1 },
-		"crossSplitExposure":  func(m *detectorCalibrationMetric) { m.Overall.IsolationConflicts = 1 },
-		"oneHoldoutPlayer":    func(m *detectorCalibrationMetric) { m.Holdout.Players = 1 },
-		"walkingUnobservable": func(m *detectorCalibrationMetric) { m.DetectorID = "MOV_006" },
-		"wristAliased":        func(m *detectorCalibrationMetric) { m.DetectorID = "BIO_001" },
+		"oneReviewer":             func(m *detectorCalibrationMetric) { m.Overall.IndependentEvidence-- },
+		"stale":                   func(m *detectorCalibrationMetric) { m.Overall.StaleProvenance = 1 },
+		"badTelemetry":            func(m *detectorCalibrationMetric) { m.Overall.UnusableTelemetry = 1 },
+		"crossSplitExposure":      func(m *detectorCalibrationMetric) { m.Overall.IsolationConflicts = 1 },
+		"oneHoldoutPlayer":        func(m *detectorCalibrationMetric) { m.Holdout.Players = 1 },
+		"oneConnectedCluster":     func(m *detectorCalibrationMetric) { m.Overall.Clusters.Groups = 1 },
+		"dominantCluster":         func(m *detectorCalibrationMetric) { m.Holdout.Clusters.LargestGroupFraction = .9 },
+		"noIndependentNegatives":  func(m *detectorCalibrationMetric) { m.Validation.Clusters.NegativeGroups = 1 },
+		"missingHeadbuttControls": func(m *detectorCalibrationMetric) { delete(m.ByLegalContext, "headbutt") },
+		"missingCaptureControls":  func(m *detectorCalibrationMetric) { delete(m.ByCaptureRate, "low_under_12hz") },
+		"walkingUnobservable":     func(m *detectorCalibrationMetric) { m.DetectorID = "MOV_006" },
+		"wristAliased":            func(m *detectorCalibrationMetric) { m.DetectorID = "BIO_001" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := representativeGateMetric()
@@ -108,14 +123,35 @@ func TestPromotionGateRejectsWeakOrUnobservableEvidence(t *testing.T) {
 	}
 }
 
+func TestCalibrationClusterRangesDoNotTreatRepeatedThrowsAsIndependent(t *testing.T) {
+	var a metricAccumulator
+	for i := 0; i < 100; i++ {
+		a.add(calibrationSample{MatchID: "M1", PlayerID: "P1", ClusterID: "shared", Truth: sqlite.GroundTruthPositive}, true)
+	}
+	a.add(calibrationSample{MatchID: "M2", PlayerID: "P2", ClusterID: "shared", Truth: sqlite.GroundTruthNegative}, false)
+	a.add(calibrationSample{MatchID: "M3", PlayerID: "P3", ClusterID: "separate", Truth: sqlite.GroundTruthPositive}, false)
+	a.add(calibrationSample{MatchID: "M3", PlayerID: "P3", ClusterID: "separate", Truth: sqlite.GroundTruthNegative}, true)
+	m := a.finish()
+	c := m.Clusters
+	if c.Groups != 2 || c.PositiveGroups != 2 || c.NegativeGroups != 2 || c.RecallObservedRange == nil || c.RecallObservedRange.Lower != 0 || c.RecallObservedRange.Upper != 1 || c.MacroRecall == nil || *c.MacroRecall != .5 || c.FalseRateObservedRange.Lower != 0 || c.FalseRateObservedRange.Upper != 1 || c.LargestGroupFraction < .98 {
+		t.Fatalf("cluster summary: %+v", c)
+	}
+	if c.Method != "observed_connected_group_ranges_not_confidence_intervals" {
+		t.Fatal("descriptive ranges mislabeled as confidence")
+	}
+	if m.Recall < .98 {
+		t.Fatal("test did not distinguish pooled from group-weighted behavior")
+	}
+}
+
 func TestPromotionEvidenceNeedsIndependentWindowNotEventLabel(t *testing.T) {
 	meta := map[string]matchCalibrationMeta{"M": {CurrentProvenance: true, QualityBand: "excellent"}}
 	window := sqlite.CalibrationOpportunity{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", FrameStart: 10, FrameEnd: 12,
 		GroundTruth: sqlite.GroundTruthPositive, ReviewerID: "reviewer-a", VerifierID: "reviewer-b", BlindReview: true,
 		VerifiedGroundTruth: sqlite.GroundTruthPositive, EvidenceMethod: "controlled_reproduction", EvidenceReference: "trial-42/frame-10-12"}
 	samples := samplesFromLabels(nil, []sqlite.CalibrationOpportunity{window}, meta)
-	if len(samples) != 1 || !samples[0].IndependentEvidence || samples[0].UnusableTelemetry {
-		t.Fatalf("verified window: %+v", samples)
+	if len(samples) != 1 || samples[0].IndependentEvidence || samples[0].UnusableTelemetry {
+		t.Fatalf("legacy text attestation became bound evidence: %+v", samples)
 	}
 	reviews := []sqlite.EventReview{{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", FrameIndex: 50, Verdict: "yes", BlindReview: true}}
 	samples = samplesFromLabels(reviews, []sqlite.CalibrationOpportunity{window}, meta)

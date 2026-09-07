@@ -14,6 +14,14 @@ same `assessment` is included in player JSON, summary JSON, player CSV and case
 reports. **No signals** does not mean verified fair play. These are review
 findings, not automatic bans or independently confirmed cheating verdicts.
 
+**0.11.0 private test candidate:** **Explain checks** records actual processing
+decisions, including skipped checks and observation-only results. The new
+[evidence review workspace](docs/blind_review_workflow.md) binds local attachments
+and two locked reviewer decisions to an exact player/window and candidate.
+Connected-group and legal-context metrics expose gaps in the evaluation data.
+See the [hardening and acceptance record](docs/comprehensive_readiness.md) for
+reliability fixes, verification scope, and the remaining real-world requirements.
+
 ## Architecture
 
 ```

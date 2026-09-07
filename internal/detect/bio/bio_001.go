@@ -24,7 +24,7 @@ const minSustainedWristFrames = 3
 // frame and a hand spinning ten times per frame look identical. With the
 // default 50 rad/s threshold the detector is therefore unreachable on 15 Hz
 // telemetry; Reachable(dt) reports this so operators can see it. The
-// threshold is left at the documented physical limit rather than lowered
+// threshold is left at the configured value rather than lowered
 // below the saturation point, because choosing a 15 Hz-attainable value
 // is a calibration decision that needs real data.
 type Bio001 struct {
@@ -42,6 +42,7 @@ func NewBio001(params map[string]any) *Bio001 {
 	d := &Bio001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "BIO_001",
+			TraceBranches:    true,
 			DetectorVersion:  "2.1.0",
 			DetectorName:     "Impossible Wrist Rotation",
 			DetectorCategory: "bio",
@@ -104,7 +105,17 @@ func (d *Bio001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		// frame in between. Post-respawn immunity additionally means hand
 		// poses jump to the spawn pose, which looks like an instantaneous
 		// rotation. Same guards as BIO_002.
-		if ps.IsStunned || ps.FrameDt < 0.01 || ps.IsImmune {
+		guard := ""
+		switch {
+		case ps.IsStunned:
+			guard = "player_stunned"
+		case ps.FrameDt < 0.01:
+			guard = "wrist_interval_too_short"
+		case ps.IsImmune:
+			guard = "player_immune"
+		}
+		if guard != "" {
+			d.TraceDecision(pid, frameIdx, guard)
 			resetHands(d.left, d.right, pid)
 			continue
 		}
@@ -135,13 +146,16 @@ func (d *Bio001) checkHand(
 
 	s.advance(frameIdx, rate > d.maxWristAngularVelocity)
 	if s.consecutive == 0 {
+		d.TraceDecision(pid, frameIdx, "wrist_at_or_below_threshold")
 		return
 	}
 
 	if !s.shouldEmit(d.minViolationFrames) {
+		d.TraceDecision(pid, frameIdx, "wrist_streak_pending")
 		return
 	}
 	s.lastEmitAt = s.consecutive
+	d.TraceDecision(pid, frameIdx, "wrist_sustained_candidate")
 	consecutive := s.consecutive
 
 	severity := excessSeverity(rate, d.maxWristAngularVelocity, d.sigmoidSteepness)

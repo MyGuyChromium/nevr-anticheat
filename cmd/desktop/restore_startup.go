@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -18,6 +17,10 @@ import (
 // The replaced database and any sidecars are renamed, not deleted, so even a
 // power loss during restore leaves a recoverable copy.
 func applyPendingRestore(dbPath string) error {
+	return applyPendingRestoreWithRename(dbPath, os.Rename)
+}
+
+func applyPendingRestoreWithRename(dbPath string, rename func(string, string) error) error {
 	requestPath := restoreRequestPath(dbPath)
 	doc, err := os.ReadFile(requestPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -50,31 +53,50 @@ func applyPendingRestore(dbPath string) error {
 	if err := sqlite.VerifyDatabase(context.Background(), source); err != nil {
 		return fmt.Errorf("verifying restore source: %w", err)
 	}
-	tmp := target + ".restore-tmp"
+	stageDir, err := os.MkdirTemp(filepath.Dir(target), ".nevr-restore-stage-*")
+	if err != nil {
+		return fmt.Errorf("creating restore staging directory: %w", err)
+	}
+	defer os.Remove(stageDir)
+	tmp := filepath.Join(stageDir, filepath.Base(target))
+	defer os.Remove(tmp)
 	if err := copyRestoreFile(source, tmp); err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
 	if err := sqlite.VerifyDatabase(context.Background(), tmp); err != nil {
 		return fmt.Errorf("verifying staged restore: %w", err)
 	}
-	suffix := ".pre-restore-" + time.Now().UTC().Format("20060102-150405")
-	recovery := target + suffix
-	if _, err := os.Stat(target); err == nil {
-		if err := os.Rename(target, recovery); err != nil {
-			return fmt.Errorf("preserving current database: %w", err)
-		}
+	// Keep each recovery set together in an exclusively-created directory.
+	// Seconds-resolution names could overwrite an earlier recovery copy.
+	recoveryDir, err := os.MkdirTemp(filepath.Dir(target), filepath.Base(target)+".pre-restore-*")
+	if err != nil {
+		return fmt.Errorf("creating restore recovery directory: %w", err)
 	}
-	for _, sidecar := range []string{"-wal", "-shm"} {
-		if _, err := os.Stat(target + sidecar); err == nil {
-			_ = os.Rename(target+sidecar, recovery+sidecar)
+	defer os.Remove(recoveryDir) // Removes only an empty directory, never recovery data.
+	recovery := filepath.Join(recoveryDir, filepath.Base(target))
+	var moved []string
+	rollback := func(cause error) error {
+		for i := len(moved) - 1; i >= 0; i-- {
+			suffix := moved[i]
+			if err := rename(recovery+suffix, target+suffix); err != nil {
+				cause = errors.Join(cause, fmt.Errorf("restoring original database file %s (preserved at %s): %w", target+suffix, recovery+suffix, err))
+			}
 		}
+		return cause
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		if _, recoveryErr := os.Stat(recovery); recoveryErr == nil {
-			_ = os.Rename(recovery, target)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if _, err := os.Lstat(target + suffix); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return rollback(fmt.Errorf("inspecting current database file %s: %w", target+suffix, err))
 		}
-		return fmt.Errorf("installing restored database: %w", err)
+		if err := rename(target+suffix, recovery+suffix); err != nil {
+			return rollback(fmt.Errorf("preserving current database file %s: %w", target+suffix, err))
+		}
+		moved = append(moved, suffix)
+	}
+	if err := rename(tmp, target); err != nil {
+		return rollback(fmt.Errorf("installing restored database: %w", err))
 	}
 	if err := os.Remove(requestPath); err != nil {
 		return fmt.Errorf("restore completed but request cleanup failed: %w", err)
@@ -89,12 +111,6 @@ func copyRestoreFile(source, destination string) (err error) {
 	}
 	defer in.Close()
 	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		if removeErr := os.Remove(destination); removeErr != nil {
-			return fmt.Errorf("removing stale restore staging file: %w", removeErr)
-		}
-		out, err = os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	}
 	if err != nil {
 		return err
 	}

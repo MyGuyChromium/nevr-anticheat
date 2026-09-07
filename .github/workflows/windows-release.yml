@@ -70,6 +70,7 @@ jobs:
           cp packaging/Install-NEVR.cmd "$package/"
           cp packaging/Install-NEVR.ps1 packaging/Uninstall-NEVR.cmd packaging/Uninstall-NEVR.ps1 "$package/installer/"
           cp packaging/Rollback-NEVR.cmd packaging/Rollback-NEVR.ps1 "$package/installer/"
+          cp packaging/Program-Snapshot.ps1 "$package/installer/"
 
       - name: Upload unsigned program files
         uses: actions/upload-artifact@v7
@@ -306,7 +307,7 @@ jobs:
           foreach ($file in @(
             "nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe",
             "installed.toml", "nevr.ico", "configs\default.toml", "configs\shadow_deploy.toml",
-            "Rollback-NEVR.cmd", "Rollback-NEVR.ps1"
+            "Rollback-NEVR.cmd", "Rollback-NEVR.ps1", "Program-Snapshot.ps1"
           )) {
             if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file))) { throw "Installed file is missing: $file" }
           }

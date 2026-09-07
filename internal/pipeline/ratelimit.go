@@ -11,6 +11,7 @@ import "github.com/nevr-anticheat/nevr-anticheat/internal/model"
 // per key so MatchResult can report how much evidence was truncated instead
 // of losing it silently.
 type RateLimiter struct {
+	decisionObserver        func(model.DetectionEvent)
 	maxPerPlayerPerDetector int
 	counts                  map[string]int // key: playerID:detectorID
 	dropped                 map[string]int // key: playerID:detectorID
@@ -43,6 +44,9 @@ func (rl *RateLimiter) Filter(events []model.DetectionEvent) ([]model.DetectionE
 	for _, ev := range events {
 		key := ev.PlayerID + ":" + ev.DetectorID
 		if rl.counts[key] >= rl.maxPerPlayerPerDetector {
+			if rl.decisionObserver != nil {
+				rl.decisionObserver(ev)
+			}
 			rl.dropped[key]++
 			if droppedNow == nil {
 				droppedNow = make(map[string]int)

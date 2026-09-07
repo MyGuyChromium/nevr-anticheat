@@ -135,18 +135,25 @@ try {
             Add-Check "source_regressions" "automated" "not_run" "Source tests require Go plus a C compiler; source-test execution was unavailable or explicitly skipped."
         } else {
             Run-Check "source_regressions" {
-                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance).*|TestApplyPendingRestorePreservesAndReplacesDatabase|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths)$'
+                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance|Settings).*|TestApplyPendingRestore.*|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths|TestSparkReplay.*|TestWatchScan.*|TestRecoveryReports.*|TestSupportBundleRepeated.*)$'
                 $logPath = Join-Path $runRoot "source-tests.jsonl"
                 & go test -json -count=1 -timeout=3m ./cmd/desktop -run $pattern 2>&1 | ForEach-Object { [string]$_ } | Set-Content -LiteralPath $logPath -Encoding utf8
                 $testExit = $LASTEXITCODE
                 $events = @(Get-Content -LiteralPath $logPath | ForEach-Object { if ($_.StartsWith("{")) { $_ | ConvertFrom-Json } })
                 $passed = @($events | Where-Object { $_.Action -eq "pass" -and $_.Test -and -not $_.Test.Contains("/") } | ForEach-Object { $_.Test })
-                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
+                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestApplyPendingRestoreRollsBackEveryMovedFile", "TestSparkReplayClipRequiresExactIncidentFrame", "TestWatchScanRetriesPersistenceFailure", "TestRecoveryReportsPersistenceFailureAndRetainsReplay", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
                     Assert-Beta ($passed -contains $required) "Required regression did not pass: $required. See source-tests.jsonl."
                 }
                 Assert-Beta ($testExit -eq 0) "Source regression tests failed; see source-tests.jsonl."
                 "$($passed.Count) regression tests passed: duplicate/malformed uploads, backup/restore, clip frame/content with mocked Spark launch, update integrity, Windows shutdown/refusal and database identity collisions."
             }
+        }
+
+        Run-Check "program_snapshot_safety" {
+            & (Join-Path $PSScriptRoot "test-windows-snapshots.ps1") -OutputDirectory $runRoot
+            $snapshotReport = Get-Content -Raw -LiteralPath (Join-Path $runRoot "windows-snapshot-tests.json") | ConvertFrom-Json
+            Assert-Beta ($snapshotReport.failed -eq 0 -and $snapshotReport.passed -ge 13) "Program snapshot/rollback safety regressions failed."
+            "$($snapshotReport.passed) isolated program snapshot, corruption, traversal, process-scope and partial-failure checks passed; no installer or real executable launched."
         }
 
         Run-Check "desktop_binary" {
@@ -172,11 +179,10 @@ try {
                 $artifact = $script:artifacts | Where-Object { $_.role -eq "tested_desktop" }
                 $artifact | Add-Member -NotePropertyName source_revision -NotePropertyValue $revisionMatch.Groups[1].Value
                 $artifact | Add-Member -NotePropertyName source_dirty -NotePropertyValue ($dirtyMatch.Groups[1].Value -eq "true")
-                $embedded = [regex]::Match($text, 'main\.buildCommit=([a-zA-Z0-9_-]+)')
-                $embeddedCommit = if ($embedded.Success) { $embedded.Groups[1].Value } else { "development" }
-                $artifact | Add-Member -NotePropertyName embedded_build_commit -NotePropertyValue $embeddedCommit
-                Assert-Beta (-not $artifact.source_dirty -or $embeddedCommit -eq "development") "Dirty binary advertises a clean Git revision; rebuild with the current private-candidate packaging script."
-                "Embedded source dirty=$($artifact.source_dirty); build commit=$embeddedCommit. Dirty candidates cannot establish clean-release provenance."
+                # Go may omit -ldflags from its build-info display when using
+                # -trimpath. Absence cannot establish the runtime variable's
+                # default value; observe that value from the isolated app below.
+                "Embedded VCS revision=$($artifact.source_revision); source dirty=$($artifact.source_dirty). Runtime build identity is checked after isolated startup."
             }
         } else { Add-Check "binary_build_provenance" "automated" "not_run" "Go or the test executable is unavailable; embedded build identity was not inspected." }
     } finally { Pop-Location }
@@ -205,7 +211,7 @@ try {
                     $desktops = @($zip.Entries | Where-Object { [IO.Path]::GetFileName($_.FullName) -eq "nevr-desktop.exe" })
                     Assert-Beta ($desktops.Count -eq 1) "Portable ZIP must have exactly one desktop executable."
                     $prefix = $desktops[0].FullName.Substring(0, $desktops[0].FullName.Length - "nevr-desktop.exe".Length)
-                    foreach ($required in @("nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe", "configs/default.toml", "configs/shadow_deploy.toml", "README-WINDOWS.txt", "installer/Rollback-NEVR.cmd", "installer/Rollback-NEVR.ps1")) {
+                    foreach ($required in @("nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe", "configs/default.toml", "configs/shadow_deploy.toml", "README-WINDOWS.txt", "installer/Rollback-NEVR.cmd", "installer/Rollback-NEVR.ps1", "installer/Program-Snapshot.ps1")) {
                         $entry = $zip.GetEntry($prefix + $required)
                         Assert-Beta ($null -ne $entry -and $entry.Length -gt 0) "Portable ZIP is missing or has an empty $required."
                     }
@@ -237,6 +243,22 @@ try {
             "Desktop $($script:testedVersion) opened an empty temporary database on loopback without a browser."
         }
         if (Has-Passed "isolated_startup") {
+            Run-Check "runtime_build_identity" {
+                # This existing local endpoint reports the actual link-time
+                # buildCommit, not analysisBuildRevision's formatted status.
+                # The database is still empty and exclusively owned by this run.
+                $identity = Send-BetaRequest "GET" "api/lab/calibration-report"
+                Assert-Beta ($identity.status -eq 200 -and $identity.body.payload.app_version -eq $script:testedVersion) "Could not read the isolated desktop's runtime build identity."
+                $runtimeCommit = [string]$identity.body.payload.build_commit
+                Assert-Beta ($runtimeCommit -eq "development" -or $runtimeCommit -cmatch '^[a-f0-9]{40}$') "Desktop returned an invalid runtime build revision."
+                $artifact = $script:artifacts | Where-Object { $_.role -eq "tested_desktop" }
+                $artifact | Add-Member -NotePropertyName embedded_build_commit -NotePropertyValue $runtimeCommit
+                if (Has-Passed "binary_build_provenance") {
+                    Assert-Beta (-not $artifact.source_dirty -or $runtimeCommit -eq "development") "Dirty binary advertises a clean Git revision; rebuild with the private-candidate packaging script."
+                    Assert-Beta ($runtimeCommit -eq "development" -or $runtimeCommit -ceq $artifact.source_revision) "Runtime build revision differs from the binary's embedded VCS revision."
+                }
+                "Actual isolated runtime build commit=$runtimeCommit; observed from the candidate, not inferred from omitted linker flags."
+            }
             Run-Check "fixture_import" {
                 $reply = Send-BetaRequest "POST" "api/analyze" $fixture
                 Assert-Beta ($reply.status -eq 200 -and $reply.body.results.Count -eq 1 -and $reply.body.results[0].ok -and $reply.body.results[0].match_id -eq "SYN-FIXTURE-001") "Synthetic fixture import failed."
@@ -277,7 +299,7 @@ try {
             }
             Run-Check "clean_shutdown" { Stop-BetaDesktop; "Owned desktop process stopped with exit code zero." }
         } else {
-            foreach ($id in @("fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
+            foreach ($id in @("runtime_build_identity", "fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
         }
     } else {
         Add-Check "isolated_desktop_smoke" "automated" "not_run" "No test executable was available."

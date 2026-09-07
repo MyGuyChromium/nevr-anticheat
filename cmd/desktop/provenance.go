@@ -87,6 +87,13 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 	}{engine.Config().EffectiveTable(), engine.Physics(), engine.Levels()})
 	fingerprint := shortHash(data)
 	calibrationConfigFingerprint := calibrationFingerprint(engine.Config())
+	executableHash, hashErr := runningExecutableSHA256()
+	if hashErr != nil {
+		// Preserve the successful analysis while explicitly recording missing
+		// identity. Never stamp a guessed hash; bound review will fail closed.
+		executableHash = ""
+		engine.Logger().Error("could not identify executable for analysis provenance; bound review unavailable", "error", hashErr)
+	}
 	perMatchWall := wall.Milliseconds() / int64(len(results))
 	for _, result := range results {
 		if result == nil || result.Result == nil || result.MatchCtx == nil || result.PersistError() != nil {
@@ -95,7 +102,7 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 		quality := result.Result.TelemetryQuality
 		_, err := engine.Store().StoreAnalysisRun(ctx, sqlite.AnalysisRun{
 			MatchID: result.MatchCtx.MatchID, Source: strings.TrimSpace(source), AppVersion: appVersion,
-			BuildCommit: analysisBuildRevision(), ConfigFingerprint: fingerprint, CalibrationFingerprint: calibrationConfigFingerprint, ProfileName: profileName,
+			BuildCommit: analysisBuildRevision(), ExecutableSHA256: executableHash, ConfigFingerprint: fingerprint, CalibrationFingerprint: calibrationConfigFingerprint, ProfileName: profileName,
 			TelemetryQuality: quality.Score, QualityGrade: quality.Grade, QualityGated: quality.Gated,
 			WallMilliseconds: perMatchWall, PipelineMilliseconds: result.Result.Duration.Milliseconds(),
 			FramesProcessed: result.Frames, EventsProduced: len(result.Result.DetectionEvents),

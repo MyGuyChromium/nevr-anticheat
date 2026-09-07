@@ -128,6 +128,31 @@ func TestImportedAbsentReplayReservesKnownPlayersAcrossNewMatches(t *testing.T) 
 	}
 }
 
+func TestCalibrationClusterKeysReflectHistoricalLinksWithoutChangingSplitIDs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	matches := []StoredMatch{splitMatch("A", "P1"), splitMatch("B", "P2")}
+	before, err := s.ReconcileCalibrationSplits(ctx, matches, map[string]string{"A": "training", "B": "training"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before["A"].ClusterKey == before["B"].ClusterKey {
+		t.Fatal("disconnected groups merged")
+	}
+	matches = append(matches, splitMatch("BRIDGE", "P1", "P2"))
+	after, err := s.ReconcileCalibrationSplits(ctx, matches, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after["A"].ClusterKey != after["B"].ClusterKey || after["A"].ClusterKey != after["BRIDGE"].ClusterKey || after["B"].GroupKey != before["B"].GroupKey {
+		t.Fatalf("historical connected groups: %+v", after)
+	}
+	remaining, err := s.ReconcileCalibrationSplits(ctx, []StoredMatch{splitMatch("B", "P2")}, nil)
+	if err != nil || remaining["B"].ClusterKey != after["A"].ClusterKey {
+		t.Fatal("deleting bridge manufactured independence")
+	}
+}
+
 func TestHoldoutExposureLocksCandidateAndSurvivesDeletedReplay(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()

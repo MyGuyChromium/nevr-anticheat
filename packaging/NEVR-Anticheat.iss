@@ -33,7 +33,7 @@ AllowNoIcons=no
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
 CloseApplications=yes
-CloseApplicationsFilter=nevr-desktop.exe
+CloseApplicationsFilter=nevr-*.exe
 RestartApplications=no
 SetupLogging=yes
 WizardStyle=modern
@@ -86,6 +86,7 @@ Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README-WINDOWS.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\installer\Rollback-NEVR.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\installer\Rollback-NEVR.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\installer\Program-Snapshot.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\assets\nevr.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -102,56 +103,99 @@ Type: dirifempty; Name: "{app}\configs"
 Type: dirifempty; Name: "{app}"
 
 [Code]
-procedure CopyDirectoryTree(const SourceDirName, DestinationDirName: String);
+procedure RejectSnapshotLink(const Path: String);
 var
   FindRec: TFindRec;
-  SourcePath: String;
-  DestinationPath: String;
 begin
-  if not DirExists(SourceDirName) then
-    Exit;
-
-  ForceDirectories(DestinationDirName);
-  if FindFirst(AddBackslash(SourceDirName) + '*', FindRec) then
+  if FindFirst(Path, FindRec) then
   begin
     try
-      repeat
-        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
-        begin
-          SourcePath := AddBackslash(SourceDirName) + FindRec.Name;
-          DestinationPath := AddBackslash(DestinationDirName) + FindRec.Name;
-          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
-            CopyDirectoryTree(SourcePath, DestinationPath)
-          else
-            FileCopy(SourcePath, DestinationPath, False);
-        end;
-      until not FindNext(FindRec);
+      if (FindRec.Attributes and 1024) <> 0 then
+        RaiseException('Refusing linked program/snapshot path: ' + Path);
     finally
       FindClose(FindRec);
     end;
   end;
 end;
 
+procedure SnapshotProgramFile(const RelativeName, SnapshotRoot: String; var Manifest: String);
+var
+  SourcePath: String;
+  DestinationPath: String;
+  Digest: String;
+begin
+  SourcePath := ExpandConstant('{app}\') + RelativeName;
+  DestinationPath := AddBackslash(SnapshotRoot) + RelativeName;
+  if not FileExists(SourcePath) then
+    RaiseException('Cannot preserve missing program file: ' + SourcePath);
+  RejectSnapshotLink(ExtractFileDir(SourcePath));
+  RejectSnapshotLink(SourcePath);
+  if not ForceDirectories(ExtractFileDir(DestinationPath)) then
+    RaiseException('Cannot create program snapshot directory. Installation stopped.');
+  Digest := GetSHA256OfFile(SourcePath);
+  if not FileCopy(SourcePath, DestinationPath, True) then
+    RaiseException('Cannot preserve program file: ' + SourcePath);
+  if CompareText(Digest, GetSHA256OfFile(DestinationPath)) <> 0 then
+    RaiseException('Program snapshot checksum failed: ' + SourcePath);
+  SourcePath := RelativeName;
+  StringChangeEx(SourcePath, '\', '/', True);
+  Manifest := Manifest + Lowercase(Digest) + ' *' + SourcePath + #13#10;
+end;
+
 procedure SnapshotPreviousProgram;
 var
   SnapshotRoot: String;
+  Prefix: String;
+  Manifest: String;
+  Attempt: Integer;
 begin
   if not FileExists(ExpandConstant('{app}\nevr-desktop.exe')) then
     Exit;
 
-  SnapshotRoot := ExpandConstant('{localappdata}\NEVR-Anticheat\program-rollbacks\') +
-    GetDateTimeString('yyyymmdd-hhnnss', '-', ':');
-  CopyDirectoryTree(ExpandConstant('{app}'), SnapshotRoot);
+  RejectSnapshotLink(ExpandConstant('{app}'));
+  RejectSnapshotLink(ExpandConstant('{localappdata}\NEVR-Anticheat'));
+  RejectSnapshotLink(ExpandConstant('{localappdata}\NEVR-Anticheat\program-rollbacks'));
+  Prefix := ExpandConstant('{localappdata}\NEVR-Anticheat\program-rollbacks\');
+  if not ForceDirectories(Prefix) then
+    RaiseException('Cannot create program rollback directory. Installation stopped.');
+  Prefix := Prefix + GetDateTimeString('yyyymmdd-hhnnss', '-', ':') + '-';
+  Attempt := 0;
+  repeat
+    SnapshotRoot := Prefix + IntToStr(Attempt);
+    Attempt := Attempt + 1;
+  until not DirExists(SnapshotRoot);
+  if not CreateDir(SnapshotRoot) then
+    RaiseException('Cannot reserve a unique program snapshot. Installation stopped.');
+  Manifest := 'nevr-program-snapshot/v1' + #13#10;
+  SnapshotProgramFile('nevr-desktop.exe', SnapshotRoot, Manifest);
+  SnapshotProgramFile('nevr-ac.exe', SnapshotRoot, Manifest);
+  SnapshotProgramFile('nevr-server.exe', SnapshotRoot, Manifest);
+  SnapshotProgramFile('nevr-bridge.exe', SnapshotRoot, Manifest);
+  SnapshotProgramFile('nevr-compat.exe', SnapshotRoot, Manifest);
+  if FileExists(ExpandConstant('{app}\README.md')) then
+    SnapshotProgramFile('README.md', SnapshotRoot, Manifest);
+  if FileExists(ExpandConstant('{app}\README-WINDOWS.txt')) then
+    SnapshotProgramFile('README-WINDOWS.txt', SnapshotRoot, Manifest);
+  if FileExists(ExpandConstant('{app}\nevr.ico')) then
+    SnapshotProgramFile('nevr.ico', SnapshotRoot, Manifest);
+  if FileExists(ExpandConstant('{app}\configs\default.toml')) then
+    SnapshotProgramFile('configs\default.toml', SnapshotRoot, Manifest);
+  if FileExists(ExpandConstant('{app}\configs\shadow_deploy.toml')) then
+    SnapshotProgramFile('configs\shadow_deploy.toml', SnapshotRoot, Manifest);
+  if not SaveStringToFile(AddBackslash(SnapshotRoot) + 'SHA256SUMS.txt', Manifest, False) then
+    RaiseException('Cannot finish program snapshot manifest. Installation stopped.');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  ResultCode: Integer;
 begin
   Result := '';
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM nevr-desktop.exe', '',
-    SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  SnapshotPreviousProgram;
+  // Inno's Restart Manager handles only applications using installation
+  // payload files. Never terminate unrelated NEVR copies by process name.
+  try
+    SnapshotPreviousProgram;
+  except
+    Result := GetExceptionMessage;
+  end;
 end;
 
 procedure EnsureInstalledConfig;

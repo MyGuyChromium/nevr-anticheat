@@ -112,16 +112,17 @@ type MatchResult struct {
 
 // Pipeline orchestrates frame processing through detectors and scoring.
 type Pipeline struct {
-	detectors   []detect.Detector
-	scorer      *scoring.SuspicionScorer
-	dedup       *Deduplicator
-	rateLimiter *RateLimiter
-	validator   *FrameValidator
-	extractor   *FeatureExtractor
-	cfg         *config.Config
-	logger      *slog.Logger
-	shadowIDs   map[string]bool
-	skipReset   bool
+	decisionCoverage *coverageTracker // current-call diagnostics, detached before returning
+	detectors        []detect.Detector
+	scorer           *scoring.SuspicionScorer
+	dedup            *Deduplicator
+	rateLimiter      *RateLimiter
+	validator        *FrameValidator
+	extractor        *FeatureExtractor
+	cfg              *config.Config
+	logger           *slog.Logger
+	shadowIDs        map[string]bool
+	skipReset        bool
 
 	// players persists across ProcessMatch calls while skipReset is set so
 	// live batches accumulate kinematic and throw state.
@@ -268,6 +269,8 @@ func (p *Pipeline) ProcessMatch(
 	} else if p.players == nil {
 		p.initMatch(matchCtx)
 	}
+	detachDecisionCoverage := p.attachDecisionCoverage(coverage)
+	defer detachDecisionCoverage()
 
 	// Group frames by index and process them in ascending index order. Only
 	// indices present in this call are visited (a live match at frame 54k
@@ -304,6 +307,7 @@ func (p *Pipeline) ProcessMatch(
 			if err != nil {
 				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, err)
 				coverage.player(pf.PlayerID).RejectedFrames++
+				coverage.allEnabled(pf.PlayerID, fi, "frame_rejected")
 				continue
 			}
 			coverage.player(pf.PlayerID).ValidFrames++
@@ -340,6 +344,9 @@ func (p *Pipeline) ProcessMatch(
 		if !activePhase {
 			// Feature extractor state was updated above to maintain continuity,
 			// but detectors do not run during non-active phases.
+			for pid := range framePlayers {
+				coverage.allEnabled(pid, fi, "inactive_phase")
+			}
 			continue
 		}
 
@@ -369,15 +376,27 @@ func (p *Pipeline) ProcessMatch(
 				}
 				eligible[warm] = view
 			}
-			if view.active == 0 {
-				continue
-			}
 			for pid, ps := range framePlayers {
 				if _, ok := view.players[pid]; ok {
 					coverage.candidate(det.ID(), ps, fi)
+					coverage.trace(det.ID(), pid, fi, "detector_evaluated")
+				} else {
+					coverage.trace(det.ID(), pid, fi, "warming_up")
 				}
 			}
+			if view.active == 0 {
+				continue
+			}
 			events := det.Evaluate(matchCtx, view.players, fi)
+			emitted := make(map[string]bool, len(events))
+			for _, event := range events {
+				emitted[event.PlayerID] = true
+			}
+			for pid := range framePlayers {
+				if _, included := view.players[pid]; included && !emitted[pid] {
+					coverage.trace(det.ID(), pid, fi, "no_raw_emission")
+				}
+			}
 			frameEvents = append(frameEvents, p.acceptEmissions(events, fi, result)...)
 		}
 
@@ -424,7 +443,9 @@ func (p *Pipeline) acceptEmissions(events []model.DetectionEvent, fi int, result
 	kept := events[:0:0]
 	for i := range events {
 		ev := events[i]
+		p.traceEvent(ev, "raw_emission_returned")
 		if err := ev.Validate(); err != nil {
+			p.traceEvent(ev, "invalid_emission_dropped")
 			result.EventsInvalid++
 			p.logger.Warn("dropping invalid detection event",
 				"detector", ev.DetectorID, "player", ev.PlayerID, "frame", fi, "error", err)
@@ -434,9 +455,11 @@ func (p *Pipeline) acceptEmissions(events []model.DetectionEvent, fi int, result
 			ev.IsShadow = true
 		}
 		if p.quality.ConfidenceMultiplier > 0 && p.quality.ConfidenceMultiplier < 1 {
+			p.traceEvent(ev, "quality_confidence_reduced")
 			ev.Confidence = model.Clamp(ev.Confidence*p.quality.ConfidenceMultiplier, 0, 1)
 		}
 		if p.quality.Gated {
+			p.traceEvent(ev, "quality_forced_shadow")
 			ev.IsShadow = true
 			ev.AutoEnforce = false
 			ev.EnforcementWeight = 0
@@ -459,14 +482,19 @@ func (p *Pipeline) applyLegalContext(ev *model.DetectionEvent) {
 	multiplier := 1.0
 	switch {
 	case ctx.TrackingLimited:
+		p.traceEvent(*ev, "context_tracking_limited")
 		multiplier = 0.55
 	case ctx.PossibleHeadContact && (ev.DetectorID == "THROW_003" || ev.DetectorID == "BIO_001"):
+		p.traceEvent(*ev, "context_possible_head_contact")
 		multiplier = 0.35
 	case ctx.PossibleSlapOrPush && (ev.DetectorID == "BIO_001" || ev.DetectorID == "BIO_002" || ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		p.traceEvent(*ev, "context_possible_slap_or_push")
 		multiplier = 0.6
 	case (ctx.Leaning || ctx.PlayspaceStep) && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		p.traceEvent(*ev, "context_lean_or_step")
 		multiplier = 0.65
 	case ctx.Boosting && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+		p.traceEvent(*ev, "context_boost")
 		multiplier = 0.75
 	}
 	if multiplier < 1 {
@@ -521,6 +549,16 @@ func (p *Pipeline) emit(events []model.DetectionEvent, result *MatchResult) {
 	for _, ev := range kept {
 		_, scored := p.scorer.IngestEventWithResult(ev)
 		result.DetectionEvents = append(result.DetectionEvents, ev)
+		if ev.IsShadow {
+			p.traceEvent(ev, "incident_retained_shadow")
+		} else {
+			p.traceEvent(ev, "incident_retained_review")
+		}
+		if scored {
+			p.traceEvent(ev, "incident_scored")
+		} else {
+			p.traceEvent(ev, "incident_not_scored")
+		}
 
 		if ev.IsShadow || !scored {
 			continue

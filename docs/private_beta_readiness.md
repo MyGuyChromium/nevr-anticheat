@@ -71,10 +71,17 @@ An automated pass must not be described as complete beta acceptance.
 | Corrupt file | Per-file failure; existing match and app remain usable | Clear UI explanation for a failed file among valid uploads |
 | Evidence persistence | Temporary backup and match survive process restart; source tests exercise restore preservation | Older-to-newer installed upgrade and uninstall preserve disposable test evidence/settings |
 | Update safety | Manifest/hash/size, redirect, active-analysis and shutdown failure-path regressions | Private release download, actual Setup handoff and relaunch between two installed betas |
+| Program snapshot/rollback | Synthetic payload hashes, required files, path/link validation, exact process scope and partial-failure recovery | Actual installed version rollback and schema compatibility |
 | Spark clip | Source tests verify incident/throw frame windows and native clip contents with a mocked viewer launch | Real Spark opens the correct player/incident/time on the tester PC |
 | Candidate identity | Hashes, required ZIP payload, Setup checksum/version and exact tested desktop binding | Confirm privately downloaded files match the maintainer's recorded hashes |
 | Publisher trust | Authenticode status is recorded without changing it | Record actual publisher and Windows/SmartScreen prompts on another PC |
 | Detection quality | No claim made from these synthetic smoke checks | Labeled real replays and independent review/calibration |
+
+The source regressions also cover complete DB/WAL/SHM restore rollback, watch
+retry after persistence errors, recovery error visibility, and refusal to open
+a clip without its exact incident frame. The ZIP inventory requires the shared
+`installer/Program-Snapshot.ps1` helper. See
+[windows_hardening.md](windows_hardening.md) for exact scope and limitations.
 
 Exit codes: `0` means the automated checks passed, `1` means a check failed,
 and `2` means automated evidence is incomplete. Required manual rows remain

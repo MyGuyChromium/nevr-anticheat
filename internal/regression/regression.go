@@ -119,6 +119,8 @@ type CaseResult struct {
 	Quality          map[string]string `json:"quality_grade_by_match"`
 	WindowSamples    map[string]int    `json:"window_samples,omitempty"`
 	Errors           []string          `json:"errors"`
+	DurationMS       int64             `json:"duration_ms"`
+	SourceBytes      int64             `json:"source_bytes"`
 }
 
 type Report struct {
@@ -169,6 +171,10 @@ func ConfigFingerprint(cfg *config.Config) (string, error) {
 }
 
 func FileSHA256(path string) (string, error) {
+	return fileSHA256(context.Background(), path)
+}
+
+func fileSHA256(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -182,10 +188,42 @@ func FileSHA256(path string) (string, error) {
 		return "", fmt.Errorf("not a regular file: %s", path)
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	if _, err := copyWithContext(ctx, hash, file); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// Copy in bounded chunks so cancelling a multi-gigabyte preflight/staging read
+// does not have to wait for the whole file. Original recordings are read-only.
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 64<<10)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, err := src.Read(buf)
+		if n > 0 {
+			if stop := ctx.Err(); stop != nil {
+				return total, stop
+			}
+			written, writeErr := dst.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
 }
 
 func validHash(hash string) bool {
@@ -253,8 +291,13 @@ func (manifest Manifest) Validate() error {
 				return fmt.Errorf("case %s has an invalid match baseline", item.ID)
 			}
 			matches[match.MatchID] = match
+			for player, frames := range match.PlayerFrames {
+				if strings.TrimSpace(player) == "" || frames <= 0 {
+					return fmt.Errorf("case %s has an invalid player frame baseline", item.ID)
+				}
+			}
 			for _, signal := range match.Signals {
-				if signal.MatchID != match.MatchID || signal.PlayerID == "" || signal.DetectorID == "" || signal.Start < 0 || signal.End < signal.Start || signal.Frame < 0 {
+				if signal.MatchID != match.MatchID || match.PlayerFrames[signal.PlayerID] <= 0 || signal.DetectorID == "" || signal.Start < 0 || signal.End < signal.Start || signal.Frame < 0 || signal.End > match.MaxFrame || signal.Frame > match.MaxFrame {
 					return fmt.Errorf("case %s has an invalid signal baseline", item.ID)
 				}
 				if _, ok := config.DetectorSpecFor(signal.DetectorID); !ok {
@@ -286,6 +329,9 @@ func (manifest Manifest) Validate() error {
 				}
 			case "synthetic", "user_reported":
 			case "confirmed":
+				if (p.Truth == "positive" && window.Expectation == "quiet") || (p.Truth == "negative" && window.Expectation == "signal") {
+					return fmt.Errorf("confirmed window %s has an expectation contradicting its ground truth; use observe to measure current behavior", window.ID)
+				}
 				reviewers := make(map[string]bool)
 				for _, reviewer := range p.Reviewers {
 					id := strings.ToLower(strings.TrimSpace(reviewer))
@@ -341,7 +387,7 @@ func Capture(ctx context.Context, cfg *config.Config, paths []string, runDir str
 		if err != nil {
 			return manifest, report, err
 		}
-		hash, err := FileSHA256(abs)
+		hash, err := fileSHA256(ctx, abs)
 		if err != nil {
 			return manifest, report, err
 		}
@@ -386,12 +432,12 @@ func Check(ctx context.Context, cfg *config.Config, manifest Manifest, baseDir, 
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		if err := verifyFile(ResolvePath(baseDir, item.Path), item.SHA256); err != nil {
+		if err := verifyFile(ctx, ResolvePath(baseDir, item.Path), item.SHA256); err != nil {
 			return report, fmt.Errorf("case %s: %w", item.ID, err)
 		}
 		for _, window := range item.Windows {
 			for _, artifact := range window.Provenance.Artifacts {
-				if err := verifyFile(ResolvePath(baseDir, artifact.Path), artifact.SHA256); err != nil {
+				if err := verifyFile(ctx, ResolvePath(baseDir, artifact.Path), artifact.SHA256); err != nil {
 					return report, fmt.Errorf("window %s: %w", window.ID, err)
 				}
 			}
@@ -417,8 +463,8 @@ func Check(ctx context.Context, cfg *config.Config, manifest Manifest, baseDir, 
 	return report, nil
 }
 
-func verifyFile(path, expected string) error {
-	hash, err := FileSHA256(path)
+func verifyFile(ctx context.Context, path, expected string) error {
+	hash, err := fileSHA256(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -429,10 +475,12 @@ func verifyFile(path, expected string) error {
 }
 
 func runCase(ctx context.Context, cfg *config.Config, item ReplayCase, source, dir string) (out CaseResult, retErr error) {
+	started := time.Now()
 	out = CaseResult{ID: item.ID, SourceSHA256: item.SHA256, Passed: true, StructureMatch: true,
 		Actual: []Snapshot{}, Missing: []Signal{}, Unexpected: []Signal{}, Windows: []WindowResult{},
 		DetectorVersions: map[string]string{}, Quality: map[string]string{}, WindowSamples: map[string]int{}, Errors: []string{}}
 	defer func() {
+		out.DurationMS = time.Since(started).Milliseconds()
 		if retErr != nil {
 			out.Passed = false
 			out.Errors = append(out.Errors, retErr.Error())
@@ -457,7 +505,8 @@ func runCase(ctx context.Context, cfg *config.Config, item ReplayCase, source, d
 	// This exact file was created above inside a newly created run directory.
 	defer os.Remove(stagePath)
 	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(stage, hash), input)
+	copied, copyErr := copyWithContext(ctx, io.MultiWriter(stage, hash), input)
+	out.SourceBytes = copied
 	closeErr := stage.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		return out, err

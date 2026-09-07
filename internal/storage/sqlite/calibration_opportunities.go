@@ -53,6 +53,7 @@ type CalibrationOpportunity struct {
 	VerifiedGroundTruth string    `json:"verified_ground_truth"`
 	EvidenceMethod      string    `json:"evidence_method"`
 	EvidenceReference   string    `json:"evidence_reference"`
+	ReviewSessionID     string    `json:"review_session_id,omitempty"`
 }
 
 // IndependentEvidenceVerified describes a recorded human attestation, not an
@@ -154,6 +155,9 @@ func normalizeOpportunity(in CalibrationOpportunity) (CalibrationOpportunity, er
 
 // StoreCalibrationOpportunity creates or replaces a ground-truth window.
 func (s *Store) StoreCalibrationOpportunity(ctx context.Context, in CalibrationOpportunity) (CalibrationOpportunity, error) {
+	if in.ReviewSessionID != "" {
+		return in, errors.New("bound reviews can only be created by the blind-review workflow")
+	}
 	in, err := normalizeOpportunity(in)
 	if err != nil {
 		return in, err
@@ -201,6 +205,8 @@ func (s *Store) CalibrationWindowHasSamples(ctx context.Context, matchID, player
 // replay is imported. Like imported match labels, it becomes measurable once
 // the referenced match telemetry exists.
 func (s *Store) ImportCalibrationOpportunity(ctx context.Context, in CalibrationOpportunity) error {
+	// Portable text cannot recreate proof of actual bytes/ballot order.
+	in.ReviewSessionID = ""
 	in, err := normalizeOpportunity(in)
 	if err != nil {
 		return err
@@ -218,6 +224,13 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 		return in, fmt.Errorf("starting calibration opportunity transaction: %w", err)
 	}
 	defer tx.Rollback()
+	var bound int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities WHERE opportunity_id=? AND review_session_id<>''`, in.OpportunityID).Scan(&bound); err != nil {
+		return in, err
+	}
+	if bound != 0 {
+		return in, errors.New("hash-bound review annotations are immutable; create a new session for a correction")
+	}
 	var overlapping int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities
 		WHERE match_id = ? AND player_id = ? AND detector_id = ? AND opportunity_id <> ?
@@ -263,7 +276,7 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 const calibrationOpportunityColumns = `opportunity_id, match_id, player_id, detector_id,
 	behavior_type, opportunity_kind, frame_start, frame_end, timestamp_start, timestamp_end,
 	ground_truth, comment, reviewer_id, blind_review, reviewed_at,
-	verifier_id, verified_ground_truth, evidence_method, evidence_reference`
+	verifier_id, verified_ground_truth, evidence_method, evidence_reference, review_session_id`
 
 func scanCalibrationOpportunity(row rowScanner) (CalibrationOpportunity, error) {
 	var out CalibrationOpportunity
@@ -273,7 +286,7 @@ func scanCalibrationOpportunity(row rowScanner) (CalibrationOpportunity, error) 
 		&out.BehaviorType, &out.Kind, &out.FrameStart, &out.FrameEnd,
 		&out.TimestampStart, &out.TimestampEnd, &out.GroundTruth, &out.Comment,
 		&out.ReviewerID, &blind, &reviewed,
-		&out.VerifierID, &out.VerifiedGroundTruth, &out.EvidenceMethod, &out.EvidenceReference)
+		&out.VerifierID, &out.VerifiedGroundTruth, &out.EvidenceMethod, &out.EvidenceReference, &out.ReviewSessionID)
 	out.BlindReview = blind != 0
 	out.ReviewedAt = parseDBTimeLenient(reviewed)
 	return out, err

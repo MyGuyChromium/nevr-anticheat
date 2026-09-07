@@ -189,3 +189,94 @@ test('detector filter cannot override whole-source insufficient data or quality 
   p.coverage.quality_gated = false; p.coverage.status = 'insufficient_data';
   assert.equal(render.playerReviewAssessment(match, p, 'THROW_001').status, 'insufficient_data');
 });
+
+test('decision traces distinguish pipeline-only data and escape every reason', () => {
+  const render = ui(), match = fixture(), p = match.players[0];
+  p.coverage.detectors[0].decision_trace = { version: 1, internal_branches: true, reasons: [
+    { code: '<img src=x>', description: '<script>bad()</script>', count: 4, first_frame: 7, last_frame: 23 }
+  ], overflow_count: 2 };
+  p.coverage.detectors[1].decision_trace = { version: 1, internal_branches: false, reasons: [] };
+  const before = JSON.stringify(match);
+  const html = render.decisionTraceDetails(match, p);
+  assert.match(html, /&lt;img|&lt;script/);
+  assert.doesNotMatch(html, /<img|<script/);
+  assert.match(html, /pipeline only|Internal detector decisions are not instrumented/);
+  assert.match(html, /data-physics-frame="7"/);
+  assert.match(html, /exceeded the bounded/);
+  assert.match(html, /Reasons can overlap/);
+  assert.doesNotMatch(render.decisionTraceDetails(match, p, 'THROW_001'), /MOV_006/);
+  assert.equal(JSON.stringify(match), before);
+});
+
+test('missing and blinded decision traces never expose conclusions or imply clearance', () => {
+  const render = ui(), match = fixture(), p = match.players[0];
+  assert.match(render.decisionTraceDetails(match, p), /No compatible trace/);
+  delete p.coverage;
+  assert.match(render.decisionTraceDetails(match, p), /missing traces are not a clean result/);
+  render.blindReview = true;
+  assert.match(render.decisionTraceDetails(match, p), /concealed/);
+  assert.doesNotMatch(render.decisionTraceDetails(match, p), /THROW_001|MOV_006|unflagged/);
+});
+
+function blindUI() {
+  const context = ui();
+  const a = script.indexOf('  let blindSessions =');
+  const b = script.indexOf('  async function openBlindWorkspace(', a);
+  assert.ok(a >= 0 && b > a);
+  vm.runInContext(script.slice(a,b), context);
+  return context;
+}
+
+test('calibration details expose diversity and legal context without inventing missing error rates', () => {
+  const render = blindUI();
+  const a = script.indexOf('  function calibrationDetailsHTML(');
+  const b = script.indexOf('  let blindSessions =', a);
+  vm.runInContext(script.slice(a,b),render);
+  const metric = { true_positive:2, false_positive:0, false_negative:0, true_negative:0, positive_opportunities:2, precision:1, recall:1, clusters:{ groups:1, positive_groups:1, negative_groups:0, largest_group_fraction:1, recall_observed_range:{lower:1,upper:1}, macro_recall:1 } };
+  const d = { overall:metric, reasons:['<img src=x>'], by_legal_context:{slap:metric,'<script>':metric} };
+  const before = JSON.stringify(d);
+  const html = render.calibrationDetailsHTML(d);
+  assert.match(html,/Connected-group diversity|Disc slap|not confidence intervals/);
+  assert.match(html,/Reserved holdout \(not sealed\)/);
+  assert.doesNotMatch(html,/<img|<script|undefined|NaN|Infinity/);
+  assert.match(html,/&lt;img|&lt;script/);
+  assert.match(html,/<td>—<\/td>/);
+  assert.equal(JSON.stringify(d),before);
+});
+
+test('blind session rendering hides prematurely supplied ballots and findings', () => {
+  const render = blindUI();
+  const session = { session_id:'s', revealed:false, ballot_count:1, binding:{match_id:'m',player_id:'p',detector_id:'THROW_001',artifact_sha256:'a'.repeat(64),frame_start:1,frame_end:9}, ballots:[{reviewer_id:'SECRET-REVIEWER',ground_truth:'positive',comment:'SECRET-BALLOT'}], consensus:'positive' };
+  const html = render.blindSessionDetails(session,[{detector_id:'SECRET-DETECTOR',observed_value:'SECRET-FINDING'}]);
+  assert.doesNotMatch(html,/SECRET-|Locked review results|data-blind-reveal/);
+  assert.match(html, /id="br-truth"><option value="uncertain"/);
+  assert.match(html, /id="br-attest" type="checkbox">/);
+  assert.match(html, /id="br-comment" maxlength="2000"/);
+  assert.match(page, /pre_reveal_attestation:\$\('br-attest'\)\.checked/);
+  assert.match(html, /data-blind-ballot="s"/);
+  session.ballot_count = 2;
+  const ready = render.blindSessionDetails(session);
+  assert.doesNotMatch(ready,/SECRET-|data-blind-ballot/);
+  assert.match(ready,/data-blind-reveal="s"/);
+});
+
+test('revealed review and attached evidence links are escaped and integrity constrained', () => {
+  const render = blindUI();
+  assert.doesNotMatch(render.blindArtifactLink('javascript:alert(1)'), /href=/);
+  const session = { session_id:'<img>', revealed:true, ballot_count:2, consensus:'<script>bad()</script>', binding:{match_id:'<img>',player_id:'<img>',detector_id:'THROW_001',artifact_sha256:'a'.repeat(64),frame_start:1,frame_end:9}, ballots:[{reviewer_id:'<img>',ground_truth:'negative',comment:'<script>bad()</script>'}] };
+  const html = render.blindSessionDetails(session,[{detector_id:'<img>',observed_value:'<img>',frame_index:2}]);
+  assert.doesNotMatch(html,/<img|<script/);
+  assert.match(html,/&lt;img|&lt;script/);
+  assert.match(html,/api\/blind-review\/artifacts\/a{64}/);
+  assert.doesNotMatch(html,/id="br-reviewer"/);
+});
+
+test('modal status messages are visible inside the active modal and never interpreted as HTML', () => {
+  const nodes = { status:{}, 'lab-dialog':{open:true}, 'lab-dialog-status':{} };
+  const context = vm.createContext({$: (id) => nodes[id]});
+  const a = script.indexOf('  const setStatus ='), b = script.indexOf('  async function getJSON(',a);
+  vm.runInContext(script.slice(a,b) + '\nsetStatus("<img src=x>", "err");',context);
+  assert.equal(nodes['lab-dialog-status'].textContent,'<img src=x>');
+  assert.equal(nodes['lab-dialog-status'].className,'status err');
+  assert.equal(nodes['lab-dialog-status'].innerHTML,undefined);
+});

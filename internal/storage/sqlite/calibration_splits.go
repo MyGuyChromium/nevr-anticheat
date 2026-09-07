@@ -65,6 +65,7 @@ func (s *Store) RecordCalibrationExposure(ctx context.Context, matchID string, k
 // CalibrationSplitAssignment survives replay deletion. Split and group key are
 // immutable; historical player membership only grows and quarantine never clears.
 type CalibrationSplitAssignment struct {
+	ClusterKey          string   `json:"cluster_key"` // Current connected component, including historical membership.
 	MatchID             string   `json:"match_id"`
 	PolicyVersion       int      `json:"policy_version"`
 	GroupKey            string   `json:"group_key"`
@@ -227,6 +228,7 @@ func (s *Store) ReconcileCalibrationSplits(ctx context.Context, matches []Stored
 		}
 		for _, id := range ids {
 			a := all[id]
+			a.ClusterKey = "component:" + ids[0]
 			if !existing[id] {
 				a.Split, a.GroupKey = chosen, "component:"+ids[0]
 			}
