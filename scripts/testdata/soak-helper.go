@@ -23,9 +23,28 @@ func main() {
 	case "fail":
 		os.Exit(3)
 	}
-	doc, err := os.ReadFile(os.Args[2])
-	if err != nil {
+	if err := runSynthetic(root, os.Args[2]); err != nil {
 		panic(err)
+	}
+}
+
+func runSynthetic(rootPath, configPath string) error {
+	rootPath, err := filepath.Abs(rootPath)
+	if err != nil {
+		return err
+	}
+	configPath, err = pathWithinRoot(rootPath, configPath)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	doc, err := root.ReadFile(configPath)
+	if err != nil {
+		return err
 	}
 	for _, line := range strings.Split(string(doc), "\n") {
 		if !strings.HasPrefix(line, "db_path = ") {
@@ -33,17 +52,33 @@ func main() {
 		}
 		var path string
 		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "db_path = "))), &path); err != nil {
-			panic(err)
+			return err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			panic("runner escaped its isolated test root")
+		path, err = pathWithinRoot(rootPath, path)
+		if err != nil {
+			return err
 		}
-		if err := os.WriteFile(path, []byte("synthetic runner marker, not a database"), 0o600); err != nil {
-			panic(err)
+		if err := root.WriteFile(path, []byte("synthetic runner marker, not a database"), 0o600); err != nil {
+			return err
 		}
 		fmt.Println("synthetic runner success")
-		return
+		return nil
 	}
-	panic("runner omitted database configuration")
+	return fmt.Errorf("runner omitted database configuration")
+}
+
+// The runner supplies absolute paths; tests may also use paths relative to the
+// isolated root. Root methods enforce the boundary again when following links.
+func pathWithinRoot(root, path string) (string, error) {
+	if filepath.IsAbs(path) {
+		var err error
+		path, err = filepath.Rel(root, path)
+		if err != nil {
+			return "", err
+		}
+	}
+	if !filepath.IsLocal(path) {
+		return "", fmt.Errorf("runner escaped its isolated test root")
+	}
+	return path, nil
 }
