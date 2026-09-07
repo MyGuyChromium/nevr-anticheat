@@ -179,11 +179,10 @@ try {
                 $artifact = $script:artifacts | Where-Object { $_.role -eq "tested_desktop" }
                 $artifact | Add-Member -NotePropertyName source_revision -NotePropertyValue $revisionMatch.Groups[1].Value
                 $artifact | Add-Member -NotePropertyName source_dirty -NotePropertyValue ($dirtyMatch.Groups[1].Value -eq "true")
-                $embedded = [regex]::Match($text, 'main\.buildCommit=([a-zA-Z0-9_-]+)')
-                $embeddedCommit = if ($embedded.Success) { $embedded.Groups[1].Value } else { "development" }
-                $artifact | Add-Member -NotePropertyName embedded_build_commit -NotePropertyValue $embeddedCommit
-                Assert-Beta (-not $artifact.source_dirty -or $embeddedCommit -eq "development") "Dirty binary advertises a clean Git revision; rebuild with the current private-candidate packaging script."
-                "Embedded source dirty=$($artifact.source_dirty); build commit=$embeddedCommit. Dirty candidates cannot establish clean-release provenance."
+                # Go may omit -ldflags from its build-info display when using
+                # -trimpath. Absence cannot establish the runtime variable's
+                # default value; observe that value from the isolated app below.
+                "Embedded VCS revision=$($artifact.source_revision); source dirty=$($artifact.source_dirty). Runtime build identity is checked after isolated startup."
             }
         } else { Add-Check "binary_build_provenance" "automated" "not_run" "Go or the test executable is unavailable; embedded build identity was not inspected." }
     } finally { Pop-Location }
@@ -244,6 +243,22 @@ try {
             "Desktop $($script:testedVersion) opened an empty temporary database on loopback without a browser."
         }
         if (Has-Passed "isolated_startup") {
+            Run-Check "runtime_build_identity" {
+                # This existing local endpoint reports the actual link-time
+                # buildCommit, not analysisBuildRevision's formatted status.
+                # The database is still empty and exclusively owned by this run.
+                $identity = Send-BetaRequest "GET" "api/lab/calibration-report"
+                Assert-Beta ($identity.status -eq 200 -and $identity.body.payload.app_version -eq $script:testedVersion) "Could not read the isolated desktop's runtime build identity."
+                $runtimeCommit = [string]$identity.body.payload.build_commit
+                Assert-Beta ($runtimeCommit -eq "development" -or $runtimeCommit -cmatch '^[a-f0-9]{40}$') "Desktop returned an invalid runtime build revision."
+                $artifact = $script:artifacts | Where-Object { $_.role -eq "tested_desktop" }
+                $artifact | Add-Member -NotePropertyName embedded_build_commit -NotePropertyValue $runtimeCommit
+                if (Has-Passed "binary_build_provenance") {
+                    Assert-Beta (-not $artifact.source_dirty -or $runtimeCommit -eq "development") "Dirty binary advertises a clean Git revision; rebuild with the private-candidate packaging script."
+                    Assert-Beta ($runtimeCommit -eq "development" -or $runtimeCommit -ceq $artifact.source_revision) "Runtime build revision differs from the binary's embedded VCS revision."
+                }
+                "Actual isolated runtime build commit=$runtimeCommit; observed from the candidate, not inferred from omitted linker flags."
+            }
             Run-Check "fixture_import" {
                 $reply = Send-BetaRequest "POST" "api/analyze" $fixture
                 Assert-Beta ($reply.status -eq 200 -and $reply.body.results.Count -eq 1 -and $reply.body.results[0].ok -and $reply.body.results[0].match_id -eq "SYN-FIXTURE-001") "Synthetic fixture import failed."
@@ -284,7 +299,7 @@ try {
             }
             Run-Check "clean_shutdown" { Stop-BetaDesktop; "Owned desktop process stopped with exit code zero." }
         } else {
-            foreach ($id in @("fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
+            foreach ($id in @("runtime_build_identity", "fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
         }
     } else {
         Add-Check "isolated_desktop_smoke" "automated" "not_run" "No test executable was available."
