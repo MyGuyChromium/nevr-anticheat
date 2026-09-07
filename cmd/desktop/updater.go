@@ -77,7 +77,27 @@ func (rt *desktopRuntime) githubGet(ctx context.Context, client *http.Client, ur
 	if token := strings.TrimSpace(os.Getenv("NEVR_GITHUB_TOKEN")); token != "" && sameHTTPOrigin(url, rt.updateURL) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	return client.Do(req)
+	// net/http may forward Authorization to a subdomain or another port, and
+	// even across an HTTPS-to-HTTP redirect. Enforce the same origin rule on
+	// every hop without mutating the shared client used by concurrent checks.
+	redirectClient := *client
+	redirectClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if req.URL.Scheme == "https" && next.URL.Scheme != "https" {
+			return errors.New("refusing an insecure update redirect")
+		}
+		if client.CheckRedirect != nil {
+			if err := client.CheckRedirect(next, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if !sameHTTPOrigin(next.URL.String(), rt.updateURL) {
+			next.Header.Del("Authorization")
+		}
+		return nil
+	}
+	return redirectClient.Do(req)
 }
 
 func sameHTTPOrigin(rawA, rawB string) bool {

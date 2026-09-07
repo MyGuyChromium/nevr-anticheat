@@ -79,30 +79,16 @@ func (s *Store) DeleteMatchSummary(ctx context.Context, matchID string) error {
 
 // ForEachMatchTick streams a match's raw session payloads in frame order to
 // fn, one at a time (a full match holds hundreds of megabytes of JSON, so
-// nothing is accumulated). match_ticks is read first; matches ingested
-// before it existed fall back to telemetry_frames.raw_json. Returns fn's
+// nothing is accumulated). Each tick absent from match_ticks falls back to
+// telemetry_frames.raw_json, including partially upgraded matches. Returns fn's
 // error as it is; n is the number of ticks delivered.
 func (s *Store) ForEachMatchTick(ctx context.Context, matchID string, fn func(frameIndex int, raw string) error) (n int, err error) {
-	for _, q := range []string{
-		`SELECT frame_index, raw_json FROM match_ticks WHERE match_id = ? ORDER BY frame_index`,
-		`SELECT frame_index, raw_json FROM telemetry_frames
-		 WHERE match_id = ? AND raw_json IS NOT NULL GROUP BY frame_index ORDER BY frame_index`,
-	} {
-		n, err = s.streamTicks(ctx, q, matchID, fn)
-		if err != nil || n > 0 {
-			return n, err
-		}
-	}
-	return 0, nil
-}
-
-func (s *Store) streamTicks(ctx context.Context, query, matchID string, fn func(int, string) error) (int, error) {
-	rows, err := s.db.QueryContext(ctx, query, matchID)
+	rows, err := s.db.QueryContext(ctx, matchRawTicksSelect+` ORDER BY frame_index`, matchID, matchID)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
-	n := 0
+	n = 0
 	for rows.Next() {
 		var idx int
 		var raw string

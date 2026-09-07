@@ -61,6 +61,10 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-compat.exe" ./cmd/compat
 
+          # Windows-only tests are excluded from Linux CI. Compile them with
+          # the same toolchain as the shipped app, then run on Windows below.
+          go test -c -o dist/nevr-desktop.test.exe ./cmd/desktop
+
           cp README.md packaging/README-WINDOWS.txt "$package/"
           cp configs/default.toml configs/shadow_deploy.toml "$package/configs/"
           cp packaging/Install-NEVR.cmd "$package/"
@@ -72,6 +76,13 @@ jobs:
         with:
           name: nevr-windows-unsigned
           path: dist/NEVR-Anticheat-Windows-x64
+          if-no-files-found: error
+
+      - name: Upload Windows desktop test binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: nevr-windows-desktop-tests
+          path: dist/nevr-desktop.test.exe
           if-no-files-found: error
 
   package:
@@ -89,6 +100,23 @@ jobs:
         with:
           name: nevr-windows-unsigned
           path: dist/NEVR-Anticheat-Windows-x64
+
+      - name: Download Windows desktop tests
+        uses: actions/download-artifact@v8
+        with:
+          name: nevr-windows-desktop-tests
+          path: dist/desktop-tests
+
+      - name: Run desktop tests on Windows
+        shell: pwsh
+        run: |
+          Push-Location cmd/desktop
+          try {
+            & ..\..\dist\desktop-tests\nevr-desktop.test.exe '-test.timeout=5m'
+            if ($LASTEXITCODE -ne 0) { throw "Windows desktop tests failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Select signing mode
         shell: pwsh
