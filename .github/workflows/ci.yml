@@ -1,9 +1,13 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: ["**"]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -27,6 +31,13 @@ jobs:
 
       - name: Desktop assessment rendering regression tests
         run: node --test scripts/desktop-review.test.cjs
+
+      - name: Release gate policy regressions
+        run: node --test scripts/release-gate.test.cjs
+
+      - name: Synthetic soak helper isolation regressions
+        # Go ./... skips testdata; the security scanner does not.
+        run: go test -race ./scripts/testdata
 
       - name: Static analysis
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...

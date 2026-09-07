@@ -41,6 +41,19 @@ try {
         $checks.Add([pscustomobject]@{ mode = $mode; status = 'pass'; child_failure = $report.runs[0].failure })
         Write-Host "PASS soak runner $mode"
     }
+    $restrictedRoot = Join-Path $testRoot 'restricted-root'
+    [IO.Directory]::CreateDirectory($restrictedRoot) | Out-Null
+    $escapedConfig = Join-Path $testRoot 'escaped-config.toml'
+    $escapedMarker = Join-Path $restrictedRoot 'unexpected.db'
+    [IO.File]::WriteAllText($escapedConfig, 'db_path = ' + (ConvertTo-Json -InputObject $escapedMarker -Compress))
+    $env:NEVR_SOAK_TEST_ROOT, $env:NEVR_SOAK_TEST_MODE = $restrictedRoot, 'success'
+    foreach ($config in @($escapedConfig, (Join-Path '..' 'escaped-config.toml'))) {
+        & $helper --config $config 2>$null | Out-Null
+        Assert-SoakTest ($LASTEXITCODE -ne 0) 'Synthetic helper accepted a configuration outside its isolated root.'
+        Assert-SoakTest (-not (Test-Path -LiteralPath $escapedMarker)) 'Synthetic helper read an escaped configuration.'
+    }
+    $checks.Add([pscustomobject]@{ mode = 'escaped_config'; status = 'pass'; child_failure = $null })
+    Write-Host 'PASS soak runner escaped_config'
     $result = [ordered]@{ schema_version = 'nevr-soak-runner-tests/v1'; scope = 'Synthetic helper process; no installer, user database, replay, or network used.'; checks = @($checks.ToArray()); passed = $checks.Count }
     if ($OutputDirectory) {
         [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)) | Out-Null
