@@ -48,6 +48,28 @@ func TestEchoVRDiscBouncePresenceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBounceFingerprintSignedBoundaries(t *testing.T) {
+	maximum := int(^uint(0) >> 1)
+	seen := make(map[uint64]int)
+	for _, count := range []int{0, 1, 127, 128, -1, -128, -129, maximum, -maximum - 1} {
+		s := observationSession()
+		s.Disc.BounceCount = observationInt(count)
+		fingerprint := sessionFingerprint(s)
+		if prior, exists := seen[fingerprint]; exists {
+			t.Fatalf("signed bounce fingerprints collided for %d and %d", prior, count)
+		}
+		seen[fingerprint] = count
+		if repeated := sessionFingerprint(s); repeated != fingerprint {
+			t.Fatalf("bounce fingerprint changed for identical count %d", count)
+		}
+	}
+	s := observationSession()
+	s.Disc.BounceCount = nil
+	if _, exists := seen[sessionFingerprint(s)]; exists {
+		t.Fatal("absent bounce counter must differ from an explicitly present value")
+	}
+}
+
 func observationInt(v int) *int { return &v }
 
 func observationSession() *EchoVRSessionResponse {

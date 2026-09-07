@@ -465,9 +465,11 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 		writeV(raw.Disc.Velocity)
 		writeB(raw.Disc.BounceCount != nil)
 		if raw.Disc.BounceCount != nil {
-			var buf [8]byte
-			binary.LittleEndian.PutUint64(buf[:], uint64(*raw.Disc.BounceCount))
-			h.Write(buf[:])
+			// Preserve signed raw values (including invalid negatives) in a
+			// self-delimiting encoding without unsigned conversion overflow.
+			var buf [binary.MaxVarintLen64]byte
+			n := binary.PutVarint(buf[:], int64(*raw.Disc.BounceCount))
+			h.Write(buf[:n])
 		}
 	}
 	writeF(float64(raw.BluePoints))
