@@ -48,6 +48,9 @@ func defaultReplayClipDir() string {
 // reviewer lands immediately before the detection instead of opening an HTML
 // page in a browser.
 func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir string, event model.DetectionEvent) (*replayClip, error) {
+	if event.FrameIndex < 0 {
+		return nil, fmt.Errorf("%w: invalid incident frame", errRawReplayUnavailable)
+	}
 	start, end := event.FrameRangeStart, event.FrameRangeEnd
 	if start < 0 || end < start || (start == 0 && end == 0 && event.FrameIndex != 0) {
 		start, end = event.FrameIndex, event.FrameIndex
@@ -62,7 +65,7 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 	if start < 0 {
 		start = 0
 	}
-	end += replayClipAfter
+	end = min(end, int(^uint(0)>>1)-replayClipAfter) + replayClipAfter
 
 	rawTicks, err := store.GetMatchRawTicks(ctx, event.MatchID, start, end)
 	if err != nil {
@@ -70,6 +73,9 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 	}
 	if len(rawTicks) == 0 {
 		return nil, fmt.Errorf("%w for match %s", errRawReplayUnavailable, event.MatchID)
+	}
+	if _, ok := rawTicks[event.FrameIndex]; !ok {
+		return nil, fmt.Errorf("%w for incident frame %d in match %s", errRawReplayUnavailable, event.FrameIndex, event.MatchID)
 	}
 	timestamps, err := store.GetMatchTickTimestamps(ctx, event.MatchID)
 	if err != nil {
@@ -111,6 +117,9 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 	written := 0
 	actualStart, actualEnd := 0, 0
 	for _, idx := range indices {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		raw := []byte(rawTicks[idx])
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, raw); err != nil {
@@ -243,8 +252,27 @@ func findSparkReplayViewer() (string, error) {
 }
 
 func launchSparkReplayViewer(clipPath string) (string, error) {
+	return launchSparkReplayViewerWith(clipPath, resolvedReplayViewers(), func(cmd *exec.Cmd) error {
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		// The viewer outlives this HTTP request. Reap it on exit so repeated
+		// launches do not retain process handles (or zombies on Unix).
+		go func() { _ = cmd.Wait() }()
+		return nil
+	})
+}
+
+func launchSparkReplayViewerWith(clipPath string, commands []string, start func(*exec.Cmd) error) (string, error) {
+	if strings.TrimSpace(clipPath) != "" {
+		absolute, err := filepath.Abs(clipPath)
+		if err != nil {
+			return "", fmt.Errorf("resolving replay clip: %w", err)
+		}
+		clipPath = absolute
+	}
 	var lastErr error
-	for _, command := range resolvedReplayViewers() {
+	for _, command := range commands {
 		var args []string
 		if strings.TrimSpace(clipPath) != "" {
 			args = append(args, clipPath)
@@ -253,7 +281,7 @@ func launchSparkReplayViewer(clipPath string) (string, error) {
 		if filepath.IsAbs(command) {
 			cmd.Dir = filepath.Dir(command)
 		}
-		if err := cmd.Start(); err == nil {
+		if err := start(cmd); err == nil {
 			return command, nil
 		} else {
 			lastErr = err

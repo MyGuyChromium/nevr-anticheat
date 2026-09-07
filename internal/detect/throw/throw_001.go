@@ -41,7 +41,8 @@ func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID: "THROW_001", DetectorVersion: "1.5.1",
-			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
+			TraceBranches: true,
+			DetectorName:  "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
 			// Auto-enforcement stays off until the tolerances are validated
@@ -76,14 +77,21 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		ps := players[pid]
 		t := throwAt(ps, frameIdx)
 		if t == nil {
+			if ps != nil && ps.LastFrameIdx == frameIdx {
+				d.TraceDecision(pid, frameIdx, "no_current_release")
+			} else {
+				d.TraceDecision(pid, frameIdx, "stale_player_context")
+			}
 			continue
 		}
 		if t.GameLastThrow != nil && t.GameLastThrow.Valid() {
+			d.TraceDecision(pid, frameIdx, "engine_throw_available")
 			normalized := *t
 			normalized.ReleaseSpeed = math.Max(t.ReleaseSpeed, t.GameLastThrow.TotalSpeed)
 			t = &normalized
 		}
 		if math.IsNaN(t.ReleaseSpeed) || math.IsInf(t.ReleaseSpeed, 0) || t.ReleaseSpeed <= 0 {
+			d.TraceDecision(pid, frameIdx, "release_speed_unusable")
 			continue
 		}
 
@@ -101,6 +109,8 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		handSpeed := t.HandSpeed
 		if t.HandKinematicsValid {
 			handSpeed = math.Max(handSpeed, 0.01)
+		} else {
+			d.TraceDecision(pid, frameIdx, "hand_ratio_unavailable")
 		}
 
 		sampledDiscSpeed := t.SampledDiscSpeed
@@ -130,6 +140,7 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		engineCorroborated := t.GameLastThrow != nil && t.GameLastThrow.Valid() &&
 			matchCtx.Physics.DiscSpeedCap > 0 && t.GameLastThrow.TotalSpeed > matchCtx.Physics.DiscSpeedCap*artifactCapMultiple
 		if !engineCorroborated && matchCtx.Physics.DiscSpeedCap > 0 && t.ReleaseSpeed > matchCtx.Physics.DiscSpeedCap*artifactCapMultiple {
+			d.TraceDecision(pid, frameIdx, "sampled_speed_artifact_band")
 			d.artifactCounts[pid]++
 			evidence.ArtifactSuspected = true
 			evidence.ArtifactCount = d.artifactCounts[pid]
@@ -156,6 +167,7 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 
 		if speedExcess <= 0 {
+			d.TraceDecision(pid, frameIdx, "release_at_or_below_cap")
 			// A repeatable near-cap throw is legal skill, not evidence of a
 			// modified client. Only an actual over-cap release is observable.
 			continue
@@ -164,6 +176,7 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// Over the effective cap. The hand-speed ratio is only meaningful
 		// here: a slow throw with a tiny wrist flick has a huge but legitimate
 		// ratio.
+		d.TraceDecision(pid, frameIdx, "release_above_cap")
 		speedRatio := 0.0
 		severity := model.SigmoidConfidence(t.ReleaseSpeed, effectiveCap, d.sigmoidSteepness)
 		if t.HandKinematicsValid {

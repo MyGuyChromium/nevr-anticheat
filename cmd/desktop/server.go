@@ -63,6 +63,7 @@ type server struct {
 	activeCtx context.CancelFunc
 	quitOnce  sync.Once
 	quit      chan struct{}
+	requests  requestGate
 }
 
 func newServer(engine *replay.Engine, token string) *server {
@@ -96,6 +97,13 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/calibration/opportunities", s.handleCalibrationOpportunities)
 	s.mux.HandleFunc("POST "+p+"/api/calibration/opportunities", s.handleStoreCalibrationOpportunity)
 	s.mux.HandleFunc("DELETE "+p+"/api/calibration/opportunities/{id}", s.handleDeleteCalibrationOpportunity)
+	s.mux.HandleFunc("GET "+p+"/api/blind-review/matches", s.handleBlindReviewMatches)
+	s.mux.HandleFunc("POST "+p+"/api/blind-review/artifacts", s.handleUploadBlindArtifact)
+	s.mux.HandleFunc("GET "+p+"/api/blind-review/artifacts/{sha}", s.handleDownloadBlindArtifact)
+	s.mux.HandleFunc("GET "+p+"/api/blind-review/sessions", s.handleListBlindReviews)
+	s.mux.HandleFunc("POST "+p+"/api/blind-review/sessions", s.handleCreateBlindReview)
+	s.mux.HandleFunc("POST "+p+"/api/blind-review/sessions/{id}/ballots", s.handleBlindReviewBallot)
+	s.mux.HandleFunc("POST "+p+"/api/blind-review/sessions/{id}/reveal", s.handleRevealBlindReview)
 	s.mux.HandleFunc("GET "+p+"/api/lab/promotions", s.handlePromotions)
 	s.mux.HandleFunc("POST "+p+"/api/lab/candidate", s.handleStoreThresholdCandidate)
 	s.mux.HandleFunc("POST "+p+"/api/lab/promotions/{detector}", s.handlePromoteDetector)
@@ -163,7 +171,7 @@ func newServer(engine *replay.Engine, token string) *server {
 }
 
 // Handler is the routed handler.
-func (s *server) Handler() http.Handler { return s.mux }
+func (s *server) Handler() http.Handler { return desktopSafety(s.requests.wrap(s.mux)) }
 
 // Done is closed when /quit was requested.
 func (s *server) Done() <-chan struct{} { return s.quit }
@@ -182,9 +190,15 @@ func writeError(w http.ResponseWriter, status int, format string, args ...any) {
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	nonce, err := newToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not secure the app page")
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(indexHTML)
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'")
+	_, _ = w.Write(bytes.ReplaceAll(indexHTML, []byte("<script>"), []byte("<script nonce=\""+nonce+"\">")))
 }
 
 func (s *server) handleQuit(w http.ResponseWriter, r *http.Request) {
@@ -1059,6 +1073,11 @@ func (s *server) beginAnalysis() (context.Context, uint64) {
 	s.activeID++
 	id := s.activeID
 	s.activeCtx = cancel
+	select {
+	case <-s.quit:
+		cancel()
+	default:
+	}
 	s.activeMu.Unlock()
 	return ctx, id
 }
@@ -1116,6 +1135,12 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// file while the request is still writing it and queue the partial copy.
 	s.analyzeMu.Lock()
 	defer s.analyzeMu.Unlock()
+	select {
+	case <-s.quit:
+		writeError(w, http.StatusServiceUnavailable, "the app is shutting down; retry after reopening it")
+		return
+	default:
+	}
 	if s.runtime.updateInProgress() {
 		writeError(w, http.StatusConflict, "an update is being installed; reopen NEVR after it finishes")
 		return

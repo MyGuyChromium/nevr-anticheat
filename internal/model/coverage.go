@@ -15,13 +15,33 @@ type PlayerCoverage struct {
 }
 
 type DetectorCoverage struct {
-	DetectorID      string   `json:"detector_id"`
-	Enabled         bool     `json:"enabled"`
-	Status          string   `json:"status"`
-	CandidateFrames int      `json:"candidate_frames"`
-	InputFrames     int      `json:"input_frames"`
-	InputCheck      bool     `json:"input_check"`
-	Limitations     []string `json:"limitations"`
+	DetectorID      string                 `json:"detector_id"`
+	Enabled         bool                   `json:"enabled"`
+	Status          string                 `json:"status"`
+	CandidateFrames int                    `json:"candidate_frames"`
+	InputFrames     int                    `json:"input_frames"`
+	InputCheck      bool                   `json:"input_check"`
+	Limitations     []string               `json:"limitations"`
+	DecisionTrace   *DetectorDecisionTrace `json:"decision_trace,omitempty"`
+}
+
+// DetectorDecisionTrace is a bounded summary of branches actually visited,
+// not an explanation synthesized by running detector guards a second time.
+// Multiple branches/hands may be counted on one frame. Raw emissions are not
+// retained incidents; scoring and storage are reported separately downstream.
+type DetectorDecisionTrace struct {
+	Version          int                      `json:"version"`
+	InternalBranches bool                     `json:"internal_branches"`
+	Reasons          []DetectorDecisionReason `json:"reasons"`
+	OverflowCount    int                      `json:"overflow_count"`
+}
+
+type DetectorDecisionReason struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	Count       int    `json:"count"`
+	FirstFrame  int    `json:"first_frame"`
+	LastFrame   int    `json:"last_frame"`
 }
 
 const ReviewStatusInsufficientData = "insufficient_data"

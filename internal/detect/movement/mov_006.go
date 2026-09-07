@@ -34,6 +34,7 @@ type Mov006 struct {
 
 type playspaceBurst struct {
 	startFrame    int
+	lastFrame     int
 	startTime     float64
 	frames        int
 	maxSpeed      float64
@@ -49,7 +50,8 @@ func NewMov006(params map[string]any) *Mov006 {
 	d := &Mov006{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_006",
-			DetectorVersion:  "1.2.0",
+			TraceBranches:    true,
+			DetectorVersion:  "1.2.1",
 			DetectorName:     "Physical Playspace Walking",
 			DetectorCategory: "movement",
 			Inputs:           []string{"position", "reported_velocity", "lhand.pos", "rhand.pos"},
@@ -110,20 +112,39 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 	var events []model.DetectionEvent
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
-		qualified := ps.PlayspaceValid && ps.PlayspaceTrackedHands > 0 &&
-			ps.PlayspaceSpeed >= d.minPlayspaceSpeed &&
-			ps.PlayspaceDistance >= d.minPlayspaceDistance &&
-			ps.Speed >= d.minObservedPoseSpeed &&
-			ps.PlayspaceRigCoherence >= d.minRigCoherence
-		if d.maxPingMs > 0 && ps.EstimatedPingMs > d.maxPingMs {
-			qualified = false
+		// Same short-circuit conditions as the conjunction, with the actual
+		// first failed gate named. Negated >= preserves NaN rejection too.
+		guard := ""
+		switch {
+		case !ps.PlayspaceValid:
+			guard = "playspace_unavailable"
+		case !(ps.PlayspaceTrackedHands > 0):
+			guard = "tracked_hands_unavailable"
+		case !(ps.PlayspaceSpeed >= d.minPlayspaceSpeed):
+			guard = "playspace_speed_below_gate"
+		case !(ps.PlayspaceDistance >= d.minPlayspaceDistance):
+			guard = "playspace_distance_below_gate"
+		case !(ps.Speed >= d.minObservedPoseSpeed):
+			guard = "pose_speed_below_gate"
+		case !(ps.PlayspaceRigCoherence >= d.minRigCoherence):
+			guard = "rig_coherence_below_gate"
 		}
-		if !qualified {
+		if d.maxPingMs > 0 && ps.EstimatedPingMs > d.maxPingMs {
+			guard = "ping_above_gate"
+		}
+		if guard != "" {
+			d.TraceDecision(pid, frameIdx, guard)
 			delete(d.bursts, pid)
 			continue
 		}
 
 		burst := d.bursts[pid]
+		if burst != nil && frameIdx != burst.lastFrame+1 {
+			// Missing/rejected/inactive samples cannot establish continuous
+			// physical movement or supply duration to a sustained burst.
+			d.TraceDecision(pid, frameIdx, "playspace_observation_gap")
+			burst = nil
+		}
 		if burst == nil {
 			burst = &playspaceBurst{
 				startFrame: frameIdx, startTime: ps.LastTimestamp,
@@ -131,6 +152,7 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			}
 			d.bursts[pid] = burst
 		}
+		burst.lastFrame = frameIdx
 		burst.frames++
 		if ps.PlayspaceSpeed > burst.maxSpeed {
 			burst.maxSpeed = ps.PlayspaceSpeed
@@ -149,10 +171,21 @@ func (d *Mov006) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 		if duration < 0 {
 			duration = 0
 		}
-		if burst.frames < d.minSustainedFrames || duration < d.minSustainedSeconds || burst.emitted {
+		guard = ""
+		switch {
+		case burst.frames < d.minSustainedFrames:
+			guard = "playspace_frames_pending"
+		case duration < d.minSustainedSeconds:
+			guard = "playspace_duration_pending"
+		case burst.emitted:
+			guard = "playspace_burst_already_reported"
+		}
+		if guard != "" {
+			d.TraceDecision(pid, frameIdx, guard)
 			continue
 		}
 		burst.emitted = true
+		d.TraceDecision(pid, frameIdx, "sustained_playspace_candidate")
 
 		// Crossing both configurable thresholds establishes the event. Larger
 		// speed and displacement raise severity smoothly; rig coherence drives

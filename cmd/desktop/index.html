@@ -149,6 +149,8 @@
   .health-list .error { color: var(--bad); } .health-list .warning { color: var(--warn); } .health-list .info { color: var(--muted); }
   .action-stack { display: flex; flex-wrap: wrap; gap: 5px; min-width: 250px; }
   dialog { width: min(1240px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line-2); color: var(--ink); background: #07111e; box-shadow: 0 40px 120px rgba(0,0,0,.72); }
+  #lab-dialog-status:empty { display: none; }
+  #lab-dialog-status { margin: 16px 22px 0; }
   dialog::backdrop { background: rgba(0,5,12,.8); backdrop-filter: blur(7px); }
   .inspector-head { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: rgba(7,17,30,.96); }
   .inspector-head h2 { margin: 0; font: 20px/1.2 var(--mono); letter-spacing: -.03em; }
@@ -644,6 +646,7 @@
 </dialog>
 <dialog id="lab-dialog" aria-labelledby="lab-dialog-title">
   <div class="inspector-head"><h2 id="lab-dialog-title">Investigation</h2><button id="close-lab-dialog" class="btn">Close</button></div>
+  <p id="lab-dialog-status" class="status" role="status" aria-live="polite"></p>
   <div id="lab-dialog-content" class="inspector-body"></div>
 </dialog>
 
@@ -718,7 +721,11 @@
   let blindReview = !!prefs.blindReview;
   const revealedEvents = new Set();
   $('blind-review').checked = blindReview;
-  const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
+  const setStatus = (msg, cls = '') => {
+    const el = $('status'); el.textContent = msg; el.className = 'status ' + cls;
+    const modalStatus = $('lab-dialog-status');
+    if ($('lab-dialog')?.open && modalStatus) { modalStatus.textContent = msg; modalStatus.className = 'status ' + cls; }
+  };
   async function getJSON(url) {
     let r;
     try {
@@ -833,6 +840,22 @@
     }).join(' · ');
   }
 
+  function decisionTraceDetails(m, p, detectorID = '') {
+    if (blindReview) return '<p class="notice">Decision traces are concealed during blinded review. Record independent observations before revealing detector behavior.</p>';
+    if (!p?.coverage || p.coverage.version !== 1) return '<p class="notice">Decision traces were not recorded for this analysis. Re-analyze the replay with the current version; missing traces are not a clean result.</p>';
+    const detectors = (p.coverage.detectors || []).filter((d) => !detectorID || d.detector_id === detectorID);
+    const panels = detectors.map((d) => {
+      const trace = d.decision_trace;
+      if (!trace || trace.version !== 1) return `<details class="sub"><summary>${esc(d.detector_id)}</summary><p class="empty">No compatible trace recorded. Re-analyze to collect decision reasons.</p></details>`;
+      const rows = [...(trace.reasons || [])].sort((a,b) => b.count - a.count || a.code.localeCompare(b.code)).map((reason) => {
+        const frameOK = Number.isSafeInteger(reason.first_frame) && reason.first_frame >= 0;
+        return `<tr><td><span class="mono">${esc(reason.code)}</span><span class="explain">${esc(reason.description || '')}</span></td><td class="num">${fmtInt(reason.count)}</td><td class="num">${fmtInt(reason.first_frame)}–${fmtInt(reason.last_frame)}</td><td>${frameOK ? `<button class="btn btn-sm" data-physics-match="${esc(m.match_id)}" data-physics-frame="${reason.first_frame}" data-physics-player="${esc(p.player_id)}">Inspect first frame</button>` : '—'}</td></tr>`;
+      }).join('');
+      return `<details class="sub" ${detectorID ? 'open' : ''}><summary><span class="mono">${esc(d.detector_id)}</span> · ${esc(d.status)} · ${trace.internal_branches ? 'internal decisions + pipeline' : 'pipeline only'}</summary><p class="summary-note">${trace.internal_branches ? 'Reasons were recorded from actual detector branches.' : 'Internal detector decisions are not instrumented for this check; pipeline dispatch is not proof every internal condition passed.'}</p><div class="physics-table"><table><thead><tr><th>Recorded reason</th><th>Count</th><th>First–last frame</th><th>Inspect</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No recorded decisions for this player and detector.</td></tr>'}</tbody></table></div>${trace.overflow_count ? `<p class="warning">${fmtInt(trace.overflow_count)} observations exceeded the bounded reason inventory.</p>` : ''}</details>`;
+    }).join('');
+    return `<p>${who(p.name, p.player_id)}</p><p class="notice">These counters explain what the analysis did, not whether somebody cheated. First–last frame is a range, not continuous activity. Reasons can overlap; counts are not independent incidents. Raw emissions, merged/rate-limited findings and retained shadow/review incidents are different stages.</p>${panels || '<p class="empty">No matching detector coverage.</p>'}`;
+  }
+
   function playerSignalBadge(assessment) {
     if (!assessment.signal_count && assessment.status === 'insufficient_data') return '<span class="tag warn" title="The analysis cannot support this check. No signals must not be interpreted as fair play.">insufficient data</span>';
     return assessment.signal_count > 0
@@ -874,7 +897,7 @@
       rows.map(({player: p, assessment: a}) => `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td>${playerSignalBadge(a)}</td>
         <td><span class="review-reasons">${a.signal_count ? esc(reviewReasonText(m, a)) : a.status === 'insufficient_data' ? 'Missing coverage, insufficient inputs, disabled check or incomplete warmup. See replay coverage.' : 'No detector fired on the available telemetry; coverage remains partial.'}</span></td>
         <td class="num">${fmtInt(a.signal_count)}<span class="det-name">${fmtInt(a.shadow_signals)} observation-only</span></td>
-        <td><span class="action-stack">${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}<button class="btn btn-sm" data-player-history="${esc(p.player_id)}">Player history</button></span></td>
+        <td><span class="action-stack">${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}<button class="btn btn-sm" data-decision-match="${esc(m.match_id)}" data-decision-player="${esc(p.player_id)}" data-decision-detector="${esc(detectorID)}">Explain checks</button><button class="btn btn-sm" data-player-history="${esc(p.player_id)}">Player history</button></span></td>
         <td class="num">${fmtInt(p.frames)}</td><td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td></tr>`).join('') + '</tbody></table>' +
       '<p class="summary-note"><b>Review needed</b> means a detector fired, including shadow review signals that add zero score. <b>No signals</b> means no detector fired on partially observable telemetry. Neither status is a verified cheating verdict. <b>Insufficient data</b> means this check cannot be supported. Counts are incidents, not independent confirmed cheats; reviewing an incident does not erase its signal.</p>' +
       (detectorID ? '<p class="summary-note">Signal counts, findings and evidence follow this filter. Scoring totals remain full-match totals.</p>' : '');
@@ -1329,15 +1352,66 @@
       const table = detectors.length ? `<h3>Detector confusion matrix<span class="count">${fmtInt(detectors.length)} measured</span></h3><div class="physics-table"><table><thead><tr><th>Detector</th><th class="num">TP</th><th class="num">FP</th><th class="num">FN</th><th class="num">TN</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">FP / 100</th><th>Promotion gate</th></tr></thead><tbody>${detectors.map((d)=>{const m=d.overall||{},pc=m.precision_ci95||{},rc=m.recall_ci95||{};return `<tr><td class="mono">${esc(d.detector_id)}</td><td class="num">${fmtInt(m.true_positive)}</td><td class="num regression-fail">${fmtInt(m.false_positive)}</td><td class="num regression-fail">${fmtInt(m.false_negative)}</td><td class="num">${fmtInt(m.true_negative)}</td><td class="num" title="95% CI ${fmtNum((pc.lower||0)*100,1)}–${fmtNum((pc.upper||0)*100,1)}%">${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td class="num" title="95% CI ${fmtNum((rc.lower||0)*100,1)}–${fmtNum((rc.upper||0)*100,1)}%">${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td class="num">${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td><button class="btn btn-sm" data-calibration-details="${esc(d.detector_id)}">Details</button> ${d.eligible?`<button class="btn btn-sm" data-promote-detector="${esc(d.detector_id)}">Promote to review</button>`:`<span class="tag warn" title="${esc((d.reasons||[]).join(' · '))}">not eligible</span>`}</td></tr>`}).join('')}</tbody></table></div>` : '<p class="empty">No measured opportunities yet. Label an emitted event or add a ground-truth window to begin measuring false negatives and true negatives.</p>';
       const activePromotions=(promotions.promotions||[]).filter(p=>p.status==='active');
       const promotionStatus=activePromotions.length?`<h3>Staged review promotion</h3>${activePromotions.map(p=>`<p><span class="tag warn">review mode</span> <span class="mono">${esc(p.detector_id)}</span> · ${esc(p.profile_name)} <button class="btn btn-sm" data-rollback-detector="${esc(p.detector_id)}">Return to shadow</button></p>`).join('')}`:'';
-      el.innerHTML = cards + `<div class="studio-actions"><a class="btn" href="api/lab/calibration-report">Export hashed calibration packet</a></div>` + table + promotionStatus + `<p class="summary-note warning">${esc(v.notice)}</p>`;
+      el.innerHTML = cards + `<div class="studio-actions"><button class="btn" data-blind-workspace="">Evidence review workspace</button><a class="btn" href="api/lab/calibration-report">Export hashed calibration packet</a></div>` + table + promotionStatus + `<p class="summary-note warning">${esc(v.notice)}</p>`;
       el.dataset.validation=JSON.stringify(v);
     } catch (e) { panelError(el, 'the calibration library', e); }
   }
 
   function openLabDialog(title, html) {
     $('lab-dialog-title').textContent = title;
+    $('lab-dialog-status').textContent = '';
     $('lab-dialog-content').innerHTML = html;
     if (!$('lab-dialog').open) $('lab-dialog').showModal();
+  }
+
+  function calibrationDetailsHTML(d) {
+    const pct = (v) => typeof v === 'number' && Number.isFinite(v) ? fmtNum(v * 100, 1) + '%' : '—';
+    const range = (v) => v && Number.isFinite(v.lower) && Number.isFinite(v.upper) ? `${pct(v.lower)}–${pct(v.upper)}` : '—';
+    const header = '<tr><th>Band / split</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Players / matches</th><th>Connected groups</th></tr>';
+    const row = (name, m = {}) => `<tr><td>${esc(name)}</td><td>${fmtInt(m.true_positive || 0)}</td><td>${fmtInt(m.false_positive || 0)}</td><td>${fmtInt(m.false_negative || 0)}</td><td>${fmtInt(m.true_negative || 0)}</td><td>${m.true_positive + m.false_positive ? pct(m.precision) : '—'}</td><td>${m.positive_opportunities ? pct(m.recall) : '—'}</td><td>${m.negative_opportunities ? fmtNum(m.false_positives_per_100, 2) : '—'}</td><td>${fmtInt(m.players || 0)} / ${fmtInt(m.matches || 0)}</td><td>${m.clusters ? fmtInt(m.clusters.groups) : '—'}</td></tr>`;
+    const table = (title, entries) => `<h3>${esc(title)}</h3><div class="physics-table"><table><thead>${header}</thead><tbody>${entries.map(([name, m]) => row(name, m)).join('') || '<tr><td colspan="10" class="muted">No labeled samples.</td></tr>'}</tbody></table></div>`;
+    const splits = [['Overall', d.overall], ['Training', d.training], ['Validation', d.validation], ['Reserved holdout (not sealed)', d.holdout]];
+    const clusters = `<h3>Connected-group diversity</h3><p class="summary-note">Repeated opportunities from connected players and sessions are not independent trials. These ranges describe observed group differences, not confidence intervals or population accuracy. A dash means unavailable, not zero error.</p><div class="physics-table"><table><thead><tr><th>Split</th><th>Groups (+ / −)</th><th>Largest group share</th><th>Group recall range</th><th>Group false-rate range</th><th>Macro recall</th><th>Macro false rate</th></tr></thead><tbody>${splits.map(([name, m]) => { const c = m?.clusters; return `<tr><td>${esc(name)}</td><td>${c ? `${fmtInt(c.groups)} (${fmtInt(c.positive_groups)} / ${fmtInt(c.negative_groups)})` : '—'}</td><td>${c?.groups ? pct(c.largest_group_fraction) : '—'}</td><td>${range(c?.recall_observed_range)}</td><td>${range(c?.false_rate_observed_range)}</td><td>${pct(c?.macro_recall)}</td><td>${pct(c?.macro_false_rate)}</td></tr>`; }).join('')}</tbody></table></div>`;
+    const gate = `<h3>Promotion gate</h3>${d.eligible ? '<p class="notice">Eligible for single-detector scored review. Automatic enforcement remains disabled.</p>' : `<ul class="health-list">${(d.reasons || []).map((x) => `<li class="warning">${esc(x)}</li>`).join('')}</ul>`}`;
+    return table('Measured opportunities', splits) + clusters + gate + table('By ping', Object.entries(d.by_ping || {})) + table('By capture rate', Object.entries(d.by_capture_rate || {})) + table('By telemetry quality', Object.entries(d.by_quality || {})) + table('By independently reviewed legal context', Object.entries(d.by_legal_context || {}).map(([name, m]) => [legalContexts[name] || name, m]));
+  }
+
+  let blindSessions = [], uploadedArtifactHash = '';
+  const legalContexts = { unknown:'Unknown / not established', normal:'Ordinary release', lean:'Lean / lunge', stack:'Stack / regrab', block_push:'Block push', slap:'Disc slap', headbutt:'Headbutt', transition:'Round / state transition', other:'Other context' };
+
+  function blindArtifactLink(hash, label = 'Download attached evidence') {
+    return /^[a-f0-9]{64}$/.test(hash || '') ? `<a class="btn btn-sm" href="api/blind-review/artifacts/${hash}">${esc(label)}</a>` : '<span class="warning">No valid attached evidence hash.</span>';
+  }
+
+  function blindSessionDetails(session, observations) {
+    const b = session.binding || {};
+    const revealed = session.revealed === true;
+    const ballots = revealed ? (session.ballots || []) : [];
+    const decisionRows = ballots.map((ballot) => `<tr><td>${esc(ballot.reviewer_id)}</td><td>${esc(ballot.ground_truth)}</td><td>${esc(ballot.comment || '')}</td></tr>`).join('');
+    const results = revealed && Array.isArray(observations) ? `<h3>Detector findings after reveal</h3><p>${fmtInt(observations.length)} matching observation(s). These findings are not independent confirmation.</p><div class="physics-table"><table><thead><tr><th>Detector</th><th>Frame</th><th>Observed</th><th>Review</th></tr></thead><tbody>${observations.map((event) => `<tr><td>${esc(event.detector_id)}</td><td>${fmtInt(event.frame_index)}</td><td>${esc(event.observed_value || '')}</td><td>${replayButton({match_id:b.match_id},event,'Open clip')}</td></tr>`).join('') || '<tr><td colspan="4">No matching findings. This is not proof of fair play.</td></tr>'}</tbody></table></div>` : '';
+    return `<p class="notice">This local workflow locks two separate ballots before reveal. It does not authenticate reviewer identities or prevent the operator from inspecting other app views. Ask a second person to review the exact attachment independently.</p><div class="inspector-grid"><div><span>Match</span><b>${esc(b.match_id)}</b></div><div><span>Player</span><b>${esc(b.player_id)}</b></div><div><span>Detector / window</span><b>${esc(b.detector_id)} · ${fmtInt(b.frame_start)}–${fmtInt(b.frame_end)}</b></div><div><span>Ballots locked</span><b>${fmtInt(session.ballot_count)} / 2</b></div></div><p>${blindArtifactLink(b.artifact_sha256)}</p><details class="sub"><summary>Evidence and candidate integrity</summary><p>Evidence SHA-256: <code>${esc(b.artifact_sha256)}</code></p><p>Window: <code>${esc(session.window_sha256)}</code></p><p>Candidate: <code>${esc(session.candidate_fingerprint)}</code></p><p>${esc(b.evidence_method)} · ${esc(legalContexts[b.legal_context] || b.legal_context || 'Unknown')}</p></details>
+      ${revealed ? `<h3>Locked review results · ${esc(session.consensus || 'uncertain')}</h3><table><thead><tr><th>Reviewer</th><th>Decision</th><th>Note</th></tr></thead><tbody>${decisionRows}</tbody></table><p class="summary-note">Disagreement and uncertain decisions do not establish decisive ground truth. Ballots cannot be edited; a new review is required for corrected evidence.</p>${results}` : session.ballot_count < 2 ? `<h3>Submit independent ballot</h3><div class="form-row"><label class="form-field">Reviewer ID<input id="br-reviewer" maxlength="120" autocomplete="off" placeholder="Independent reviewer identity"></label><label class="form-field">Decision<select id="br-truth"><option value="uncertain">Uncertain / cannot establish</option><option value="negative">Legitimate behavior</option><option value="positive">Cheat behavior established</option></select></label></div><label class="form-field">Evidence note<textarea id="br-comment" maxlength="2000" rows="3" placeholder="Describe what the attachment establishes, including legal-contact alternatives."></textarea></label><label class="check-inline"><input id="br-attest" type="checkbox"> I reviewed the attached evidence before seeing the detector findings or the other ballot.</label><div class="studio-actions"><button class="btn" data-blind-ballot="${esc(session.session_id)}">Lock this ballot</button></div><p class="summary-note">The first ballot is hidden from the second reviewer. Use a real second reviewer, not a second alias for the same person.</p>` : '<p class="notice">Both ballots are locked. Reveal to compare them with the detector findings.</p>'}
+      <div class="studio-actions">${session.ballot_count === 2 ? `<button class="btn" data-blind-reveal="${esc(session.session_id)}">${revealed ? 'Load matching detector findings' : 'Reveal locked results'}</button>` : ''}<button class="btn" data-blind-workspace="${esc(b.match_id || '')}">Back to review workspace</button></div>`;
+  }
+
+  async function openBlindWorkspace(matchID = '') {
+    openLabDialog('Evidence review workspace', '<p class="status">Loading private review records…</p>');
+    const [data, roster] = await Promise.all([getJSON('api/blind-review/sessions'), getJSON('api/blind-review/matches')]);
+    blindSessions = data.sessions || [];
+    const matches = roster.matches || [], selected = matches.find((m) => m.match_id === matchID) || matches[0];
+    const inventory = data.inventory || {}, artifacts = inventory.artifacts || [];
+    const matchOptions = matches.map((m) => `<option value="${esc(m.match_id)}" ${m === selected ? 'selected' : ''}>${esc(m.source_file || m.match_id)} · ${esc(m.match_id)}</option>`).join('');
+    const players = (selected?.players || []).map((p) => `<option value="${esc(p.player_id)}">${esc(p.name || p.player_id)} · frames ${fmtInt(p.min_frame)}–${fmtInt(p.max_frame)}</option>`).join('');
+    const detectors = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
+    const artifactOptions = artifacts.map((a) => `<option value="${esc(a.sha256)}" ${a.sha256 === uploadedArtifactHash ? 'selected' : ''}>${esc(a.filename)} · ${fmtNum(a.size_bytes/1048576,2)} MiB · ${esc(a.sha256.slice(0,12))}</option>`).join('');
+    const sessions = blindSessions.filter((s) => !selected || s.binding?.match_id === selected.match_id);
+    const rows = sessions.map((s) => `<tr><td>${esc(s.binding.player_id)}</td><td>${esc(s.binding.detector_id)}</td><td>${fmtInt(s.binding.frame_start)}–${fmtInt(s.binding.frame_end)}</td><td>${fmtInt(s.ballot_count)} / 2</td><td>${s.revealed ? esc(s.consensus || 'uncertain') : 'Concealed'}</td><td><button class="btn btn-sm" data-open-blind-session="${esc(s.session_id)}">${s.revealed ? 'View locked review' : 'Review evidence'}</button></td></tr>`).join('');
+    openLabDialog('Evidence review workspace', `<p class="notice">${esc(data.notice || '')}</p><p class="summary-note">This picker loads roster and frame bounds only—not detector findings. Two-reviewer workflow integrity is separate from validated accuracy.</p>
+      <label class="form-field">Stored replay<select id="br-match">${matchOptions || '<option value="">Import a replay first</option>'}</select></label>
+      <details class="sub" ${artifacts.length ? '' : 'open'}><summary>1 · Attach independent evidence</summary><p>Short synchronized video, controlled-reproduction evidence or authoritative telemetry. Maximum ${fmtNum((inventory.max_file_bytes || 33554432)/1048576,0)} MiB per file; ${fmtNum((inventory.used_bytes || 0)/1048576,1)} / ${fmtNum((inventory.max_bytes || 268435456)/1048576,0)} MiB stored locally.</p><input id="br-file" type="file" aria-label="Independent evidence file"><label class="check-inline"><input id="br-consent" type="checkbox"> Store this evidence locally in NEVR and include it in database backups. I have permission to use it.</label><div class="studio-actions"><button class="btn" id="upload-blind-artifact">Attach evidence</button></div></details>
+      <details class="sub" open><summary>2 · Bind an exact review window</summary><div class="form-row"><label class="form-field">Player<select id="br-player">${players}</select></label><label class="form-field">Detector<select id="br-detector">${detectors}</select></label></div><div class="form-row"><label class="form-field">First frame<input id="br-start" type="number" min="0" step="1" placeholder="Exact frame"></label><label class="form-field">Last frame<input id="br-end" type="number" min="0" step="1" placeholder="Exact frame"></label><label class="form-field">Opportunity<select id="br-kind"><option value="throw">Throw</option><option value="movement_window">Movement window</option><option value="state_transition">State transition</option><option value="custom">Custom</option></select></label></div>
+      <div class="form-row"><label class="form-field">Attached evidence<select id="br-artifact">${artifactOptions || '<option value="">Attach an evidence file first</option>'}</select></label><label class="form-field">Evidence method<select id="br-method"><option value="synchronized_video">Synchronized video</option><option value="controlled_reproduction">Controlled reproduction</option><option value="authoritative_telemetry">Authoritative telemetry</option></select></label><label class="form-field">Observed context<select id="br-context">${Object.entries(legalContexts).map(([id,label])=>`<option value="${id}">${esc(label)}</option>`).join('')}</select></label></div><label class="form-field">Behavior description<input id="br-behavior" maxlength="120" placeholder="Describe the behavior to review without copying a detector verdict"></label><div class="studio-actions"><button class="btn" id="create-blind-session" ${!players || !detectors || !artifacts.length ? 'disabled' : ''}>Create bound review</button></div><p class="summary-note">Re-analyze with the current build first. Evidence, exact stored window and current candidate are pinned; changes require a new review. Context tags describe the reviewed window, not proof that a mechanic was legal.</p></details>
+      <h3>3 · Independent ballots and reveal</h3><div class="physics-table"><table><thead><tr><th>Player</th><th>Detector</th><th>Frames</th><th>Ballots</th><th>Result</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6">No bound reviews for this replay yet.</td></tr>'}</tbody></table></div>`);
   }
 
   async function openOpportunityEditor(matchID) {
@@ -1351,7 +1425,7 @@
       <div class="form-row"><label class="form-field">Player<select id="opportunity-player">${playerOptions}</select></label><label class="form-field">Detector<select id="opportunity-detector">${detectorOptions}</select></label><label class="form-field">Truth<select id="opportunity-truth"><option value="uncertain">Uncertain / exclude</option><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option></select></label></div>
       <div class="form-row"><label class="form-field">Opportunity type<select id="opportunity-kind"><option value="throw">Throw</option><option value="movement_window">Movement window</option><option value="state_transition">State transition</option><option value="match">Whole match</option><option value="player_history">Player history</option><option value="custom">Custom</option></select></label><label class="form-field">Start frame<input id="opportunity-start" type="number" min="0" step="1" placeholder="Exact start frame"></label><label class="form-field">End frame<input id="opportunity-end" type="number" min="0" step="1" placeholder="Exact end frame"></label></div>
       <div class="form-row"><label class="form-field">Behavior type<input id="opportunity-behavior" maxlength="120" placeholder="e.g. verified over-cap release"></label><label class="form-field path">Review note<input id="opportunity-comment" maxlength="4000" placeholder="What did the reviewer verify in Spark?"></label></div>
-      <p class="summary-note">A detector's own output or a reported admission is not independent confirmation of this window. Save uncertain examples freely; promotion requires two distinct reviewers and a specific independent evidence artifact. Reviewer names are attestations, not authenticated identities.</p>
+      <p class="summary-note">A detector's own output or a reported admission is not independent confirmation of this window. These editable annotations remain useful review notes but do not satisfy verified-evidence promotion requirements. Use the evidence workspace to attach a file and lock two separate ballots. Reviewer names are attestations, not authenticated identities.</p><button class="btn" data-blind-workspace="${esc(matchID)}">Open evidence review workspace</button>
       <div class="form-row"><label class="form-field">First reviewer ID<input id="opportunity-reviewer" maxlength="120" placeholder="Reviewer identity"></label><label class="form-field">Second reviewer ID<input id="opportunity-verifier" maxlength="120" placeholder="Independent reviewer identity"></label><label class="form-field">Second review result<select id="opportunity-verified-truth"><option value="">Not reviewed</option><option value="uncertain">Uncertain</option><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option></select></label></div>
       <div class="form-row"><label class="form-field">Independent evidence method<select id="opportunity-evidence-method"><option value="">Not supplied</option><option value="controlled_reproduction">Controlled reproduction</option><option value="synchronized_video">Synchronized video</option><option value="authoritative_telemetry">Authoritative telemetry</option></select></label><label class="form-field path">Evidence artifact / exact clip reference<input id="opportunity-evidence-reference" maxlength="2000" placeholder="Private artifact ID and time range; no passwords or access tokens"></label></div>
       <div class="form-row"><label class="check-inline"><input id="opportunity-blind" type="checkbox"> I attest the first review was completed before seeing detector conclusions</label><button class="btn" data-save-opportunity="${esc(matchID)}">Save ground truth</button></div>
@@ -1655,6 +1729,82 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const blindWorkspace = e.target.closest('button[data-blind-workspace]');
+    if (blindWorkspace) {
+      try { await openBlindWorkspace(blindWorkspace.dataset.blindWorkspace || ''); }
+      catch (err) { openLabDialog('Evidence review unavailable', `<p class="notice bad">${esc(err.message)}</p>`); }
+      return;
+    }
+    const openBlind = e.target.closest('button[data-open-blind-session]');
+    if (openBlind) {
+      const session = blindSessions.find((s) => s.session_id === openBlind.dataset.openBlindSession);
+      if (session) openLabDialog('Independent evidence ballot', blindSessionDetails(session));
+      return;
+    }
+    if (e.target.closest('#upload-blind-artifact')) {
+      const button = e.target.closest('#upload-blind-artifact'), file = $('br-file').files[0];
+      if (!file || !$('br-consent').checked) { setStatus('Choose an evidence file and explicitly consent to local storage.', 'err'); return; }
+      if (file.size === 0 || file.size > 33554432) { setStatus('Choose a nonempty evidence clip no larger than 32 MiB.', 'err'); return; }
+      button.disabled = true;
+      const matchID = $('br-match').value;
+      try {
+        const form = new FormData(); form.append('consent','true'); form.append('file',file,file.name);
+        const response = await fetch('api/blind-review/artifacts',{method:'POST',body:form,cache:'no-store'});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Evidence upload failed');
+        uploadedArtifactHash = result.sha256;
+        await openBlindWorkspace(matchID); setStatus('Evidence attached and hashed locally. Nothing was uploaded to GitHub.', 'ok');
+      } catch (err) { setStatus(`Could not attach evidence: ${err.message}`, 'err'); }
+      finally { button.disabled = false; }
+      return;
+    }
+    if (e.target.closest('#create-blind-session')) {
+      const button = e.target.closest('#create-blind-session');
+      const start = Number($('br-start').value), end = Number($('br-end').value);
+      if (!$('br-start').value.trim() || !$('br-end').value.trim() || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) { setStatus('Choose exact, ordered whole-number frames for the review.', 'err'); return; }
+      button.disabled = true;
+      try {
+        const session = await postJSON('api/blind-review/sessions',{match_id:$('br-match').value,player_id:$('br-player').value,detector_id:$('br-detector').value,opportunity_kind:$('br-kind').value,behavior_type:$('br-behavior').value,frame_start:start,frame_end:end,evidence_method:$('br-method').value,artifact_sha256:$('br-artifact').value,legal_context:$('br-context').value});
+        blindSessions.push(session); openLabDialog('Independent evidence ballot', blindSessionDetails(session));
+        setStatus('Exact evidence, window and candidate pinned. Collect independent ballots next.', 'ok');
+      } catch (err) { setStatus(`Could not bind review: ${err.message}`, 'err'); }
+      finally { button.disabled = false; }
+      return;
+    }
+    const ballotButton = e.target.closest('button[data-blind-ballot]');
+    if (ballotButton) {
+      if (!$('br-attest').checked || !$('br-reviewer').value.trim()) { setStatus('Enter the reviewer identity and confirm an independent evidence review.', 'err'); return; }
+      ballotButton.disabled = true;
+      try {
+        const session = await postJSON(`api/blind-review/sessions/${encodeURIComponent(ballotButton.dataset.blindBallot)}/ballots`,{reviewer_id:$('br-reviewer').value,ground_truth:$('br-truth').value,comment:$('br-comment').value,pre_reveal_attestation:$('br-attest').checked});
+        blindSessions = blindSessions.map((s) => s.session_id === session.session_id ? session : s);
+        openLabDialog('Independent evidence ballot', blindSessionDetails(session));
+        setStatus('Ballot locked. It cannot be edited or shown to the next reviewer before reveal.', 'ok');
+      } catch (err) { setStatus(`Ballot was not saved: ${err.message}`, 'err'); }
+      finally { ballotButton.disabled = false; }
+      return;
+    }
+    const revealBlind = e.target.closest('button[data-blind-reveal]');
+    if (revealBlind) {
+      if (!confirm('Reveal the locked ballots and detector findings? This cannot undo the review exposure.')) return;
+      revealBlind.disabled = true;
+      try {
+        const result = await postJSON(`api/blind-review/sessions/${encodeURIComponent(revealBlind.dataset.blindReveal)}/reveal`);
+        blindSessions = blindSessions.map((s) => s.session_id === result.session.session_id ? result.session : s);
+        openLabDialog('Revealed evidence review', blindSessionDetails(result.session, result.observations));
+        loadCalibration(); loadStudio();
+      } catch (err) { setStatus(`Could not reveal current findings: ${err.message}`, 'err'); }
+      finally { revealBlind.disabled = false; }
+      return;
+    }
+    const decisionButton = e.target.closest('button[data-decision-match]');
+    if (decisionButton) {
+      const m = views.find((view) => view.match_id === decisionButton.dataset.decisionMatch);
+      const p = m?.players.find((player) => player.player_id === decisionButton.dataset.decisionPlayer);
+      if (p) openLabDialog('Why did this check fire or stay quiet?', decisionTraceDetails(m, p, decisionButton.dataset.decisionDetector || ''));
+      else setStatus('Open or reload the match before inspecting decision traces.', 'err');
+      return;
+    }
     const opportunityButton = e.target.closest('button[data-opportunity-match]');
     if (opportunityButton) {
       opportunityButton.disabled = true;
@@ -1727,7 +1877,12 @@
       try{const result=await postJSON('api/lab/experiments',{match_id:$('matrix-match').value,detector_id:$('matrix-detector').value,parameter:$('matrix-param').value,values,scope:$('matrix-scope').value,enabled:true});openLabDialog('Threshold experiment matrix',`<p class="notice">${esc(result.notice||'Preview only; no database or config changes.')}</p><div class="physics-table"><table><thead><tr><th>Value</th><th>Matches</th><th>Events</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Runtime</th><th>Candidate</th></tr></thead><tbody>${result.rows.map(x=>{const m=x.metrics||{};return `<tr><td>${esc(x.value)} ${esc(x.unit)}</td><td>${fmtInt(x.matches)}</td><td>${fmtInt(x.events)}</td><td>${fmtInt(m.true_positive)}</td><td>${fmtInt(m.false_positive)}</td><td>${fmtInt(m.false_negative)}</td><td>${fmtInt(m.true_negative)}</td><td>${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td>${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td>${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td>${fmtInt(x.pipeline_ms)} ms</td><td><button class="btn btn-sm" data-save-candidate="1" data-candidate-detector="${esc(result.detector_id)}" data-candidate-param="${esc(result.parameter)}" data-candidate-value="${esc(x.value)}">Save shadow candidate</button></td></tr>`}).join('')}</tbody></table></div>`)}catch(err){setStatus(`Matrix failed: ${err.message}`,'err')}finally{button.disabled=false;const scope=$('matrix-scope')?.value;button.textContent=scope==='training'?'Run training sweep':scope==='validation'?'Run validation sweep':'Run matrix'}return;
     }
     const calibrationDetails=e.target.closest('button[data-calibration-details]');
-    if(calibrationDetails){const v=JSON.parse($('calibration').dataset.validation||'{}'),d=(v.detectors||[]).find(x=>x.detector_id===calibrationDetails.dataset.calibrationDetails);if(!d)return;const row=(name,m)=>`<tr><td>${esc(name)}</td><td>${fmtInt(m.true_positive)}</td><td>${fmtInt(m.false_positive)}</td><td>${fmtInt(m.false_negative)}</td><td>${fmtInt(m.true_negative)}</td><td>${m.true_positive+m.false_positive?fmtNum(m.precision*100,1)+'%':'—'}</td><td>${m.positive_opportunities?fmtNum(m.recall*100,1)+'%':'—'}</td><td>${m.negative_opportunities?fmtNum(m.false_positives_per_100,2):'—'}</td><td>${fmtInt(m.players)} / ${fmtInt(m.matches)}</td></tr>`;const strata=(title,map)=>`<h3>${esc(title)}</h3><div class="physics-table"><table><thead><tr><th>Band</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Players / matches</th></tr></thead><tbody>${Object.entries(map||{}).map(([k,m])=>row(k,m)).join('')||'<tr><td colspan="9" class="muted">No labeled samples.</td></tr>'}</tbody></table></div>`;openLabDialog(`Calibration — ${d.detector_id}`,`<div class="physics-table"><table><thead><tr><th>Split</th><th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Precision</th><th>Recall</th><th>FP / 100</th><th>Players / matches</th></tr></thead><tbody>${row('Overall',d.overall)}${row('Training',d.training)}${row('Validation',d.validation)}${row('Locked holdout',d.holdout)}</tbody></table></div><h3>Promotion gate</h3>${d.eligible?'<p class="notice">Eligible for single-detector scored review. Automatic enforcement remains disabled.</p>':`<ul class="health-list">${(d.reasons||[]).map(x=>`<li class="warning">${esc(x)}</li>`).join('')}</ul>`}${strata('By ping',d.by_ping)}${strata('By capture rate',d.by_capture_rate)}${strata('By telemetry quality',d.by_quality)}`);return}
+    if (calibrationDetails) {
+      const v = JSON.parse($('calibration').dataset.validation || '{}');
+      const d = (v.detectors || []).find((x) => x.detector_id === calibrationDetails.dataset.calibrationDetails);
+      if (d) openLabDialog(`Calibration — ${d.detector_id}`, calibrationDetailsHTML(d));
+      return;
+    }
     const saveCandidate=e.target.closest('button[data-save-candidate]');
     if(saveCandidate){const detector=saveCandidate.dataset.candidateDetector,param=saveCandidate.dataset.candidateParam,value=Number(saveCandidate.dataset.candidateValue);if(!confirm(`Save ${detector}.${param} = ${value} as the next shadow-only candidate profile?`))return;saveCandidate.disabled=true;try{const result=await postJSON('api/lab/candidate',{detector_id:detector,parameter:param,value});setStatus(result.message,'ok');await loadStudio()}catch(err){setStatus(`Could not save candidate: ${err.message}`,'err')}finally{saveCandidate.disabled=false}return}
     const promote=e.target.closest('button[data-promote-detector]');
@@ -2049,7 +2204,12 @@
     else return;
     e.preventDefault();document.querySelectorAll('[data-playlist-row]').forEach(row=>row.classList.toggle('active',+row.dataset.playlistRow===activePlaylistIndex));document.querySelector(`[data-playlist-row="${activePlaylistIndex}"]`)?.scrollIntoView({block:'nearest'});
   });
-  document.addEventListener('change', (e) => {
+  document.addEventListener('change', async (e) => {
+    if (e.target.id === 'br-match') {
+      try { await openBlindWorkspace(e.target.value); }
+      catch (err) { setStatus(`Could not load the selected replay: ${err.message}`, 'err'); }
+      return;
+    }
     if (e.target.id === 'matrix-scope') {
       if ($('matrix-match')) $('matrix-match').disabled = e.target.value !== 'match';
       if ($('run-matrix')) $('run-matrix').textContent = e.target.value === 'training' ? 'Run training sweep' : e.target.value === 'validation' ? 'Run validation sweep' : 'Run matrix';

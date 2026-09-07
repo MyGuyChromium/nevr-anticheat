@@ -23,9 +23,10 @@ import (
 // The effect is that a 60-frame wrist-rate excursion becomes a single
 // DetectionEvent spanning frames [start, end] instead of ~55 events.
 type Deduplicator struct {
-	mergeWindow int // frames
-	open        map[string]*model.DetectionEvent
-	merged      int64 // raw emissions folded into an existing incident
+	decisionObserver func(model.DetectionEvent)
+	mergeWindow      int // frames
+	open             map[string]*model.DetectionEvent
+	merged           int64 // raw emissions folded into an existing incident
 }
 
 // NewDeduplicator creates a deduplicator with the given merge window (frames).
@@ -64,6 +65,9 @@ func (d *Deduplicator) Deduplicate(events []model.DetectionEvent, frameIdx int) 
 		key := ev.CausalKey.Key()
 		inc, ok := d.open[key]
 		if ok && d.belongs(inc, &ev) {
+			if d.decisionObserver != nil {
+				d.decisionObserver(ev)
+			}
 			mergeInto(inc, &ev)
 			d.merged++
 			continue

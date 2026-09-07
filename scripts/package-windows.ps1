@@ -13,6 +13,9 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
 
 $resourcePath = Join-Path $repoRoot "cmd\desktop\resource_windows_amd64.syso"
+if (Test-Path -LiteralPath $resourcePath) {
+    throw "Desktop resource already exists at $resourcePath; finish the other build before packaging. Existing metadata was not overwritten."
+}
 
 $stage = Join-Path $outputRoot ("NEVR-Anticheat-Windows-x64-" + [System.IO.Path]::GetRandomFileName())
 $stage = [System.IO.Path]::GetFullPath($stage)
@@ -88,6 +91,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Uninstall-NEVR.ps1") -Destination $installerTarget
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Rollback-NEVR.cmd") -Destination $installerTarget
     Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Rollback-NEVR.ps1") -Destination $installerTarget
+    Copy-Item -LiteralPath (Join-Path $repoRoot "packaging\Program-Snapshot.ps1") -Destination $installerTarget
 
     $zipPath = Join-Path $outputRoot "NEVR-Anticheat-Windows-x64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force

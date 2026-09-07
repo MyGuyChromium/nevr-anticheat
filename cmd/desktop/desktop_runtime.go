@@ -272,8 +272,11 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 	}
 	var files []string
 	err := filepath.WalkDir(folder, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
-			return nil
+			return walkErr
 		}
 		if entry.IsDir() {
 			if path != folder && strings.HasPrefix(entry.Name(), ".") {
@@ -326,9 +329,11 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 		recordAnalysisResults(ctx, rt.engine, results, "watch", time.Since(started))
 		failure := analyzeErr
 		ok := analyzeErr == nil && len(results) > 0
+		persistFailed := false
 		for _, result := range results {
 			if result.PersistError() != nil {
 				ok = false
+				persistFailed = true
 				failure = result.PersistError()
 			}
 		}
@@ -339,10 +344,14 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 			// Remember this exact failed fingerprint so an invalid recording does
 			// not consume CPU every five seconds. Replacing or touching the file
 			// changes the fingerprint and makes it eligible again.
-			rt.mu.Lock()
-			rt.settings.SeenFiles[path] = fp
-			_ = rt.saveSettingsLocked()
-			rt.mu.Unlock()
+			// A database write failure or cancellation is not a bad recording.
+			// Leave these eligible for the next scan without touching the replay.
+			if !persistFailed && ctx.Err() == nil && !errors.Is(failure, context.Canceled) && !errors.Is(failure, context.DeadlineExceeded) {
+				rt.mu.Lock()
+				rt.settings.SeenFiles[path] = fp
+				_ = rt.saveSettingsLocked()
+				rt.mu.Unlock()
+			}
 			failures = append(failures, filepath.Base(path)+": "+failure.Error())
 			rt.queueFinish(queueID, len(results), failure)
 			continue
@@ -396,6 +405,9 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 		return
 	}
 	for _, path := range rt.pendingFiles() {
+		if ctx.Err() != nil {
+			return
+		}
 		queueID := rt.queueStart(path, "crash recovery")
 		started := time.Now()
 		results, err := rt.engine.AnalyzeFileAll(ctx, path, true)
@@ -404,22 +416,31 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 		for _, result := range results {
 			if result.PersistError() != nil {
 				ok = false
+				err = errors.Join(err, result.PersistError())
 			}
 		}
 		if ok {
-			rt.queueFinish(queueID, len(results), nil)
-			_ = os.Remove(path)
-			_ = os.Remove(filepath.Dir(path))
-			rt.mu.Lock()
-			rt.recovered++
-			rt.mu.Unlock()
-		} else if err != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = fmt.Errorf("analysis saved but pending replay cleanup failed: %w", removeErr)
+			} else {
+				if filepath.Clean(filepath.Dir(path)) != filepath.Clean(rt.pendingDir) {
+					_ = os.Remove(filepath.Dir(path)) // Only empty child job directories, never the queue root.
+				}
+				rt.queueFinish(queueID, len(results), nil)
+				rt.mu.Lock()
+				rt.recovered++
+				rt.mu.Unlock()
+				continue
+			}
+		}
+		if err == nil {
+			err = errors.New("recovery did not persist a complete match")
+		}
+		if err != nil {
 			rt.queueFinish(queueID, len(results), err)
 			rt.mu.Lock()
 			rt.recoveryErr = err.Error()
 			rt.mu.Unlock()
-		} else {
-			rt.queueFinish(queueID, len(results), errors.New("recovery did not persist a complete match"))
 		}
 	}
 }
@@ -462,6 +483,10 @@ func (s *server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	req.WatchFolder = strings.TrimSpace(req.WatchFolder)
 	if req.WatchEnabled {
+		if req.WatchFolder == "" {
+			writeError(w, 400, "choose a replay watch folder first")
+			return
+		}
 		abs, err := filepath.Abs(req.WatchFolder)
 		if err != nil {
 			writeError(w, 400, "invalid watch folder: %v", err)
@@ -475,9 +500,13 @@ func (s *server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		req.WatchFolder = abs
 	}
 	s.runtime.mu.Lock()
+	previous := s.runtime.settings
 	req.SeenFiles = s.runtime.settings.SeenFiles
 	s.runtime.settings = req
 	err := s.runtime.saveSettingsLocked()
+	if err != nil {
+		s.runtime.settings = previous
+	}
 	s.runtime.mu.Unlock()
 	if err != nil {
 		writeError(w, 500, "saving settings: %v", err)
@@ -693,11 +722,11 @@ func (s *server) createSupportBundle(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(s.runtime.supportDir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(s.runtime.supportDir, "nevr-support-"+time.Now().UTC().Format("20060102-150405")+".zip")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(s.runtime.supportDir, "nevr-support-"+time.Now().UTC().Format("20060102-150405")+"-*.zip")
 	if err != nil {
 		return "", err
 	}
+	path := f.Name()
 	zw := zip.NewWriter(f)
 	fail := func(err error) (string, error) {
 		_ = zw.Close()

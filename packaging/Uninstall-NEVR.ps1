@@ -2,12 +2,13 @@
 param([switch]$RemoveEvidence)
 
 $ErrorActionPreference = 'Stop'
-$installRoot = Join-Path $env:LOCALAPPDATA 'Programs\NEVR-Anticheat'
-$dataRoot = Join-Path $env:LOCALAPPDATA 'NEVR-Anticheat'
+. (Join-Path $PSScriptRoot 'Program-Snapshot.ps1')
+$roots = Resolve-NEVRInstallRoots $env:LOCALAPPDATA
+$installRoot, $dataRoot = $roots.InstallRoot, $roots.DataRoot
 $startShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\NEVR-Anticheat.lnk'
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'NEVR-Anticheat.lnk'
 
-Get-Process -Name 'nevr-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force
+Assert-NEVRProgramsClosed $installRoot
 Remove-Item -LiteralPath $startShortcut, $desktopShortcut -Force -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force }
 if ($RemoveEvidence -and (Test-Path -LiteralPath $dataRoot)) {

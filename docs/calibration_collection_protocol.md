@@ -9,7 +9,7 @@ NEVR cannot be made trustworthy by guessing better thresholds. Detector promotio
 3. Review the synchronized Spark clip before revealing the detector when the desktop offers blind review.
 4. Label a detector opportunity, not an entire player. A player can have both legal and illegal windows in one match.
 5. Use `positive` only when the behavior is independently confirmed. Use `negative` only when the same detector had a real opportunity and the behavior was legal. Use `uncertain` for occlusion, missing telemetry, ambiguous contact, or reviewer disagreement.
-6. A distinct second reviewer must confirm every decisive positive or negative before it can count toward scored-review eligibility. Fill `reviewer_id`, `verifier_id`, `verified_ground_truth`, `evidence_method`, and `evidence_reference`, and record blinded primary review. Use `uncertain` for disagreement. Both IDs and references are recorded attestations, not authenticated identities or automatic verification of the artifact. A participant-level admission cannot label every throw by that player.
+6. Use the [Evidence review workspace](blind_review_workflow.md) to attach the actual independent artifact and bind it to an exact player/window and candidate. Two distinct reviewers must independently submit immutable pre-reveal ballots; both must agree before a decisive label qualifies. Disagreement stays uncertain. Reviewer identities and independence remain attestations, not authenticated facts; old free-text references alone no longer qualify. A participant-level admission cannot label every throw by that player.
 7. Do not copy one player across training, validation, and holdout. NEVR groups connected matches that share any player and exports the assignments.
 
 ## What to collect

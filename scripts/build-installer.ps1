@@ -51,7 +51,7 @@ try {
     foreach ($required in @(
         "nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe",
         "configs\default.toml", "configs\shadow_deploy.toml", "README.md", "README-WINDOWS.txt",
-        "installer\Rollback-NEVR.cmd", "installer\Rollback-NEVR.ps1"
+        "installer\Rollback-NEVR.cmd", "installer\Rollback-NEVR.ps1", "installer\Program-Snapshot.ps1"
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $required))) {
             throw "Package is incomplete: missing $required"

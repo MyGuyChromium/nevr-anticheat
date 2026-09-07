@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -26,7 +27,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
-const appVersion = "0.10.3"
+const appVersion = "0.11.0"
 
 // Filled by the release workflow. Development builds intentionally retain
 // these values so the updater can say that their revision is unknown.
@@ -91,7 +92,12 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
-	defer store.Close()
+	closeStore := true
+	defer func() {
+		if closeStore {
+			_ = store.Close()
+		}
+	}()
 	engine := replay.NewEngine(cfg, store)
 	config.LogStartup(engine.Logger(), cfg, nil)
 
@@ -104,7 +110,10 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 		return fmt.Errorf("listening: %w", err)
 	}
 	srv := newServer(engine, token)
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	requestCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+		BaseContext: func(net.Listener) context.Context { return requestCtx }}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- hs.Serve(ln) }()
 
@@ -132,18 +141,11 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	}
 	// Stop the watch/recovery worker before closing its database. This also
 	// makes Ctrl+C follow the same orderly path as the in-app Quit button.
-	srv.quitOnce.Do(func() { close(srv.quit) })
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := hs.Shutdown(shutdownCtx); err != nil {
-		return err
-	}
-	select {
-	case <-srv.runtime.stopped:
-		return serveFailure
-	case <-shutdownCtx.Done():
-		return shutdownCtx.Err()
-	}
+	var shutdownErr error
+	closeStore, shutdownErr = shutdownDesktop(shutdownCtx, hs, srv, cancelRequests)
+	return errors.Join(serveFailure, shutdownErr)
 }
 
 type appWindowCandidate struct {

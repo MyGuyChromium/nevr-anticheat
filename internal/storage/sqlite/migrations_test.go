@@ -168,6 +168,55 @@ func TestMigration18PreservesLabelsAndReservesLegacyExposure(t *testing.T) {
 	}
 }
 
+func TestMigration19PreservesLegacyAttestationsWithoutInventingBallots(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v18-blind.db")
+	raw, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,description TEXT,applied_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 19 {
+			break
+		}
+		if err := applyMigration(raw, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`INSERT INTO calibration_opportunities(opportunity_id,match_id,player_id,detector_id,opportunity_kind,frame_start,frame_end,ground_truth,reviewer_id,verifier_id,verified_ground_truth,evidence_method,evidence_reference,blind_review,comment) VALUES('legacy','M','P','THROW_001','throw',1,2,'positive','Alice','Bob','positive','synchronized_video','old-reference',1,'keep my original review');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO analysis_runs(match_id,source,app_version,build_commit,config_fingerprint) VALUES('M','legacy','old-version','old-commit','old-config')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStoreAt(t, dbPath)
+	runs, runErr := s.ListAnalysisRuns(t.Context(), "M", 1)
+	if runErr != nil || len(runs) != 1 || runs[0].BuildCommit != "old-commit" || runs[0].ExecutableSHA256 != "" {
+		t.Fatalf("legacy analysis identity damaged or fabricated: %+v %v", runs, runErr)
+	}
+	items, err := s.ListCalibrationOpportunities(t.Context(), "M", "")
+	if err != nil || len(items) != 1 || items[0].Comment != "keep my original review" || items[0].EvidenceReference != "old-reference" || items[0].ReviewSessionID != "" {
+		t.Fatalf("legacy evidence damaged or auto-bound: %+v %v", items, err)
+	}
+	sessions, err := s.ListBlindReviewSessions(t.Context())
+	if err != nil || len(sessions) != 0 {
+		t.Fatal("migration invented review sessions")
+	}
+	inventory, err := s.ListBlindArtifacts(t.Context())
+	if err != nil || inventory.UsedBytes != 0 {
+		t.Fatal("migration invented attachments")
+	}
+	if err := RunMigrations(s.DB()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A database bootstrapped by hand from migrations/001_initial.sql, holding rows
 // written in the legacy datetime('now') layout by an older binary, must upgrade
 // cleanly and end up with every timestamp normalized.

@@ -13,17 +13,21 @@ type coverageTracker struct {
 	players    map[string]*model.PlayerCoverage
 	detectors  []model.DetectorCoverage
 	index      map[string]int
+	branches   map[string]bool
 	wristLimit float64
 }
 
 func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster []string) *coverageTracker {
-	c := &coverageTracker{players: make(map[string]*model.PlayerCoverage), index: make(map[string]int), wristLimit: 50}
+	c := &coverageTracker{players: make(map[string]*model.PlayerCoverage), index: make(map[string]int), branches: make(map[string]bool), wristLimit: 50}
 	if dc, ok := cfg.Detectors["BIO_001"]; ok {
 		c.wristLimit = detect.GetFloat(dc.Params, "max_wrist_angular_velocity", 50)
 	}
 	enabled := make(map[string]bool)
 	for _, d := range detectors {
 		enabled[d.ID()] = true
+		if observed, ok := d.(detect.DecisionObservable); ok {
+			c.branches[d.ID()] = observed.HasDecisionBranches()
+		}
 	}
 	ids := make(map[string]bool)
 	for id := range cfg.Detectors {
@@ -68,6 +72,10 @@ func (c *coverageTracker) player(id string) *model.PlayerCoverage {
 	p := c.players[id]
 	if p == nil {
 		p = &model.PlayerCoverage{Version: 1, Status: "insufficient_data", Detectors: append([]model.DetectorCoverage(nil), c.detectors...), Limitations: []string{}}
+		for i := range p.Detectors {
+			d := &p.Detectors[i]
+			d.DecisionTrace = &model.DetectorDecisionTrace{Version: 1, InternalBranches: c.branches[d.DetectorID], Reasons: []model.DetectorDecisionReason{}}
+		}
 		c.players[id] = p
 	}
 	return p
@@ -101,6 +109,15 @@ func (c *coverageTracker) finish(quality TelemetryQualityReport) map[string]*mod
 		usableDetectors := 0
 		for i := range p.Detectors {
 			d := &p.Detectors[i]
+			if d.DecisionTrace != nil {
+				sort.Slice(d.DecisionTrace.Reasons, func(i, j int) bool {
+					a, b := d.DecisionTrace.Reasons[i], d.DecisionTrace.Reasons[j]
+					if a.Count != b.Count {
+						return a.Count > b.Count
+					}
+					return a.Code < b.Code
+				})
+			}
 			if !d.Enabled {
 				continue
 			}

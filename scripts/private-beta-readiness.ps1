@@ -135,18 +135,25 @@ try {
             Add-Check "source_regressions" "automated" "not_run" "Source tests require Go plus a C compiler; source-test execution was unavailable or explicitly skipped."
         } else {
             Run-Check "source_regressions" {
-                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance).*|TestApplyPendingRestorePreservesAndReplacesDatabase|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths)$'
+                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance|Settings).*|TestApplyPendingRestore.*|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths|TestSparkReplay.*|TestWatchScan.*|TestRecoveryReports.*|TestSupportBundleRepeated.*)$'
                 $logPath = Join-Path $runRoot "source-tests.jsonl"
                 & go test -json -count=1 -timeout=3m ./cmd/desktop -run $pattern 2>&1 | ForEach-Object { [string]$_ } | Set-Content -LiteralPath $logPath -Encoding utf8
                 $testExit = $LASTEXITCODE
                 $events = @(Get-Content -LiteralPath $logPath | ForEach-Object { if ($_.StartsWith("{")) { $_ | ConvertFrom-Json } })
                 $passed = @($events | Where-Object { $_.Action -eq "pass" -and $_.Test -and -not $_.Test.Contains("/") } | ForEach-Object { $_.Test })
-                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
+                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestApplyPendingRestoreRollsBackEveryMovedFile", "TestSparkReplayClipRequiresExactIncidentFrame", "TestWatchScanRetriesPersistenceFailure", "TestRecoveryReportsPersistenceFailureAndRetainsReplay", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
                     Assert-Beta ($passed -contains $required) "Required regression did not pass: $required. See source-tests.jsonl."
                 }
                 Assert-Beta ($testExit -eq 0) "Source regression tests failed; see source-tests.jsonl."
                 "$($passed.Count) regression tests passed: duplicate/malformed uploads, backup/restore, clip frame/content with mocked Spark launch, update integrity, Windows shutdown/refusal and database identity collisions."
             }
+        }
+
+        Run-Check "program_snapshot_safety" {
+            & (Join-Path $PSScriptRoot "test-windows-snapshots.ps1") -OutputDirectory $runRoot
+            $snapshotReport = Get-Content -Raw -LiteralPath (Join-Path $runRoot "windows-snapshot-tests.json") | ConvertFrom-Json
+            Assert-Beta ($snapshotReport.failed -eq 0 -and $snapshotReport.passed -ge 13) "Program snapshot/rollback safety regressions failed."
+            "$($snapshotReport.passed) isolated program snapshot, corruption, traversal, process-scope and partial-failure checks passed; no installer or real executable launched."
         }
 
         Run-Check "desktop_binary" {
@@ -205,7 +212,7 @@ try {
                     $desktops = @($zip.Entries | Where-Object { [IO.Path]::GetFileName($_.FullName) -eq "nevr-desktop.exe" })
                     Assert-Beta ($desktops.Count -eq 1) "Portable ZIP must have exactly one desktop executable."
                     $prefix = $desktops[0].FullName.Substring(0, $desktops[0].FullName.Length - "nevr-desktop.exe".Length)
-                    foreach ($required in @("nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe", "configs/default.toml", "configs/shadow_deploy.toml", "README-WINDOWS.txt", "installer/Rollback-NEVR.cmd", "installer/Rollback-NEVR.ps1")) {
+                    foreach ($required in @("nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe", "configs/default.toml", "configs/shadow_deploy.toml", "README-WINDOWS.txt", "installer/Rollback-NEVR.cmd", "installer/Rollback-NEVR.ps1", "installer/Program-Snapshot.ps1")) {
                         $entry = $zip.GetEntry($prefix + $required)
                         Assert-Beta ($null -ne $entry -and $entry.Length -gt 0) "Portable ZIP is missing or has an empty $required."
                     }

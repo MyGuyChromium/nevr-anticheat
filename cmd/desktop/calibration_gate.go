@@ -42,6 +42,7 @@ type confidenceInterval struct {
 }
 
 type confusionMetric struct {
+	Clusters              clusterDescription `json:"clusters"`
 	TruePositive          int                `json:"true_positive"`
 	FalsePositive         int                `json:"false_positive"`
 	FalseNegative         int                `json:"false_negative"`
@@ -70,9 +71,25 @@ type confusionMetric struct {
 
 type metricAccumulator struct {
 	confusionMetric
-	players map[string]bool
-	matches map[string]bool
+	players  map[string]bool
+	matches  map[string]bool
+	clusters map[string]*clusterCounts
 }
+
+// Ranges across observed connected player/session groups are descriptive
+// heterogeneity, NOT confidence intervals or guaranteed population accuracy.
+type clusterDescription struct {
+	Groups                 int                 `json:"groups"`
+	PositiveGroups         int                 `json:"positive_groups"`
+	NegativeGroups         int                 `json:"negative_groups"`
+	LargestGroupFraction   float64             `json:"largest_group_fraction"`
+	RecallObservedRange    *confidenceInterval `json:"recall_observed_range,omitempty"`
+	FalseRateObservedRange *confidenceInterval `json:"false_rate_observed_range,omitempty"`
+	MacroRecall            *float64            `json:"macro_recall,omitempty"`
+	MacroFalseRate         *float64            `json:"macro_false_rate,omitempty"`
+	Method                 string              `json:"method"`
+}
+type clusterCounts struct{ tp, fp, tn, fn int }
 
 func (a *metricAccumulator) add(sample calibrationSample, predicted bool) {
 	if a.players == nil {
@@ -94,6 +111,29 @@ func (a *metricAccumulator) add(sample calibrationSample, predicted bool) {
 		return
 	}
 	if sample.Truth == sqlite.GroundTruthPositive || sample.Truth == sqlite.GroundTruthNegative {
+		if sample.ClusterID != "" {
+			if a.clusters == nil {
+				a.clusters = make(map[string]*clusterCounts)
+			}
+			c := a.clusters[sample.ClusterID]
+			if c == nil {
+				c = &clusterCounts{}
+				a.clusters[sample.ClusterID] = c
+			}
+			if sample.Truth == sqlite.GroundTruthPositive {
+				if predicted {
+					c.tp++
+				} else {
+					c.fn++
+				}
+			} else {
+				if predicted {
+					c.fp++
+				} else {
+					c.tn++
+				}
+			}
+		}
 		if sample.IndependentEvidence {
 			a.IndependentEvidence++
 		}
@@ -151,7 +191,53 @@ func (a *metricAccumulator) finish() confusionMetric {
 		a.FalsePositivesPer100 = a.FalsePositiveRate * 100
 		a.FalsePositiveRateCI95 = wilson(a.FalsePositive, n)
 	}
+	a.Clusters = describeClusters(a.clusters, a.PositiveOpportunities+a.NegativeOpportunities)
 	return a.confusionMetric
+}
+
+func describeClusters(groups map[string]*clusterCounts, total int) clusterDescription {
+	out := clusterDescription{Groups: len(groups), Method: "observed_connected_group_ranges_not_confidence_intervals"}
+	var recallSum, falseSum float64
+	add := func(interval **confidenceInterval, value float64) {
+		if *interval == nil {
+			*interval = &confidenceInterval{Lower: value, Upper: value}
+		} else {
+			(*interval).Lower = math.Min((*interval).Lower, value)
+			(*interval).Upper = math.Max((*interval).Upper, value)
+		}
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		c := groups[key]
+		if total > 0 {
+			out.LargestGroupFraction = math.Max(out.LargestGroupFraction, float64(c.tp+c.fp+c.tn+c.fn)/float64(total))
+		}
+		if c.tp+c.fn > 0 {
+			r := float64(c.tp) / float64(c.tp+c.fn)
+			out.PositiveGroups++
+			recallSum += r
+			add(&out.RecallObservedRange, r)
+		}
+		if c.fp+c.tn > 0 {
+			r := float64(c.fp) / float64(c.fp+c.tn)
+			out.NegativeGroups++
+			falseSum += r
+			add(&out.FalseRateObservedRange, r)
+		}
+	}
+	if out.PositiveGroups > 0 {
+		v := recallSum / float64(out.PositiveGroups)
+		out.MacroRecall = &v
+	}
+	if out.NegativeGroups > 0 {
+		v := falseSum / float64(out.NegativeGroups)
+		out.MacroFalseRate = &v
+	}
+	return out
 }
 
 func wilson(successes, total int) confidenceInterval {
@@ -167,6 +253,9 @@ func wilson(successes, total int) confidenceInterval {
 }
 
 type calibrationSample struct {
+	ClusterID           string
+	LegalContext        string
+	OpportunityID       string
 	MatchID             string
 	PlayerID            string
 	DetectorID          string
@@ -202,12 +291,14 @@ type detectorCalibrationMetric struct {
 	ByPing         map[string]confusionMetric `json:"by_ping"`
 	ByCaptureRate  map[string]confusionMetric `json:"by_capture_rate"`
 	ByQuality      map[string]confusionMetric `json:"by_quality"`
+	ByLegalContext map[string]confusionMetric `json:"by_legal_context"`
 	Eligible       bool                       `json:"eligible"`
 	PromotionBlock string                     `json:"promotion_block,omitempty"`
 	Reasons        []string                   `json:"reasons"`
 }
 
 type splitAssignment struct {
+	ClusterKey          string `json:"cluster_key"`
 	MatchID             string `json:"match_id"`
 	GroupKey            string `json:"group_key"`
 	Split               string `json:"split"`
@@ -386,7 +477,7 @@ func (s *server) isolatedDatasetSplits(ctx context.Context, matches []sqlite.Sto
 			split = "quarantined"
 		}
 		out[id] = split
-		assignments = append(assignments, splitAssignment{MatchID: id, GroupKey: a.GroupKey, Split: split, OriginalSplit: a.Split, PolicyVersion: a.PolicyVersion, ExposureFingerprint: a.ExposureFingerprint})
+		assignments = append(assignments, splitAssignment{MatchID: id, ClusterKey: a.ClusterKey, GroupKey: a.GroupKey, Split: split, OriginalSplit: a.Split, PolicyVersion: a.PolicyVersion, ExposureFingerprint: a.ExposureFingerprint})
 	}
 	sort.Slice(assignments, func(i, j int) bool { return assignments[i].MatchID < assignments[j].MatchID })
 	return out, assignments, nil
@@ -614,11 +705,12 @@ func samplesFromLabels(reviews []sqlite.EventReview, opportunities []sqlite.Cali
 		out = append(out, sample)
 	}
 	for _, opportunity := range opportunities {
-		sample := calibrationSample{MatchID: opportunity.MatchID, PlayerID: opportunity.PlayerID,
+		sample := calibrationSample{OpportunityID: opportunity.OpportunityID, MatchID: opportunity.MatchID, PlayerID: opportunity.PlayerID,
 			DetectorID: opportunity.DetectorID, FrameStart: opportunity.FrameStart,
 			FrameEnd: opportunity.FrameEnd, Truth: opportunity.GroundTruth,
 			BlindReview: opportunity.BlindReview, Source: "ground_truth_window"}
-		sample.IndependentEvidence = opportunity.IndependentEvidenceVerified()
+		// Historical/free-text attestations remain descriptive labels. Only
+		// current hash-bound immutable ballots can satisfy promotion evidence.
 		decorate(&sample)
 		out = append(out, sample)
 	}
@@ -628,13 +720,13 @@ func samplesFromLabels(reviews []sqlite.EventReview, opportunities []sqlite.Cali
 func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]model.DetectionEvent, splitByMatch map[string]string) map[string]detectorCalibrationMetric {
 	type detectorAcc struct {
 		overall, training, validation, holdout metricAccumulator
-		ping, capture, quality                 map[string]*metricAccumulator
+		ping, capture, quality, legal          map[string]*metricAccumulator
 	}
 	all := make(map[string]*detectorAcc)
 	for _, sample := range samples {
 		acc := all[sample.DetectorID]
 		if acc == nil {
-			acc = &detectorAcc{ping: make(map[string]*metricAccumulator), capture: make(map[string]*metricAccumulator), quality: make(map[string]*metricAccumulator)}
+			acc = &detectorAcc{ping: make(map[string]*metricAccumulator), capture: make(map[string]*metricAccumulator), quality: make(map[string]*metricAccumulator), legal: make(map[string]*metricAccumulator)}
 			all[sample.DetectorID] = acc
 		}
 		sample.IsolationConflict = splitByMatch[sample.MatchID] == "quarantined"
@@ -659,10 +751,11 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 		addStratum(sample.PingBand, acc.ping)
 		addStratum(sample.CaptureBand, acc.capture)
 		addStratum(sample.QualityBand, acc.quality)
+		addStratum(sample.LegalContext, acc.legal)
 	}
 	out := make(map[string]detectorCalibrationMetric, len(all))
 	for id, acc := range all {
-		metric := detectorCalibrationMetric{DetectorID: id, Overall: acc.overall.finish(), Training: acc.training.finish(), Validation: acc.validation.finish(), Holdout: acc.holdout.finish(), ByPing: make(map[string]confusionMetric), ByCaptureRate: make(map[string]confusionMetric), ByQuality: make(map[string]confusionMetric)}
+		metric := detectorCalibrationMetric{DetectorID: id, Overall: acc.overall.finish(), Training: acc.training.finish(), Validation: acc.validation.finish(), Holdout: acc.holdout.finish(), ByPing: make(map[string]confusionMetric), ByCaptureRate: make(map[string]confusionMetric), ByQuality: make(map[string]confusionMetric), ByLegalContext: make(map[string]confusionMetric)}
 		for key, item := range acc.ping {
 			metric.ByPing[key] = item.finish()
 		}
@@ -671,6 +764,9 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 		}
 		for key, item := range acc.quality {
 			metric.ByQuality[key] = item.finish()
+		}
+		for key, item := range acc.legal {
+			metric.ByLegalContext[key] = item.finish()
 		}
 		out[id] = metric
 	}
@@ -717,7 +813,7 @@ func applyPromotionGate(metric *detectorCalibrationMetric) {
 		{v.PositiveOpportunities < promotionMinValidationPositive, fmt.Sprintf("validation needs %d positive opportunities; have %d", promotionMinValidationPositive, v.PositiveOpportunities)},
 		{v.NegativeOpportunities < promotionMinValidationNegative, fmt.Sprintf("validation needs %d legitimate opportunities; have %d", promotionMinValidationNegative, v.NegativeOpportunities)},
 		{o.StaleProvenance > 0, fmt.Sprintf("%d decisive samples were not analyzed by this app build and detector configuration; re-analyze their replays", o.StaleProvenance)},
-		{o.IndependentEvidence != o.PositiveOpportunities+o.NegativeOpportunities, "every decisive sample needs a specific independent artifact, blinded primary review, and a distinct second reviewer agreeing on that window"},
+		{o.IndependentEvidence != o.PositiveOpportunities+o.NegativeOpportunities, "every decisive sample needs hash-verified attached evidence and two agreeing immutable ballots committed before reveal under the current candidate/window"},
 		{o.UnusableTelemetry > 0, "samples include absent player-window telemetry or gated/unverified telemetry quality"},
 		{o.IsolationConflicts > 0, "decisive samples include quarantined cross-split exposure"},
 		{o.PositiveOpportunities > 0 && o.Precision < promotionMinPrecision, fmt.Sprintf("precision %.1f%% is below %.1f%%", o.Precision*100, promotionMinPrecision*100)},
@@ -759,7 +855,34 @@ func applyPromotionGate(metric *detectorCalibrationMetric) {
 				text   string
 			}{m.Players < 5 || m.Matches < 5, split.name + " needs at least five distinct players and five matches"})
 		}
+		minGroups, maxShare := 5, 0.40
+		if split.name == "overall" {
+			minGroups, maxShare = 10, 0.25
+		}
+		if m.Clusters.Groups < minGroups || m.Clusters.PositiveGroups < 3 || m.Clusters.NegativeGroups < 3 {
+			metric.Reasons = append(metric.Reasons, fmt.Sprintf("%s needs at least %d independent connected player/session groups, with positives and negatives in at least three groups", split.name, minGroups))
+		}
+		if m.Clusters.LargestGroupFraction > maxShare {
+			metric.Reasons = append(metric.Reasons, fmt.Sprintf("%s is dominated by one connected group (maximum %.0f%% of opportunities)", split.name, maxShare*100))
+		}
 	}
+	checkStrata := func(kind string, keys []string, values map[string]confusionMetric) {
+		for _, key := range keys {
+			m := values[key]
+			if m.NegativeOpportunities < 20 || m.Clusters.NegativeGroups < 3 {
+				metric.Reasons = append(metric.Reasons, fmt.Sprintf("%s stratum %s needs 20 legitimate opportunities from three connected groups", kind, key))
+			}
+		}
+	}
+	checkStrata("ping", []string{"low_under_80ms", "medium_80_150ms", "high_over_150ms"}, metric.ByPing)
+	checkStrata("capture", []string{"low_under_12hz", "standard_12_22hz", "high_over_22hz"}, metric.ByCaptureRate)
+	legal := []string{"normal", "transition"}
+	if strings.HasPrefix(metric.DetectorID, "THROW_") {
+		legal = []string{"normal", "stack", "block_push", "slap", "headbutt"}
+	} else if strings.HasPrefix(metric.DetectorID, "MOV_") {
+		legal = []string{"normal", "lean", "stack", "block_push"}
+	}
+	checkStrata("legal context", legal, metric.ByLegalContext)
 	for _, check := range checks {
 		if check.failed {
 			metric.Reasons = append(metric.Reasons, check.text)
@@ -798,9 +921,26 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 	}
 	meta := s.calibrationMatchMeta(ctx, matches, neededMatches)
 	samples := samplesFromLabels(reviews, opportunities, meta)
+	clusterByMatch := make(map[string]string)
+	for _, a := range assignments {
+		clusterByMatch[a.MatchID] = a.ClusterKey
+	}
+	candidate, candidateErr := s.blindCandidateFingerprint()
+	if candidateErr != nil {
+		return calibrationDashboard{}, candidateErr
+	}
+	proofs, proofErr := store.VerifiedBlindOpportunities(ctx, opportunities, candidate)
+	if proofErr != nil {
+		return calibrationDashboard{}, proofErr
+	}
 	measurable := samples[:0]
 	for _, sample := range samples {
 		if splitByMatch[sample.MatchID] != "" {
+			sample.ClusterID = clusterByMatch[sample.MatchID]
+			sample.LegalContext = "unknown"
+			if proof, ok := proofs[sample.OpportunityID]; ok {
+				sample.IndependentEvidence, sample.LegalContext = proof.Verified, proof.LegalContext
+			}
 			if sample.Truth == sqlite.GroundTruthPositive || sample.Truth == sqlite.GroundTruthNegative {
 				available, sampleErr := store.CalibrationWindowHasSamples(ctx, sample.MatchID, sample.PlayerID, sample.FrameStart, sample.FrameEnd)
 				if sampleErr != nil {
@@ -855,8 +995,8 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 	return calibrationDashboard{Detectors: detectors, Splits: splits, Assignments: assignments,
 		ValidationLimitations: []string{
 			"Reserved holdout is not a sealed/blinded prospective test: ordinary replay views and dashboard metrics can expose findings. First exposure locks the app/build/behavior candidate; changes quarantine that cohort.",
-			"Reviewer identities and artifact references are human attestations, not authenticated independent verification.",
-			"Wilson intervals describe labeled opportunities; correlated throws/players violate independence assumptions and these are not population-level guarantees.",
+			"Attached evidence bytes, window/candidate hashes and two immutable ballots are verified locally; reviewer identities and independence remain unauthenticated human attestations.",
+			"Wilson intervals describe labeled opportunities under an independence assumption. Connected-group ranges/macro averages describe observed heterogeneity, not population confidence intervals; group/stratum floors are conservative policy, not measured validity.",
 			"Public release/automatic enforcement remain unvalidated; require a prospectively collected external holdout under a locked candidate and independent review protocol.",
 		},
 		Samples: len(samples), BlindSamples: blind, PlayerLeakage: len(splits["quarantined"]) > 0,
@@ -867,8 +1007,12 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 			"minimum_precision": promotionMinPrecision, "minimum_recall": promotionMinRecall,
 			"maximum_false_positive_rate": promotionMaxFalseRate, "minimum_precision_lower95": promotionMinPrecision,
 			"minimum_recall_lower95": promotionMinRecallLower95, "maximum_false_rate_upper95": promotionMaxFalseRate,
-			"independent_second_review_required": true, "isolation_policy_version": sqlite.CalibrationSplitPolicyVersion, "auto_enforce": false},
-		Notice: "Conservative human-review policy, not production validation: promotion needs independently corroborated windows and Wilson 95% bounds. Reserved holdout is not sealed; first exposure locks the candidate and later changes quarantine it. Cross-split exposure is quarantined; legacy data stays training-only. Automatic enforcement remains disabled."}, nil
+			"independent_second_review_required": true, "hash_bound_blind_ballots_required": true,
+			"minimum_overall_connected_groups": 10, "minimum_evaluation_connected_groups": 5, "minimum_positive_and_negative_groups": 3,
+			"maximum_overall_group_fraction": .25, "maximum_evaluation_group_fraction": .4,
+			"minimum_stratum_legitimate_opportunities": 20, "minimum_stratum_negative_groups": 3,
+			"isolation_policy_version": sqlite.CalibrationSplitPolicyVersion, "auto_enforce": false},
+		Notice: "Conservative human-review policy, not production validation: promotion needs actual hash-bound evidence and two agreeing immutable pre-reveal ballots, diverse connected groups and representative legal/ping/capture controls, plus the existing Wilson policy. Group ranges are descriptive, not population confidence. Reserved holdout is not sealed; changed candidates quarantine exposure. Automatic enforcement remains disabled."}, nil
 }
 
 func (s *server) handleCalibrationOpportunities(w http.ResponseWriter, r *http.Request) {

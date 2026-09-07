@@ -32,7 +32,8 @@ func NewThrow003(params map[string]any) *Throw003 {
 	return &Throw003{
 		BaseDetector: detect.BaseDetector{
 			DetectorID: "THROW_003", DetectorVersion: "1.3.0",
-			DetectorName: "Unnatural Release Angle", DetectorCategory: "throw",
+			TraceBranches: true,
+			DetectorName:  "Unnatural Release Angle", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
 		},
 		maxAngleDev:   detect.GetFloat(params, "max_release_angle_deviation", 177.0),
@@ -55,18 +56,27 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		ps := players[pid]
 		t := throwAt(ps, frameIdx)
 		if t == nil {
+			if ps != nil && ps.LastFrameIdx == frameIdx {
+				d.TraceDecision(pid, frameIdx, "no_current_release")
+			} else {
+				d.TraceDecision(pid, frameIdx, "stale_player_context")
+			}
 			continue
 		}
 		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
+			d.TraceDecision(pid, frameIdx, "release_hand_unavailable")
 			continue
 		}
 		if t.PossibleHeadContact {
+			d.TraceDecision(pid, frameIdx, "possible_head_contact")
 			continue
 		}
 		if t.HandSpeed < d.minHandSpeed || t.ReleaseSpeed < d.minThrowSpeed {
+			d.TraceDecision(pid, frameIdx, "release_motion_below_gate")
 			continue
 		}
 		if math.IsNaN(t.ReleaseAngle) || t.ReleaseAngle <= d.maxAngleDev {
+			d.TraceDecision(pid, frameIdx, "release_angle_not_exceeded")
 			continue
 		}
 		// Frame-of-reference guard: if the body moved as fast as the hand,
@@ -74,9 +84,11 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// angle carries no information about the wrist motion.
 		bodySpeed := t.PlayerVelocity.Magnitude()
 		if t.HandSpeed <= 0 || bodySpeed >= t.HandSpeed {
+			d.TraceDecision(pid, frameIdx, "body_translation_dominates")
 			continue
 		}
 		bodyFactor := 1.0 - bodySpeed/t.HandSpeed
+		d.TraceDecision(pid, frameIdx, "release_angle_candidate")
 
 		severity := model.SigmoidConfidence(t.ReleaseAngle, d.maxAngleDev, 0.1)
 		confidence := severity * bodyFactor

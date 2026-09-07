@@ -37,6 +37,7 @@ func NewMov001(params map[string]any) *Mov001 {
 	d := &Mov001{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_001",
+			TraceBranches:    true,
 			DetectorVersion:  "2.1.0",
 			DetectorName:     "Impossible Player Speed",
 			DetectorCategory: "movement",
@@ -103,6 +104,7 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 		window := d.speedWindow[pid]
 		if len(window) < d.sustainedSpeedWindow {
+			d.TraceDecision(pid, frameIdx, "speed_window_pending")
 			continue
 		}
 
@@ -129,8 +131,10 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 				}
 			}
 			if burstFrames < d.minBurstFrames {
+				d.TraceDecision(pid, frameIdx, "speed_not_exceeded")
 				continue
 			}
+			d.TraceDecision(pid, frameIdx, "speed_burst_candidate")
 
 			severity := model.SigmoidConfidence(p90/burstThreshold, 1.2, 8.5)
 			confidence := model.SigmoidConfidence(float64(burstFrames), float64(d.minBurstFrames), 1.0) * 0.6
@@ -171,6 +175,7 @@ func (d *Mov001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			continue
 		}
 
+		d.TraceDecision(pid, frameIdx, "median_speed_candidate")
 		severity := model.SigmoidConfidence(medianSpeed, d.maxLegitimateSpeed*1.2, d.sigmoidSteepness)
 		confidence := model.SigmoidConfidence(medianSpeed, d.maxLegitimateSpeed, d.sigmoidSteepness)
 

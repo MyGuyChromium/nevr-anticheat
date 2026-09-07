@@ -140,6 +140,7 @@ var requiredTables = []string{
 	"calibration_opportunities", "detector_promotions",
 	"calibration_split_assignments",
 	"match_analysis_coverage",
+	"blind_evidence_artifacts", "blind_review_sessions", "blind_review_ballots",
 }
 
 var migrations = []MigrationVersion{
@@ -566,6 +567,30 @@ var migrations = []MigrationVersion{
 				) WHERE player_id <> '' ORDER BY player_id
 			)
 		);`,
+	},
+	{
+		Version: 19, Description: "hash-bound local evidence and immutable blind ballots",
+		SQL: `ALTER TABLE calibration_opportunities ADD COLUMN review_session_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE analysis_runs ADD COLUMN executable_sha256 TEXT NOT NULL DEFAULT '';
+		CREATE TABLE blind_evidence_artifacts (
+			sha256 TEXT PRIMARY KEY, filename TEXT NOT NULL, payload BLOB NOT NULL,
+			created_at TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE TABLE blind_review_sessions (
+			session_id TEXT PRIMARY KEY, binding_json TEXT NOT NULL,
+			artifact_sha256 TEXT NOT NULL, candidate_fingerprint TEXT NOT NULL,
+			window_sha256 TEXT NOT NULL, revealed_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		CREATE TABLE blind_review_ballots (
+			session_id TEXT NOT NULL, reviewer_key TEXT NOT NULL, ballot_json TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			PRIMARY KEY(session_id, reviewer_key)
+		);
+		CREATE TRIGGER blind_ballots_no_update BEFORE UPDATE ON blind_review_ballots BEGIN SELECT RAISE(ABORT,'ballots are immutable'); END;
+		CREATE TRIGGER blind_ballots_no_delete BEFORE DELETE ON blind_review_ballots BEGIN SELECT RAISE(ABORT,'ballots are immutable'); END;
+		CREATE TRIGGER blind_artifacts_no_update BEFORE UPDATE ON blind_evidence_artifacts BEGIN SELECT RAISE(ABORT,'evidence is immutable'); END;
+		CREATE TRIGGER blind_bindings_no_update BEFORE UPDATE OF binding_json,artifact_sha256,candidate_fingerprint,window_sha256 ON blind_review_sessions BEGIN SELECT RAISE(ABORT,'review bindings are immutable'); END;`,
 	},
 }
 
