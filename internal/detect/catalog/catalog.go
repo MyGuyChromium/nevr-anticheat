@@ -5,7 +5,7 @@
 // (throw, bio, movement, state, pattern) in detect.Catalog, and Build applies
 // each detector's [detector.<ID>] config block (enabled, enforcement_weight,
 // auto_enforce, params) through detect.BuildAll so the three binaries can
-// never drift apart or hand-roll a 30-entry list again.
+// never drift apart or hand-roll separate detector lists again.
 package catalog
 
 import (

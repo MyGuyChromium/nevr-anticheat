@@ -11,4 +11,5 @@ func init() {
 	detect.MustRegister(func(p map[string]any) detect.Detector { return NewState005(p) })
 	detect.MustRegister(func(p map[string]any) detect.Detector { return NewState006(p) })
 	detect.MustRegister(func(p map[string]any) detect.Detector { return NewState007(p) })
+	detect.MustRegister(func(p map[string]any) detect.Detector { return NewState008(p) })
 }

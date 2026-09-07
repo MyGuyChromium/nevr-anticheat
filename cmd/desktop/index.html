@@ -162,6 +162,11 @@
   .physics-table { overflow: auto; max-height: 48vh; border: 1px solid var(--line); }
   .physics-table table { min-width: 1120px; }
   .physics-table tr.focus td { background: var(--accent-bg); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+  .catch-projections { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 12px; margin: 16px 0; }
+  .catch-projections figure { margin: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .catch-projections svg { display: block; width: 100%; height: auto; }
+  .catch-projections figcaption { color: var(--muted); font: 11px/1.5 var(--mono); }
+  .catch-legend { display: flex; flex-wrap: wrap; gap: 16px; font: 11px/1.6 var(--mono); }
   .signal-list { max-width: 280px; color: var(--muted); font-size: 10px; }
   .studio-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
   .studio-card { border:1px solid var(--line); background:var(--panel); padding:18px; min-width:0; }
@@ -1660,6 +1665,34 @@
   }
 
   const fmtVec = (v) => Array.isArray(v) ? `[${v.map((n) => fmtNum(Number(n), 2)).join(', ')}]` : '—';
+  function renderCatchTrajectory(evidence) {
+    // Bound and validate stored evidence before building SVG coordinates. No
+    // held-disc sample is part of this comparison; the detector stores free flight only.
+    if (blindReview) return '';
+    const samples = evidence && evidence.catch_trajectory;
+    const fields = ['disc_position', 'expected_position', 'left_hand', 'right_hand'];
+    const vector = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1000000);
+    if (!Array.isArray(samples) || samples.length < 2 || samples.length > 32 || !samples.every((s, i) => s && Number.isSafeInteger(s.frame_index) && s.frame_index >= 0 && Number.isFinite(s.timestamp) && fields.every((f) => vector(s[f])) && (i === 0 || (s.frame_index > samples[i - 1].frame_index && s.timestamp > samples[i - 1].timestamp)))) return '';
+    const tracks = [
+      { field: 'expected_position', color: '#a5acba', dash: '6 5', label: 'Steady-motion reference' },
+      { field: 'left_hand', color: '#c4a0ff', dash: '2 5', label: 'Left hand' },
+      { field: 'right_hand', color: '#ffbf72', dash: '9 3 2 3', label: 'Right hand' },
+      { field: 'disc_position', color: '#54dfd1', dash: '', label: 'Observed free disc' },
+    ];
+    const plots = [[0, 1, 'X / Y'], [0, 2, 'X / Z'], [1, 2, 'Y / Z']].map(([a, b, label]) => {
+      const points = samples.flatMap((s) => fields.map((f) => s[f]));
+      const xs = points.map((v) => v[a]), ys = points.map((v) => v[b]);
+      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+      const span = Math.max(maxX - minX, maxY - minY, .5), scale = 248 / span;
+      const x = (v) => (150 + (v[a] - (minX + maxX) / 2) * scale).toFixed(2);
+      const y = (v) => (150 - (v[b] - (minY + maxY) / 2) * scale).toFixed(2);
+      const paths = tracks.map((track) => `<polyline fill="none" stroke="${track.color}" stroke-width="2" stroke-dasharray="${track.dash}" points="${samples.map((s) => `${x(s[track.field])},${y(s[track.field])}`).join(' ')}"><title>${track.label}</title></polyline>`).join('');
+      const hands = tracks.filter((t) => t.field.endsWith('_hand')).map((t) => { const hand = samples[samples.length - 1][t.field]; return `<circle cx="${x(hand)}" cy="${y(hand)}" r="3" fill="none" stroke="${t.color}" stroke-width="2"><title>${t.label} at last free sample</title></circle>`; }).join('');
+      const dots = [samples[0], samples[samples.length - 1]].map((s, i) => `<circle cx="${x(s.disc_position)}" cy="${y(s.disc_position)}" r="${i ? 5 : 3}" fill="#54dfd1"><title>${i ? 'Last free sample' : 'First free sample'}</title></circle>`).join('');
+      return `<figure><svg viewBox="0 0 300 300" role="img" aria-label="Free disc and moving hand paths, ${label} projection"><path d="M26 274H274 M26 26V274" fill="none" stroke="#465366"/>${paths}${hands}${dots}</svg><figcaption>${label} projection · equal axis scale · ${span.toFixed(2)} m span</figcaption></figure>`;
+    }).join('');
+    return `<section class="catch-review"><h3>Catch trajectory · observation only</h3><p class="notice">Receiver-associated path change—not proof of autopocket or who caused it. Legal contacts and source prediction/corrections remain possible. This detector never adds suspicion score.</p><p class="summary-note">${samples.length} free-disc samples · frames ${samples[0].frame_index}–${samples[samples.length - 1].frame_index}. The larger dot is the last free sample; the held-disc attachment is excluded. The dashed reference assumes constant velocity, not an exact Echo physics simulation. Each projection is scaled independently.</p><div class="catch-legend">${tracks.map((t) => `<span style="color:${t.color}">${t.label}${t.dash ? ' (dashed)' : ' (solid)'}</span>`).join('')}</div><div class="catch-projections">${plots}</div></section>`;
+  }
   function renderPhysics(p) {
     const event = p.event ? `<div><span>Detector</span><b class="mono">${esc(p.event.detector_id)} v${esc(p.event.detector_version)}</b></div>` : '<div><span>Incident</span><b>Throw / selected frame</b></div>';
     const health = p.telemetry_health ? `<span class="tag ${p.telemetry_health.status === 'healthy' ? 'ok' : p.telemetry_health.status === 'warning' ? 'warn' : 'bad'}">${esc(p.telemetry_health.status)}</span>` : '<span class="tag warn">raw unavailable</span>';
@@ -1671,7 +1704,7 @@
     const raw = p.raw_tick_present ? `<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Original focus tick</h3></summary><pre>${esc(JSON.stringify(p.raw_focus_tick, null, 2))}</pre></details>` : '<p class="notice bad">The original raw focus tick is not active. Normalized values remain available; restore the match archive for full raw inspection.</p>';
     const evidence = p.event ? `<dl class="kv"><dt>Observed</dt><dd>${esc(p.event.observed_value || '—')}</dd><dt>Expected</dt><dd>${esc(p.event.expected_range || '—')}</dd><dt>Confidence</dt><dd>${fmtNum(p.event.confidence, 2)}</dd></dl><details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector evidence</h3></summary><pre>${esc(JSON.stringify(p.event.evidence || {}, null, 2))}</pre></details>` : '';
     return `<div class="inspector-grid"><div><span>Match</span><b class="mono">${esc(p.match_id)}</b></div><div><span>Player</span><b>${esc(p.player_name || p.player_id)}</b></div><div><span>Focus frame</span><b class="mono">${fmtInt(p.focus_frame)}</b></div>${event}<div><span>Telemetry</span><b>${health}</b></div><div><span>Disc cap</span><b>${fmtNum(p.disc_speed_cap, 1)} m/s</b></div></div>
-      ${evidence}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th><th>Signals</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${evidence}${p.event && p.event.detector_id === 'STATE_008' ? renderCatchTrajectory(p.event.evidence) : ''}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th><th>Signals</th></tr></thead><tbody>${rows}</tbody></table></div>
       ${raw}<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(p.limitations || []).map((x) => `<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
   }
 

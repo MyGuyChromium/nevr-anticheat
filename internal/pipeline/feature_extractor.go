@@ -206,6 +206,11 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 
 	// Update raw state from frame
 	ps.Position = frame.Position
+	ps.HeadPosition = nil
+	if frame.HeadPosition != nil && !frame.HeadPosition.IsZero() && !frame.HeadPosition.HasNaN() && !frame.HeadPosition.HasInf() {
+		head := *frame.HeadPosition
+		ps.HeadPosition = &head
+	}
 	ps.Rotation = frame.Rotation
 	ps.HasReportedVelocity = frame.ReportedVelocity != nil
 	if frame.ReportedVelocity != nil {

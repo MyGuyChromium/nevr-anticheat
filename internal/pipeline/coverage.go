@@ -56,6 +56,9 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 		case "MOV_006":
 			d.InputCheck = true
 			d.Limitations = append(d.Limitations, "No feet, guardian or authoritative contact telemetry: this cannot prove walking rather than a legal lean or lunge.")
+		case "STATE_008":
+			d.InputCheck = true
+			d.Limitations = append(d.Limitations, "Experimental autopocket catch review requires explicit possession, bounce-counter presence and a complete tracked player sample. Input availability is not a confirmed catch opportunity; inspect branch reasons. No remote grip input or authoritative collision impulses are available, so a trajectory observation cannot identify a cheater or prove input automation.")
 		default:
 			d.Limitations = append(d.Limitations, "Internal detector opportunity coverage is not measured; dispatch does not prove that all required inputs or situations occurred.")
 		}

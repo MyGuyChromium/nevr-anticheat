@@ -44,6 +44,7 @@ var constructors = map[string]func(map[string]any) detect.Detector{
 	"STATE_005": func(p map[string]any) detect.Detector { return state.NewState005(p) },
 	"STATE_006": func(p map[string]any) detect.Detector { return state.NewState006(p) },
 	"STATE_007": func(p map[string]any) detect.Detector { return state.NewState007(p) },
+	"STATE_008": func(p map[string]any) detect.Detector { return state.NewState008(p) },
 	"PAT_001":   func(p map[string]any) detect.Detector { return pattern.NewPat001(p) },
 	"PAT_002":   func(p map[string]any) detect.Detector { return pattern.NewPat002(p) },
 	"PAT_003":   func(p map[string]any) detect.Detector { return pattern.NewPat003(p) },

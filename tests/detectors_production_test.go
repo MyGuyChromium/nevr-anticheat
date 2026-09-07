@@ -11,8 +11,9 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
 
-// Per-detector production-parameter tests: every one of the 30 catalogued
-// detectors is built by the catalog from DefaultConfig params (no threshold
+// Per-detector production-parameter tests: the status table accounts for all
+// 31 catalogued detectors. STATE_008's observation-only behavior is covered
+// separately. Other detectors are built from DefaultConfig params (no threshold
 // overrides anywhere in this file) and run on one cheat generator that must
 // fire and one legit generator that must stay silent. Detectors that
 // DefaultConfig disables (UNSAFE / TELEMETRY_DEPENDENT / UNVERIFIED /
@@ -28,7 +29,7 @@ var detectorStatus = map[string]string{
 	"BIO_001": "enabled", "BIO_002": "enabled", "BIO_003": "enabled", "BIO_004": "enabled",
 	"MOV_001": "enabled", "MOV_002": "enabled", "MOV_003": "unsafe", "MOV_004": "telemetry_dependent", "MOV_005": "telemetry_dependent", "MOV_006": "enabled",
 	"STATE_001": "enabled", "STATE_002": "enabled", "STATE_003": "telemetry_dependent", "STATE_004": "telemetry_dependent",
-	"STATE_005": "telemetry_dependent", "STATE_006": "suspended", "STATE_007": "telemetry_dependent",
+	"STATE_005": "telemetry_dependent", "STATE_006": "suspended", "STATE_007": "telemetry_dependent", "STATE_008": "observation_only",
 	"PAT_001": "unsafe", "PAT_002": "unsafe", "PAT_003": "cross_match_dependent", "PAT_004": "enabled", "PAT_005": "enabled",
 }
 
@@ -37,7 +38,7 @@ var detectorStatus = map[string]string{
 // every detector in this file has a status.
 func TestDetectorStatus_MatchesDefaultConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
-	if len(detectorStatus) != 30 || len(cfg.Detectors) != 30 {
+	if len(detectorStatus) != 31 || len(cfg.Detectors) != 31 {
 		t.Fatalf("%d statuses, %d config blocks", len(detectorStatus), len(cfg.Detectors))
 	}
 	built := map[string]bool{}
@@ -45,7 +46,7 @@ func TestDetectorStatus_MatchesDefaultConfig(t *testing.T) {
 		built[d.ID()] = true
 	}
 	for id, status := range detectorStatus {
-		enabled := status == "enabled"
+		enabled := status == "enabled" || status == "observation_only"
 		if cfg.Detectors[id].Enabled != enabled {
 			t.Errorf("%s: config enabled=%v, status %q", id, cfg.Detectors[id].Enabled, status)
 		}

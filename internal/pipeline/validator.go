@@ -64,6 +64,10 @@ const (
 	// removed. Nil means unavailable, so playspace reconstruction safely
 	// disables itself for that frame.
 	SanitizedReportedVelocity = "invalid_reported_velocity"
+	// Optional observations become unknown independently of the legacy body,
+	// hand and disc motion fields when their metadata is unusable.
+	SanitizedHeadPosition    = "invalid_head_position"
+	SanitizedDiscObservation = "invalid_disc_observation"
 )
 
 // ValidationError describes why a frame was rejected.
@@ -235,6 +239,11 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 		frame.ReportedVelocity = nil
 		sanitized = append(sanitized, SanitizedReportedVelocity)
 	}
+	if head := frame.HeadPosition; head != nil && (head.IsZero() || head.HasNaN() || head.HasInf() ||
+		math.Abs(head[0]) > halfX || math.Abs(head[1]) > halfY || math.Abs(head[2]) > halfZ) {
+		frame.HeadPosition = nil
+		sanitized = append(sanitized, SanitizedHeadPosition)
+	}
 	// Disc state: drop it rather than the whole frame when it is not finite
 	// or not physically plausible.
 	if frame.Disc != nil {
@@ -245,6 +254,24 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 		case !discInRange(frame.Disc, matchCtx.Physics, halfX, halfY, halfZ):
 			frame.Disc = nil
 			sanitized = append(sanitized, SanitizedDiscOutOfRange)
+		}
+	}
+	if disc := frame.Disc; disc != nil {
+		invalidBounce := disc.BounceCount != nil && *disc.BounceCount < 0
+		invalidCount := disc.SampledPlayerCount < 0 || (disc.PossessionKnown && disc.SampledPlayerCount == 0)
+		if invalidBounce || invalidCount {
+			// Frame copies can share a disc pointer. Repair only this frame's
+			// optional metadata, preserving the observed motion/holder fields.
+			repaired := *disc
+			if invalidBounce {
+				repaired.BounceCount = nil
+			}
+			if invalidCount {
+				repaired.SampledPlayerCount = 0
+				repaired.PossessionKnown = false
+			}
+			frame.Disc = &repaired
+			sanitized = append(sanitized, SanitizedDiscObservation)
 		}
 	}
 	return sanitized, nil

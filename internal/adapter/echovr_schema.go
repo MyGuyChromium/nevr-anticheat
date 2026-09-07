@@ -84,9 +84,9 @@ type EchoVRDisc struct {
 	Position [3]float64 `json:"position"` // CONFIRMED: [x, y, z] in meters
 	Velocity [3]float64 `json:"velocity"` // CONFIRMED: [vx, vy, vz] in m/s
 
-	// UNKNOWN: The API may include additional fields like "bounce_count".
-	// These are not confirmed and are ignored during mapping.
-	BounceCount int `json:"bounce_count"` // UNKNOWN
+	// Some sources omit the counter. A pointer retains that absence rather
+	// than inventing a zero-bounce observation when decoding or reserializing.
+	BounceCount *int `json:"bounce_count,omitempty"`
 }
 
 // EchoVRTeam represents a team in the Echo VR API.

@@ -190,6 +190,13 @@ func defaultDetectors() map[string]DetectorConfig {
 			"punch_range_threshold": 10.0, "velocity_adjust_scale": 0.15, "min_incidents": 3,
 			"sigmoid_steepness": 1.0, "attribution_window_frames": 2, "max_range": 25.0,
 		}},
+		// OBSERVATION_ONLY: pre-catch trajectory review has no validated cheat signature.
+		"STATE_008": {Enabled: true, EnforcementWeight: 0.0, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
+			"baseline_samples": 4, "min_correction_samples": 2, "max_sample_gap_s": 0.12,
+			"max_window_s": 1.5, "max_step_error_m": 0.20, "min_lateral_deviation_m": 0.30,
+			"min_correction_angle_deg": 4.0, "max_turn_angle_deg": 20.0, "contact_margin_m": 0.65,
+			"min_miss_improvement_m": 0.50, "max_catch_approach_m": 1.5, "regrab_grace_s": 0.35,
+		}},
 		// UNSAFE: regrab rhythm produces low CoV naturally.
 		"PAT_001": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"max_cov": 0.05, "max_stddev": 3.0, "min_throw_count": 12, "sigmoid_steepness": 20.0,

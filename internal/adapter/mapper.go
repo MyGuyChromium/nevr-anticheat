@@ -257,13 +257,24 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 			Velocity: vel,
 			Speed:    vel.Magnitude(),
 		}
+		if raw.Disc.BounceCount != nil && *raw.Disc.BounceCount >= 0 {
+			count := *raw.Disc.BounceCount
+			tickDisc.BounceCount = &count
+		}
 	}
 	holders := 0
+	sampledPlayers := 0
+	allHoldingKnown := true
 	for teamIdx, team := range raw.Teams {
 		if _, ok := mappedTeamName(team.TeamName, teamIdx); !ok {
 			continue
 		}
 		for i := range team.Players {
+			sampledPlayers++
+			p := &team.Players[i]
+			// Both fields must be explicit. HasDisc keeps its established
+			// one-field/legacy fallback semantics for existing detectors.
+			allHoldingKnown = allHoldingKnown && p.HoldingLeft != "" && p.HoldingRight != ""
 			if team.Players[i].HasDisc() {
 				holders++
 				if tickDisc != nil && !tickDisc.IsHeld {
@@ -272,6 +283,11 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 				}
 			}
 		}
+	}
+	if tickDisc != nil {
+		tickDisc.SampledPlayerCount = sampledPlayers
+		tickDisc.PossessionKnown = sampledPlayers > 0 && allHoldingKnown
+		tickDisc.PossessionConflict = holders > 1
 	}
 	if holders > 1 {
 		m.stats.PossessionConflicts++
@@ -443,9 +459,16 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 	}
 	h.Write([]byte(raw.GameStatus))
 	writeF(raw.GameClock)
+	writeB(raw.Disc != nil)
 	if raw.Disc != nil {
 		writeV(raw.Disc.Position)
 		writeV(raw.Disc.Velocity)
+		writeB(raw.Disc.BounceCount != nil)
+		if raw.Disc.BounceCount != nil {
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], uint64(*raw.Disc.BounceCount))
+			h.Write(buf[:])
+		}
 	}
 	writeF(float64(raw.BluePoints))
 	writeF(float64(raw.OrangePoints))
@@ -473,13 +496,16 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			h.Write([]byte(p.Name))
 			writeV(p.Velocity)
 			writeV(p.Body.Position)
+			writeV(p.Head.Position)
 			writeV(p.Body.Forward)
 			writeV(p.LHand.Position)
 			writeV(p.RHand.Position)
 			writeV(p.LHand.Forward)
 			writeV(p.RHand.Forward)
 			writeB(p.Possession)
+			writeF(float64(len(p.HoldingLeft)))
 			h.Write([]byte(p.HoldingLeft))
+			writeF(float64(len(p.HoldingRight)))
 			h.Write([]byte(p.HoldingRight))
 			writeB(p.Stunned)
 			writeB(p.Blocking)
@@ -584,6 +610,10 @@ func (m *Mapper) mapPlayer(
 	if pos.HasNaN() || pos.HasInf() {
 		return nil, nil, &MappingError{PlayerName: p.Name, Field: "body.position", Message: "NaN/Inf position"}
 	}
+	var headPosition *model.Vec3
+	if head := model.Vec3(p.Head.Position); !head.IsZero() && !head.HasNaN() && !head.HasInf() {
+		headPosition = &head
+	}
 
 	// CONFIRMED from real replay: body rotation from body.forward/left/up direction vectors.
 	// A degenerate basis (missing vectors) yields the ZERO quaternion, which
@@ -617,6 +647,10 @@ func (m *Mapper) mapPlayer(
 	var disc *model.DiscState
 	if tickDisc != nil {
 		d := *tickDisc
+		if tickDisc.BounceCount != nil {
+			count := *tickDisc.BounceCount
+			d.BounceCount = &count
+		}
 		disc = &d
 	}
 
@@ -661,6 +695,7 @@ func (m *Mapper) mapPlayer(
 		Timestamp:         timestamp,
 		DeltaTime:         dt,
 		Position:          pos,
+		HeadPosition:      headPosition,
 		Rotation:          bodyRot,
 		ReportedVelocity:  &reportedVelocity,
 		LeftHandPosition:  leftHandPos,

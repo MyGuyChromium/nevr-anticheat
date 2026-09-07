@@ -472,6 +472,28 @@ sigmoid_steepness         = 1.0
 attribution_window_frames = 2      # frames a stun start may lag the punch
 max_range                 = 25.0   # m; beyond this the attribution failed
 
+[detector.STATE_008]
+# Autopocket Catch Review. OBSERVATION_ONLY: these engineering filters are
+# provisional, not verified catch physics or a calibrated cheat signature.
+# This detector cannot be promoted to scoring or automatic enforcement.
+enabled            = true
+enforcement_weight = 0.0
+auto_enforce       = false
+mode               = "shadow"
+[detector.STATE_008.params]
+baseline_samples           = 4      # free-flight baseline samples
+min_correction_samples     = 2      # consecutive approach corrections
+max_sample_gap_s           = 0.12   # s; reject larger adjacent sample gaps
+max_window_s               = 1.5    # s; maximum pre-catch window
+max_step_error_m           = 0.20   # m; displacement/velocity consistency
+min_lateral_deviation_m    = 0.30   # m; deviation from baseline trajectory
+min_correction_angle_deg   = 4.0    # deg; minimum sustained correction
+max_turn_angle_deg         = 20.0   # deg; larger turns are ambiguous
+contact_margin_m           = 0.65   # m; possible-contact exclusion, not a game radius
+min_miss_improvement_m     = 0.50   # m; projected miss-distance improvement
+max_catch_approach_m       = 1.5    # m; last-free-sample hand distance
+regrab_grace_s             = 0.35   # s; exclude rapid regrabs
+
 # ----------------------------------------------------------------------------- pattern
 
 [detector.PAT_001]

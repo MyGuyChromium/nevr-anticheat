@@ -31,9 +31,16 @@ func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason s
 		t.OverflowCount++
 		return
 	}
+	// STATE_008 checks the whole sampled roster, not just one player's pose.
+	// Count inputs only after that detector actually passes its global checks.
+	// Repeated diagnostic calls for one frame must not inflate coverage.
+	catchInputs := detectorID == "STATE_008" && reason == "catch_inputs_ready"
 	for i := range t.Reasons {
 		r := &t.Reasons[i]
 		if r.Code == reason {
+			if catchInputs && frame > r.LastFrame {
+				c.player(playerID).Detectors[index].InputFrames++
+			}
 			r.Count++
 			if frame < r.FirstFrame {
 				r.FirstFrame = frame
@@ -47,6 +54,9 @@ func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason s
 	if len(t.Reasons) >= MaxDecisionReasons {
 		t.OverflowCount++
 		return
+	}
+	if catchInputs {
+		c.player(playerID).Detectors[index].InputFrames++
 	}
 	t.Reasons = append(t.Reasons, model.DetectorDecisionReason{Code: reason, Description: detect.DecisionReasonDescription(reason), Count: 1, FirstFrame: frame, LastFrame: frame})
 }

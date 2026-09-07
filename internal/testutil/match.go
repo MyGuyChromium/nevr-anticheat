@@ -26,7 +26,9 @@ func Concat(segments ...[]model.PlayerTelemetryFrame) []model.PlayerTelemetryFra
 			continue
 		}
 		if len(out) == 0 {
-			out = append(out, seg...)
+			for _, f := range seg {
+				out = append(out, copyObservationFields(f))
+			}
 			continue
 		}
 		last := out[len(out)-1]
@@ -38,12 +40,16 @@ func Concat(segments ...[]model.PlayerTelemetryFrame) []model.PlayerTelemetryFra
 		baseIdx := last.FrameIndex + 1
 		baseTS := last.Timestamp + dt
 		for i, f := range seg {
+			f = copyObservationFields(f)
 			f.FrameIndex = baseIdx + i
 			f.Timestamp = baseTS + (seg[i].Timestamp - seg[0].Timestamp)
 			if i == 0 {
 				f.DeltaTime = dt
 			}
 			f.Position = f.Position.Add(shift)
+			if f.HeadPosition != nil && !f.HeadPosition.IsZero() {
+				*f.HeadPosition = f.HeadPosition.Add(shift)
+			}
 			if !f.LeftHandPosition.IsZero() {
 				f.LeftHandPosition = f.LeftHandPosition.Add(shift)
 			}
@@ -70,12 +76,32 @@ func Concat(segments ...[]model.PlayerTelemetryFrame) []model.PlayerTelemetryFra
 // the arena.
 func ShiftFrom(frames []model.PlayerTelemetryFrame, atFrame int, delta model.Vec3) {
 	for i := atFrame; i < len(frames); i++ {
+		frames[i] = copyObservationFields(frames[i])
 		p := ClampToArena(frames[i].Position.Add(delta))
 		d := p.Sub(frames[i].Position)
 		frames[i].Position = p
+		if frames[i].HeadPosition != nil && !frames[i].HeadPosition.IsZero() {
+			*frames[i].HeadPosition = frames[i].HeadPosition.Add(d)
+		}
 		frames[i].LeftHandPosition = frames[i].LeftHandPosition.Add(d)
 		frames[i].RightHandPosition = frames[i].RightHandPosition.Add(d)
 	}
+}
+
+// copyObservationFields gives a synthetic result its own optional head and
+// bounce observations without manufacturing values for older fixtures.
+func copyObservationFields(frame model.PlayerTelemetryFrame) model.PlayerTelemetryFrame {
+	if frame.HeadPosition != nil {
+		head := *frame.HeadPosition
+		frame.HeadPosition = &head
+	}
+	if frame.Disc != nil && frame.Disc.BounceCount != nil {
+		disc := *frame.Disc
+		bounce := *disc.BounceCount
+		disc.BounceCount = &bounce
+		frame.Disc = &disc
+	}
+	return frame
 }
 
 // MatchBuilder assembles a multi-player match from per-player frame
@@ -154,9 +180,14 @@ func (mb *MatchBuilder) Build() (*model.MatchContext, []model.PlayerTelemetryFra
 	maxIdx := 0
 	for _, pid := range mc.PlayerIDs {
 		for _, f := range mb.players[pid] {
+			f = copyObservationFields(f)
 			if discByIdx != nil {
 				if d, ok := discByIdx[f.FrameIndex]; ok && d != nil {
 					dc := *d
+					if d.BounceCount != nil {
+						bounce := *d.BounceCount
+						dc.BounceCount = &bounce
+					}
 					f.Disc = &dc
 				}
 			}

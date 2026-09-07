@@ -1,10 +1,12 @@
 # NEVR-Anticheat
 
-Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 30 detectors analyse it there.
+Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 31 detectors analyse it there.
 
 **Windows:** [Download NEVR-Anticheat-Setup.exe](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe), double-click it, and choose **Install**. No ZIP extraction, command prompt, administrator access, or manual folder selection is required.
 
-**Validation status: 0 of 30 detectors have been validated on labelled real Echo VR telemetry.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
+**Validation status: 0 of 31 detectors have completed representative, independently labelled real-telemetry validation.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
+
+Desktop 0.12.0 adds [autopocket catch review](docs/autopocket_review.md): sustained free-disc path changes before a confirmed catch, with moving-hand comparisons, contact exclusions and three trajectory projections in the physics inspector. This is permanently observation-only in this implementation; it cannot prove automated grip input or attribute the cause to the receiver. Re-import original replays to populate the new presence-aware telemetry; older normalized caches may not contain enough inputs.
 
 **Automatic findings:** the installed app analyzes replays itself; no assistant,
 cloud upload, admission list or player-name rules are needed. Each analyzed match
@@ -44,7 +46,7 @@ OFFLINE PATH
   .echoreplay / legacy JSON replay ──▶ nevr-ac analyze|batch (internal/adapter + internal/replay)
 
 BOTH PATHS
-  SQLite (source of truth) ──▶ feature extraction ──▶ 30 detectors ──▶ per-match scores
+  SQLite (source of truth) ──▶ feature extraction ──▶ 31 detectors ──▶ per-match scores
         ──▶ review cases (single-match RC-*, cross-match XM-*) ──▶ moderator verdicts ──▶ calibration
 ```
 
@@ -271,6 +273,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | STATE_005 | Cooldown Bypass | state | 0.6 | Disabled — needs shield_active field |
 | STATE_006 | Score Manipulation | state | 1.0 | **SUSPENDED** — no confirmed invariant |
 | STATE_007 | Impossible Punch Range | state | 0.5 | Disabled — needs per-frame stun data |
+| STATE_008 | Autopocket Catch Review | state | 0.0 | Experimental — immutable observation-only; cause and actor unverified |
 | PAT_001 | Frame-Perfect Timing | pattern | 0.6 | **UNSAFE** — FPs on skilled players |
 | PAT_002 | Identical Release Points | pattern | 0.6 | **UNSAFE** — FPs on consistent form |
 | PAT_003 | Cross-Match Consistency | pattern | 0.8 | Needs 3+ matches of DB history |
@@ -308,7 +311,7 @@ Derived data: `detection_events` (`is_shadow`, `analysis_source` = initial/repro
 
 ## Shadow Mode
 
-`mode = "shadow"` means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. Both shipped configurations use this mode for all 30 detectors. `verdict` and `calibration-report` provide the calibration path before promoting anything.
+`mode = "shadow"` means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. Both shipped configurations use this mode for all 31 detectors. `verdict` and `calibration-report` provide the calibration path before promoting anything. STATE_008 cannot be promoted by configuration or the calibration UI: its current observation does not establish a violation or identify the responsible actor.
 
 Weights and `auto_enforce` come from config: the binaries build detectors through `detect.BuildAll`, which applies `enforcement_weight` via `SetWeight` and `auto_enforce` via `SetAutoEnforce`, so `MakeEvent` stamps the configured weight on every event.
 

@@ -481,6 +481,9 @@ func explainEvent(e model.DetectionEvent) string {
 	case model.MovementEvidence:
 		return fmt.Sprintf("%s The movement metrics crossed this detector's configured window; inspect the physics panel for lean, slap, collision, stacking, and tracking context.%s", strings.TrimSpace(v.DetectorSpecific), shadow)
 	case model.StateEvidence:
+		if e.DetectorID == "STATE_008" {
+			return "The free disc deviated from a stable constant-velocity comparison before a confirmed catch. This is a receiver-associated trajectory observation; the cause and actor are unverified. Legal contact, prediction and source corrections remain possible. It cannot prove automated grip input and never adds suspicion score."
+		}
 		return fmt.Sprintf("%s The interaction state crossed the configured limit.%s", strings.TrimSpace(v.DetectorSpecific), shadow)
 	case model.PatternEvidence:
 		return fmt.Sprintf("%s A repeated-match pattern crossed the configured limit; this is statistical evidence, not proof.%s", strings.TrimSpace(v.DetectorSpecific), shadow)

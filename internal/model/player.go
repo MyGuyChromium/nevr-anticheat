@@ -9,12 +9,13 @@ type PlayerState struct {
 	Team     string `json:"team"`
 
 	// Current frame state
-	Position     Vec3 `json:"position"`
-	Rotation     Quat `json:"rotation"`
-	LeftHand     Vec3 `json:"left_hand"`
-	RightHand    Vec3 `json:"right_hand"`
-	LeftHandRot  Quat `json:"left_hand_rot"`
-	RightHandRot Quat `json:"right_hand_rot"`
+	Position     Vec3  `json:"position"`
+	HeadPosition *Vec3 `json:"head_position,omitempty"`
+	Rotation     Quat  `json:"rotation"`
+	LeftHand     Vec3  `json:"left_hand"`
+	RightHand    Vec3  `json:"right_hand"`
+	LeftHandRot  Quat  `json:"left_hand_rot"`
+	RightHandRot Quat  `json:"right_hand_rot"`
 
 	// Derived kinematics
 	Velocity              Vec3    `json:"velocity"`

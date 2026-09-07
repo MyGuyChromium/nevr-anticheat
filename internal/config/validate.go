@@ -199,6 +199,9 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 		if dc.EnforcementWeight < 0 || dc.EnforcementWeight > 1 {
 			add("detector.%s.enforcement_weight must be in [0, 1], got %v", id, dc.EnforcementWeight)
 		}
+		if id == "STATE_008" && (dc.Mode != "shadow" || dc.EnforcementWeight != 0 || dc.AutoEnforce) {
+			add("detector.STATE_008 is observation-only pending independent catch calibration: mode must be shadow, enforcement_weight must be 0, and auto_enforce must be false")
+		}
 		switch dc.Mode {
 		case "shadow":
 		case "review":
