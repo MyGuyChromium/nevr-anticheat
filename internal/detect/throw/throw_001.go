@@ -26,8 +26,8 @@ const (
 //
 // Release speed is the higher of the engine's last_throw.total_speed and the
 // game-reported disc velocity magnitude for local-client throws, otherwise
-// the disc magnitude alone. Neither path uses a position delta, so the
-// detector does not depend on the sampling interval.
+// the disc magnitude alone. Neither speed calculation uses a position delta;
+// sampling gaps can still obscure the true release/contact or attribution.
 type Throw001 struct {
 	detect.BaseDetector
 	baseTolerance       float64
@@ -40,7 +40,7 @@ type Throw001 struct {
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.5.0",
+			DetectorID: "THROW_001", DetectorVersion: "1.5.1",
 			DetectorName: "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
 			Weight: 0.8,
@@ -91,7 +91,11 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		effectiveCap := matchCtx.Physics.DiscSpeedCap + d.baseTolerance + pingTolerance
 		speedExcess := t.ReleaseSpeed - effectiveCap
 		playerSpeed := t.PlayerVelocity.Magnitude()
-		alignedMovementSpeed := t.PlayerVelocity.Dot(t.ReleaseVelocity) / t.ReleaseSpeed
+		// Project onto the sampled direction, not ReleaseSpeed: the latter
+		// may be a larger independent engine last_throw scalar. Mixing those
+		// measurements scales the projection incorrectly. This is context
+		// only; it is not added to or subtracted from the configured cap.
+		alignedMovementSpeed := t.PlayerVelocity.Dot(t.ReleaseVelocity.Normalized())
 		playerRelativeVelocity := t.ReleaseVelocity.Sub(t.PlayerVelocity)
 		playerRelativeSpeed := playerRelativeVelocity.Magnitude()
 		handSpeed := t.HandSpeed

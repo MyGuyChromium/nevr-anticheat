@@ -45,17 +45,29 @@ try {
 
         $revision = (& git rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
+        $sourceStatus = & git status --porcelain
+        if ($LASTEXITCODE -ne 0) { throw "git status failed" }
+        $sourceDirty = -not [string]::IsNullOrWhiteSpace(($sourceStatus -join ""))
+        # An uncommitted local candidate is not the named clean Git release.
+        # Preserve the exact SHA contract for clean packages; development
+        # packages cannot install updates or qualify as trusted calibration.
+        $embeddedCommit = if ($sourceDirty) { "development" } else { $revision }
+        if ($sourceDirty) { Write-Warning "Packaging uncommitted changes as a development candidate; source_dirty=true." }
         $buildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         foreach ($program in $programs) {
             $target = Join-Path $stage $program.Name
             $linkerFlags = "-s -w"
             if ($program.Name -eq "nevr-desktop.exe") {
-                $linkerFlags += " -X main.buildCommit=$revision -X main.buildTime=$buildTime"
+                $linkerFlags += " -X main.buildCommit=$embeddedCommit -X main.buildTime=$buildTime"
             }
-            & go build -trimpath -ldflags $linkerFlags -o $target $program.Package
+            & go build -buildvcs=true -trimpath -ldflags $linkerFlags -o $target $program.Package
             if ($LASTEXITCODE -ne 0) {
                 throw "go build failed for $($program.Package)"
             }
+        }
+        $desktopBuildInfo = & go version -m (Join-Path $stage "nevr-desktop.exe")
+        if ($LASTEXITCODE -ne 0 -or ($desktopBuildInfo -join "`n") -notmatch ("vcs\.modified=" + $sourceDirty.ToString().ToLowerInvariant())) {
+            throw "Desktop VCS metadata does not match the packaging source state; rebuild from a stable checkout."
         }
     }
     finally {
@@ -80,6 +92,17 @@ try {
     $zipPath = Join-Path $outputRoot "NEVR-Anticheat-Windows-x64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force
     Write-Host "Created $zipPath"
+    $buildIdentity = [ordered]@{
+        schema_version = "nevr-local-package/v1"
+        source_revision = $revision
+        source_dirty = $sourceDirty
+        embedded_build_commit = $embeddedCommit
+        built_at = $buildTime
+        executables = @($programs | ForEach-Object {
+            [ordered]@{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath (Join-Path $stage $_.Name) -Algorithm SHA256).Hash.ToLowerInvariant() }
+        })
+    }
+    $buildIdentity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $outputRoot "NEVR-Anticheat-Build.json") -Encoding utf8
     if ($BuildInstaller) {
         & (Join-Path $repoRoot "scripts\build-installer.ps1") -PackageZip $zipPath -OutputDirectory $outputRoot
         if ($LASTEXITCODE -ne 0) { throw "installer build failed" }

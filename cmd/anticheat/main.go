@@ -320,6 +320,52 @@ func printPlayerScores(scores map[string]model.SuspicionScore) {
 	}
 }
 
+// printReviewAssessments includes observation-only findings, which deliberately
+// do not appear in the scored-player list. It never produces cheating verdicts.
+func printReviewAssessments(events []model.DetectionEvent, runCoverage ...map[string]*model.PlayerCoverage) {
+	if len(runCoverage) > 0 {
+		missing := 0
+		for _, coverage := range runCoverage[0] {
+			if coverage == nil || coverage.Version != 1 || coverage.Status != "limited" {
+				missing++
+			}
+		}
+		if missing > 0 || len(runCoverage[0]) == 0 {
+			fmt.Printf("Coverage: insufficient data for %d player(s); zero signals cannot establish fair play.\n", missing)
+		} else {
+			fmt.Println("Coverage: partial; individual checks can still lack required inputs or opportunities. See match JSON for per-detector coverage.")
+		}
+	}
+	players := make(map[string]bool)
+	for _, event := range events {
+		if event.PlayerID != "" {
+			players[event.PlayerID] = true
+		}
+	}
+	ids := make([]string, 0, len(players))
+	for id := range players {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		fmt.Println("Automatic assessment: no detector signals on the available telemetry (not verified fair play).")
+		return
+	}
+	fmt.Println("Automatic assessment: review needed (detector findings, not cheating verdicts).")
+	for _, id := range ids {
+		assessment := model.AssessPlayerEvents(id, events)
+		fmt.Printf("  Player %s: %d signals (%d observation-only, %d scored)\n", id,
+			assessment.SignalCount, assessment.ShadowSignals, assessment.ScoredSignals)
+		for _, finding := range assessment.Detectors {
+			name := finding.DetectorID
+			if spec, ok := config.DetectorSpecFor(finding.DetectorID); ok {
+				name = spec.Name
+			}
+			fmt.Printf("    %s - %s: %d\n", finding.DetectorID, name, finding.SignalCount)
+		}
+	}
+}
+
 func runAnalyze(configPath, replayPath string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
@@ -406,6 +452,7 @@ func printAnalyzeResult(res *replay.AnalyzeResult) {
 		len(result.DetectionEvents), res.Stored.EventsStored, res.Stored.CasesStored, res.Stored.CasesClosed, result.Duration)
 	printCountMap("Invalid frames by reason", result.InvalidFrameReasons)
 	printCountMap("Sanitized frames by reason", result.SanitizedFrames)
+	printReviewAssessments(result.DetectionEvents, result.PlayerCoverage)
 	printPlayerScores(result.PlayerScores)
 }
 
@@ -1189,6 +1236,7 @@ func runReprocessMatch(configPath, matchID string) {
 	}
 	fmt.Printf("Reprocessed match %s: %d frames, %d detections, %v\n",
 		matchID, result.FramesProcessed, len(result.DetectionEvents), result.Duration)
+	printReviewAssessments(result.DetectionEvents, result.PlayerCoverage)
 	printPlayerScores(result.PlayerScores)
 }
 

@@ -148,6 +148,31 @@ func TestThrow001_EngineTotalSpeedOverridesUnderCapDiscSample(t *testing.T) {
 	}
 }
 
+func TestThrow001_MovementProjectionUsesSampledDirectionNotEngineScalar(t *testing.T) {
+	for _, movement := range []model.Vec3{{4, 0, 0}, {-4, 0, 0}, {0, 4, 0}} {
+		d := NewThrow001(nil)
+		players := withThrow("p1", 100, 18, 0)
+		th := players["p1"].LastThrow
+		th.PlayerVelocity = movement
+		th.SampledDiscSpeed = 18
+		th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 24, SpeedFromMovement: 3}
+		events := d.Evaluate(testCtx(), players, 100)
+		if len(events) != 1 {
+			t.Fatalf("engine over-cap evidence missing: %+v", events)
+		}
+		evidence := events[0].Evidence.(model.ThrowEvidence)
+		if !near(evidence.AlignedMovementSpeed, movement[0], 1e-9) {
+			t.Errorf("movement=%v: aligned projection=%v, want %v from sampled direction", movement, evidence.AlignedMovementSpeed, movement[0])
+		}
+		if evidence.ReleaseSpeed != 24 || evidence.SampledDiscSpeed != 18 || evidence.GameLastThrow.SpeedFromMovement != 3 || th.ReleaseSpeed != 18 {
+			t.Fatalf("projection changed independent measurements or input throw: %+v, %+v", evidence, th)
+		}
+		if events[0].AutoEnforce {
+			t.Fatal("evidence correction must not enable enforcement")
+		}
+	}
+}
+
 func TestThrow001_CorroboratedExtremeSpeedIsNotDowngradedToArtifact(t *testing.T) {
 	d := NewThrow001(nil)
 	players := withThrow("p1", 100, 20, 0)

@@ -110,8 +110,61 @@ func TestMigration17UpgradesExistingCalibrationData(t *testing.T) {
 	if err := store.DB().QueryRow(`SELECT calibration_fingerprint FROM analysis_runs WHERE match_id='M1'`).Scan(&fingerprint); err != nil || fingerprint != "" {
 		t.Fatalf("calibration_fingerprint = %q, %v", fingerprint, err)
 	}
-	if version, err := AppliedSchemaVersion(store.DB()); err != nil || version != 17 {
+	if version, err := AppliedSchemaVersion(store.DB()); err != nil || version != SchemaVersion() {
 		t.Fatalf("schema version = %d, %v", version, err)
+	}
+}
+
+func TestMigration18PreservesLabelsAndReservesLegacyExposure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v17-calibration.db")
+	raw, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.Version >= 18 {
+			break
+		}
+		if err := applyMigration(raw, migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := raw.Exec(`INSERT INTO match_contexts (match_id,context_json) VALUES ('LEGACY','{"match_id":"LEGACY","player_ids":["P"]}');
+		INSERT INTO calibration_opportunities (opportunity_id,match_id,player_id,detector_id,opportunity_kind,frame_start,frame_end,ground_truth,reviewer_id,comment)
+		VALUES ('OP','LEGACY','EARLIER','THROW_001','throw',10,20,'positive','Alice','preserve this note'),
+		('ARCHIVED','NOT-PRESENT','Q','THROW_001','throw',0,1,'negative','Bob','retained after replay deletion');
+		INSERT INTO event_reviews (event_id,match_id,player_id,detector_id,frame_index,verdict,reviewer_id) VALUES
+		('E1','LEGACY','REVIEWED','THROW_001',1,'yes','Alice'), ('E2','NOT-PRESENT','ARCHIVED-REVIEW','THROW_001',2,'no','Bob');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStoreAt(t, dbPath)
+	items, err := s.ListCalibrationOpportunities(t.Context(), "LEGACY", "")
+	if err != nil || len(items) != 1 || items[0].Comment != "preserve this note" || items[0].ReviewerID != "Alice" || items[0].IndependentEvidenceVerified() {
+		t.Fatalf("legacy label lost or auto-verified: %+v %v", items, err)
+	}
+	matches := []StoredMatch{splitMatch("LEGACY", "P"), splitMatch("NEW", "Q"), splitMatch("NEW-EARLIER", "EARLIER"), splitMatch("NEW-REVIEW", "REVIEWED"), splitMatch("NEW-ARCHIVED-REVIEW", "ARCHIVED-REVIEW")}
+	proposed := make(map[string]string)
+	for _, match := range matches {
+		proposed[match.Context.MatchID] = "holdout"
+	}
+	got, err := s.ReconcileCalibrationSplits(t.Context(), matches, proposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id := range proposed {
+		if got[id].Split != "training" {
+			t.Fatalf("historical exposure became held out: %+v", got)
+		}
+	}
+	if err := RunMigrations(s.DB()); err != nil {
+		t.Fatalf("second migration failed: %v", err)
 	}
 }
 

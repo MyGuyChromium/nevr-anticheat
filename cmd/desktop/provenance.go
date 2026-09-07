@@ -95,7 +95,7 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 		quality := result.Result.TelemetryQuality
 		_, err := engine.Store().StoreAnalysisRun(ctx, sqlite.AnalysisRun{
 			MatchID: result.MatchCtx.MatchID, Source: strings.TrimSpace(source), AppVersion: appVersion,
-			BuildCommit: buildCommit, ConfigFingerprint: fingerprint, CalibrationFingerprint: calibrationConfigFingerprint, ProfileName: profileName,
+			BuildCommit: analysisBuildRevision(), ConfigFingerprint: fingerprint, CalibrationFingerprint: calibrationConfigFingerprint, ProfileName: profileName,
 			TelemetryQuality: quality.Score, QualityGrade: quality.Grade, QualityGated: quality.Gated,
 			WallMilliseconds: perMatchWall, PipelineMilliseconds: result.Result.Duration.Milliseconds(),
 			FramesProcessed: result.Frames, EventsProduced: len(result.Result.DetectionEvents),

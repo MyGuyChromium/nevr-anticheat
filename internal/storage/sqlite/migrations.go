@@ -138,6 +138,8 @@ var requiredTables = []string{
 	"event_reviews", "match_labels", "analysis_snapshots", "investigation_notes",
 	"analysis_runs", "config_profiles", "saved_filters",
 	"calibration_opportunities", "detector_promotions",
+	"calibration_split_assignments",
+	"match_analysis_coverage",
 }
 
 var migrations = []MigrationVersion{
@@ -519,6 +521,51 @@ var migrations = []MigrationVersion{
 		);
 		CREATE INDEX IF NOT EXISTS idx_detector_promotions_status
 			ON detector_promotions(status, updated_at);`,
+	},
+	{
+		Version: 18, Description: "independent calibration evidence and durable dataset isolation",
+		SQL: `ALTER TABLE calibration_opportunities ADD COLUMN verifier_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE calibration_opportunities ADD COLUMN verified_ground_truth TEXT NOT NULL DEFAULT '';
+		ALTER TABLE calibration_opportunities ADD COLUMN evidence_method TEXT NOT NULL DEFAULT '';
+		ALTER TABLE calibration_opportunities ADD COLUMN evidence_reference TEXT NOT NULL DEFAULT '';
+		CREATE TABLE IF NOT EXISTS match_analysis_coverage (match_id TEXT PRIMARY KEY, coverage_json TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS calibration_split_assignments (
+			match_id TEXT PRIMARY KEY,
+			policy_version INTEGER NOT NULL,
+			group_key TEXT NOT NULL,
+			split TEXT NOT NULL CHECK (split IN ('training','validation','holdout')),
+			players_json TEXT NOT NULL,
+			exposure_fingerprint TEXT NOT NULL DEFAULT '',
+			quarantined INTEGER NOT NULL DEFAULT 0 CHECK (quarantined IN (0,1))
+		);
+		-- Previously inspected data cannot retrospectively become an unseen holdout.
+		-- No FK: deleting a replay must not erase its exposure/player history.
+		INSERT OR IGNORE INTO calibration_split_assignments
+			(match_id, policy_version, group_key, split, players_json)
+			SELECT match_id, 1, 'legacy-exposure', 'training',
+			COALESCE(json_extract(context_json, '$.player_ids'), '[]') FROM match_contexts;
+		INSERT OR IGNORE INTO calibration_split_assignments
+			(match_id, policy_version, group_key, split, players_json)
+			SELECT match_id, 1, 'legacy-review-exposure', 'training', json_group_array(DISTINCT player_id)
+			FROM event_reviews GROUP BY match_id;
+		INSERT OR IGNORE INTO calibration_split_assignments
+			(match_id, policy_version, group_key, split, players_json)
+			SELECT match_id, 1, 'legacy-window-exposure', 'training', json_group_array(DISTINCT player_id)
+			FROM calibration_opportunities GROUP BY match_id;
+		INSERT OR IGNORE INTO calibration_split_assignments
+			(match_id, policy_version, group_key, split, players_json)
+			SELECT match_id, 1, 'legacy-label-exposure', 'training', '[]' FROM match_labels;
+		-- A shortened current roster must not erase players still identified by
+		-- earlier reviews/windows, nor may one evidence source hide another.
+		UPDATE calibration_split_assignments SET players_json=(
+			SELECT json_group_array(player_id) FROM (
+				SELECT DISTINCT player_id FROM (
+					SELECT trim(value) AS player_id FROM json_each(calibration_split_assignments.players_json)
+					UNION SELECT trim(player_id) FROM event_reviews WHERE match_id=calibration_split_assignments.match_id
+					UNION SELECT trim(player_id) FROM calibration_opportunities WHERE match_id=calibration_split_assignments.match_id
+				) WHERE player_id <> '' ORDER BY player_id
+			)
+		);`,
 	},
 }
 

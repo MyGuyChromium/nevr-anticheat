@@ -249,6 +249,12 @@
   }
   .assessment-count { color: var(--muted); font: 11px/1.3 var(--mono); white-space: nowrap; }
   .assessment-players { margin-top: 8px; overflow-x: auto; }
+  .automatic-review { margin-top: 24px; padding: 20px; border: 1px solid var(--line-2); border-left: 3px solid var(--warn); background: var(--panel-solid); }
+  .automatic-review.quiet { border-left-color: var(--muted); }
+  .automatic-review h3 { margin: 0 0 8px; }
+  .review-findings { display: grid; gap: 10px; margin-top: 16px; }
+  .review-finding { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .review-reasons { display: block; max-width: 52ch; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.5; white-space: normal; }
   .det-name { display: block; color: var(--muted); font: 11px/1.3 -apple-system, "Segoe UI", sans-serif; margin-top: 2px; white-space: normal; }
   .team-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
   .team-card { border: 1px solid var(--line); border-radius: 5px; padding: 16px; min-width: 0; }
@@ -576,7 +582,7 @@
 
   <section class="block" aria-labelledby="h-flagged">
     <div class="section-kicker"><span>03</span> Human review queue</div>
-    <h2 id="h-flagged">Players needing review</h2>
+    <h2 id="h-flagged">Scored review cases</h2>
     <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-observations">
@@ -593,7 +599,7 @@
     <div class="section-kicker"><span>06</span> Detector development</div>
     <h2 id="h-lab">Regression &amp; threshold lab</h2>
     <div class="lab-grid">
-      <div class="lab-card"><h3>Reviewed replay regression</h3><p class="help">Every Correct or False positive event label becomes a permanent local expectation. Re-run it after each detector change.</p><div id="regression" class="status">Loading reviewed expectations…</div><button id="run-regression" class="btn">Run regression suite</button></div>
+      <div class="lab-card"><h3>Reviewed replay regression</h3><p class="help">Compare saved labels with stored detector output. Re-analyze recordings after a detector change; this comparison does not itself run the engine. Maintainers can use the private replay-regression tool for fresh, isolated runs.</p><div id="regression" class="status">Loading reviewed expectations…</div><button id="run-regression" class="btn">Check stored comparisons</button></div>
       <div class="lab-card"><h3>Threshold sandbox</h3><p class="help">Preview one numeric detector setting against stored telemetry. Nothing is written to the database or config.</p>
         <div class="form-row"><label class="form-field">Match<select id="lab-match"></select></label><label class="form-field">Detector<select id="lab-detector"></select></label></div>
         <div class="form-row"><label class="form-field">Parameter<select id="lab-param"></select></label><label class="form-field">Candidate value<input id="lab-value" type="number" step="any"></label><label class="check-inline"><input id="lab-enable" type="checkbox"> Enable in preview</label><button id="preview-threshold" class="btn">Preview</button></div>
@@ -610,7 +616,7 @@
       <select id="history-detector" aria-label="Filter history by detector"><option value="">All detectors</option></select>
       <select id="history-label" aria-label="Filter history by calibration label"><option value="">All replay labels</option><option value="unlabeled">Unlabeled</option><option value="known_clean">Known clean</option><option value="suspected">Suspected</option><option value="confirmed_cheat">Confirmed cheat</option></select>
       <select id="history-sort" aria-label="Sort history"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
-      <label class="check-inline"><input id="history-flagged" type="checkbox"> Flagged only</label>
+      <label class="check-inline"><input id="history-flagged" type="checkbox"> Scored cases only</label>
       <span id="history-count" class="history-count"></span>
     </div>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
@@ -773,45 +779,112 @@
     return `<button class="btn btn-sm" data-replay-match="${esc(m.match_id)}" data-replay-event="${esc(event.event_id)}">${esc(label)}</button>`;
   }
 
-  function playerSignalBadge(p, filteredCounts) {
-    const scored = filteredCounts ? filteredCounts.scored : p.detections;
-    const shadow = filteredCounts ? filteredCounts.shadow : p.shadow_detections;
-    if (scored > 0) {
-      return p.level === 'clean'
-        ? '<span class="tag warn" title="A scored signal exists but its total remains below the first suspicion threshold">below threshold</span>'
-        : badge(p.level);
+  function playerReviewAssessment(m, p, detectorID = '') {
+    if (!detectorID && p.assessment) return p.assessment;
+    // Older payloads and client-side filters use the same incident-counting
+    // contract as the backend: one event row, not its merged frame count.
+    const findings = new Map();
+    let scored = 0, shadow = 0;
+    for (const e of (m.events || [])) {
+      if (e.player_id !== p.player_id || (detectorID && e.detector_id !== detectorID)) continue;
+      const d = findings.get(e.detector_id) || { detector_id: e.detector_id, signal_count: 0, scored_signals: 0, shadow_signals: 0 };
+      d.signal_count++;
+      if (e.is_shadow) { shadow++; d.shadow_signals++; } else { scored++; d.scored_signals++; }
+      findings.set(e.detector_id, d);
     }
-    if (shadow > 0) {
-      return '<span class="tag warn" title="Detected in observation-only mode; this is evidence to review, not a cheating verdict">shadow review</span>';
+    const coverage = playerDetectorCoverage(p, detectorID);
+    return { status: scored + shadow ? 'review_needed' : coverage && coverage.status === 'limited' ? 'no_signals' : 'insufficient_data', signal_count: scored + shadow,
+      scored_signals: scored, shadow_signals: shadow,
+      detectors: [...findings.values()].sort((a, b) => b.signal_count - a.signal_count || a.detector_id.localeCompare(b.detector_id)) };
+  }
+
+  function playerDetectorCoverage(p, detectorID = '') {
+    if (!p.coverage || p.coverage.version !== 1) return null;
+    if (!detectorID) return p.coverage;
+    const d = (p.coverage.detectors || []).find((d) => d.detector_id === detectorID) || null;
+    if (d && (p.coverage.quality_gated || p.coverage.status !== 'limited')) return { ...d, status: 'insufficient_data' };
+    return d;
+  }
+
+  function coverageDetails(m, detectorID = '') {
+    const detectors = new Map();
+    let unknown = 0;
+    for (const p of (m.players || [])) {
+      if (!p.coverage || p.coverage.version !== 1) { unknown++; continue; }
+      for (const d of (p.coverage.detectors || [])) {
+        if (detectorID && d.detector_id !== detectorID) continue;
+        const a = detectors.get(d.detector_id) || { enabled: false, candidates: 0, inputs: 0, inputCheck: false, limitations: new Set() };
+        a.enabled ||= d.enabled; a.candidates += d.candidate_frames || 0; a.inputs += d.input_frames || 0; a.inputCheck ||= d.input_check;
+        (d.limitations || []).forEach((note) => a.limitations.add(note));
+        detectors.set(d.detector_id, a);
+      }
     }
-    return '<span class="tag ok">no signals</span>';
+    const rows = [...detectors.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, d]) =>
+      `<tr><td class="mono">${esc(id)}</td><td>${!d.enabled ? 'Disabled' : !d.candidates || (d.inputCheck && !d.inputs) ? 'Insufficient data / opportunities' : 'Partial coverage'}</td><td class="num">${fmtInt(d.candidates)}</td><td class="num">${d.inputCheck ? fmtInt(d.inputs) : 'Not measured'}</td><td>${[...d.limitations].map(esc).join(' ')}</td></tr>`).join('');
+    return `<details class="sub"><summary><span class="tog"></span><h3>What this replay can and cannot check</h3></summary><p class="summary-note">Candidate frames passed phase and warmup gates. Input checks are necessary conditions only, not counts of independently verified opportunities or proof that every internal detector guard passed. No detector is validated by these counts.${unknown ? ` Coverage was not recorded for ${fmtInt(unknown)} player(s); re-analyze to refresh it.` : ''}</p><div class="physics-table"><table><thead><tr><th>Detector</th><th>Coverage</th><th>Candidate frames</th><th>Input check frames</th><th>Limitations</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Coverage unknown. Re-analyze this replay.</td></tr>'}</tbody></table></div></details>`;
+  }
+
+  function reviewReasonText(m, assessment) {
+    const friendly = { THROW_001: 'throw-speed', MOV_006: 'playspace-motion', BIO_001: 'wrist-rotation' };
+    return (assessment.detectors || []).map((d) => {
+      const event = (m.events || []).find((e) => e.detector_id === d.detector_id);
+      const name = friendly[d.detector_id] || (event && event.detector_name) || d.detector_id;
+      return `${fmtInt(d.signal_count)} ${name} signal${d.signal_count === 1 ? '' : 's'}`;
+    }).join(' · ');
+  }
+
+  function playerSignalBadge(assessment) {
+    if (!assessment.signal_count && assessment.status === 'insufficient_data') return '<span class="tag warn" title="The analysis cannot support this check. No signals must not be interpreted as fair play.">insufficient data</span>';
+    return assessment.signal_count > 0
+      ? '<span class="tag warn" title="Automatic detector findings are present, including observation-only signals. Inspect the evidence; this is not a confirmed cheating verdict.">review needed</span>'
+      : '<span class="tag" title="No detector fired on the available telemetry. This is not verified fair play.">no signals</span>';
+  }
+
+  function reviewPlayers(m, detectorID = '') {
+    return (m.players || []).map((p) => ({ player: p, assessment: playerReviewAssessment(m, p, detectorID) }))
+      .filter((r) => !detectorID || r.assessment.signal_count > 0 || r.assessment.status === 'insufficient_data')
+      .sort((a, b) => Number(b.assessment.signal_count > 0) - Number(a.assessment.signal_count > 0) ||
+        (b.player.score || 0) - (a.player.score || 0) || b.assessment.signal_count - a.assessment.signal_count ||
+        (a.player.name || a.player.player_id).localeCompare(b.player.name || b.player.player_id));
+  }
+
+  function reviewOverview(m, detectorID = '') {
+    if (blindReview) return '<section class="automatic-review quiet" aria-label="Automatic replay assessment"><h3>Automatic assessment concealed</h3><p class="summary-note">Blinded review is enabled. Record your independent observations before revealing detector conclusions.</p></section>';
+    const rows = reviewPlayers(m, detectorID).filter((r) => r.assessment.signal_count > 0);
+    const count = rows.reduce((n, r) => n + r.assessment.signal_count, 0);
+    const insufficient = (m.players || []).filter((p) => playerReviewAssessment(m, p, detectorID).status === 'insufficient_data').length;
+    const title = count ? `${fmtInt(rows.length)} player${rows.length === 1 ? '' : 's'} with signals to review` : insufficient ? 'Insufficient data to assess every player' : 'No detector signals found';
+    return `<section class="automatic-review${count ? '' : ' quiet'}" aria-label="Automatic replay assessment">
+      <h3>${title}</h3><p class="summary-note">${detectorID ? `Filtered to ${esc(detectorID)}. ` : ''}${count ? `${fmtInt(count)} automatic signal${count === 1 ? '' : 's'}. ` : ''}Findings include observation-only (shadow) detectors, even when the scoring total is zero. This is a review aid, not a cheating verdict or proof of fair play.</p>
+      ${insufficient ? `<p class="summary-note">${fmtInt(insufficient)} player(s) have insufficient data for this assessment. Existing findings remain visible.</p>` : ''}
+      ${rows.length ? `<div class="review-findings">${rows.map(({player: p, assessment: a}) => `<div class="review-finding"><div>${who(p.name, p.player_id)}<span class="review-reasons">${esc(reviewReasonText(m, a))}</span></div><span class="action-stack">${playerSignalBadge(a)}${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Review in Spark')}</span></div>`).join('')}</div>` : ''}
+      ${coverageDetails(m, detectorID)}
+    </section>`;
   }
 
   function playersTable(m, detectorID = '') {
     if (!m.players.length) return '<p class="empty">The replay carried no players on the blue or orange team.</p>';
+    if (blindReview) return '<p class="summary-note">Player signal statuses, scores and ranking are concealed during blinded review.</p><table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th></tr></thead><tbody>' +
+      m.players.map((p) => `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${fmtInt(p.frames)}</td></tr>`).join('') + '</tbody></table>';
     const cap = Math.max((m.levels && m.levels.action_worthy) || 0, ...m.players.map((p) => p.score || 0), 1);
-    const scoped = detectorID ? (m.events || []).filter((e) => e.detector_id === detectorID) : [];
-    const counts = new Map();
-    for (const e of scoped) {
-      const c = counts.get(e.player_id) || { scored: 0, shadow: 0 };
-      e.is_shadow ? c.shadow++ : c.scored++;
-      counts.set(e.player_id, c);
-    }
-    const rows = m.players.slice().filter((p) => !detectorID || counts.has(p.player_id)).sort((a, b) => (b.score || 0) - (a.score || 0));
+    const rows = reviewPlayers(m, detectorID);
     if (!rows.length) return `<p class="empty">No player triggered ${esc(detectorID)} in this match.</p>`;
-    return `<table><thead><tr><th>Player</th><th>Team</th><th class="num">Frames</th><th class="num" title="Scores always remain full-match totals">Score${detectorID ? ' (overall)' : ''}</th><th>Signal status</th>
-      <th class="num">Detections</th><th class="num">Shadow</th><th>Top detectors</th><th>Evidence</th></tr></thead><tbody>` +
-      rows.map((p) => { const c = counts.get(p.player_id); return `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td class="num">${fmtInt(p.frames)}</td>
-        <td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td><td>${playerSignalBadge(p, c)}</td>
-        <td class="num">${fmtInt(c ? c.scored : p.detections)}</td><td class="num dim">${fmtInt(c ? c.shadow : p.shadow_detections)}</td>
-        <td>${detectorID ? `${esc(detectorID)} (${fmtInt(c.scored + c.shadow)})` : (p.top_detectors.length ? esc(p.top_detectors.join(', ')) : '<span class="muted">—</span>')}</td>
-        <td><span class="action-stack">${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}<button class="btn btn-sm" data-player-history="${esc(p.player_id)}">Player history</button></span></td></tr>`; }).join('') + '</tbody></table>' +
-      '<p class="summary-note"><b>No signals</b> means no detector fired. <b>Shadow review</b> means a detector observed something but deliberately added zero score. Neither status is a verified cheating verdict.</p>' +
-      (detectorID ? '<p class="summary-note">Detection counts and evidence follow this filter. Suspicion scores remain full-match totals.</p>' : '');
+    return `<table><thead><tr><th>Player</th><th>Team</th><th>Automatic assessment</th><th>Why review?</th><th class="num">Signals</th><th>Evidence</th><th class="num">Frames</th>
+      <th class="num" title="Scoring totals exclude shadow signals and are not a verdict">Scoring total${detectorID ? ' (overall)' : ''}</th></tr></thead><tbody>` +
+      rows.map(({player: p, assessment: a}) => `<tr><td>${who(p.name, p.player_id)}</td><td>${team(p.team)}</td><td>${playerSignalBadge(a)}</td>
+        <td><span class="review-reasons">${a.signal_count ? esc(reviewReasonText(m, a)) : a.status === 'insufficient_data' ? 'Missing coverage, insufficient inputs, disabled check or incomplete warmup. See replay coverage.' : 'No detector fired on the available telemetry; coverage remains partial.'}</span></td>
+        <td class="num">${fmtInt(a.signal_count)}<span class="det-name">${fmtInt(a.shadow_signals)} observation-only</span></td>
+        <td><span class="action-stack">${replayButton(m, strongestPlayerEvent(m, p.player_id, detectorID), 'Open strongest clip')}<button class="btn btn-sm" data-player-history="${esc(p.player_id)}">Player history</button></span></td>
+        <td class="num">${fmtInt(p.frames)}</td><td class="num"><span class="val">${fmtNum(p.score)}</span>${bar(p.score, cap, lvlTone(p.level))}</td></tr>`).join('') + '</tbody></table>' +
+      '<p class="summary-note"><b>Review needed</b> means a detector fired, including shadow review signals that add zero score. <b>No signals</b> means no detector fired on partially observable telemetry. Neither status is a verified cheating verdict. <b>Insufficient data</b> means this check cannot be supported. Counts are incidents, not independent confirmed cheats; reviewing an incident does not erase its signal.</p>' +
+      (detectorID ? '<p class="summary-note">Signal counts, findings and evidence follow this filter. Scoring totals remain full-match totals.</p>' : '');
   }
 
   function assessmentFilter(m, idx) {
     const counts = new Map();
+    for (const p of (m.players || [])) for (const d of (p.coverage?.detectors || [])) {
+      if (!counts.has(d.detector_id)) counts.set(d.detector_id, { name: d.enabled ? 'coverage available' : 'disabled', count: 0 });
+    }
     for (const e of (m.events || [])) {
       const item = counts.get(e.detector_id) || { name: e.detector_name || e.detector_id, count: 0 };
       item.count++;
@@ -1014,6 +1087,7 @@
         ${score}
       </summary>
       ${notices}
+      <div data-review-overview="${idx}">${reviewOverview(m)}</div>
       ${calibrationControls(m)}
       ${matchReport(m)}
       <section class="assessment" data-assessment="${idx}">
@@ -1206,7 +1280,7 @@
       const f = await getJSON('api/flagged');
       el.className = ''; el.removeAttribute('aria-busy');
       if (!f.single_match.length && !f.cross_match.length) {
-        el.innerHTML = '<p class="empty">No player currently needs review. A case appears here when scored signals reach the review threshold in one match or accumulate across several. A case is not a cheating verdict.</p>';
+        el.innerHTML = '<p class="empty">No scored review cases. Observation-only findings do not create scored cases: open a match from History to see its automatic assessment and replay evidence. A case appears here when scored signals reach the review threshold; it is not a cheating verdict.</p>';
         return;
       }
       let html = '';
@@ -1274,10 +1348,13 @@
     const detectorOptions = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
     const rows = (data.opportunities || []).map((o) => `<tr><td class="mono">${esc(o.detector_id)}</td><td>${who((view.players||[]).find(p=>p.player_id===o.player_id)?.name,o.player_id)}</td><td><span class="tag ${o.ground_truth==='positive'?'bad':o.ground_truth==='negative'?'ok':'warn'}">${esc(o.ground_truth)}</span></td><td>${esc(o.opportunity_kind)}</td><td class="num">${fmtInt(o.frame_start)}–${fmtInt(o.frame_end)}</td><td>${esc(o.behavior_type || '—')}<span class="explain">${esc(o.comment || '')}${o.blind_review ? ' · blind review' : ''}</span></td><td><button class="btn btn-sm" data-delete-opportunity="${esc(o.opportunity_id)}" data-opportunity-owner="${esc(matchID)}">Delete</button></td></tr>`).join('');
     openLabDialog('Ground-truth opportunities', `<p class="notice">Annotate the exact player and frame window where a detector should—or should not—fire. A positive window with no matching signal becomes a false negative.</p>
-      <div class="form-row"><label class="form-field">Player<select id="opportunity-player">${playerOptions}</select></label><label class="form-field">Detector<select id="opportunity-detector">${detectorOptions}</select></label><label class="form-field">Truth<select id="opportunity-truth"><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option><option value="uncertain">Uncertain / exclude</option></select></label></div>
-      <div class="form-row"><label class="form-field">Opportunity type<select id="opportunity-kind"><option value="throw">Throw</option><option value="movement_window">Movement window</option><option value="state_transition">State transition</option><option value="match">Whole match</option><option value="player_history">Player history</option><option value="custom">Custom</option></select></label><label class="form-field">Start frame<input id="opportunity-start" type="number" min="0" step="1" value="0"></label><label class="form-field">End frame<input id="opportunity-end" type="number" min="0" step="1" value="${Math.max(0,Number(view.frames_processed||0)-1)}"></label></div>
+      <div class="form-row"><label class="form-field">Player<select id="opportunity-player">${playerOptions}</select></label><label class="form-field">Detector<select id="opportunity-detector">${detectorOptions}</select></label><label class="form-field">Truth<select id="opportunity-truth"><option value="uncertain">Uncertain / exclude</option><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option></select></label></div>
+      <div class="form-row"><label class="form-field">Opportunity type<select id="opportunity-kind"><option value="throw">Throw</option><option value="movement_window">Movement window</option><option value="state_transition">State transition</option><option value="match">Whole match</option><option value="player_history">Player history</option><option value="custom">Custom</option></select></label><label class="form-field">Start frame<input id="opportunity-start" type="number" min="0" step="1" placeholder="Exact start frame"></label><label class="form-field">End frame<input id="opportunity-end" type="number" min="0" step="1" placeholder="Exact end frame"></label></div>
       <div class="form-row"><label class="form-field">Behavior type<input id="opportunity-behavior" maxlength="120" placeholder="e.g. verified over-cap release"></label><label class="form-field path">Review note<input id="opportunity-comment" maxlength="4000" placeholder="What did the reviewer verify in Spark?"></label></div>
-      <div class="form-row"><label class="check-inline"><input id="opportunity-blind" type="checkbox" ${blindReview?'checked':''}> Reviewed before detector conclusion was revealed</label><button class="btn" data-save-opportunity="${esc(matchID)}">Save ground truth</button></div>
+      <p class="summary-note">A detector's own output or a reported admission is not independent confirmation of this window. Save uncertain examples freely; promotion requires two distinct reviewers and a specific independent evidence artifact. Reviewer names are attestations, not authenticated identities.</p>
+      <div class="form-row"><label class="form-field">First reviewer ID<input id="opportunity-reviewer" maxlength="120" placeholder="Reviewer identity"></label><label class="form-field">Second reviewer ID<input id="opportunity-verifier" maxlength="120" placeholder="Independent reviewer identity"></label><label class="form-field">Second review result<select id="opportunity-verified-truth"><option value="">Not reviewed</option><option value="uncertain">Uncertain</option><option value="positive">Cheat behavior present</option><option value="negative">Legitimate opportunity</option></select></label></div>
+      <div class="form-row"><label class="form-field">Independent evidence method<select id="opportunity-evidence-method"><option value="">Not supplied</option><option value="controlled_reproduction">Controlled reproduction</option><option value="synchronized_video">Synchronized video</option><option value="authoritative_telemetry">Authoritative telemetry</option></select></label><label class="form-field path">Evidence artifact / exact clip reference<input id="opportunity-evidence-reference" maxlength="2000" placeholder="Private artifact ID and time range; no passwords or access tokens"></label></div>
+      <div class="form-row"><label class="check-inline"><input id="opportunity-blind" type="checkbox"> I attest the first review was completed before seeing detector conclusions</label><button class="btn" data-save-opportunity="${esc(matchID)}">Save ground truth</button></div>
       <h3>Saved opportunities<span class="count">${fmtInt((data.opportunities||[]).length)}</span></h3><div class="physics-table"><table><thead><tr><th>Detector</th><th>Player</th><th>Truth</th><th>Type</th><th>Frames</th><th>Evidence</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No ground-truth windows yet.</td></tr>'}</tbody></table></div>`);
   }
 
@@ -1298,7 +1375,7 @@
     const q = d.quality || {}, progress = d.review_progress || {};
     activePlaylist = d.playlist || []; activePlaylistIndex = -1; activeInvestigationMatch = d.match.match_id;
     const incidents = (d.incidents || []).map((x) => `<tr><td class="mono">${esc(x.id)}</td><td>${who(x.player_name,x.player_id)}</td><td class="num">${fmtInt(x.start_frame)}–${fmtInt(x.end_frame)}</td><td><span class="tag ${x.agreement > 1 ? 'warn' : ''}">${fmtInt(x.agreement)} detector${x.agreement === 1 ? '' : 's'}</span></td><td class="mono">${esc((x.detectors||[]).join(', '))}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-event="${esc((x.event_ids||[])[0])}">Open incident</button></td></tr>`).join('');
-    const throws = (d.throws || []).map((t) => `<tr class="${t.certain_breach ? 'cap-breach-row' : ''}"><td class="mono">${esc(t.clock || fmtClock(t.time))}</td><td>${who(t.player,t.player_id)}</td><td class="num">${fmtNum(t.speed,2)} ± ${fmtNum(t.uncertainty,2)}</td><td>${t.certain_breach ? '<span class="tag bad">certainly over cap</span>' : t.near_boundary ? '<span class="tag warn">boundary</span>' : '<span class="tag ok">within envelope</span>'}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(t.frame_index)}">Open throw</button></td></tr>`).join('');
+    const throws = (d.throws || []).map((t) => `<tr class="${t.sample_above_guide ? 'cap-breach-row' : ''}"><td class="mono">${esc(t.clock || fmtClock(t.time))}</td><td>${who(t.player,t.player_id)}</td><td class="num">${fmtNum(t.speed,2)} m/s<span class="det-name">heuristic margin ${fmtNum(t.uncertainty,2)} m/s (not validated)</span></td><td>${t.sample_above_guide ? '<span class="tag warn">sample above guide</span>' : t.near_boundary ? '<span class="tag warn">near guide boundary</span>' : '<span class="tag">sample below guide</span>'}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(t.frame_index)}">Open throw</button></td></tr>`).join('');
     const playlist = activePlaylist.map((x,i) => `<tr data-playlist-row="${i}"><td class="num">${i+1}</td><td>${esc(x.kind)}</td><td>${who(x.player_name,x.player_id)}</td><td class="mono">${esc(x.label)}</td><td class="num">${fmtInt(x.frame)}</td><td><button class="btn btn-sm" data-playlist-index="${i}" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(x.frame)}">Open</button></td></tr>`).join('');
     const notes = (d.notes || []).map((n) => `<li><span class="tag">${esc(n.kind)}</span> ${n.frame_index >= 0 ? `frame ${fmtInt(n.frame_index)} · ` : ''}${esc(n.body || 'Bookmark')} <button class="btn btn-text btn-sm" data-delete-note="${esc(n.note_id)}">Delete</button></li>`).join('') || '<li class="muted">No investigator notes yet.</li>';
     const contexts = Object.entries(d.legal_context_counts || {}).sort((a,b)=>b[1]-a[1]).map(([name,n])=>`<span class="tag">${esc(name || 'unclassified')} ${fmtInt(n)}</span>`).join(' ');
@@ -1351,7 +1428,7 @@
       if ($('compare-b') && players.length>1) $('compare-b').selectedIndex=1;
       if (!prefs.v05SetupSeen) {
         prefs.v05SetupSeen = true; savePrefs();
-        openLabDialog('Welcome to NEVR v0.8', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Nothing in this app automatically punishes a player. Build labeled evidence before trusting a detector.</p>`);
+        openLabDialog('Welcome to NEVR', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Drop a replay to see automatic findings and review clips. Nothing in this app automatically punishes a player; detector accuracy still requires independent validation.</p>`);
       }
     } catch(e){ panelError(el,'the investigation studio',e); }
   }
@@ -1550,7 +1627,12 @@
       if (!blindReview) revealedEvents.clear();
       document.querySelectorAll('[data-assessment]').forEach((root) => {
         const idx=+root.dataset.assessment, m=views[idx], state=viewState[idx];
-        if (m && state) root.querySelector('.events').innerHTML=eventsTable(m,idx,state.all,state.detector);
+        if (m && state) {
+          root.querySelector('.events').innerHTML=eventsTable(m,idx,state.all,state.detector);
+          root.querySelector('[data-assessment-players]').innerHTML=playersTable(m,state.detector);
+          const overview=document.querySelector(`[data-review-overview="${idx}"]`);
+          if(overview) overview.innerHTML=reviewOverview(m,state.detector);
+        }
       });
       setStatus(blindReview ? 'Blinded review enabled. Detector conclusions are concealed until revealed.' : 'Blinded review disabled.','ok');
       return;
@@ -1567,6 +1649,8 @@
     root.querySelector('[data-assessment-count]').textContent = `${fmtInt(filtered.length)} of ${fmtInt(m.events.length)} shown`;
     root.querySelector('[data-detection-count]').textContent = fmtInt(filtered.length);
     root.querySelector('[data-assessment-players]').innerHTML = playersTable(m, state.detector);
+    const overview = document.querySelector(`[data-review-overview="${idx}"]`);
+    if (overview) overview.innerHTML = reviewOverview(m, state.detector);
     root.querySelector('.events').innerHTML = eventsTable(m, idx, false, state.detector);
   });
 
@@ -1581,11 +1665,12 @@
     }
     const saveOpportunity = e.target.closest('button[data-save-opportunity]');
     if (saveOpportunity) {
+      if (!$('opportunity-start').value.trim() || !$('opportunity-end').value.trim()) { setStatus('Choose an exact start and end frame for this opportunity.','err'); return; }
       const start=Number($('opportunity-start').value), end=Number($('opportunity-end').value);
       if (!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<start) { setStatus('Ground-truth frames must be ordered whole numbers.','err'); return; }
       saveOpportunity.disabled=true;
       try {
-        await postJSON('api/calibration/opportunities',{match_id:saveOpportunity.dataset.saveOpportunity,player_id:$('opportunity-player').value,detector_id:$('opportunity-detector').value,ground_truth:$('opportunity-truth').value,opportunity_kind:$('opportunity-kind').value,frame_start:start,frame_end:end,timestamp_start:0,timestamp_end:0,behavior_type:$('opportunity-behavior').value,comment:$('opportunity-comment').value,blind_review:$('opportunity-blind').checked});
+        await postJSON('api/calibration/opportunities',{match_id:saveOpportunity.dataset.saveOpportunity,player_id:$('opportunity-player').value,detector_id:$('opportunity-detector').value,ground_truth:$('opportunity-truth').value,opportunity_kind:$('opportunity-kind').value,frame_start:start,frame_end:end,timestamp_start:0,timestamp_end:0,behavior_type:$('opportunity-behavior').value,comment:$('opportunity-comment').value,blind_review:$('opportunity-blind').checked,reviewer_id:$('opportunity-reviewer').value,verifier_id:$('opportunity-verifier').value,verified_ground_truth:$('opportunity-verified-truth').value,evidence_method:$('opportunity-evidence-method').value,evidence_reference:$('opportunity-evidence-reference').value});
         await openOpportunityEditor(saveOpportunity.dataset.saveOpportunity); setStatus('Ground-truth opportunity saved.','ok'); loadCalibration(); loadStudio();
       } catch(err) { setStatus(`Could not save ground truth: ${err.message}`,'err'); }
       finally { saveOpportunity.disabled=false; }

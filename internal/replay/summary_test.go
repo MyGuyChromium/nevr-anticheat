@@ -117,3 +117,61 @@ func TestSummaryBuilderPreservesZeroZeroScore(t *testing.T) {
 		t.Fatalf("0-0 score lost: %+v", s)
 	}
 }
+
+func TestSummaryReviewAssessmentIncludesShadowAndRefreshes(t *testing.T) {
+	const playerID = "arbitrary-player"
+	summary := &MatchSummary{Players: []*PlayerSummary{
+		{PlayerID: playerID, Name: "Player One"},
+		{PlayerID: "other-player", Name: "Player Two"},
+	}}
+	events := make([]model.DetectionEvent, 5)
+	for i := range events {
+		events[i] = model.DetectionEvent{PlayerID: playerID, DetectorID: "THROW_001", IsShadow: true}
+	}
+	summary.ApplySuspicion(nil, nil, events, model.DefaultLevelTable())
+	want := model.AssessPlayerEvents(playerID, events)
+	got := summary.Players[0].Suspicion
+	if got.Score != 0 || got.Level != "clean" || got.Detections != 0 || got.ShadowDetections != 5 ||
+		got.Assessment.Status != model.ReviewStatusReviewNeeded || got.Assessment.SignalCount != 5 || got.Assessment.ShadowSignals != 5 {
+		t.Fatalf("shadow-only assessment changed scoring or hid findings: %+v", got)
+	}
+	if got.Assessment.Detectors[0] != want.Detectors[0] {
+		t.Fatalf("summary detector counts = %+v, want %+v", got.Assessment.Detectors, want.Detectors)
+	}
+	if other := summary.Players[1].Suspicion; other.Assessment.Status != model.ReviewStatusNoSignals || other.Assessment.SignalCount != 0 {
+		t.Fatalf("another player's findings leaked: %+v", other)
+	}
+	if len(summary.FlaggedPlayers()) != 0 || summary.TotalDetections() != 0 {
+		t.Fatal("review assessment must not promote shadow observations into scored cases")
+	}
+	rows, err := csv.NewReader(strings.NewReader(string(summary.PlayersCSV()))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows[0]) != 32 || rows[0][25] != "suspicion_score" || rows[0][30] != "review_status" || rows[0][31] != "review_signals" ||
+		rows[1][25] != "0.00" || rows[1][26] != "clean" || rows[1][30] != "review_needed" || rows[1][31] != "5" ||
+		rows[2][30] != "no_signals" || rows[2][31] != "0" {
+		t.Fatalf("CSV must append assessment while preserving existing columns: %+v", rows)
+	}
+
+	// Re-analysis and loading a cached summary must replace, not accumulate,
+	// the projection after old observations have been removed.
+	summary.ApplySuspicion(nil, nil, nil, model.DefaultLevelTable())
+	if got = summary.Players[0].Suspicion; got.Assessment.Status != model.ReviewStatusNoSignals ||
+		got.Assessment.SignalCount != 0 || len(got.Assessment.Detectors) != 0 || got.ShadowDetections != 0 {
+		t.Fatalf("removed events left a stale assessment: %+v", got)
+	}
+}
+
+func TestSummaryReviewAssessmentIncludesEventOnlyPlayer(t *testing.T) {
+	summary := &MatchSummary{}
+	summary.ApplySuspicion(&model.MatchContext{
+		PlayerNames:     map[string]string{"event-only": "Event Only"},
+		TeamAssignments: map[string]string{"event-only": "orange"},
+	}, nil, []model.DetectionEvent{{PlayerID: "event-only", DetectorID: "NEW_DETECTOR", IsShadow: true}}, model.DefaultLevelTable())
+	if len(summary.Players) != 1 || summary.Players[0].Name != "Event Only" ||
+		summary.Players[0].Suspicion.Assessment.Status != model.ReviewStatusReviewNeeded ||
+		summary.Players[0].Suspicion.Assessment.Detectors[0].DetectorID != "NEW_DETECTOR" {
+		t.Fatalf("event-only player assessment: %+v", summary.Players)
+	}
+}

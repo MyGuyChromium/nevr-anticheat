@@ -155,21 +155,24 @@ type PlayerSummary struct {
 	PingAvg   float64 `json:"ping_avg"`
 	PingMax   int     `json:"ping_max"`
 	// Stats are taken from the last snapshot the player appeared in.
-	Stats     PlayerStats      `json:"stats"`
-	Throws    ThrowStats       `json:"throws"`
-	Suspicion *PlayerSuspicion `json:"suspicion,omitempty"`
+	Stats     PlayerStats           `json:"stats"`
+	Throws    ThrowStats            `json:"throws"`
+	Suspicion *PlayerSuspicion      `json:"suspicion,omitempty"`
+	Coverage  *model.PlayerCoverage `json:"coverage,omitempty"`
 
 	pingSum float64
 	pingN   int
 }
 
-// PlayerSuspicion is the anticheat verdict of one player in the match.
+// PlayerSuspicion keeps scoring separate from a player's review findings.
+// Neither the scoring level nor the assessment is a verified cheating verdict.
 type PlayerSuspicion struct {
-	Score            float64  `json:"score"`
-	Level            string   `json:"level"`
-	Detections       int      `json:"detections"`
-	ShadowDetections int      `json:"shadow_detections"`
-	TopDetectors     []string `json:"top_detectors"`
+	Score            float64                `json:"score"`
+	Level            string                 `json:"level"`
+	Detections       int                    `json:"detections"`
+	ShadowDetections int                    `json:"shadow_detections"`
+	TopDetectors     []string               `json:"top_detectors"`
+	Assessment       model.ReviewAssessment `json:"assessment"`
 }
 
 // GoalEvent is one goal of the scoring timeline: when the team score
@@ -551,8 +554,8 @@ func (b *SummaryBuilder) Finish() *MatchSummary {
 	return s
 }
 
-// ApplySuspicion attaches the anticheat verdicts: per player the match
-// score and level, the counts of real and shadow detections and the three
+// ApplySuspicion attaches per-player scoring and review findings: the match
+// score and scoring level, scored and shadow detection counts, and the three
 // detectors that fired most. A player only known from the detections is
 // added to the roster with the context's team.
 func (s *MatchSummary) ApplySuspicion(mc *model.MatchContext, scores map[string]model.SuspicionScore, events []model.DetectionEvent, levels model.LevelTable) {
@@ -608,6 +611,7 @@ func (s *MatchSummary) ApplySuspicion(mc *model.MatchContext, scores map[string]
 	for _, p := range s.Players {
 		su := p.Suspicion
 		su.Level = string(levels.LevelFor(su.Score))
+		su.Assessment = model.AssessPlayerEvents(p.PlayerID, events)
 		var counts []detCount
 		for id, n := range perDetector[p.PlayerID] {
 			counts = append(counts, detCount{id, n})
@@ -666,6 +670,7 @@ var csvColumns = []string{
 	"points", "goals", "assists", "saves", "steals", "stuns", "passes", "catches", "blocks", "interceptions",
 	"possession_time_s", "shots_taken", "throws", "throw_mean_speed_mps", "throw_max_speed_mps", "throw_goals",
 	"suspicion_score", "suspicion_level", "detections", "shadow_detections", "top_detectors",
+	"review_status", "review_signals",
 }
 
 // PlayersCSV renders the roster as CSV (UTF-8, CRLF, header row), one row
@@ -679,7 +684,7 @@ func (s *MatchSummary) PlayersCSV() []byte {
 	for _, p := range s.Players {
 		su := p.Suspicion
 		if su == nil {
-			su = &PlayerSuspicion{}
+			su = &PlayerSuspicion{Assessment: model.AssessPlayerEvents(p.PlayerID, nil)}
 		}
 		st := p.Stats
 		_ = w.Write([]string{
@@ -690,6 +695,7 @@ func (s *MatchSummary) PlayersCSV() []byte {
 			f(st.PossessionTime, 2), strconv.Itoa(st.ShotsTaken),
 			strconv.Itoa(p.Throws.Count), f(p.Throws.MeanSpeed, 2), f(p.Throws.MaxSpeed, 2), strconv.Itoa(p.Throws.Goals),
 			f(su.Score, 2), su.Level, strconv.Itoa(su.Detections), strconv.Itoa(su.ShadowDetections), strings.Join(su.TopDetectors, "; "),
+			su.Assessment.Status, strconv.Itoa(su.Assessment.SignalCount),
 		})
 	}
 	w.Flush()
@@ -776,10 +782,26 @@ func (e *Engine) LoadMatchSummary(ctx context.Context, mc *model.MatchContext, s
 		rebuilt = true
 	}
 	s.ApplySuspicion(mc, scores, events, e.Levels())
+	coverage, err := e.store.GetMatchAnalysisCoverage(ctx, mc.MatchID)
+	if err != nil {
+		return nil, err
+	}
+	s.ApplyCoverage(coverage, events)
 	if rebuilt {
 		if doc, err := json.Marshal(s); err == nil {
 			_ = e.store.StoreMatchSummaryJSON(ctx, s.Meta(), doc) // a cache miss next time is harmless
 		}
 	}
 	return s, nil
+}
+
+// ApplyCoverage projects the persisted run's observability without changing
+// its scores or treating absence of detector events as verified fair play.
+func (s *MatchSummary) ApplyCoverage(coverage map[string]*model.PlayerCoverage, events []model.DetectionEvent) {
+	for _, player := range s.Players {
+		player.Coverage = coverage[player.PlayerID]
+		if player.Suspicion != nil {
+			player.Suspicion.Assessment = model.AssessPlayerWithCoverage(player.PlayerID, events, player.Coverage)
+		}
+	}
 }

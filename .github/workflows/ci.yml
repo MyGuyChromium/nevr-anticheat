@@ -25,6 +25,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Desktop assessment rendering regression tests
+        run: node --test scripts/desktop-review.test.cjs
+
       - name: Static analysis
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 

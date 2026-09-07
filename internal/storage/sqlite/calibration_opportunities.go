@@ -34,21 +34,45 @@ const (
 // nothing, allowing calibration to measure false negatives and true
 // negatives. It is evidence metadata only and never affects a player score.
 type CalibrationOpportunity struct {
-	OpportunityID  string    `json:"opportunity_id"`
-	MatchID        string    `json:"match_id"`
-	PlayerID       string    `json:"player_id"`
-	DetectorID     string    `json:"detector_id"`
-	BehaviorType   string    `json:"behavior_type"`
-	Kind           string    `json:"opportunity_kind"`
-	FrameStart     int       `json:"frame_start"`
-	FrameEnd       int       `json:"frame_end"`
-	TimestampStart float64   `json:"timestamp_start"`
-	TimestampEnd   float64   `json:"timestamp_end"`
-	GroundTruth    string    `json:"ground_truth"`
-	Comment        string    `json:"comment"`
-	ReviewerID     string    `json:"reviewer_id"`
-	BlindReview    bool      `json:"blind_review"`
-	ReviewedAt     time.Time `json:"reviewed_at"`
+	OpportunityID       string    `json:"opportunity_id"`
+	MatchID             string    `json:"match_id"`
+	PlayerID            string    `json:"player_id"`
+	DetectorID          string    `json:"detector_id"`
+	BehaviorType        string    `json:"behavior_type"`
+	Kind                string    `json:"opportunity_kind"`
+	FrameStart          int       `json:"frame_start"`
+	FrameEnd            int       `json:"frame_end"`
+	TimestampStart      float64   `json:"timestamp_start"`
+	TimestampEnd        float64   `json:"timestamp_end"`
+	GroundTruth         string    `json:"ground_truth"`
+	Comment             string    `json:"comment"`
+	ReviewerID          string    `json:"reviewer_id"`
+	BlindReview         bool      `json:"blind_review"`
+	ReviewedAt          time.Time `json:"reviewed_at"`
+	VerifierID          string    `json:"verifier_id"`
+	VerifiedGroundTruth string    `json:"verified_ground_truth"`
+	EvidenceMethod      string    `json:"evidence_method"`
+	EvidenceReference   string    `json:"evidence_reference"`
+}
+
+// IndependentEvidenceVerified describes a recorded human attestation, not an
+// authenticated identity or machine verification of the referenced artifact.
+// A player-level allegation/admission or a detector's own output is insufficient.
+func (in CalibrationOpportunity) IndependentEvidenceVerified() bool {
+	return (in.GroundTruth == GroundTruthPositive || in.GroundTruth == GroundTruthNegative) &&
+		in.BlindReview && in.ReviewerID != "" && !strings.EqualFold(in.ReviewerID, "local-owner") &&
+		in.VerifierID != "" && !strings.EqualFold(in.VerifierID, "local-owner") &&
+		!strings.EqualFold(in.ReviewerID, in.VerifierID) && in.VerifiedGroundTruth == in.GroundTruth &&
+		validIndependentEvidenceMethod(in.EvidenceMethod) && strings.TrimSpace(in.EvidenceReference) != ""
+}
+
+func validIndependentEvidenceMethod(method string) bool {
+	switch method {
+	case "controlled_reproduction", "synchronized_video", "authoritative_telemetry":
+		return true
+	default:
+		return false
+	}
 }
 
 func validOpportunityKind(kind string) bool {
@@ -80,6 +104,19 @@ func normalizeOpportunity(in CalibrationOpportunity) (CalibrationOpportunity, er
 	in.GroundTruth = strings.ToLower(strings.TrimSpace(in.GroundTruth))
 	in.Comment = strings.TrimSpace(in.Comment)
 	in.ReviewerID = strings.TrimSpace(in.ReviewerID)
+	in.VerifierID = strings.TrimSpace(in.VerifierID)
+	in.VerifiedGroundTruth = strings.ToLower(strings.TrimSpace(in.VerifiedGroundTruth))
+	in.EvidenceMethod = strings.ToLower(strings.TrimSpace(in.EvidenceMethod))
+	in.EvidenceReference = strings.TrimSpace(in.EvidenceReference)
+	if len(in.ReviewerID) > 120 || len(in.VerifierID) > 120 || len(in.EvidenceReference) > 2000 {
+		return in, errors.New("reviewer identity or evidence reference is too long")
+	}
+	if in.EvidenceMethod != "" && !validIndependentEvidenceMethod(in.EvidenceMethod) {
+		return in, errors.New("evidence_method must be controlled_reproduction, synchronized_video, or authoritative_telemetry")
+	}
+	if in.VerifiedGroundTruth != "" && !validGroundTruth(in.VerifiedGroundTruth) {
+		return in, errors.New("invalid verified_ground_truth")
+	}
 	if in.OpportunityID == "" {
 		in.OpportunityID = uuid.NewString()
 	}
@@ -135,7 +172,29 @@ func (s *Store) StoreCalibrationOpportunity(ctx context.Context, in CalibrationO
 	if playerExists == 0 {
 		return in, fmt.Errorf("player %s is not stored in match %s", in.PlayerID, in.MatchID)
 	}
+	if available, err := s.CalibrationWindowHasSamples(ctx, in.MatchID, in.PlayerID, in.FrameStart, in.FrameEnd); err != nil {
+		return in, err
+	} else if !available {
+		return in, errors.New("the selected player has no stored telemetry in this frame window")
+	}
 	return s.upsertCalibrationOpportunity(ctx, in)
+}
+
+// CalibrationWindowHasSamples checks observability, not telemetry sufficiency:
+// a window without any player samples cannot be a measured miss or true negative.
+// Imported/legacy annotations remain durable even when their window is absent.
+func (s *Store) CalibrationWindowHasSamples(ctx context.Context, matchID, playerID string, start, end int) (bool, error) {
+	if start < 0 || end < start {
+		return false, errors.New("frame range must be non-negative and ordered")
+	}
+	var available bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM telemetry_frames
+		WHERE match_id = ? AND player_id = ? AND frame_index BETWEEN ? AND ?)`,
+		matchID, playerID, start, end).Scan(&available)
+	if err != nil {
+		return false, fmt.Errorf("checking calibration window telemetry: %w", err)
+	}
+	return available, nil
 }
 
 // ImportCalibrationOpportunity restores portable evidence before or after its
@@ -144,6 +203,9 @@ func (s *Store) StoreCalibrationOpportunity(ctx context.Context, in CalibrationO
 func (s *Store) ImportCalibrationOpportunity(ctx context.Context, in CalibrationOpportunity) error {
 	in, err := normalizeOpportunity(in)
 	if err != nil {
+		return err
+	}
+	if err := s.RecordCalibrationExposure(ctx, in.MatchID, in.PlayerID); err != nil {
 		return err
 	}
 	_, err = s.upsertCalibrationOpportunity(ctx, in)
@@ -173,8 +235,8 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 	_, err = tx.ExecContext(ctx, `INSERT INTO calibration_opportunities
 		(opportunity_id, match_id, player_id, detector_id, behavior_type, opportunity_kind,
 		 frame_start, frame_end, timestamp_start, timestamp_end, ground_truth, comment,
-		 reviewer_id, blind_review, reviewed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 reviewer_id, blind_review, reviewed_at, verifier_id, verified_ground_truth, evidence_method, evidence_reference)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(opportunity_id) DO UPDATE SET
 		 match_id=excluded.match_id, player_id=excluded.player_id,
 		 detector_id=excluded.detector_id, behavior_type=excluded.behavior_type,
@@ -182,10 +244,13 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 		 frame_end=excluded.frame_end, timestamp_start=excluded.timestamp_start,
 		 timestamp_end=excluded.timestamp_end, ground_truth=excluded.ground_truth,
 		 comment=excluded.comment, reviewer_id=excluded.reviewer_id,
-		 blind_review=excluded.blind_review, reviewed_at=excluded.reviewed_at`,
+		 blind_review=excluded.blind_review, reviewed_at=excluded.reviewed_at,
+		 verifier_id=excluded.verifier_id, verified_ground_truth=excluded.verified_ground_truth,
+		 evidence_method=excluded.evidence_method, evidence_reference=excluded.evidence_reference`,
 		in.OpportunityID, in.MatchID, in.PlayerID, in.DetectorID, in.BehaviorType, in.Kind,
 		in.FrameStart, in.FrameEnd, in.TimestampStart, in.TimestampEnd, in.GroundTruth,
-		in.Comment, in.ReviewerID, blind, fmtDBTime(in.ReviewedAt))
+		in.Comment, in.ReviewerID, blind, fmtDBTime(in.ReviewedAt),
+		in.VerifierID, in.VerifiedGroundTruth, in.EvidenceMethod, in.EvidenceReference)
 	if err != nil {
 		return in, fmt.Errorf("storing calibration opportunity: %w", err)
 	}
@@ -197,7 +262,8 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 
 const calibrationOpportunityColumns = `opportunity_id, match_id, player_id, detector_id,
 	behavior_type, opportunity_kind, frame_start, frame_end, timestamp_start, timestamp_end,
-	ground_truth, comment, reviewer_id, blind_review, reviewed_at`
+	ground_truth, comment, reviewer_id, blind_review, reviewed_at,
+	verifier_id, verified_ground_truth, evidence_method, evidence_reference`
 
 func scanCalibrationOpportunity(row rowScanner) (CalibrationOpportunity, error) {
 	var out CalibrationOpportunity
@@ -206,7 +272,8 @@ func scanCalibrationOpportunity(row rowScanner) (CalibrationOpportunity, error) 
 	err := row.Scan(&out.OpportunityID, &out.MatchID, &out.PlayerID, &out.DetectorID,
 		&out.BehaviorType, &out.Kind, &out.FrameStart, &out.FrameEnd,
 		&out.TimestampStart, &out.TimestampEnd, &out.GroundTruth, &out.Comment,
-		&out.ReviewerID, &blind, &reviewed)
+		&out.ReviewerID, &blind, &reviewed,
+		&out.VerifierID, &out.VerifiedGroundTruth, &out.EvidenceMethod, &out.EvidenceReference)
 	out.BlindReview = blind != 0
 	out.ReviewedAt = parseDBTimeLenient(reviewed)
 	return out, err

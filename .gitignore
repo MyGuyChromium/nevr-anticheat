@@ -28,7 +28,7 @@ dump/
 # Profiling and coverage
 *.prof
 *.out
-coverage.*
+/coverage.*
 cover.html
 
 # Temp

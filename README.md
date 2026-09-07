@@ -6,6 +6,14 @@ Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR commu
 
 **Validation status: 0 of 30 detectors have been validated on labelled real Echo VR telemetry.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
 
+**Automatic findings:** the installed app analyzes replays itself; no assistant,
+cloud upload, admission list or player-name rules are needed. Each analyzed match
+shows players with **Review needed**, detector-specific signal counts and Spark
+replay buttons, including observation-only findings that add zero score. The
+same `assessment` is included in player JSON, summary JSON, player CSV and case
+reports. **No signals** does not mean verified fair play. These are review
+findings, not automatic bans or independently confirmed cheating verdicts.
+
 ## Architecture
 
 ```
@@ -46,6 +54,14 @@ Each successful master build publishes SHA-256 checksums, runs a clean install/u
 The desktop's update card follows the verified `windows-latest` release tag. After this version has been installed once, **Install update** downloads the new setup package, verifies its revision-bound manifest, published SHA-256, and exact size, then closes NEVR, updates all five executables, and reopens it. The evidence database, labels, settings, and rollback snapshots stay outside the replaceable program files. Portable copies keep a manual-download fallback because safely updating an arbitrary portable folder is ambiguous.
 
 Because this repository is private, the desktop cannot borrow credentials from a signed-in browser. Set a read-only GitHub token in `NEVR_GITHUB_TOKEN` for in-app checks and one-click installation; the manual-download button continues to use your signed-in browser. Remove that requirement by making the release publicly readable in the future—never embed a repository token in the program.
+
+The installer can be shared directly and runs offline, but widespread downloads
+and updates need a publicly readable release channel. Keeping the source private
+and publishing binaries to a separate public release repository is possible;
+that requires explicitly setting up the repository, publication permissions and
+the updater's trusted release source. It is **not configured by this change**.
+Do not distribute a maintainer token to end users or change source visibility
+just to work around a download failure.
 
 Maintainers can build that package locally from PowerShell with:
 
@@ -123,7 +139,7 @@ go build -o nevr-desktop.exe ./cmd/desktop     # CGO_ENABLED=1, like every binar
 
 On start it opens the database (`nevr-anticheat.db` next to the executable, or `general.db_path` with `--config <file>`), listens on **127.0.0.1 only** at a random free port behind a random per-run token, and prints the URL. It opens that page in a dedicated Edge/Chrome app window when available, falling back to the default browser (`--no-browser` only prints the URL; `--port` pins the port). Starting a second copy for the same database hands off to the existing local session instead of competing for SQLite. Files or whole folders are analyzed through a visible, one-file-at-a-time queue with per-file progress, cancel, and retry controls. Browser intake streams recordings up to 4 GB directly into the durable recovery queue instead of making an extra operating-system temporary copy; larger recordings can be processed in place by the watched-folder workflow. Desktop uploads always re-analyze stored matches with the current detectors and replace their derived events, scores, and normalized cache; immutable raw ticks and human calibration labels remain preserved.
 
-The desktop's **Regression & threshold lab** turns each event marked Correct or False positive into a local replay expectation, compares current output with the pre-reprocess snapshot, and previews numeric detector parameters against stored normalized telemetry. Full-library sweeps are restricted to training and validation; holdout is never tuned. A selected value can be saved only as a shadow candidate. Match reports link to aggregate player history, and every event explains what crossed the boundary and whether it contributed score.
+The desktop's **Regression & threshold lab** turns each event marked Correct or False positive into a local replay expectation, compares current output with the pre-reprocess snapshot, and previews numeric detector parameters against stored normalized telemetry. Both single-match previews and sweeps exclude reserved holdout and quarantined recordings. Reserved holdout is not an independently sealed prospective test: viewing findings freezes a clean candidate identity, and changing that candidate invalidates the exposed cohort. A selected value can be saved only as a shadow candidate. Match reports link to aggregate player history, and every event explains what crossed the boundary and whether it contributed score.
 
 The **Automation, recovery & updates** panel can watch a local replay folder for new stable `.echoreplay` files, recover uploads durably spooled before an interruption, compare the release's embedded Git commit with the last successfully packaged `windows-latest` release, install a verified update with one click, and create a privacy-redacted support ZIP. Support bundles exclude raw ticks, normalized frames, the database, player identities and the watch-folder path. NEVR never silently installs an update: automatic checks only announce availability and the owner clicks **Install update**.
 
@@ -137,11 +153,15 @@ Desktop v0.10 adds a verified one-click Windows updater. It refuses to interrupt
 
 Desktop v0.10.1 fixes raw replay reads in databases containing both legacy and current tick storage, reports match-summary save failures, and strengthens updater redirect and shutdown checks. The Windows release workflow now runs the desktop test suite on Windows before packaging, including the Windows-only updater regressions.
 
+Desktop v0.10.3 separates **Review needed**, **No signals**, and **Insufficient data**. Each analyzed player has persisted per-detector coverage, including phase/warmup dispatch counts and necessary-input checks for throw speed, wrist rotation and playspace motion. Disabled detectors and missing coverage never certify fair play; shadow findings remain visible at zero score. Coverage is stored atomically with the analysis and refreshed on re-import. Legacy results without coverage request re-analysis instead of silently implying success. The throw reconstruction margin is explicitly an unvalidated review guide, not a measurement confidence interval.
+
+Private development now includes a [hash-pinned replay regression harness](docs/private_replay_regressions.md), [throw-measurement verification record](docs/throw_measurement_verification.md), and [isolated Windows beta readiness runner](docs/private_beta_readiness.md). These are maintainer tools; ordinary users still drop replays into the app. See the [six-track acceptance record](docs/private_readiness_acceptance.md) for implemented safeguards, local verification, and the independent evidence still required before wider release. Nothing in these workflows makes the repository public.
+
 The [v0.9 hardening acceptance record](docs/hardening_v09.md) maps each of the eight tracks to its implemented evidence and clearly separates the remaining real-replay, independent-review, and publisher-identity gates.
 
 On an update, the Windows installer snapshots the previous program files under `%LOCALAPPDATA%\NEVR-Anticheat\program-rollbacks`. Run `Rollback-NEVR.cmd` from the installed program folder to restore the newest snapshot; the evidence database is never replaced by program rollback.
 
-Each match can be indexed as **Known clean**, **Suspected**, or **Confirmed cheat**, with a note. This organizes the library but does not automatically label a detector. Every observation can separately be labeled **Correct**, **False positive**, or **Unsure**, optionally before revealing the detector. Use **Ground-truth window** to label detector opportunities that did not emit an event; these windows are what make false negatives and true negatives measurable. All labels survive re-analysis and portable evidence export. Player-grouped training/validation/holdout splits prevent player leakage, and the promotion gate can move only one eligible detector into scored human-review mode. Automatic enforcement remains disabled and failed gates roll back to shadow. See [the calibration workflow](docs/calibration_workflow.md) and [collection protocol](docs/calibration_collection_protocol.md) for the exact requirements.
+Each match can be indexed as **Known clean**, **Suspected**, or **Confirmed cheat**, with a note. This organizes the library but does not automatically label a detector. Every observation can separately be labeled **Correct**, **False positive**, or **Unsure**. Use **Ground-truth window** for missed opportunities too; its default is uncertain, and it requires explicitly chosen frame boundaries. Promotion requires structured, corroborated, blinded review by two distinct reviewer identities and independent evidence references, not merely a label or admission. These identities are operator attestations, not authenticated reviewers. All labels survive re-analysis and portable evidence export. Persistent player-grouped assignments quarantine conflicting exposure; they cannot establish what a reviewer saw outside the app. The conservative promotion gate can move only one eligible detector into scored human-review mode, never automatically validate a production release. Automatic enforcement remains disabled and failed gates roll back to shadow. See [the calibration workflow](docs/calibration_workflow.md) and [collection protocol](docs/calibration_collection_protocol.md) for the exact requirements.
 
 For an independent frame-by-frame physics comparison, run `nevr-compat --physics-audit physics-audit.csv match.echoreplay`. The export includes raw reported velocity, independently derived pose velocity, the production extractor result, playspace motion, legal-motion context, wrist rates, disc state, and releases for alignment with Spark.
 

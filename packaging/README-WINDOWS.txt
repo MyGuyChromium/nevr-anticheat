@@ -13,6 +13,17 @@ Setup needs no ZIP extraction, command prompt, administrator access, folder
 selection, or manual configuration. It creates the Windows shortcuts and the
 Installed apps entry automatically.
 
+AUTOMATIC ASSESSMENT
+
+NEVR runs its detectors locally when you import a replay. The automatic
+assessment lists players with signals to review, explains which detectors fired,
+and offers Review in Spark. This works for every player without a name list,
+an admission, a cloud upload, or an assistant examining the file.
+
+Review needed includes observation-only (shadow) signals that deliberately add
+zero score. No signals means no detector fired on the available telemetry, not
+verified fair play. Detector signals are not confirmed cheating or automatic bans.
+
 PORTABLE / ADVANCED
 
 Extract the entire NEVR-Anticheat-Windows-x64.zip, then run nevr-desktop.exe.
@@ -23,6 +34,17 @@ mode stores it beside nevr-desktop.exe. Windows Firewall does not need to expose
 it: the desktop app listens only on 127.0.0.1 (this computer).
 
 UPDATES AND ROLLBACK
+
+Use Windows updates > Check for updates > Install update in the app. Installed
+copies verify and run the update package, preserve local evidence and restart.
+Portable copies use the manual-download fallback.
+
+The current release feed is in a private GitHub repository. Downloads require
+repository access; in-app updates additionally need a read-only token through
+NEVR_GITHUB_TOKEN. Signing into a browser does not authenticate the app. The
+installer itself runs offline if shared directly, but public distribution and
+token-free updates require a publicly readable release channel. Never share a
+maintainer token with recipients.
 
 Installing a newer package snapshots the previous program files without
 copying or changing the evidence database. If an update has a problem, run
@@ -65,4 +87,7 @@ The advanced portable package remains available here:
 
   https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Windows-x64.zip
 
-Successful releases include SHA-256 checksums and GitHub build provenance.
+Successful releases include SHA-256 checksums. GitHub build provenance is added
+when the repository's visibility supports attestations. Publisher signing also
+depends on the maintainer's signing configuration; checksums do not remove
+Windows SmartScreen warnings.

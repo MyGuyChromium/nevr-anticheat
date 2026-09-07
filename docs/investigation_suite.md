@@ -4,7 +4,7 @@ This release implements the 30-item investigation/QoL pass as one evidence-only 
 
 1. **Telemetry quality gate** — grades normalized source data before detection, reduces confidence when quality falls, and hard-gates unusable timing.
 2. **Legal-action context engine** — one shared classifier covers game locomotion, boosts, coherent leans, playspace steps, possible wall/block slaps or pushes, possible head contact, and tracking loss. It can only reduce confidence.
-3. **Physics uncertainty envelopes** — throw review shows speed tolerance derived from source quality and ping; the 18.9 m/s engine cap itself is unchanged.
+3. **Physics review guides** — throw review shows an unvalidated heuristic margin derived from source quality and ping. This is not a confidence interval, measurement error bound, or proof of cheating; the configured 18.9 m/s cap itself is unchanged. `sample_above_guide` is descriptive; the deprecated `certain_breach` field remains false.
 4. **Throw reconstruction view** — every summarized release is shown with its frame, player, speed, envelope, boundary state, and Spark action.
 5. **Detector agreement system** — temporally overlapping signals for one player are grouped into incidents and show the number of distinct detectors. Agreement is review priority, not proof.
 6. **Automatic threshold recommendations** — direct-label sample size and precision drive conservative collect/tighten/hold recommendations.

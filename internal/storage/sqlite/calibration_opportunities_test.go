@@ -72,3 +72,81 @@ func TestCalibrationOpportunitiesValidateAndPromotions(t *testing.T) {
 		t.Fatalf("rollback status = %q", loaded.Status)
 	}
 }
+
+func TestCalibrationOpportunityWindowRequiresPlayerSamplesButImportPreservesEvidence(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	if err := s.StoreMatchContext(ctx, &model.MatchContext{MatchID: "M", PlayerIDs: []string{"P", "OTHER"}}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StoreTelemetryFrames(ctx, "M", mkFrames("P", 10, 12)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StoreTelemetryFrames(ctx, "M", mkFrames("OTHER", 20, 22)); err != nil {
+		t.Fatal(err)
+	}
+	for _, interval := range [][2]int{{0, 9}, {13, 15}, {20, 22}, {999, 1000}} {
+		x := CalibrationOpportunity{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", Kind: OpportunityThrow,
+			FrameStart: interval[0], FrameEnd: interval[1], GroundTruth: GroundTruthNegative}
+		if _, err := s.StoreCalibrationOpportunity(ctx, x); err == nil {
+			t.Fatalf("empty player window accepted: %+v", interval)
+		}
+		if err := s.ImportCalibrationOpportunity(ctx, x); err != nil {
+			t.Fatalf("unavailable portable evidence was discarded: %v", err)
+		}
+		if available, err := s.CalibrationWindowHasSamples(ctx, "M", "P", interval[0], interval[1]); err != nil || available {
+			t.Fatalf("empty window availability = %v, %v", available, err)
+		}
+	}
+	x := CalibrationOpportunity{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", Kind: OpportunityThrow,
+		FrameStart: 10, FrameEnd: 11, GroundTruth: GroundTruthPositive}
+	if _, err := s.StoreCalibrationOpportunity(ctx, x); err != nil {
+		t.Fatalf("available window rejected: %v", err)
+	}
+	items, err := s.ListCalibrationOpportunities(ctx, "M", "")
+	if err != nil || len(items) != 5 {
+		t.Fatalf("preserved annotations = %d, %v", len(items), err)
+	}
+}
+
+func TestIndependentCalibrationEvidenceRoundTripAndDisagreement(t *testing.T) {
+	s := newTestStore(t)
+	x := CalibrationOpportunity{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", Kind: OpportunityThrow,
+		FrameStart: 10, FrameEnd: 20, GroundTruth: GroundTruthPositive, ReviewerID: "Alice", VerifierID: "Bob",
+		BlindReview: true, VerifiedGroundTruth: GroundTruthPositive, EvidenceMethod: "synchronized_video", EvidenceReference: "clip-42@10-20"}
+	if err := s.ImportCalibrationOpportunity(t.Context(), x); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListCalibrationOpportunities(t.Context(), "M", "")
+	if err != nil || len(items) != 1 || !items[0].IndependentEvidenceVerified() || items[0].EvidenceReference != x.EvidenceReference {
+		t.Fatalf("evidence round trip: %+v %v", items, err)
+	}
+	for name, modify := range map[string]func(*CalibrationOpportunity){
+		"sameReviewer":      func(x *CalibrationOpportunity) { x.VerifierID = "ALICE" },
+		"placeholder":       func(x *CalibrationOpportunity) { x.ReviewerID = "local-owner" },
+		"disputed":          func(x *CalibrationOpportunity) { x.VerifiedGroundTruth = GroundTruthNegative },
+		"unblinded":         func(x *CalibrationOpportunity) { x.BlindReview = false },
+		"missingArtifact":   func(x *CalibrationOpportunity) { x.EvidenceReference = "" },
+		"reportedAdmission": func(x *CalibrationOpportunity) { x.EvidenceMethod = "reported_admission" },
+		"uncertain": func(x *CalibrationOpportunity) {
+			x.GroundTruth = GroundTruthUncertain
+			x.VerifiedGroundTruth = GroundTruthUncertain
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := x
+			modify(&copy)
+			if copy.IndependentEvidenceVerified() {
+				t.Fatal("ineligible attestation accepted")
+			}
+		})
+	}
+	legacy := CalibrationOpportunity{MatchID: "OLD", PlayerID: "P", DetectorID: "THROW_001", Kind: OpportunityThrow, GroundTruth: GroundTruthPositive}
+	if err := s.ImportCalibrationOpportunity(t.Context(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	items, err = s.ListCalibrationOpportunities(t.Context(), "OLD", "")
+	if err != nil || len(items) != 1 || items[0].IndependentEvidenceVerified() {
+		t.Fatalf("legacy label not preserved safely: %+v %v", items, err)
+	}
+}
