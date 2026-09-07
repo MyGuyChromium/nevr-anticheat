@@ -22,6 +22,12 @@ Connected-group and legal-context metrics expose gaps in the evaluation data.
 See the [hardening and acceptance record](docs/comprehensive_readiness.md) for
 reliability fixes, verification scope, and the remaining real-world requirements.
 
+**0.11.1 first-launch fix:** Setup creates the per-user evidence directory, and
+desktop startup creates a missing parent for a normal configured database path.
+Windows release checks now launch the actual installed app with its installed
+configuration before preparing preservation-test data. See the
+[first-launch regression record](docs/first_launch_regression.md).
+
 ## Architecture
 
 ```

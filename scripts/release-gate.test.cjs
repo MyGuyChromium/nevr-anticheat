@@ -100,3 +100,13 @@ test('workflow and helper edits trigger Windows integration and upload names can
   assert.ok(names.length >= 4);
   assert.equal(new Set(names).size, names.length, 'called workflows share one run artifact namespace');
 });
+
+test('installed first launch is tested before preservation fixtures can mask missing data directories', () => {
+  const packageJob = job(windows, 'package');
+  const startup = packageJob.indexOf('& .\\scripts\\test-installed-startup.ps1 -InstallRoot $installRoot');
+  const fixtures = packageJob.indexOf('$evidenceMarker = ');
+  assert.ok(startup >= 0 && fixtures > startup, 'actual installed startup must precede data fixtures');
+  assert.doesNotMatch(packageJob.slice(0, fixtures), /New-Item[^\n]*\$dataRoot/);
+  const installer = fs.readFileSync(path.join(root, 'packaging/NEVR-Anticheat.iss'), 'utf8');
+  assert.match(installer, /Name: "\{localappdata\}\\NEVR-Anticheat"; Flags: uninsneveruninstall/);
+});

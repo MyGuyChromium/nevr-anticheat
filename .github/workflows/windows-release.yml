@@ -309,14 +309,21 @@ jobs:
             throw "Microsoft Defender detected a threat in the release artifacts."
           }
 
-      - name: Smoke-test setup and uninstall
+      - name: Smoke-test fresh installed startup, upgrade and uninstall
         shell: pwsh
         run: |
+          if ($env:RUNNER_ENVIRONMENT -ne "github-hosted" -or $env:RUNNER_OS -ne "Windows") {
+            throw "Installer smoke checks require a disposable GitHub-hosted Windows runner."
+          }
+          $installRoot = Join-Path $env:LOCALAPPDATA "Programs\NEVR-Anticheat"
+          $dataRoot = Join-Path $env:LOCALAPPDATA "NEVR-Anticheat"
+          foreach ($path in @($installRoot, $dataRoot)) {
+            if (Test-Path -LiteralPath $path) { throw "Fresh-install smoke requires an absent path: $path" }
+          }
           $setup = Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe"
-          $install = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+          $install = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -WindowStyle Hidden -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Silent install exited with $($install.ExitCode)" }
 
-          $installRoot = Join-Path $env:LOCALAPPDATA "Programs\NEVR-Anticheat"
           foreach ($file in @(
             "nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe",
             "installed.toml", "nevr.ico", "configs\default.toml", "configs\shadow_deploy.toml",
@@ -329,13 +336,15 @@ jobs:
             throw "Installed configuration does not point at the evidence database."
           }
 
-          $dataRoot = Join-Path $env:LOCALAPPDATA "NEVR-Anticheat"
-          New-Item -ItemType Directory -Force $dataRoot | Out-Null
+          # The installer must create the data directory, and the installed
+          # executable must complete its first boot before fixtures are written.
+          & .\scripts\test-installed-startup.ps1 -InstallRoot $installRoot
+
           $evidenceMarker = Join-Path $dataRoot "installer-preservation-test.txt"
           Set-Content -LiteralPath $evidenceMarker -Value "preserve"
           Add-Content -LiteralPath $installedConfig -Value "# preserve-upgrade-settings"
 
-          $upgrade = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -Wait -PassThru
+          $upgrade = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -WindowStyle Hidden -Wait -PassThru
           if ($upgrade.ExitCode -ne 0) { throw "Silent upgrade exited with $($upgrade.ExitCode)" }
           if ((Get-Content -Raw $installedConfig) -notmatch "preserve-upgrade-settings") {
             throw "Upgrade replaced the existing installed configuration."
@@ -348,7 +357,7 @@ jobs:
 
           $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" | Select-Object -First 1
           if ($null -eq $uninstaller) { throw "Windows uninstall entry was not created." }
-          $uninstall = Start-Process $uninstaller.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          $uninstall = Start-Process $uninstaller.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -WindowStyle Hidden -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "Silent uninstall exited with $($uninstall.ExitCode)" }
           if (-not (Test-Path -LiteralPath $evidenceMarker)) { throw "Uninstall removed the evidence directory." }
           Remove-Item -LiteralPath $evidenceMarker -Force
