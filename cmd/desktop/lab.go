@@ -304,6 +304,15 @@ func (s *server) handleThresholdPreview(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "match_id is required")
 		return
 	}
+	splits, isolationErr := s.experimentSplits(r.Context())
+	if isolationErr != nil {
+		writeError(w, 500, "verifying preview isolation: %v", isolationErr)
+		return
+	}
+	if err := checkExperimentMatch(splits, req.MatchID); err != nil {
+		writeError(w, http.StatusConflict, "%v", err)
+		return
+	}
 	candidate := cloneConfig(s.engine.Config())
 	value, unit, err := setSandboxParam(candidate, req)
 	if err != nil {

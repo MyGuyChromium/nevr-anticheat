@@ -51,10 +51,14 @@ type investigationIncident struct {
 
 type throwEnvelope struct {
 	replay.ThrowEvent
-	Cap           float64 `json:"cap"`
-	Uncertainty   float64 `json:"uncertainty"`
-	CertainBreach bool    `json:"certain_breach"`
-	NearBoundary  bool    `json:"near_boundary"`
+	Cap         float64 `json:"cap"`
+	Uncertainty float64 `json:"uncertainty"`
+	// Retained for old consumers, always false: this heuristic is not a
+	// calibrated measurement uncertainty and cannot establish a certain breach.
+	CertainBreach    bool   `json:"certain_breach"`
+	SampleAboveGuide bool   `json:"sample_above_guide"`
+	MarginKind       string `json:"margin_kind"`
+	NearBoundary     bool   `json:"near_boundary"`
 }
 
 func buildIncidents(events []model.DetectionEvent, mc *model.MatchContext) []investigationIncident {
@@ -193,7 +197,7 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 			}
 			cap := mc.Physics.DiscSpeedCap
 			throws = append(throws, throwEnvelope{ThrowEvent: throw, Cap: cap, Uncertainty: uncertainty,
-				CertainBreach: throw.Speed-uncertainty > cap, NearBoundary: math.Abs(throw.Speed-cap) <= uncertainty})
+				SampleAboveGuide: throw.Speed-uncertainty > cap, MarginKind: "heuristic_unvalidated", NearBoundary: math.Abs(throw.Speed-cap) <= uncertainty})
 		}
 	}
 	reviewed := 0
@@ -450,6 +454,11 @@ func (s *server) handleExperimentMatrix(w http.ResponseWriter, r *http.Request) 
 	}
 	type experimentMatch struct{ id string }
 	var selected []experimentMatch
+	splits, err := s.experimentSplits(r.Context())
+	if err != nil {
+		writeError(w, 500, "verifying experiment isolation: %v", err)
+		return
+	}
 	if req.Scope == "match" {
 		if strings.TrimSpace(req.MatchID) == "" {
 			writeError(w, 400, "match_id is required for match scope")
@@ -459,6 +468,10 @@ func (s *server) handleExperimentMatrix(w http.ResponseWriter, r *http.Request) 
 			writeError(w, 404, "loading match: %v", err)
 			return
 		}
+		if err := checkExperimentMatch(splits, req.MatchID); err != nil {
+			writeError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		selected = append(selected, experimentMatch{id: req.MatchID})
 	} else {
 		matches, err := s.engine.Store().ListMatches(r.Context(), 100000)
@@ -466,7 +479,6 @@ func (s *server) handleExperimentMatrix(w http.ResponseWriter, r *http.Request) 
 			writeError(w, 500, "loading training matches: %v", err)
 			return
 		}
-		splits, _ := groupedDatasetSplits(matches)
 		for _, match := range matches {
 			if match.Context != nil && splits[match.Context.MatchID] == req.Scope {
 				selected = append(selected, experimentMatch{id: match.Context.MatchID})
@@ -897,9 +909,15 @@ func (s *server) handleCaseReport(w http.ResponseWriter, r *http.Request) {
 	incidents := doc["incidents"].([]investigationIncident)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="nevr-case-%s.html"`, safeClipName(match.MatchID)))
-	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>NEVR case %s</title><style>body{font:14px system-ui;max-width:960px;margin:40px auto;padding:0 24px;color:#17202b}table{width:100%%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #ccd5df;padding:8px}code{font-family:monospace}</style><h1>NEVR investigation report</h1><p><b>Match:</b> <code>%s</code><br><b>Generated:</b> %s<br><b>Configuration:</b> <code>%s</code></p><h2>Telemetry</h2><p>Quality %.1f/100 (%s); gated: %t.</p><h2>Assessment</h2><table><tr><th>Player</th><th>Score</th><th>Level</th><th>Signals</th></tr>", html.EscapeString(match.MatchID), html.EscapeString(match.MatchID), html.EscapeString(fmtTime(time.Now())), html.EscapeString(s.configFingerprint()), quality.Score, html.EscapeString(quality.Grade), quality.Gated)
+	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>NEVR case %s</title><style>body{font:14px system-ui;max-width:960px;margin:40px auto;padding:0 24px;color:#17202b}table{width:100%%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #ccd5df;padding:8px}code{font-family:monospace}</style><h1>NEVR investigation report</h1><p><b>Match:</b> <code>%s</code><br><b>Generated:</b> %s<br><b>Configuration:</b> <code>%s</code></p><h2>Telemetry</h2><p>Quality %.1f/100 (%s); gated: %t.</p><h2>Assessment</h2><p>Review needed includes shadow-only observations that add zero score. No signals means no detector finding, not verified fair play. Scoring level is separate from this assessment and is not a cheating verdict.</p><table><tr><th>Player</th><th>Assessment</th><th>Score</th><th>Scoring level</th><th>Signals</th></tr>", html.EscapeString(match.MatchID), html.EscapeString(match.MatchID), html.EscapeString(fmtTime(time.Now())), html.EscapeString(s.configFingerprint()), quality.Score, html.EscapeString(quality.Grade), quality.Gated)
 	for _, p := range match.Players {
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%.1f</td><td>%s</td><td>%d + %d shadow</td></tr>", html.EscapeString(p.Name), p.Score, html.EscapeString(p.Level), p.Detections, p.ShadowDetections)
+		assessment := "No signals"
+		if p.Assessment.Status == model.ReviewStatusReviewNeeded {
+			assessment = "Review needed"
+		} else if p.Assessment.Status == model.ReviewStatusInsufficientData {
+			assessment = "Insufficient data"
+		}
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%.1f</td><td>%s</td><td>%d total (%d scored + %d shadow)</td></tr>", html.EscapeString(p.Name), assessment, p.Score, html.EscapeString(p.Level), p.Assessment.SignalCount, p.Assessment.ScoredSignals, p.Assessment.ShadowSignals)
 	}
 	fmt.Fprint(w, "</table><h2>Grouped incidents</h2><table><tr><th>ID</th><th>Player</th><th>Frames</th><th>Agreement</th><th>Detectors</th></tr>")
 	for _, x := range incidents {

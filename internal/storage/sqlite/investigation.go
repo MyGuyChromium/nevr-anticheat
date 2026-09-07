@@ -352,6 +352,9 @@ func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error
 	if len(review.Comment) > 2000 || (review.EvidenceJSON != "" && !json.Valid([]byte(review.EvidenceJSON))) {
 		return fmt.Errorf("invalid imported event review payload")
 	}
+	if err := s.RecordCalibrationExposure(ctx, review.MatchID, review.PlayerID); err != nil {
+		return err
+	}
 	if review.ReviewedAt.IsZero() {
 		review.ReviewedAt = nowUTC()
 	}
@@ -375,6 +378,9 @@ func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error
 func (s *Store) ImportMatchLabel(ctx context.Context, label MatchLabel) error {
 	if strings.TrimSpace(label.MatchID) == "" || !validMatchLabel(label.Label) || len(label.Comment) > 4000 {
 		return fmt.Errorf("invalid imported match label")
+	}
+	if err := s.RecordCalibrationExposure(ctx, label.MatchID); err != nil {
+		return err
 	}
 	if label.ReviewedAt.IsZero() {
 		label.ReviewedAt = nowUTC()

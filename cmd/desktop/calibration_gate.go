@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -20,17 +21,19 @@ import (
 )
 
 const (
-	promotionMinPositive           = 30
-	promotionMinNegative           = 300
-	promotionMinPlayers            = 5
-	promotionMinMatches            = 10
-	promotionMinHoldoutPositive    = 5
-	promotionMinHoldoutNegative    = 50
-	promotionMinValidationPositive = 5
-	promotionMinValidationNegative = 50
+	// Conservative release policy, not measured detector performance.
+	promotionMinPositive           = 160
+	promotionMinNegative           = 800
+	promotionMinPlayers            = 10
+	promotionMinMatches            = 20
+	promotionMinHoldoutPositive    = 80
+	promotionMinHoldoutNegative    = 400
+	promotionMinValidationPositive = 80
+	promotionMinValidationNegative = 400
 	promotionMinPrecision          = 0.95
-	promotionMinRecall             = 0.50
+	promotionMinRecall             = 0.90
 	promotionMaxFalseRate          = 0.01
+	promotionMinRecallLower95      = 0.80
 )
 
 type confidenceInterval struct {
@@ -57,6 +60,9 @@ type confusionMetric struct {
 	FalsePositivesPer100  float64            `json:"false_positives_per_100"`
 	CurrentProvenance     int                `json:"current_provenance_samples"`
 	StaleProvenance       int                `json:"stale_provenance_samples"`
+	IndependentEvidence   int                `json:"independent_evidence_samples"`
+	UnusableTelemetry     int                `json:"unusable_telemetry_samples"`
+	IsolationConflicts    int                `json:"isolation_conflict_samples"`
 	PrecisionCI95         confidenceInterval `json:"precision_ci95"`
 	RecallCI95            confidenceInterval `json:"recall_ci95"`
 	FalsePositiveRateCI95 confidenceInterval `json:"false_positive_rate_ci95"`
@@ -79,6 +85,24 @@ func (a *metricAccumulator) add(sample calibrationSample, predicted bool) {
 	}
 	if sample.BlindReview {
 		a.BlindLabels++
+	}
+	if sample.NoWindowSamples {
+		// Keep the annotation visible without treating missing observation as
+		// either successful detection, a quiet legitimate play, or a missed cheat.
+		a.Uncertain++
+		a.UnusableTelemetry++
+		return
+	}
+	if sample.Truth == sqlite.GroundTruthPositive || sample.Truth == sqlite.GroundTruthNegative {
+		if sample.IndependentEvidence {
+			a.IndependentEvidence++
+		}
+		if sample.UnusableTelemetry {
+			a.UnusableTelemetry++
+		}
+		if sample.IsolationConflict {
+			a.IsolationConflicts++
+		}
 	}
 	switch sample.Truth {
 	case sqlite.GroundTruthPositive:
@@ -143,18 +167,22 @@ func wilson(successes, total int) confidenceInterval {
 }
 
 type calibrationSample struct {
-	MatchID           string
-	PlayerID          string
-	DetectorID        string
-	FrameStart        int
-	FrameEnd          int
-	Truth             string
-	BlindReview       bool
-	Source            string
-	PingBand          string
-	CaptureBand       string
-	QualityBand       string
-	CurrentProvenance bool
+	MatchID             string
+	PlayerID            string
+	DetectorID          string
+	FrameStart          int
+	FrameEnd            int
+	Truth               string
+	BlindReview         bool
+	Source              string
+	PingBand            string
+	CaptureBand         string
+	QualityBand         string
+	CurrentProvenance   bool
+	IndependentEvidence bool
+	UnusableTelemetry   bool
+	NoWindowSamples     bool
+	IsolationConflict   bool
 }
 
 type matchCalibrationMeta struct {
@@ -162,6 +190,7 @@ type matchCalibrationMeta struct {
 	CaptureBand       string
 	QualityBand       string
 	CurrentProvenance bool
+	QualityGated      bool
 }
 
 type detectorCalibrationMetric struct {
@@ -179,24 +208,31 @@ type detectorCalibrationMetric struct {
 }
 
 type splitAssignment struct {
-	MatchID  string `json:"match_id"`
-	GroupKey string `json:"group_key"`
-	Split    string `json:"split"`
+	MatchID             string `json:"match_id"`
+	GroupKey            string `json:"group_key"`
+	Split               string `json:"split"`
+	OriginalSplit       string `json:"original_split,omitempty"`
+	PolicyVersion       int    `json:"policy_version"`
+	ExposureFingerprint string `json:"exposure_fingerprint,omitempty"`
 }
 
 type calibrationDashboard struct {
-	Detectors      []detectorCalibrationMetric `json:"detectors"`
-	Splits         map[string][]string         `json:"splits"`
-	Assignments    []splitAssignment           `json:"assignments"`
-	PlayerLeakage  bool                        `json:"player_leakage"`
-	Samples        int                         `json:"samples"`
-	BlindSamples   int                         `json:"blind_samples"`
-	Requirements   map[string]any              `json:"promotion_requirements"`
-	Notice         string                      `json:"notice"`
-	Drift          map[string]any              `json:"drift,omitempty"`
-	Disagreements  []map[string]any            `json:"disagreements,omitempty"`
-	MatchRecall    map[string]any              `json:"match_recall,omitempty"`
-	AutoRolledBack []string                    `json:"auto_rolled_back,omitempty"`
+	SealedHoldout         bool                        `json:"sealed_holdout"`
+	ProductionValidated   bool                        `json:"production_validated"`
+	ReleaseEligible       bool                        `json:"release_eligible"`
+	ValidationLimitations []string                    `json:"validation_limitations"`
+	Detectors             []detectorCalibrationMetric `json:"detectors"`
+	Splits                map[string][]string         `json:"splits"`
+	Assignments           []splitAssignment           `json:"assignments"`
+	PlayerLeakage         bool                        `json:"player_leakage"`
+	Samples               int                         `json:"samples"`
+	BlindSamples          int                         `json:"blind_samples"`
+	Requirements          map[string]any              `json:"promotion_requirements"`
+	Notice                string                      `json:"notice"`
+	Drift                 map[string]any              `json:"drift,omitempty"`
+	Disagreements         []map[string]any            `json:"disagreements,omitempty"`
+	MatchRecall           map[string]any              `json:"match_recall,omitempty"`
+	AutoRolledBack        []string                    `json:"auto_rolled_back,omitempty"`
 }
 
 type calibrationReportPayload struct {
@@ -336,6 +372,123 @@ func groupedDatasetSplits(matches []sqlite.StoredMatch) (map[string]string, []sp
 	return out, assignments
 }
 
+func (s *server) isolatedDatasetSplits(ctx context.Context, matches []sqlite.StoredMatch) (map[string]string, []splitAssignment, error) {
+	proposed, _ := groupedDatasetSplits(matches)
+	stored, err := s.engine.Store().ReconcileCalibrationSplits(ctx, matches, proposed)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make(map[string]string, len(stored))
+	assignments := make([]splitAssignment, 0, len(stored))
+	for id, a := range stored {
+		split := a.Split
+		if a.Quarantined {
+			split = "quarantined"
+		}
+		out[id] = split
+		assignments = append(assignments, splitAssignment{MatchID: id, GroupKey: a.GroupKey, Split: split, OriginalSplit: a.Split, PolicyVersion: a.PolicyVersion, ExposureFingerprint: a.ExposureFingerprint})
+	}
+	sort.Slice(assignments, func(i, j int) bool { return assignments[i].MatchID < assignments[j].MatchID })
+	return out, assignments, nil
+}
+
+func (s *server) experimentSplits(ctx context.Context) (map[string]string, error) {
+	if err := s.recordCalibrationViewExposure(ctx); err != nil {
+		return nil, err
+	}
+	matches, err := s.engine.Store().ListMatches(ctx, 100000)
+	if err != nil {
+		return nil, err
+	}
+	splits, _, err := s.isolatedDatasetSplits(ctx, matches)
+	return splits, err
+}
+
+func trustedCalibrationBuild(info *debug.BuildInfo, revision string) bool {
+	if info == nil || len(revision) != 40 {
+		return false
+	}
+	if _, err := hex.DecodeString(revision); err != nil {
+		return false
+	}
+	var recorded string
+	var clean bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			recorded = setting.Value
+		case "vcs.modified":
+			clean = setting.Value == "false"
+		}
+	}
+	return clean && recorded == revision
+}
+
+func analysisBuildRevision() string {
+	info, _ := debug.ReadBuildInfo()
+	if !trustedCalibrationBuild(info, buildCommit) {
+		return "unverified:" + buildCommit
+	}
+	return buildCommit
+}
+
+func exposureCandidateFingerprint(run sqlite.AnalysisRun, version, revision, behavior string, trusted bool) string {
+	if !trusted || run.AppVersion != version || run.BuildCommit != revision || run.CalibrationFingerprint != behavior {
+		return ""
+	}
+	return shortHash([]byte(version + "\x00" + revision + "\x00" + behavior))
+}
+
+// recordCalibrationViewExposure must run after durable analysis provenance and
+// before findings are returned to a reviewer. This freezes a candidate, not a
+// claim of psychological blinding or an independently sealed prospective test.
+func (s *server) recordCalibrationViewExposure(ctx context.Context) error {
+	matches, err := s.engine.Store().ListMatches(ctx, 100000)
+	if err != nil {
+		return err
+	}
+	splits, _, err := s.isolatedDatasetSplits(ctx, matches)
+	if err != nil {
+		return err
+	}
+	info, _ := debug.ReadBuildInfo()
+	trusted := trustedCalibrationBuild(info, buildCommit)
+	behavior := calibrationFingerprint(s.engine.Config())
+	fingerprints := make(map[string]string)
+	for id, split := range splits {
+		if split != "holdout" {
+			continue
+		}
+		runs, err := s.engine.Store().ListAnalysisRuns(ctx, id, 1)
+		if err != nil {
+			return fmt.Errorf("reading held-out analysis provenance: %w", err)
+		}
+		fingerprints[id] = ""
+		if len(runs) == 1 {
+			fingerprints[id] = exposureCandidateFingerprint(runs[0], appVersion, buildCommit, behavior, trusted)
+		}
+	}
+	if err := s.engine.Store().RecordCalibrationHoldoutExposure(ctx, fingerprints); err != nil {
+		return err
+	}
+	// Propagate quarantine to historically connected matches, including deleted ones.
+	_, _, err = s.isolatedDatasetSplits(ctx, matches)
+	return err
+}
+
+func checkExperimentMatch(splits map[string]string, matchID string) error {
+	switch splits[matchID] {
+	case "training", "validation":
+		return nil
+	case "holdout":
+		return fmt.Errorf("match %s is reserved holdout; threshold experiments are forbidden", matchID)
+	case "quarantined":
+		return fmt.Errorf("match %s has conflicting dataset exposure and is quarantined", matchID)
+	default:
+		return fmt.Errorf("match %s has no verified dataset assignment", matchID)
+	}
+}
+
 func captureBand(rate float64) string {
 	switch {
 	case rate <= 0:
@@ -372,7 +525,8 @@ func (s *server) calibrationMatchMeta(ctx context.Context, matches []sqlite.Stor
 		meta := matchCalibrationMeta{PingByPlayer: make(map[string]float64), CaptureBand: captureBand(match.Context.TickRate)}
 		if runs, err := s.engine.Store().ListAnalysisRuns(ctx, match.Context.MatchID, 1); err == nil && len(runs) == 1 {
 			meta.QualityBand = runs[0].QualityGrade
-			meta.CurrentProvenance = runs[0].AppVersion == appVersion && runs[0].BuildCommit == buildCommit && runs[0].CalibrationFingerprint == currentCalibrationFingerprint
+			meta.QualityGated = runs[0].QualityGated
+			meta.CurrentProvenance = runs[0].AppVersion == appVersion && runs[0].BuildCommit == analysisBuildRevision() && runs[0].CalibrationFingerprint == currentCalibrationFingerprint
 		}
 		if meta.QualityBand == "" {
 			meta.QualityBand = "unknown"
@@ -425,6 +579,7 @@ func samplesFromLabels(reviews []sqlite.EventReview, opportunities []sqlite.Cali
 		sample.PingBand = pingBand(m.PingByPlayer[sample.PlayerID])
 		sample.CaptureBand, sample.QualityBand = m.CaptureBand, m.QualityBand
 		sample.CurrentProvenance = m.CurrentProvenance
+		sample.UnusableTelemetry = m.QualityGated || (m.QualityBand != "excellent" && m.QualityBand != "good")
 		if sample.CaptureBand == "" {
 			sample.CaptureBand = "unknown"
 		}
@@ -463,6 +618,7 @@ func samplesFromLabels(reviews []sqlite.EventReview, opportunities []sqlite.Cali
 			DetectorID: opportunity.DetectorID, FrameStart: opportunity.FrameStart,
 			FrameEnd: opportunity.FrameEnd, Truth: opportunity.GroundTruth,
 			BlindReview: opportunity.BlindReview, Source: "ground_truth_window"}
+		sample.IndependentEvidence = opportunity.IndependentEvidenceVerified()
 		decorate(&sample)
 		out = append(out, sample)
 	}
@@ -481,6 +637,7 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 			acc = &detectorAcc{ping: make(map[string]*metricAccumulator), capture: make(map[string]*metricAccumulator), quality: make(map[string]*metricAccumulator)}
 			all[sample.DetectorID] = acc
 		}
+		sample.IsolationConflict = splitByMatch[sample.MatchID] == "quarantined"
 		predicted := samplePredicted(sample, eventsByMatch[sample.MatchID])
 		acc.overall.add(sample, predicted)
 		switch splitByMatch[sample.MatchID] {
@@ -488,6 +645,8 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 			acc.holdout.add(sample, predicted)
 		case "validation":
 			acc.validation.add(sample, predicted)
+		case "quarantined":
+			// Keep evidence visible overall; it must never feed a split metric.
 		default:
 			acc.training.add(sample, predicted)
 		}
@@ -519,6 +678,8 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 }
 
 var promotionBlocked = map[string]string{
+	"MOV_006":   "room-scale walking cannot be reliably separated from legal leaning with replay-only telemetry; requires a separate observability validation design",
+	"BIO_001":   "wrist angular speed is capture-rate limited and aliased; requires a separate observability validation design",
 	"THROW_004": "known unsafe on legitimate regrab play",
 	"THROW_007": "stub detector without required telemetry",
 	"MOV_003":   "known unsafe around legitimate wall reversals",
@@ -536,6 +697,7 @@ var promotionBlocked = map[string]string{
 }
 
 func applyPromotionGate(metric *detectorCalibrationMetric) {
+	metric.Reasons, metric.PromotionBlock = nil, ""
 	if blocked := promotionBlocked[metric.DetectorID]; blocked != "" {
 		metric.PromotionBlock = blocked
 		metric.Reasons = append(metric.Reasons, blocked)
@@ -555,6 +717,9 @@ func applyPromotionGate(metric *detectorCalibrationMetric) {
 		{v.PositiveOpportunities < promotionMinValidationPositive, fmt.Sprintf("validation needs %d positive opportunities; have %d", promotionMinValidationPositive, v.PositiveOpportunities)},
 		{v.NegativeOpportunities < promotionMinValidationNegative, fmt.Sprintf("validation needs %d legitimate opportunities; have %d", promotionMinValidationNegative, v.NegativeOpportunities)},
 		{o.StaleProvenance > 0, fmt.Sprintf("%d decisive samples were not analyzed by this app build and detector configuration; re-analyze their replays", o.StaleProvenance)},
+		{o.IndependentEvidence != o.PositiveOpportunities+o.NegativeOpportunities, "every decisive sample needs a specific independent artifact, blinded primary review, and a distinct second reviewer agreeing on that window"},
+		{o.UnusableTelemetry > 0, "samples include absent player-window telemetry or gated/unverified telemetry quality"},
+		{o.IsolationConflicts > 0, "decisive samples include quarantined cross-split exposure"},
 		{o.PositiveOpportunities > 0 && o.Precision < promotionMinPrecision, fmt.Sprintf("precision %.1f%% is below %.1f%%", o.Precision*100, promotionMinPrecision*100)},
 		{o.PositiveOpportunities > 0 && o.Recall < promotionMinRecall, fmt.Sprintf("recall %.1f%% is below %.1f%%", o.Recall*100, promotionMinRecall*100)},
 		{o.NegativeOpportunities > 0 && o.FalsePositiveRate > promotionMaxFalseRate, fmt.Sprintf("false-positive rate %.2f%% exceeds %.2f%%", o.FalsePositiveRate*100, promotionMaxFalseRate*100)},
@@ -565,6 +730,36 @@ func applyPromotionGate(metric *detectorCalibrationMetric) {
 		{v.PositiveOpportunities > 0 && v.Recall < promotionMinRecall, fmt.Sprintf("validation recall %.1f%% is below %.1f%%", v.Recall*100, promotionMinRecall*100)},
 		{v.NegativeOpportunities > 0 && v.FalsePositiveRate > promotionMaxFalseRate, fmt.Sprintf("validation false-positive rate %.2f%% exceeds %.2f%%", v.FalsePositiveRate*100, promotionMaxFalseRate*100)},
 	}
+	for _, split := range []struct {
+		name string
+		m    confusionMetric
+	}{{"overall", o}, {"validation", v}, {"holdout", h}} {
+		m := split.m
+		// Recompute from counts, never trust a caller-supplied confidence interval.
+		precision := wilson(m.TruePositive, m.TruePositive+m.FalsePositive)
+		recall := wilson(m.TruePositive, m.TruePositive+m.FalseNegative)
+		falseRate := wilson(m.FalsePositive, m.FalsePositive+m.TrueNegative)
+		checks = append(checks,
+			struct {
+				failed bool
+				text   string
+			}{m.TruePositive+m.FalsePositive == 0 || precision.Lower < promotionMinPrecision, fmt.Sprintf("%s precision Wilson 95%% lower bound must be at least %.0f%%", split.name, promotionMinPrecision*100)},
+			struct {
+				failed bool
+				text   string
+			}{m.TruePositive+m.FalseNegative == 0 || recall.Lower < promotionMinRecallLower95, fmt.Sprintf("%s recall Wilson 95%% lower bound must be at least %.0f%%", split.name, promotionMinRecallLower95*100)},
+			struct {
+				failed bool
+				text   string
+			}{m.FalsePositive+m.TrueNegative == 0 || falseRate.Upper > promotionMaxFalseRate, fmt.Sprintf("%s false-positive-rate Wilson 95%% upper bound must be at most %.0f%%", split.name, promotionMaxFalseRate*100)},
+		)
+		if split.name != "overall" {
+			checks = append(checks, struct {
+				failed bool
+				text   string
+			}{m.Players < 5 || m.Matches < 5, split.name + " needs at least five distinct players and five matches"})
+		}
+	}
 	for _, check := range checks {
 		if check.failed {
 			metric.Reasons = append(metric.Reasons, check.text)
@@ -574,12 +769,18 @@ func applyPromotionGate(metric *detectorCalibrationMetric) {
 }
 
 func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents map[string][]model.DetectionEvent) (calibrationDashboard, error) {
+	if err := s.recordCalibrationViewExposure(ctx); err != nil {
+		return calibrationDashboard{}, fmt.Errorf("recording evaluation exposure: %w", err)
+	}
 	store := s.engine.Store()
 	matches, err := store.ListMatches(ctx, 100000)
 	if err != nil {
 		return calibrationDashboard{}, err
 	}
-	splitByMatch, assignments := groupedDatasetSplits(matches)
+	splitByMatch, assignments, err := s.isolatedDatasetSplits(ctx, matches)
+	if err != nil {
+		return calibrationDashboard{}, fmt.Errorf("verifying dataset isolation: %w", err)
+	}
 	reviews, err := store.ListEventReviews(ctx, time.Time{})
 	if err != nil {
 		return calibrationDashboard{}, err
@@ -600,6 +801,13 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 	measurable := samples[:0]
 	for _, sample := range samples {
 		if splitByMatch[sample.MatchID] != "" {
+			if sample.Truth == sqlite.GroundTruthPositive || sample.Truth == sqlite.GroundTruthNegative {
+				available, sampleErr := store.CalibrationWindowHasSamples(ctx, sample.MatchID, sample.PlayerID, sample.FrameStart, sample.FrameEnd)
+				if sampleErr != nil {
+					return calibrationDashboard{}, sampleErr
+				}
+				sample.NoWindowSamples = !available
+			}
 			measurable = append(measurable, sample)
 		}
 	}
@@ -631,7 +839,7 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 		detectors = append(detectors, metric)
 	}
 	sort.Slice(detectors, func(i, j int) bool { return detectors[i].DetectorID < detectors[j].DetectorID })
-	splits := map[string][]string{"training": {}, "validation": {}, "holdout": {}}
+	splits := map[string][]string{"training": {}, "validation": {}, "holdout": {}, "quarantined": {}}
 	for matchID, split := range splitByMatch {
 		splits[split] = append(splits[split], matchID)
 	}
@@ -645,14 +853,22 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 		}
 	}
 	return calibrationDashboard{Detectors: detectors, Splits: splits, Assignments: assignments,
-		Samples: len(samples), BlindSamples: blind, PlayerLeakage: false,
+		ValidationLimitations: []string{
+			"Reserved holdout is not a sealed/blinded prospective test: ordinary replay views and dashboard metrics can expose findings. First exposure locks the app/build/behavior candidate; changes quarantine that cohort.",
+			"Reviewer identities and artifact references are human attestations, not authenticated independent verification.",
+			"Wilson intervals describe labeled opportunities; correlated throws/players violate independence assumptions and these are not population-level guarantees.",
+			"Public release/automatic enforcement remain unvalidated; require a prospectively collected external holdout under a locked candidate and independent review protocol.",
+		},
+		Samples: len(samples), BlindSamples: blind, PlayerLeakage: len(splits["quarantined"]) > 0,
 		Requirements: map[string]any{"positive_opportunities": promotionMinPositive, "legitimate_opportunities": promotionMinNegative,
 			"distinct_players": promotionMinPlayers, "distinct_matches": promotionMinMatches,
 			"holdout_positive": promotionMinHoldoutPositive, "holdout_legitimate": promotionMinHoldoutNegative,
 			"validation_positive": promotionMinValidationPositive, "validation_legitimate": promotionMinValidationNegative,
 			"minimum_precision": promotionMinPrecision, "minimum_recall": promotionMinRecall,
-			"maximum_false_positive_rate": promotionMaxFalseRate, "auto_enforce": false},
-		Notice: "Ground-truth windows expose false negatives. Splits group every connected set of matches sharing a player, so a player cannot appear in both training and holdout. Promotion only enables scored human review; automatic enforcement remains disabled."}, nil
+			"maximum_false_positive_rate": promotionMaxFalseRate, "minimum_precision_lower95": promotionMinPrecision,
+			"minimum_recall_lower95": promotionMinRecallLower95, "maximum_false_rate_upper95": promotionMaxFalseRate,
+			"independent_second_review_required": true, "isolation_policy_version": sqlite.CalibrationSplitPolicyVersion, "auto_enforce": false},
+		Notice: "Conservative human-review policy, not production validation: promotion needs independently corroborated windows and Wilson 95% bounds. Reserved holdout is not sealed; first exposure locks the candidate and later changes quarantine it. Cross-split exposure is quarantined; legacy data stays training-only. Automatic enforcement remains disabled."}, nil
 }
 
 func (s *server) handleCalibrationOpportunities(w http.ResponseWriter, r *http.Request) {

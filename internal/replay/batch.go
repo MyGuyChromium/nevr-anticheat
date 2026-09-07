@@ -497,6 +497,7 @@ func storeMatchAnalysis(ctx context.Context, store *sqlite.Store, matchCtx *mode
 		MatchID: matchCtx.MatchID, Source: source, Replace: replace,
 		Events: result.DetectionEvents, Scores: scores, Cases: cases,
 		KeepPlayers: out.FlaggedPlayers,
+		Coverage:    result.PlayerCoverage,
 		CloseReason: fmt.Sprintf("player no longer reaches the review tier after %s analysis", source),
 	})
 	if err != nil {

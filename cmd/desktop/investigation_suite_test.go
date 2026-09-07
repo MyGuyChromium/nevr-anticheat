@@ -54,7 +54,7 @@ func TestInvestigationSuiteRoutes(t *testing.T) {
 	var validation struct {
 		Splits map[string][]string `json:"splits"`
 	}
-	if resp := getJSON(t, base+"/api/lab/validation", &validation); resp.StatusCode != 200 || len(validation.Splits) != 3 {
+	if resp := getJSON(t, base+"/api/lab/validation", &validation); resp.StatusCode != 200 || len(validation.Splits) != 4 {
 		t.Fatalf("validation status=%d body=%+v", resp.StatusCode, validation)
 	}
 	var probes struct {

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,18 +57,132 @@ func TestGroundTruthWindowSupersedesOverlappingEventReview(t *testing.T) {
 }
 
 func TestPromotionGateAcceptsRepresentativePassingEvidence(t *testing.T) {
-	metric := detectorCalibrationMetric{
-		DetectorID: "THROW_001",
-		Overall: confusionMetric{TruePositive: 30, TrueNegative: 300, PositiveOpportunities: 30,
-			NegativeOpportunities: 300, Players: 5, Matches: 10, Precision: 1, Recall: 1},
-		Validation: confusionMetric{TruePositive: 5, TrueNegative: 50, PositiveOpportunities: 5,
-			NegativeOpportunities: 50, Precision: 1, Recall: 1},
-		Holdout: confusionMetric{TruePositive: 5, TrueNegative: 50, PositiveOpportunities: 5,
-			NegativeOpportunities: 50, Precision: 1, Recall: 1},
-	}
+	metric := representativeGateMetric()
 	applyPromotionGate(&metric)
 	if !metric.Eligible || len(metric.Reasons) != 0 {
 		t.Fatalf("passing metric was rejected: %+v", metric)
+	}
+}
+
+func representativeGateMetric() detectorCalibrationMetric {
+	full := confusionMetric{TruePositive: 200, TrueNegative: 1000, PositiveOpportunities: 200,
+		NegativeOpportunities: 1000, Players: 20, Matches: 20, Precision: 1, Recall: 1,
+		IndependentEvidence: 1200, CurrentProvenance: 1200}
+	half := confusionMetric{TruePositive: 100, TrueNegative: 500, PositiveOpportunities: 100,
+		NegativeOpportunities: 500, Players: 10, Matches: 10, Precision: 1, Recall: 1,
+		IndependentEvidence: 600, CurrentProvenance: 600}
+	return detectorCalibrationMetric{DetectorID: "THROW_001", Overall: full, Validation: half, Holdout: half}
+}
+
+func TestPromotionGateRejectsWeakOrUnobservableEvidence(t *testing.T) {
+	for name, modify := range map[string]func(*detectorCalibrationMetric){
+		"old50percentRecall": func(m *detectorCalibrationMetric) { m.Overall.Recall = .5 },
+		"uncertainPrecision": func(m *detectorCalibrationMetric) {
+			m.Holdout.TruePositive = 60
+			m.Holdout.TrueNegative = 10000
+			m.Holdout.PositiveOpportunities = 80
+			m.Holdout.NegativeOpportunities = 10000
+		},
+		"uncertainFalseRate": func(m *detectorCalibrationMetric) {
+			m.Holdout.FalsePositive = 1
+			m.Holdout.TrueNegative = 399
+			m.Holdout.FalsePositiveRate = .0025
+			m.Holdout.NegativeOpportunities = 400
+		},
+		"oneReviewer":         func(m *detectorCalibrationMetric) { m.Overall.IndependentEvidence-- },
+		"stale":               func(m *detectorCalibrationMetric) { m.Overall.StaleProvenance = 1 },
+		"badTelemetry":        func(m *detectorCalibrationMetric) { m.Overall.UnusableTelemetry = 1 },
+		"crossSplitExposure":  func(m *detectorCalibrationMetric) { m.Overall.IsolationConflicts = 1 },
+		"oneHoldoutPlayer":    func(m *detectorCalibrationMetric) { m.Holdout.Players = 1 },
+		"walkingUnobservable": func(m *detectorCalibrationMetric) { m.DetectorID = "MOV_006" },
+		"wristAliased":        func(m *detectorCalibrationMetric) { m.DetectorID = "BIO_001" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := representativeGateMetric()
+			modify(&m)
+			applyPromotionGate(&m)
+			if m.Eligible {
+				t.Fatalf("unsafe promotion: %+v", m)
+			}
+		})
+	}
+}
+
+func TestPromotionEvidenceNeedsIndependentWindowNotEventLabel(t *testing.T) {
+	meta := map[string]matchCalibrationMeta{"M": {CurrentProvenance: true, QualityBand: "excellent"}}
+	window := sqlite.CalibrationOpportunity{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", FrameStart: 10, FrameEnd: 12,
+		GroundTruth: sqlite.GroundTruthPositive, ReviewerID: "reviewer-a", VerifierID: "reviewer-b", BlindReview: true,
+		VerifiedGroundTruth: sqlite.GroundTruthPositive, EvidenceMethod: "controlled_reproduction", EvidenceReference: "trial-42/frame-10-12"}
+	samples := samplesFromLabels(nil, []sqlite.CalibrationOpportunity{window}, meta)
+	if len(samples) != 1 || !samples[0].IndependentEvidence || samples[0].UnusableTelemetry {
+		t.Fatalf("verified window: %+v", samples)
+	}
+	reviews := []sqlite.EventReview{{MatchID: "M", PlayerID: "P", DetectorID: "THROW_001", FrameIndex: 50, Verdict: "yes", BlindReview: true}}
+	samples = samplesFromLabels(reviews, []sqlite.CalibrationOpportunity{window}, meta)
+	if samples[0].IndependentEvidence {
+		t.Fatal("event-only review became independent release evidence")
+	}
+	metrics := metricsForSamples(samples, nil, map[string]string{"M": "quarantined"})["THROW_001"]
+	if metrics.Overall.IsolationConflicts != 2 || metrics.Training.PositiveOpportunities != 0 || metrics.Holdout.PositiveOpportunities != 0 {
+		t.Fatalf("quarantine leaked into metrics: %+v", metrics)
+	}
+}
+
+func TestExperimentEndpointsRejectHoldoutAndQuarantine(t *testing.T) {
+	s, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	for _, split := range []string{"holdout", "quarantined"} {
+		t.Run(split, func(t *testing.T) {
+			id := "EXPERIMENT-" + split
+			match := sqlite.StoredMatch{Context: &model.MatchContext{MatchID: id, PlayerIDs: []string{id + "-player"}}}
+			if err := s.engine.Store().StoreMatchContext(t.Context(), match.Context, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.engine.Store().ReconcileCalibrationSplits(t.Context(), []sqlite.StoredMatch{match}, map[string]string{id: "holdout"}); err != nil {
+				t.Fatal(err)
+			}
+			if split == "quarantined" {
+				if err := s.engine.Store().RecordCalibrationExposure(t.Context(), id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, endpoint := range []string{"/api/lab/experiments", "/api/lab/thresholds/preview"} {
+				resp := postJSONTest(t, base+endpoint, map[string]any{"scope": "match", "match_id": id, "detector_id": "THROW_001", "parameter": "base_tolerance", "value": 1, "values": []float64{1}}, nil)
+				if resp.StatusCode != http.StatusConflict {
+					t.Fatalf("%s accepted %s: %d", endpoint, split, resp.StatusCode)
+				}
+			}
+		})
+	}
+}
+
+func TestCalibrationExposureRejectsDirtyUnknownOrStaleCandidates(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	info := &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: revision}, {Key: "vcs.modified", Value: "false"}}}
+	if !trustedCalibrationBuild(info, revision) {
+		t.Fatal("clean identifiable build rejected")
+	}
+	if trustedCalibrationBuild(nil, revision) || trustedCalibrationBuild(info, "development") || trustedCalibrationBuild(info, strings.Repeat("b", 40)) {
+		t.Fatal("unknown revision trusted")
+	}
+	info.Settings[1].Value = "true"
+	if trustedCalibrationBuild(info, revision) {
+		t.Fatal("dirty build trusted")
+	}
+	run := sqlite.AnalysisRun{AppVersion: "1", BuildCommit: revision, CalibrationFingerprint: "behavior-A"}
+	fp := exposureCandidateFingerprint(run, "1", revision, "behavior-A", true)
+	if fp == "" {
+		t.Fatal("identifiable candidate lost")
+	}
+	for _, got := range []string{
+		exposureCandidateFingerprint(run, "2", revision, "behavior-A", true),
+		exposureCandidateFingerprint(run, "1", strings.Repeat("b", 40), "behavior-A", true),
+		exposureCandidateFingerprint(run, "1", revision, "behavior-B", true),
+		exposureCandidateFingerprint(run, "1", revision, "behavior-A", false),
+	} {
+		if got != "" {
+			t.Fatal("stale/untrusted provenance created a candidate lock")
+		}
 	}
 }
 
@@ -254,6 +370,37 @@ func TestImportedOpportunityIsNotMeasuredUntilReplayExists(t *testing.T) {
 	}
 }
 
+func TestImportedEmptyPlayerWindowsAreUnobservableNotConfusionEvidence(t *testing.T) {
+	s, ts := newTestServer(t)
+	if resp, out := upload(t, ts, true, map[string]string{"fixture.echoreplay": fixturePath}); resp.StatusCode != http.StatusOK || !out.Results[0].OK {
+		t.Fatalf("upload status=%d out=%+v", resp.StatusCode, out)
+	}
+	for i, truth := range []string{sqlite.GroundTruthPositive, sqlite.GroundTruthNegative} {
+		if err := s.engine.Store().ImportCalibrationOpportunity(t.Context(), sqlite.CalibrationOpportunity{
+			MatchID: "SYN-FIXTURE-001", PlayerID: "echovr:1001", DetectorID: "THROW_001",
+			Kind: sqlite.OpportunityThrow, FrameStart: 100000 + i*100, FrameEnd: 100001 + i*100, GroundTruth: truth,
+			ReviewerID: "Alice", VerifierID: "Bob", VerifiedGroundTruth: truth, BlindReview: true,
+			EvidenceMethod: "controlled_reproduction", EvidenceReference: "independent-trial",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dashboard, err := s.buildCalibrationDashboard(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metric, ok := detectorMetric(dashboard, "THROW_001")
+	x := metric.Overall
+	if !ok || dashboard.Samples != 2 || x.Uncertain != 2 || x.UnusableTelemetry != 2 || x.IndependentEvidence != 0 ||
+		x.PositiveOpportunities != 0 || x.NegativeOpportunities != 0 || x.TruePositive+x.FalsePositive+x.TrueNegative+x.FalseNegative != 0 || metric.Eligible {
+		t.Fatalf("missing telemetry became measured evidence: %+v", metric)
+	}
+	items, err := s.engine.Store().ListCalibrationOpportunities(t.Context(), "SYN-FIXTURE-001", "THROW_001")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("annotations were not preserved: %+v, %v", items, err)
+	}
+}
+
 func TestCalibrationReportCarriesVerifiableProvenance(t *testing.T) {
 	_, ts := newTestServer(t)
 	var report calibrationReport
@@ -263,6 +410,9 @@ func TestCalibrationReportCarriesVerifiableProvenance(t *testing.T) {
 	}
 	if report.Payload.SchemaVersion != "nevr-calibration-report/v1" || report.Payload.ConfigFingerprint == "" || report.Payload.CalibrationFingerprint == "" {
 		t.Fatalf("report provenance = %+v", report.Payload)
+	}
+	if report.Payload.Dashboard.SealedHoldout || report.Payload.Dashboard.ProductionValidated || report.Payload.Dashboard.ReleaseEligible || len(report.Payload.Dashboard.ValidationLimitations) == 0 {
+		t.Fatal("human-review metrics must not claim sealed external validation or release approval")
 	}
 	raw, err := json.Marshal(report.Payload)
 	if err != nil {

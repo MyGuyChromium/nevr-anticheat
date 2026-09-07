@@ -610,6 +610,7 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 	if run.summary != nil {
 		sum := run.summary.Finish()
 		sum.ApplySuspicion(res.MatchCtx, result.PlayerScores, result.DetectionEvents, a.opts.Analysis.Levels)
+		sum.ApplyCoverage(result.PlayerCoverage, result.DetectionEvents)
 		res.MatchSummary = sum
 		if res.AnalysisErr == nil {
 			if doc, err := json.Marshal(sum); err != nil {

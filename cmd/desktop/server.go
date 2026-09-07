@@ -196,15 +196,17 @@ func (s *server) handleQuit(w http.ResponseWriter, r *http.Request) {
 // ---- views -----------------------------------------------------------------
 
 type playerView struct {
-	PlayerID         string   `json:"player_id"`
-	Name             string   `json:"name"`
-	Team             string   `json:"team"`
-	Frames           int      `json:"frames"`
-	Score            float64  `json:"score"`
-	Level            string   `json:"level"`
-	Detections       int      `json:"detections"`
-	ShadowDetections int      `json:"shadow_detections"`
-	TopDetectors     []string `json:"top_detectors"`
+	PlayerID         string                 `json:"player_id"`
+	Name             string                 `json:"name"`
+	Team             string                 `json:"team"`
+	Frames           int                    `json:"frames"`
+	Score            float64                `json:"score"`
+	Level            string                 `json:"level"`
+	Detections       int                    `json:"detections"`
+	ShadowDetections int                    `json:"shadow_detections"`
+	TopDetectors     []string               `json:"top_detectors"`
+	Assessment       model.ReviewAssessment `json:"assessment"`
+	Coverage         *model.PlayerCoverage  `json:"coverage,omitempty"`
 }
 
 type eventView struct {
@@ -334,6 +336,7 @@ type matchData struct {
 	scores          map[string]model.SuspicionScore
 	events          []model.DetectionEvent
 	eventReviews    map[string]sqlite.EventReview
+	coverage        map[string]*model.PlayerCoverage
 	cases           []model.ReviewCase
 	hasScore        bool
 	blue, orange    int
@@ -438,6 +441,8 @@ func (s *server) buildMatchView(d matchData) matchView {
 			Detections:       detections[pid],
 			ShadowDetections: shadow[pid],
 			TopDetectors:     []string{},
+			Assessment:       model.AssessPlayerWithCoverage(pid, d.events, d.coverage[pid]),
+			Coverage:         d.coverage[pid],
 		}
 		if sc, ok := d.scores[pid]; ok {
 			pv.Score = sc.TotalScore
@@ -606,6 +611,7 @@ func (s *server) freshMatchView(ctx context.Context, res *replay.AnalyzeResult, 
 		sourceFile:      sourceFile,
 		analyzedAt:      time.Now(),
 		framesProcessed: res.Result.FramesProcessed,
+		coverage:        res.Result.PlayerCoverage,
 		invalidFrames:   res.Result.InvalidFrames,
 		framesByPlayer:  res.Summary.FramesByPlayer,
 		scores:          res.Result.PlayerScores,
@@ -639,6 +645,9 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 	if err != nil {
 		return matchView{}, err
 	}
+	if err := s.recordCalibrationViewExposure(ctx); err != nil {
+		return matchView{}, fmt.Errorf("recording calibration exposure before displaying findings: %w", err)
+	}
 	events, err := store.GetMatchEvents(ctx, matchID)
 	if err != nil {
 		return matchView{}, fmt.Errorf("loading events: %w", err)
@@ -667,11 +676,16 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 	if err != nil {
 		return matchView{}, err
 	}
+	coverage, err := store.GetMatchAnalysisCoverage(ctx, matchID)
+	if err != nil {
+		return matchView{}, fmt.Errorf("loading coverage: %w", err)
+	}
 	mv := s.buildMatchView(matchData{
 		ctx:             sm.Context,
 		sourceFile:      filepath.Base(sm.Context.ReplayFile),
 		analyzedAt:      sm.IngestedAt,
 		framesProcessed: maxIdx + 1,
+		coverage:        coverage,
 		framesByPlayer:  counts,
 		scores:          scores,
 		events:          events,
@@ -741,6 +755,9 @@ func (s *server) matchEntry(ctx context.Context, res *replay.AnalyzeResult, sour
 		id := res.MatchCtx.MatchID
 		return matchEntry{AlreadyStored: true, MatchID: id,
 			Error: fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", id)}
+	}
+	if err := s.recordCalibrationViewExposure(ctx); err != nil {
+		return matchEntry{MatchID: res.MatchCtx.MatchID, Error: fmt.Sprintf("analysis completed, but calibration exposure could not be recorded before displaying findings: %v", err)}
 	}
 	mv := s.freshMatchView(ctx, res, sourceFile)
 	return matchEntry{OK: true, MatchID: mv.MatchID, Match: &mv}

@@ -106,7 +106,8 @@ type MatchResult struct {
 	EventsInvalid int `json:"events_invalid"`
 	// TelemetryQuality is assessed before offline detectors run. Low-quality
 	// input can only reduce confidence and force shadow mode.
-	TelemetryQuality TelemetryQualityReport `json:"telemetry_quality"`
+	TelemetryQuality TelemetryQualityReport           `json:"telemetry_quality"`
+	PlayerCoverage   map[string]*model.PlayerCoverage `json:"player_coverage,omitempty"`
 }
 
 // Pipeline orchestrates frame processing through detectors and scoring.
@@ -257,6 +258,7 @@ func (p *Pipeline) ProcessMatch(
 		p.quality = TelemetryQualityReport{Score: 100, Grade: "live", ConfidenceMultiplier: 1}
 	}
 	result.TelemetryQuality = p.quality
+	coverage := newCoverageTracker(p.detectors, p.cfg, matchCtx.PlayerIDs)
 
 	// Offline: every call is a whole match, reset everything. Live: the
 	// first slice only creates the roster; state seeded before it (and by
@@ -301,8 +303,10 @@ func (p *Pipeline) ProcessMatch(
 			sanitized, err := p.validator.Validate(pf, matchCtx)
 			if err != nil {
 				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, err)
+				coverage.player(pf.PlayerID).RejectedFrames++
 				continue
 			}
+			coverage.player(pf.PlayerID).ValidFrames++
 			for _, s := range sanitized {
 				result.SanitizedFrames[s]++
 			}
@@ -368,6 +372,11 @@ func (p *Pipeline) ProcessMatch(
 			if view.active == 0 {
 				continue
 			}
+			for pid, ps := range framePlayers {
+				if _, ok := view.players[pid]; ok {
+					coverage.candidate(det.ID(), ps, fi)
+				}
+			}
 			events := det.Evaluate(matchCtx, view.players, fi)
 			frameEvents = append(frameEvents, p.acceptEmissions(events, fi, result)...)
 		}
@@ -391,6 +400,7 @@ func (p *Pipeline) ProcessMatch(
 
 	// Collect final scores
 	result.PlayerScores = p.scorer.GetAllScores()
+	result.PlayerCoverage = coverage.finish(p.quality)
 	result.Duration = time.Since(start)
 	return result, nil
 }

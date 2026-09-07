@@ -22,6 +22,7 @@ type MatchAnalysisWrite struct {
 	Cases       []model.ReviewCase
 	KeepPlayers []string
 	CloseReason string
+	Coverage    map[string]*model.PlayerCoverage
 }
 
 // MatchAnalysisWriteResult reports committed row counts.
@@ -51,6 +52,23 @@ func (s *Store) WriteMatchAnalysis(ctx context.Context, in MatchAnalysisWrite) (
 		return out, fmt.Errorf("begin analysis transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// Coverage belongs to this exact analysis, so it changes atomically with
+	// events and scores. Legacy callers clear it rather than retaining a stale
+	// claim about a previous build's detector coverage.
+	if in.Coverage == nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM match_analysis_coverage WHERE match_id = ?`, in.MatchID); err != nil {
+			return out, fmt.Errorf("clear analysis coverage: %w", err)
+		}
+	} else {
+		doc, err := json.Marshal(in.Coverage)
+		if err != nil {
+			return out, fmt.Errorf("encode analysis coverage: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO match_analysis_coverage (match_id, coverage_json) VALUES (?, ?)
+			ON CONFLICT(match_id) DO UPDATE SET coverage_json=excluded.coverage_json`, in.MatchID, string(doc)); err != nil {
+			return out, fmt.Errorf("store analysis coverage: %w", err)
+		}
+	}
 
 	if in.Replace {
 		if err := captureAnalysisSnapshotTx(ctx, tx, in.MatchID); err != nil {
