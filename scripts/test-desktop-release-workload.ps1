@@ -219,7 +219,9 @@ function Invoke-WorkloadUpload([string]$Path, [int]$Ordinal, [int]$Round) {
     $count = 0L
     foreach ($item in @($entry.matches)) {
         Assert-Workload ($item.ok -and -not $item.error -and -not $item.already_stored) 'an uploaded session failed or was skipped'
-        $count += [long]$item.match.frames
+        $sessionFrames = [long]$item.match.frames_processed
+        Assert-Workload ($sessionFrames -gt 0) 'an uploaded session reported no processed frames'
+        $count += $sessionFrames
     }
     Assert-Workload ($count -gt 0) 'successful upload reported no processed frames'
     $runs.Add([pscustomobject]@{ round = $Round; input = $Ordinal; frames = $count; elapsed_ms = [math]::Round($result.elapsed_ms, 2); frames_per_second = [math]::Round($count / ($result.elapsed_ms / 1000), 2) })
@@ -240,7 +242,9 @@ function Test-WorkloadNotes {
     $denied = Send-WorkloadRequest 'POST' ($matchPath + '/notes') $body 'https://untrusted.invalid'
     Assert-Workload ($denied.status -eq 403) 'cross-origin note mutation was not denied'
     $initial = Send-WorkloadRequest 'GET' ($matchPath + '/notes')
-    Assert-Workload (@($initial.body.notes).Count -eq 0) 'denied mutation created a note'
+    # An empty Go []InvestigationNote is encoded as notes:null, not []. Do
+    # not mistake PowerShell's @($null).Count == 1 for a persisted note.
+    Assert-Workload ($initial.status -eq 200 -and $initial.body.PSObject.Properties.Name -contains 'notes' -and @($initial.body.notes | Where-Object { $null -ne $_ }).Count -eq 0) 'denied mutation created a note or initial notes could not be verified'
     foreach ($attempt in 1..2) {
         $saved = Send-WorkloadRequest 'POST' ($matchPath + '/notes') $body
         Assert-Workload ($saved.status -eq 200 -and $saved.body.note_id -eq $id) 'note save/retry lacked matching backend confirmation'

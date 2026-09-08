@@ -83,6 +83,69 @@ try {
     Pass-Runner 'Bounded request cancellation'
 } finally { $client.Dispose(); $handler.Dispose() }
 
+# Exercise the actual upload response consumer without file/network I/O. This
+# shape follows analyzeEntry -> matches[] -> matchView.FramesProcessed, not the
+# unrelated playerView.frames field. Keep the source contract checked as well.
+$serverSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\cmd\desktop\server.go'))
+Assert-Runner ($serverSource -match 'FramesProcessed\s+int\s+`json:"frames_processed"`') 'Server matchView frame-count contract changed; update the workload integration test.'
+& {
+    $uploadFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-WorkloadUpload' }, $true)
+    Assert-Runner ($null -ne $uploadFunction) 'Actual upload consumer is missing.'
+    Invoke-Expression $uploadFunction.Extent.Text
+    function Start-WorkloadRequest { return [pscustomobject]@{ task = [Threading.Tasks.Task]::CompletedTask } }
+    function Finish-WorkloadRequest { return $responseFixture }
+    function Pump-Workload { }
+    $UploadTimeoutSeconds = 5
+    $runs = [Collections.Generic.List[object]]::new()
+    $responseFixture = [pscustomobject]@{
+        status = 200; elapsed_ms = 1000
+        body = ('{"results":[{"file":"workload-input.echoreplay","ok":true,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12},"matches":[{"ok":true,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12}},{"ok":true,"match_id":"SYN-FIXTURE-002","match":{"match_id":"SYN-FIXTURE-002","frames_processed":8}}]}]}' | ConvertFrom-Json)
+    }
+    $frames = Invoke-WorkloadUpload 'synthetic-not-opened.echoreplay' 2 3
+    Assert-Runner ($frames -eq 20 -and $runs.Count -eq 1 -and $runs[0].frames -eq 20 -and $runs[0].frames_per_second -eq 20 -and $runs[0].round -eq 3 -and $runs[0].input -eq 2) 'Actual multi-session frames_processed payload did not aggregate once into upload metrics.'
+    Pass-Runner 'Actual upload consumer aggregates server frames_processed shape'
+    foreach ($invalidMatch in @('{"frames_processed":0}', '{"frames_processed":-1}', '{}', '{"frames":99}')) {
+        # Keep the first session valid: a positive total must not hide missing
+        # or zero processed-frame evidence for the second uploaded session.
+        $responseFixture.body.results[0].matches[1].match = $invalidMatch | ConvertFrom-Json
+        $rejected = $false
+        try { $null = Invoke-WorkloadUpload 'synthetic-not-opened.echoreplay' 2 3 } catch { $rejected = $true }
+        Assert-Runner ($rejected -and $runs.Count -eq 1) 'Missing/zero/wrong-key session frames were accepted or appended as a successful run.'
+    }
+    Pass-Runner 'Upload consumer rejects missing zero negative and wrong-key frame counts'
+}
+
+# ListInvestigationNotes starts with a nil Go slice: its real empty response
+# is {"notes":null}. Drive the actual full note/security helper from that
+# response, preserving IDs and returning the same route/status contracts.
+& {
+    $noteFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-WorkloadNotes' }, $true)
+    Assert-Runner ($null -ne $noteFunction) 'Actual note workload consumer is missing.'
+    Invoke-Expression $noteFunction.Extent.Text
+    $savedRows = [ordered]@{}
+    $notes = [Collections.Generic.List[string]]::new()
+    $recordedChecks = [Collections.Generic.List[object]]::new()
+    function Add-WorkloadCheck($ID, $Status, $Detail) { $recordedChecks.Add([pscustomobject]@{ id = $ID; status = $Status }) }
+    function Send-WorkloadRequest($Method, $Path, $Body = $null, $Origin = '') {
+        if ($Path.EndsWith('/investigation')) {
+            return [pscustomobject]@{ status = $(if ($Path.StartsWith('../')) { 404 } else { 200 }); body = $null }
+        }
+        Assert-Runner ($Path -eq 'api/match/SYN-FIXTURE-001/notes') 'Unexpected mock route; do not hide missing endpoint coverage.'
+        if ($Method -eq 'GET') {
+            return [pscustomobject]@{ status = 200; body = [pscustomobject]@{ notes = $(if ($savedRows.Count) { @($savedRows.Values) } else { $null }) } }
+        }
+        if ($Origin) { return [pscustomobject]@{ status = 403; body = [pscustomobject]@{ error = 'cross-origin request denied' } } }
+        if (-not $Body.body) { return [pscustomobject]@{ status = 400; body = [pscustomobject]@{ error = 'note body is required' } } }
+        $savedRows[$Body.note_id] = [pscustomobject]$Body
+        return [pscustomobject]@{ status = 200; body = $savedRows[$Body.note_id] }
+    }
+    function Start-WorkloadRequest($Method, $Path, $Body) { return [pscustomobject]@{ result = (Send-WorkloadRequest $Method $Path $Body) } }
+    function Finish-WorkloadRequest($Operation) { return $Operation.result }
+    Test-WorkloadNotes
+    Assert-Runner ($notes.Count -eq 3 -and $savedRows.Count -eq 3 -and $recordedChecks.Count -eq 1 -and $recordedChecks[0].status -eq 'PASS') 'Real empty-note response or same-ID/concurrent note projection failed.'
+    Pass-Runner 'Actual note helper accepts Go nil slice and preserves three unique IDs'
+}
+
 # Exercise the actual early cutoff code with a non-process fake object. It
 # must throw before probes or any process action can occur.
 $script:app = [pscustomobject]@{ HasExited = $false; WorkingSet64 = 2MB; TotalProcessorTime = [TimeSpan]::FromSeconds(1) }

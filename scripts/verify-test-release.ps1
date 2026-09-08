@@ -117,7 +117,7 @@ function Assert-TestReleaseDesktopReport([object]$Report, [int]$ExitCode, [strin
         Assert-TestRelease ($check.status -cin @('PASS', 'FAIL', 'NOT TESTED')) 'Unknown desktop workload check status.'
     }
     if ($Report.automated_status -cne 'FAIL') {
-        foreach ($required in @('isolated_candidate_identity', 'synthetic_notes_and_security', 'long_lived_desktop_workload', 'graceful_restart_persistence', 'inputs_and_binary_unchanged', 'abrupt_kill_recovery')) {
+        foreach ($required in @('isolated_candidate_identity', 'synthetic_notes_and_security', 'long_lived_desktop_workload', 'graceful_restart_persistence', 'inputs_and_binary_unchanged', 'abrupt_kill_recovery', 'isolated_state_cleanup')) {
             Assert-TestRelease ($ids.Contains($required)) "Required desktop workload check missing: $required."
         }
         Assert-TestRelease (@($Report.checks | Where-Object { $_.status -ceq 'FAIL' }).Count -eq 0) 'Desktop workload summary conceals a failed check.'

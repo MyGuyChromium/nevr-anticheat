@@ -2,7 +2,11 @@
 [CmdletBinding()]
 param([string]$OutputDirectory = '')
 $ErrorActionPreference = 'Stop'
+# The imported script has its own parameter defaults; preserve this runner's
+# requested report destination across dot-sourcing those validation helpers.
+$requestedVerifierReportDirectory = $OutputDirectory
 . (Join-Path $PSScriptRoot 'verify-test-release.ps1')
+$OutputDirectory = $requestedVerifierReportDirectory
 $testRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('nevr-release-contract-tests-' + [Guid]::NewGuid().ToString('N'))))
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
 $checks = [Collections.Generic.List[object]]::new()
@@ -99,6 +103,12 @@ try {
     Test-ReleaseContract 'missing_desktop_check_inventory_refused' {
         $report = [pscustomobject]@{schema_version='nevr-desktop-workload/v1';automated_status='PASS';expected_build_commit=('a' * 40);executable_sha256=('c' * 64);checks=@()}
         Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'Required'
+    }
+    Test-ReleaseContract 'missing_desktop_cleanup_check_refused' {
+        $ids = @('isolated_candidate_identity', 'synthetic_notes_and_security', 'long_lived_desktop_workload', 'graceful_restart_persistence', 'inputs_and_binary_unchanged', 'abrupt_kill_recovery')
+        $report = [pscustomobject]@{schema_version='nevr-desktop-workload/v1';automated_status='PASS';expected_build_commit=('a' * 40);executable_sha256=('c' * 64);
+            checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status=$(if ($_ -eq 'abrupt_kill_recovery') {'NOT TESTED'} else {'PASS'})} })}
+        Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'isolated_state_cleanup'
     }
     if ($OutputDirectory) {
         [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)) | Out-Null
