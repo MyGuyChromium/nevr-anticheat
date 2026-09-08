@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
 
@@ -51,6 +52,18 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 	sort.Strings(ordered)
 	for _, id := range ordered {
 		d := model.DetectorCoverage{DetectorID: id, Enabled: enabled[id], Status: "not_evaluated", Limitations: []string{}}
+		d.Capability = detect.CapabilityFor(id)
+		if d.Capability != nil {
+			d.InputCheck = true
+			d.Limitations = append(d.Limitations, "Automatic enforcement unavailable: "+d.Capability.Limitations)
+			if d.Capability.Rule != nil {
+				// Owned immutable bytes preserve the actual configured parameters,
+				// not just today's defaults or a pointer into a mutable config map.
+				if dc, ok := cfg.Detectors[id]; ok {
+					d.Capability.Rule.ConfiguredParameters, _ = json.Marshal(dc.Params)
+				}
+			}
+		}
 		if !d.Enabled {
 			d.Status = "disabled"
 		}
@@ -104,7 +117,7 @@ func (c *coverageTracker) player(id string) *model.PlayerCoverage {
 func (c *coverageTracker) candidate(id string, ps *model.PlayerState, frame int) {
 	d := &c.player(ps.PlayerID).Detectors[c.index[id]]
 	d.CandidateFrames++
-	usable := false
+	usable := detect.ReviewInputsAvailable(id, ps, frame)
 	switch id {
 	case "THROW_001":
 		usable = ps.LastThrow.ObservedAt(frame) && ps.LastThrow.ReleaseSpeed > 0
@@ -115,6 +128,8 @@ func (c *coverageTracker) candidate(id string, ps *model.PlayerState, frame int)
 	case "BIO_001":
 		usable = !ps.IsStunned && !ps.IsImmune && ps.FrameDt >= .01 && math.Pi/ps.FrameDt > c.wristLimit &&
 			(ps.LeftWristAngularRateValid || ps.RightWristAngularRateValid)
+	case "STATE_008":
+		usable = false // actual catch_inputs_ready trace owns this counter
 	}
 	if usable {
 		d.InputFrames++

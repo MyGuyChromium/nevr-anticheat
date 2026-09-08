@@ -76,6 +76,7 @@ var decisionReasonDescriptions = map[string]string{
 	"invalid_emission_dropped":          "Raw emission failed event validation and was dropped",
 	"quality_confidence_reduced":        "Source quality reduced emission confidence",
 	"quality_forced_shadow":             "Source quality forced observation-only handling",
+	"source_health_abstention":          "Affected source observations are degraded or blind; evidence retained without scoring or automatic enforcement",
 	"context_tracking_limited":          "Tracking uncertainty reduced emission confidence",
 	"context_possible_head_contact":     "Possible head contact reduced emission confidence",
 	"context_possible_slap_or_push":     "Possible slap or push reduced emission confidence",

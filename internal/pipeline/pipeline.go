@@ -112,6 +112,8 @@ type MatchResult struct {
 
 // Pipeline orchestrates frame processing through detectors and scoring.
 type Pipeline struct {
+	health           map[string]*healthEntry
+	capabilities     map[string]*model.DetectorCapability
 	decisionCoverage *coverageTracker // current-call diagnostics, detached before returning
 	detectors        []detect.Detector
 	scorer           *scoring.SuspicionScorer
@@ -183,6 +185,7 @@ func NewPipeline(
 	// bound; the validator's hard bound is MaxProducerDt.
 	extractor.SetMaxFrameDt(cfg.Pipeline.MaxFrameDt)
 	return &Pipeline{
+		capabilities:  detectorCapabilities(detectors),
 		detectors:     detectors,
 		scorer:        scorer,
 		dedup:         NewDeduplicator(DefaultMergeWindow),
@@ -223,6 +226,7 @@ func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
 // initMatch seeds the roster from the match context and anchors the scorer
 // on the match start so event times are match-relative, not ingest-relative.
 func (p *Pipeline) initMatch(matchCtx *model.MatchContext) {
+	p.health = make(map[string]*healthEntry)
 	p.lastFrameIdx = -1
 	p.players = make(map[string]*model.PlayerState, len(matchCtx.PlayerIDs))
 	for _, pid := range matchCtx.PlayerIDs {
@@ -259,7 +263,7 @@ func (p *Pipeline) ProcessMatch(
 	} else {
 		// A live slice is often only one frame. The persistent live validation
 		// path handles it incrementally; never gate it as a short offline file.
-		p.quality = TelemetryQualityReport{Score: 100, Grade: "live", ConfidenceMultiplier: 1}
+		p.quality = TelemetryQualityReport{Grade: "source_scoped", ConfidenceMultiplier: 1}
 	}
 	result.TelemetryQuality = p.quality
 	coverage := newCoverageTracker(p.detectors, p.cfg, matchCtx.PlayerIDs)
@@ -293,6 +297,7 @@ func (p *Pipeline) ProcessMatch(
 
 	for _, fi := range indices {
 		pFrames := frameGroups[fi]
+		sharedJumps := p.sharedOrientationJumps(pFrames)
 
 		select {
 		case <-ctx.Done():
@@ -309,6 +314,9 @@ func (p *Pipeline) ProcessMatch(
 			pf := &pFrames[i]
 			sanitized, err := p.validator.Validate(pf, matchCtx)
 			if err != nil {
+				if p.players[pf.PlayerID] != nil {
+					p.observeHealth(pf, p.players[pf.PlayerID], true, sanitized, false)
+				}
 				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, err)
 				coverage.player(pf.PlayerID).RejectedFrames++
 				coverage.allEnabled(pf.PlayerID, fi, "frame_rejected")
@@ -317,12 +325,14 @@ func (p *Pipeline) ProcessMatch(
 			// Keep malformed time/identity classified by the validator. Only
 			// valid observations reach ordering checks, before any history write.
 			if previous := p.players[pf.PlayerID]; previous != nil && previous.FrameCount > 0 && (pf.FrameIndex <= previous.LastFrameIdx || pf.Timestamp <= previous.LastTimestamp) {
+				p.observeHealth(pf, previous, true, sanitized, false)
 				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, &ValidationError{Reason: "stale_player_sample", PlayerID: pf.PlayerID, Detail: "frame index and timestamp must both advance"})
 				coverage.player(pf.PlayerID).RejectedFrames++
 				coverage.allEnabled(pf.PlayerID, fi, "stale_player_sample")
 				continue
 			}
 			coverage.player(pf.PlayerID).ValidFrames++
+			p.observeHealth(pf, p.players[pf.PlayerID], false, sanitized, sharedJumps[pf.PlayerID])
 			for _, s := range sanitized {
 				result.SanitizedFrames[s]++
 			}
@@ -450,6 +460,7 @@ func (p *Pipeline) ProcessMatch(
 	// Collect final scores
 	result.PlayerScores = p.scorer.GetAllScores()
 	result.PlayerCoverage = coverage.finish(p.quality)
+	p.finishHealth(coverage, result)
 	result.Duration = time.Since(start)
 	return result, nil
 }
@@ -471,6 +482,7 @@ func (p *Pipeline) Finalize(matchCtx *model.MatchContext) *MatchResult {
 	p.scorer.ApplyCorrelationBonus()
 	result.PlayerScores = p.scorer.GetAllScores()
 	result.PlayerCoverage = coverage.finish(p.quality)
+	p.finishHealth(coverage, result)
 	return result
 }
 
@@ -503,6 +515,7 @@ func (p *Pipeline) acceptEmissions(events []model.DetectionEvent, fi int, result
 			ev.EnforcementWeight = 0
 		}
 		p.applyLegalContext(&ev)
+		p.applyEvidenceSafety(&ev)
 		kept = append(kept, ev)
 	}
 	return kept

@@ -1,5 +1,11 @@
 # Grab, release and settings capability audit
 
+Correction (2026-09-08): the earlier owner-proposed 19 m/s / 4.7 m/s relationship
+is **unverified and must not be enforced**. The historical 4.7 m/s patch concerns
+a chain carrying the disc, not a universal throw requirement. Existing config
+values and this historical audit remain for traceability; see
+[the current rule/source-health audit](evidence-health-audit.md#corrected-19--47-relationship).
+
 Audit baseline: `92671e0`, 2026-09-08. This document records implementation capabilities, not validated detector accuracy. The owner's technical brief is the authority for the requested project rules; external schemas describe fields, not proof of gameplay legality.
 
 ## Source-to-decision path (before this hardening pass)

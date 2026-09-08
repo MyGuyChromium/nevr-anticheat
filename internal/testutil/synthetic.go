@@ -130,6 +130,9 @@ func (fb *FrameBuilder) baseFrame(index int, pos model.Vec3, rot model.Quat) mod
 		deltaTime = 0
 	}
 	f := model.PlayerTelemetryFrame{
+		// This generator deliberately models one described observational feed,
+		// not an attested engine. Missing-source tests explicitly clear this.
+		Observation:     &model.ObservationContext{Source: "synthetic", SourceID: "frame-builder", Authority: "client_reported", TimeBasis: "fixture", SessionID: "synthetic-session", FrameIndex: index, Timestamp: float64(index) * dt},
 		PlayerID:        fb.playerID,
 		IsBoostingKnown: &boostObserved,
 		Team:            fb.team,

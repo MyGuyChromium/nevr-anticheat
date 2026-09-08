@@ -823,7 +823,11 @@
   function coverageDetails(m, detectorID = '') {
     const detectors = new Map();
     let unknown = 0;
+    const health = { healthy: 0, degraded: 0, blind: 0, unknown: 0 };
     for (const p of (m.players || [])) {
+      const h = p.coverage?.data_health;
+      const state = h?.version === 1 && ['healthy','degraded','blind'].includes(h.state) ? h.state : 'unknown';
+      health[state]++;
       if (!p.coverage || p.coverage.version !== 1) { unknown++; continue; }
       for (const d of (p.coverage.detectors || [])) {
         if (detectorID && d.detector_id !== detectorID) continue;
@@ -835,7 +839,18 @@
     }
     const rows = [...detectors.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, d]) =>
       `<tr><td class="mono">${esc(id)}</td><td>${!d.enabled ? 'Disabled' : !d.candidates || (d.inputCheck && !d.inputs) ? 'Insufficient data / opportunities' : 'Partial coverage'}</td><td class="num">${fmtInt(d.candidates)}</td><td class="num">${d.inputCheck ? fmtInt(d.inputs) : 'Not measured'}</td><td>${[...d.limitations].map(esc).join(' ')}</td></tr>`).join('');
-    return `<details class="sub"><summary><span class="tog"></span><h3>What this replay can and cannot check</h3></summary><p class="summary-note">Candidate frames passed phase and warmup gates. Input checks are necessary conditions only, not counts of independently verified opportunities or proof that every internal detector guard passed. No detector is validated by these counts.${unknown ? ` Coverage was not recorded for ${fmtInt(unknown)} player(s); re-analyze to refresh it.` : ''}</p><div class="physics-table"><table><thead><tr><th>Detector</th><th>Coverage</th><th>Candidate frames</th><th>Input check frames</th><th>Limitations</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Coverage unknown. Re-analyze this replay.</td></tr>'}</tbody></table></div></details>`;
+    return `<details class="sub"><summary><span class="tog"></span><h3>What this replay can and cannot check</h3></summary><p class="notice">Data health at the last observed sample: ${fmtInt(health.healthy)} healthy · ${fmtInt(health.degraded)} degraded · ${fmtInt(health.blind)} blind · ${fmtInt(health.unknown)} not recorded. Healthy describes usable observations, not honest play or authoritative gameplay. Explain checks shows historical degraded/blind samples and affected detectors.</p><p class="summary-note">Candidate frames passed phase and warmup gates. Input checks are necessary conditions only, not counts of independently verified opportunities or proof that every internal detector guard passed. No detector is validated by these counts.${unknown ? ` Coverage was not recorded for ${fmtInt(unknown)} player(s); re-analyze to refresh it.` : ''}</p><div class="physics-table"><table><thead><tr><th>Detector</th><th>Coverage</th><th>Candidate frames</th><th>Input check frames</th><th>Limitations</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Coverage unknown. Re-analyze this replay.</td></tr>'}</tbody></table></div></details>`;
+  }
+
+  function capabilityDetails(d) {
+    const c = d?.capability;
+    if (!c) return '<p class="summary-note">Capability contract not recorded; re-analyze with the current version.</p>';
+    return `<details class="sub"><summary>Evidence contract · ${esc(c.version)}</summary><p class="notice">Automatic enforcement disabled. Review scores are not cheating probabilities.</p><p><strong>Required observations:</strong> ${(c.required_inputs || []).map(esc).join(', ')}.</p><p>${esc(c.source_trust)}</p><p>${esc(c.timing)}</p><p>${esc(c.validity)}</p><p><strong>Applicable build:</strong> ${esc(c.applicable_build)}.</p><p><strong>Missing enforcement prerequisites:</strong> ${(c.enforcement_requires || []).map(esc).join('; ')}.</p><p>${esc(c.missing_behavior)}</p></details>`;
+  }
+
+  function dataHealthDetails(h) {
+    if (!h || h.version !== 1) return '<p class="notice">Data health was not recorded. Missing telemetry is neither proof of cheating nor proof of fair play.</p>';
+    return `<section class="notice"><h3>Data health: ${esc(h.state)}</h3><p>${fmtInt(h.healthy_samples || 0)} healthy samples · ${fmtInt(h.degraded_samples || 0)} degraded · ${fmtInt(h.blind_samples || 0)} blind. These are observations, not independent events.</p><p>${(h.reasons || []).map(esc).join('; ') || 'No active observation faults.'}</p><p>Affected checks: ${(h.affected_detectors || []).map(esc).join(', ') || 'none currently'}. Recovery: ${fmtInt(h.recovery_samples_remaining || 0)} consecutive usable samples remaining; a new fault restarts its own window. A shared orientation jump requires investigation, not an accusation.</p></section>`;
   }
 
   function reviewReasonText(m, assessment) {
@@ -891,14 +906,14 @@
     const detectors = (p.coverage.detectors || []).filter((d) => !detectorID || d.detector_id === detectorID);
     const panels = detectors.map((d) => {
       const trace = d.decision_trace;
-      if (!trace || trace.version !== 1) return `<details class="sub"><summary>${esc(d.detector_id)}</summary><p class="empty">No compatible trace recorded. Re-analyze to collect decision reasons.</p>${mechanicsReviewDetails(m,p,d)}${catchReviewDetails(m,p,d)}</details>`;
+      if (!trace || trace.version !== 1) return `<details class="sub"><summary>${esc(d.detector_id)}</summary>${capabilityDetails(d)}<p class="empty">No compatible trace recorded. Re-analyze to collect decision reasons.</p>${mechanicsReviewDetails(m,p,d)}${catchReviewDetails(m,p,d)}</details>`;
       const rows = [...(trace.reasons || [])].sort((a,b) => b.count - a.count || a.code.localeCompare(b.code)).map((reason) => {
         const frameOK = Number.isSafeInteger(reason.first_frame) && reason.first_frame >= 0;
         return `<tr><td><span class="mono">${esc(reason.code)}</span><span class="explain">${esc(reason.description || '')}</span></td><td class="num">${fmtInt(reason.count)}</td><td class="num">${fmtInt(reason.first_frame)}–${fmtInt(reason.last_frame)}</td><td>${frameOK ? `<button class="btn btn-sm" data-physics-match="${esc(m.match_id)}" data-physics-frame="${reason.first_frame}" data-physics-player="${esc(p.player_id)}">Inspect first frame</button>` : '—'}</td></tr>`;
       }).join('');
-      return `<details class="sub" ${detectorID ? 'open' : ''}><summary><span class="mono">${esc(d.detector_id)}</span> · ${esc(d.status)} · ${trace.internal_branches ? 'internal decisions + pipeline' : 'pipeline only'}</summary>${mechanicsReviewDetails(m,p,d)}${catchReviewDetails(m,p,d)}<p class="summary-note">${trace.internal_branches ? 'Reasons were recorded from actual detector branches.' : 'Internal detector decisions are not instrumented for this check; pipeline dispatch is not proof every internal condition passed.'}</p><div class="physics-table"><table><thead><tr><th>Recorded reason</th><th>Count</th><th>First–last frame</th><th>Inspect</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No recorded decisions for this player and detector.</td></tr>'}</tbody></table></div>${trace.overflow_count ? `<p class="warning">${fmtInt(trace.overflow_count)} observations exceeded the bounded reason inventory.</p>` : ''}</details>`;
+      return `<details class="sub" ${detectorID ? 'open' : ''}><summary><span class="mono">${esc(d.detector_id)}</span> · ${esc(d.status)} · ${trace.internal_branches ? 'internal decisions + pipeline' : 'pipeline only'}</summary>${capabilityDetails(d)}${mechanicsReviewDetails(m,p,d)}${catchReviewDetails(m,p,d)}<p class="summary-note">${trace.internal_branches ? 'Reasons were recorded from actual detector branches.' : 'Internal detector decisions are not instrumented for this check; pipeline dispatch is not proof every internal condition passed.'}</p><div class="physics-table"><table><thead><tr><th>Recorded reason</th><th>Count</th><th>First–last frame</th><th>Inspect</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No recorded decisions for this player and detector.</td></tr>'}</tbody></table></div>${trace.overflow_count ? `<p class="warning">${fmtInt(trace.overflow_count)} observations exceeded the bounded reason inventory.</p>` : ''}</details>`;
     }).join('');
-    return `<p>${who(p.name, p.player_id)}</p><p class="notice">These counters explain what the analysis did, not whether somebody cheated. First–last frame is a range, not continuous activity. Reasons can overlap; counts are not independent incidents. Raw emissions, merged/rate-limited findings and retained shadow/review incidents are different stages.</p>${panels || '<p class="empty">No matching detector coverage.</p>'}`;
+    return `<p>${who(p.name, p.player_id)}</p>${dataHealthDetails(p.coverage.data_health)}<p class="notice">These counters explain what the analysis did, not whether somebody cheated. First–last frame is a range, not continuous activity. Reasons can overlap; counts are not independent incidents. Raw emissions, merged/rate-limited findings and retained shadow/review incidents are different stages.</p>${panels || '<p class="empty">No matching detector coverage.</p>'}`;
   }
 
   function playerSignalBadge(assessment) {
