@@ -182,10 +182,15 @@ func TestNilStoreAndStoreError(t *testing.T) {
 }
 
 func TestCallbacksRunOutsideLock(t *testing.T) {
-	e := newEngine(ModeEnforce, &memStore{})
+	// Punitive hooks are intentionally inert in the review-only build. Keep
+	// the original re-entrancy contract on the supported flag notification.
+	e := newEngine(ModeFlag, &memStore{})
 	events := []model.DetectionEvent{mkEvent("THROW_001", "p", 0.99, true), mkEvent("MOV_001", "p", 0.97, false)}
 	reentered := make(chan *model.EnforcementAction, 1)
-	e.OnKick = func(playerID, matchID, reason string) {
+	e.OnFlag = func(playerID, matchID string, _ float64, _ []model.DetectionEvent) {
+		if playerID != "p" {
+			return
+		}
 		// Re-entering the engine from a callback must not deadlock.
 		reentered <- e.Evaluate(context.Background(), "q", matchID, score(60, 1), []model.DetectionEvent{mkEvent("THROW_001", "q", 0.9, false)})
 	}
@@ -199,8 +204,13 @@ func TestCallbacksRunOutsideLock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("deadlock: callback could not re-enter engine")
 	}
-	if a := <-reentered; a == nil || a.ActionType != model.ActionReviewQueue {
-		t.Fatalf("re-entrant evaluation failed: %+v", a)
+	select {
+	case a := <-reentered:
+		if a == nil || a.ActionType != model.ActionFlag {
+			t.Fatalf("re-entrant evaluation failed: %+v", a)
+		}
+	default:
+		t.Fatal("durable flag notification did not run")
 	}
 }
 

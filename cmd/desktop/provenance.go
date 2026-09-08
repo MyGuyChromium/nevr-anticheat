@@ -80,12 +80,7 @@ func recordAnalysisResults(ctx context.Context, engine *replay.Engine, results [
 	if profile, ok, err := engine.Store().GetActiveConfigProfile(ctx); err == nil && ok {
 		profileName = profile.Name
 	}
-	data, _ := json.Marshal(struct {
-		Detectors any `json:"detectors"`
-		Physics   any `json:"physics"`
-		Levels    any `json:"levels"`
-	}{engine.Config().EffectiveTable(), engine.Physics(), engine.Levels()})
-	fingerprint := shortHash(data)
+	fingerprint := displayConfigFingerprint(engine.Config())
 	calibrationConfigFingerprint := calibrationFingerprint(engine.Config())
 	executableHash, hashErr := runningExecutableSHA256()
 	if hashErr != nil {

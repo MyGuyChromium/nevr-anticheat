@@ -86,6 +86,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
+	s.mux.HandleFunc("GET "+p+"/api/status", s.handleStatus)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
 	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
 	s.mux.HandleFunc("GET "+p+"/api/lab/regression", s.handleRegressionLab)
@@ -1277,31 +1278,49 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// statusResponse describes this local process, not the database or telemetry.
+// Polling must not compete with replay writes for SQLite's single connection
+// or scan the evidence library. Detailed measurements remain in /api/health.
+type statusResponse struct {
+	SchemaVersion  string            `json:"schema_version"`
+	Version        string            `json:"version"`
+	Provenance     runtimeProvenance `json:"provenance"`
+	AnalysisActive bool              `json:"analysis_active"`
+}
+
+func (s *server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, statusResponse{
+		SchemaVersion: "nevr-desktop-status/v1", Version: appVersion,
+		Provenance: s.currentRuntimeProvenance(), AnalysisActive: s.analysisActive(),
+	})
+}
+
 type healthResponse struct {
-	Version            string  `json:"version"`
-	SchemaVersion      int     `json:"schema_version"`
-	DatabasePath       string  `json:"database_path"`
-	DatabaseBytes      int64   `json:"database_bytes"`
-	DatabaseMainBytes  int64   `json:"database_main_bytes"`
-	DatabaseWALBytes   int64   `json:"database_wal_bytes"`
-	DatabaseSHMBytes   int64   `json:"database_shm_bytes"`
-	StoredMatches      int     `json:"stored_matches"`
-	ClipDirectory      string  `json:"clip_directory"`
-	ClipFiles          int     `json:"clip_files"`
-	ClipBytes          int64   `json:"clip_bytes"`
-	SparkInstalled     bool    `json:"spark_installed"`
-	SparkPath          string  `json:"spark_path,omitempty"`
-	DiscSpeedCap       float64 `json:"disc_speed_cap"`
-	AnalysisActive     bool    `json:"analysis_active"`
-	DirectLabelCount   int     `json:"direct_label_count"`
-	CalibrationMatches int     `json:"calibration_matches"`
-	RawTicks           int     `json:"raw_ticks"`
-	RawTickBytes       int64   `json:"raw_tick_bytes"`
-	NormalizedFrames   int     `json:"normalized_frames"`
-	NormalizedBytes    int64   `json:"normalized_bytes"`
-	ArchiveDirectory   string  `json:"archive_directory"`
-	ArchiveFiles       int     `json:"archive_files"`
-	ArchiveBytes       int64   `json:"archive_bytes"`
+	Provenance         runtimeProvenance `json:"provenance"`
+	Version            string            `json:"version"`
+	SchemaVersion      int               `json:"schema_version"`
+	DatabasePath       string            `json:"database_path"`
+	DatabaseBytes      int64             `json:"database_bytes"`
+	DatabaseMainBytes  int64             `json:"database_main_bytes"`
+	DatabaseWALBytes   int64             `json:"database_wal_bytes"`
+	DatabaseSHMBytes   int64             `json:"database_shm_bytes"`
+	StoredMatches      int               `json:"stored_matches"`
+	ClipDirectory      string            `json:"clip_directory"`
+	ClipFiles          int               `json:"clip_files"`
+	ClipBytes          int64             `json:"clip_bytes"`
+	SparkInstalled     bool              `json:"spark_installed"`
+	SparkPath          string            `json:"spark_path,omitempty"`
+	DiscSpeedCap       float64           `json:"disc_speed_cap"`
+	AnalysisActive     bool              `json:"analysis_active"`
+	DirectLabelCount   int               `json:"direct_label_count"`
+	CalibrationMatches int               `json:"calibration_matches"`
+	RawTicks           int               `json:"raw_ticks"`
+	RawTickBytes       int64             `json:"raw_tick_bytes"`
+	NormalizedFrames   int               `json:"normalized_frames"`
+	NormalizedBytes    int64             `json:"normalized_bytes"`
+	ArchiveDirectory   string            `json:"archive_directory"`
+	ArchiveFiles       int               `json:"archive_files"`
+	ArchiveBytes       int64             `json:"archive_bytes"`
 }
 
 func directoryStats(path string) (files int, bytes int64) {
@@ -1364,7 +1383,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	archiveFiles, archiveBytes := s.rawArchiveStats()
 	sparkPath, sparkErr := findSparkReplayViewer()
 	writeJSON(w, http.StatusOK, healthResponse{
-		Version: appVersion, SchemaVersion: sqlite.SchemaVersion(), DatabasePath: path,
+		Provenance: s.currentRuntimeProvenance(),
+		Version:    appVersion, SchemaVersion: sqlite.SchemaVersion(), DatabasePath: path,
 		DatabaseBytes: dbBytes, DatabaseMainBytes: dbMainBytes, DatabaseWALBytes: dbWALBytes,
 		DatabaseSHMBytes: dbSHMBytes, StoredMatches: matches, ClipDirectory: clipDir,
 		ClipFiles: clipFiles, ClipBytes: clipBytes, SparkInstalled: sparkErr == nil,

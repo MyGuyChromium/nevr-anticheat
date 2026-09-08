@@ -21,7 +21,7 @@ The repository, original recordings, labels and generated reports remain private
 - Run the commands in [private replay regressions](private_replay_regressions.md) against a pinned private manifest after each detector change. A captured baseline is behavior history, not ground truth or proof of accuracy.
 - Run [private beta readiness](private_beta_readiness.md) against the exact candidate ZIP/installer/executable. An all-green automated section does not turn the manual `not_run` entries green.
 
-The development candidate is **0.10.3**. Its machine-specific verification outputs are kept in ignored `dist/`, never mixed into the user's installed database or original replay files. Uncommitted development artifacts must not be described as published, signed or verified clean-revision releases.
+This is a historical acceptance record for development candidate **0.10.3**, not the identity or acceptance status of the current candidate. Use the current PR's commit/hash-bound verification report and the installed app's runtime provenance for a newer build. Machine-specific verification outputs are kept in ignored `dist/`, never mixed into the user's installed database or original replay files. Uncommitted development artifacts must not be described as published, signed or verified clean-revision releases.
 
 ## Release decision
 

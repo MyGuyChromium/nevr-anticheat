@@ -757,7 +757,7 @@ func (s *server) createSupportBundle(ctx context.Context) (string, error) {
 	}
 	if err := addZipJSON(zw, "runtime.json", map[string]any{"app_version": appVersion, "build_commit": buildCommit,
 		"build_time": buildTime, "goos": runtime.GOOS, "goarch": runtime.GOARCH, "schema_version": sqlite.SchemaVersion(),
-		"storage": stats}); err != nil {
+		"runtime_provenance": s.currentRuntimeProvenance(), "storage": stats}); err != nil {
 		return fail(err)
 	}
 	if err := addZipJSON(zw, "calibration.json", calibration); err != nil {

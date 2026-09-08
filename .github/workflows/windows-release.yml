@@ -132,6 +132,12 @@ jobs:
             Pop-Location
           }
 
+      - name: Test controlled-release verifier contracts
+        shell: pwsh
+        run: |
+          ./scripts/test-test-release-verifier.ps1
+          ./scripts/test-desktop-workload-runner.ps1
+
       - name: Select signing mode
         shell: pwsh
         env:
@@ -331,6 +337,18 @@ jobs:
           )) {
             if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file))) { throw "Installed file is missing: $file" }
           }
+          # Bind installer testing to the exact portable payload, not merely
+          # filenames or a shared marketing version. The ZIP was created from
+          # this directory after application signing and before installer build.
+          function Assert-InstalledPayload {
+            foreach ($file in @("nevr-desktop.exe", "nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe")) {
+              $expected = (Get-FileHash -LiteralPath (Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64\$file") -Algorithm SHA256).Hash
+              $actual = (Get-FileHash -LiteralPath (Join-Path $installRoot $file) -Algorithm SHA256).Hash
+              if ($actual -ne $expected) { throw "Installed payload differs from packaged payload: $file" }
+              Write-Host "PASS installed payload SHA256 $file $actual"
+            }
+          }
+          Assert-InstalledPayload
           $installedConfig = Join-Path $installRoot "installed.toml"
           if ((Get-Content -Raw $installedConfig) -notmatch "nevr-anticheat.db") {
             throw "Installed configuration does not point at the evidence database."
@@ -346,6 +364,7 @@ jobs:
 
           $upgrade = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-" -WindowStyle Hidden -Wait -PassThru
           if ($upgrade.ExitCode -ne 0) { throw "Silent upgrade exited with $($upgrade.ExitCode)" }
+          Assert-InstalledPayload
           if ((Get-Content -Raw $installedConfig) -notmatch "preserve-upgrade-settings") {
             throw "Upgrade replaced the existing installed configuration."
           }

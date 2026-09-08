@@ -61,7 +61,7 @@ function Record-Artifact([string]$Path, [string]$Role) {
     })
 }
 
-function Send-BetaRequest([string]$Method, [string]$Path, [string]$UploadPath = "") {
+function Send-BetaRequest([string]$Method, [string]$Path, [string]$UploadPath = "", [object]$JSONBody = $null) {
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $script:appURL + $Path)
     $response = $null
     try {
@@ -71,7 +71,8 @@ function Send-BetaRequest([string]$Method, [string]$Path, [string]$UploadPath = 
             $part = [Net.Http.StreamContent]::new([IO.File]::OpenRead($UploadPath))
             $multipart.Add($part, "files", [IO.Path]::GetFileName($UploadPath))
         } elseif ($Method -eq "POST") {
-            $request.Content = [Net.Http.StringContent]::new("{}", [Text.Encoding]::UTF8, "application/json")
+            $json = if ($null -eq $JSONBody) { "{}" } else { $JSONBody | ConvertTo-Json -Depth 8 -Compress }
+            $request.Content = [Net.Http.StringContent]::new($json, [Text.Encoding]::UTF8, "application/json")
         }
         $response = $script:client.SendAsync($request).GetAwaiter().GetResult()
         $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -94,8 +95,10 @@ function Start-BetaDesktop([string]$Binary, [string]$Config) {
     foreach ($arg in @("--config", $Config, "--no-browser", "--port", "0")) { $info.ArgumentList.Add($arg) }
     $info.Environment["LOCALAPPDATA"] = Join-Path $isolatedRoot "localappdata"
     $info.Environment["APPDATA"] = Join-Path $isolatedRoot "appdata"
+    foreach ($key in @($info.Environment.Keys)) {
+        if ($key -match '^(GH_|GITHUB_|NEVR_|NAKAMA_|AZURE_|AWS_|GOOGLE_|CLOUDSDK_|ANTICHEAT_|SPARK_)|TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|SESSION') { $null = $info.Environment.Remove($key) }
+    }
     $info.Environment["NEVR_REPLAY_VIEWER"] = Join-Path $isolatedRoot "missing-viewer.exe"
-    $info.Environment.Remove("NEVR_GITHUB_TOKEN") | Out-Null
     $script:app = [Diagnostics.Process]::Start($info)
     $script:stderr = $script:app.StandardError.ReadToEndAsync()
     # The first line identifies the random loopback URL. No URL/token enters
@@ -287,12 +290,16 @@ try {
                     "Corrupt file received a per-file error; the app and previously imported match remained usable."
                 }
                 Run-Check "database_backup" {
+                    $note = Send-BetaRequest "POST" "api/match/SYN-FIXTURE-001/notes" "" @{ kind = "note"; body = "Synthetic verification note saved before backup"; frame_index = 10 }
+                    Assert-Beta ($note.status -eq 200 -and [bool]$note.body.note_id) "Could not seed the synthetic backup note."
+                    $script:backupNoteID = [string]$note.body.note_id
                     $reply = Send-BetaRequest "POST" "api/maintenance/backup"
                     Assert-Beta ($reply.status -eq 200 -and $reply.body.ok -and $reply.body.bytes -gt 0) "Database backup failed."
                     $backup = [IO.Path]::GetFullPath([string]$reply.body.path)
                     Assert-Beta ($backup.StartsWith($isolatedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) "Backup escaped the isolated temporary directory."
                     Assert-Beta (Test-Path -LiteralPath $backup -PathType Leaf) "Backup file is missing."
-                    "Backup created inside the isolated directory; live evidence was never opened."
+                    $script:backupPath = $backup
+                    "Backup containing a synthetic replay and reviewer note created inside the isolated directory; live evidence was never opened."
                 }
                 Run-Check "restart_preserves_evidence" {
                     Stop-BetaDesktop
@@ -302,12 +309,43 @@ try {
                     Assert-Beta ($match.status -eq 200 -and $match.body.players.Count -eq 4 -and $match.body.frames_processed -eq 120 -and $health.status -eq 200 -and $health.body.stored_matches -eq 1) "Stored replay did not survive a clean process restart."
                     "One match, four players and 120 frames survived a clean desktop shutdown/restart."
                 }
+                if (Has-Passed "database_backup") {
+                    Run-Check "database_restore_roundtrip" {
+                        $later = Send-BetaRequest "POST" "api/match/SYN-FIXTURE-001/notes" "" @{ kind = "note"; body = "Synthetic verification note saved after backup"; frame_index = 20 }
+                        Assert-Beta ($later.status -eq 200 -and [bool]$later.body.note_id) "Could not seed the post-backup synthetic note."
+                        $laterID = [string]$later.body.note_id
+                        $scheduled = Send-BetaRequest "POST" "api/maintenance/restore" "" @{ name = [IO.Path]::GetFileName($script:backupPath) }
+                        Assert-Beta ($scheduled.status -eq 200 -and $scheduled.body.ok -and $scheduled.body.restart_required) "Candidate did not schedule restoration of its own backup."
+                        Stop-BetaDesktop
+                        Start-BetaDesktop $script:binary $configPath
+                        $notes = Send-BetaRequest "GET" "api/match/SYN-FIXTURE-001/notes"
+                        $restored = Send-BetaRequest "GET" "api/match/SYN-FIXTURE-001"
+                        Assert-Beta ($notes.status -eq 200 -and @($notes.body.notes).Count -eq 1 -and $notes.body.notes[0].note_id -eq $script:backupNoteID) "Restored database does not contain exactly the original backup note."
+                        Assert-Beta ($restored.status -eq 200 -and $restored.body.players.Count -eq 4 -and $restored.body.frames_processed -eq 120) "Restored database lost the synthetic replay."
+                        $recovery = @(Get-ChildItem -LiteralPath $freshDataRoot -Directory | Where-Object { $_.Name.StartsWith("beta.db.pre-restore-") })
+                        Assert-Beta ($recovery.Count -eq 1) "Restore did not retain exactly one recovery directory."
+                        $recoveryDB = Join-Path $recovery[0].FullName "beta.db"
+                        Assert-Beta (Test-Path -LiteralPath $recoveryDB -PathType Leaf) "Replaced database was not preserved."
+                        # Open only this run's preserved database to prove its
+                        # original data survived, not merely that a file exists.
+                        Stop-BetaDesktop
+                        $recoveryConfig = Join-Path $isolatedRoot "recovery-check.toml"
+                        [IO.File]::WriteAllText($recoveryConfig, "[general]`ndb_path = " + (ConvertTo-Json -InputObject $recoveryDB -Compress) + "`nlog_level = 'error'`n")
+                        Start-BetaDesktop $script:binary $recoveryConfig
+                        $preserved = Send-BetaRequest "GET" "api/match/SYN-FIXTURE-001/notes"
+                        $preservedIDs = @($preserved.body.notes | ForEach-Object { $_.note_id })
+                        Assert-Beta ($preserved.status -eq 200 -and $preservedIDs.Count -eq 2 -and $preservedIDs -contains $laterID -and $preservedIDs -contains $script:backupNoteID) "The preserved pre-restore database lost reviewer notes."
+                        Stop-BetaDesktop
+                        Start-BetaDesktop $script:binary $configPath
+                        "The supplied executable restored its backup through the production API/startup path; replay and original note returned, the later note was absent, and both notes survived in the preserved pre-restore database."
+                    }
+                } else { Add-Check "database_restore_roundtrip" "automated" "not_run" "Backup creation failed; no restore was attempted." }
             } else {
-                foreach ($id in @("duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence")) { Add-Check $id "automated" "not_run" "Fixture import failed; dependent check could not run." }
+                foreach ($id in @("duplicate_import", "corrupt_upload_isolation", "database_backup", "database_restore_roundtrip", "restart_preserves_evidence")) { Add-Check $id "automated" "not_run" "Fixture import failed; dependent check could not run." }
             }
             Run-Check "clean_shutdown" { Stop-BetaDesktop; "Owned desktop process stopped with exit code zero." }
         } else {
-            foreach ($id in @("runtime_build_identity", "fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
+            foreach ($id in @("runtime_build_identity", "fixture_import", "duplicate_import", "corrupt_upload_isolation", "database_backup", "database_restore_roundtrip", "restart_preserves_evidence", "clean_shutdown")) { Add-Check $id "automated" "not_run" "Isolated desktop startup failed." }
         }
     } else {
         Add-Check "isolated_desktop_smoke" "automated" "not_run" "No test executable was available."
