@@ -461,6 +461,13 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 		h.Write(buf[:])
 	}
 	writeF := func(v float64) { writeI(math.Float64bits(v)) }
+	writeSigned := func(v int64) {
+		// Self-delimiting signed encoding preserves the complete int64 domain
+		// without float rounding or a signed-to-unsigned conversion.
+		var buf [binary.MaxVarintLen64]byte
+		n := binary.PutVarint(buf[:], v)
+		h.Write(buf[:n])
+	}
 	writeS := func(v string) { writeI(uint64(len(v))); h.Write([]byte(v)) }
 	writeV := func(v [3]float64) { writeF(v[0]); writeF(v[1]); writeF(v[2]) }
 	writeB := func(v bool) {
@@ -487,13 +494,11 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 		if raw.Disc.BounceCount != nil {
 			// Preserve signed raw values (including invalid negatives) in a
 			// self-delimiting encoding without unsigned conversion overflow.
-			var buf [binary.MaxVarintLen64]byte
-			n := binary.PutVarint(buf[:], int64(*raw.Disc.BounceCount))
-			h.Write(buf[:n])
+			writeSigned(int64(*raw.Disc.BounceCount))
 		}
 	}
-	writeI(uint64(raw.BluePoints))
-	writeI(uint64(raw.OrangePoints))
+	writeSigned(int64(raw.BluePoints))
+	writeSigned(int64(raw.OrangePoints))
 	writeB(raw.LastThrow != nil)
 	if raw.LastThrow != nil {
 		writeF(raw.LastThrow.ArmSpeed)
@@ -518,7 +523,7 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			p := &team.Players[i]
 			// User IDs are exact int64 values. Conversion through float64
 			// aliases adjacent IDs above 2^53 and can drop a roster change.
-			writeI(uint64(p.UserID))
+			writeSigned(p.UserID)
 			writeS(p.Name)
 			writeB(p.hasVelocity())
 			writeV(p.Velocity)
@@ -541,9 +546,9 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			writeB(p.Stunned)
 			writeB(p.Blocking)
 			writeB(p.Invulnerable)
-			writeI(uint64(p.Ping))
-			writeI(uint64(p.Stats.Goals))
-			writeI(uint64(p.Stats.Stuns))
+			writeSigned(int64(p.Ping))
+			writeSigned(int64(p.Stats.Goals))
+			writeSigned(int64(p.Stats.Stuns))
 		}
 	}
 	return h.Sum64()
