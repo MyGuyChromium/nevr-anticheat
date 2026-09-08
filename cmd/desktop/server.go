@@ -86,6 +86,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
+	s.mux.HandleFunc("GET "+p+"/api/status", s.handleStatus)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
 	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
 	s.mux.HandleFunc("GET "+p+"/api/lab/regression", s.handleRegressionLab)
@@ -1275,6 +1276,23 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(tmp)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// statusResponse describes this local process, not the database or telemetry.
+// Polling must not compete with replay writes for SQLite's single connection
+// or scan the evidence library. Detailed measurements remain in /api/health.
+type statusResponse struct {
+	SchemaVersion  string            `json:"schema_version"`
+	Version        string            `json:"version"`
+	Provenance     runtimeProvenance `json:"provenance"`
+	AnalysisActive bool              `json:"analysis_active"`
+}
+
+func (s *server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, statusResponse{
+		SchemaVersion: "nevr-desktop-status/v1", Version: appVersion,
+		Provenance: s.currentRuntimeProvenance(), AnalysisActive: s.analysisActive(),
+	})
 }
 
 type healthResponse struct {

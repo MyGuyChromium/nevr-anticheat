@@ -61,7 +61,7 @@ test('initial screen reports unknown engine and queue state, not decorative metr
   assert.doesNotMatch(markup, />ONLINE<|>30<|>31</);
   assert.match(markup, /Live monitoring is not available/);
   assert.match(markup, /No automatic punishment/);
-  assert.match(markup, /No successful health check yet/);
+  assert.match(markup, /No successful connection check yet/);
   assert.match(markup, /class="skip-link" href="#workspace"/);
 });
 
@@ -98,7 +98,7 @@ test('health provenance renders current identity honestly and escapes export met
     const context = run(section('  async function loadHealth(', '  const fmtVec ='), {
       $: () => element,
       getJSON: async () => ({ version: 'test', analysis_active: false, provenance }),
-      operatorState: {}, setConnectionState() {}, fmtInt: String, fmtNum: String, fmtBytes: String,
+      operatorState: {}, setConnectionState() {}, fmtInt: String, fmtNum: String, fmtBytes: String, fmtAbs: String,
       panelError: (_element, _purpose, error) => { throw error; },
     });
     await context.loadHealth();
@@ -117,16 +117,16 @@ test('health provenance renders current identity honestly and escapes export met
 });
 
 test('stale successful health cannot show an idle or ready engine', () => {
-  const ui = statusUI({ connection: 'online', checkedAt: 80000, health: { analysis_active: false }, settings: { watch_enabled: true, watch_status: 'watching' } });
+  const ui = statusUI({ connection: 'online', checkedAt: 80000, appStatus: { analysis_active: false }, settings: { watch_enabled: true, watch_status: 'watching' } });
   assert.match(ui.get('operator-freshness').textContent, /status is stale/);
-  assert.match(ui.get('operator-freshness').textContent, /Not telemetry freshness/);
+  assert.match(ui.get('operator-freshness').textContent, /Not database health or telemetry freshness/);
   assert.match(ui.get('operator-activity').textContent, /unknown/);
   assert.equal(ui.get('import-readiness').textContent, 'Engine not verified');
   assert.doesNotMatch(ui.get('operator-connection').closest().className, /tone-ok/);
 });
 
 test('fresh local engine is explicitly Replay and cannot masquerade as a live feed', () => {
-  const ui = statusUI({ connection: 'online', checkedAt: 99000, health: { analysis_active: true }, settings: { watch_enabled: true, watch_status: 'scanning' } });
+  const ui = statusUI({ connection: 'online', checkedAt: 99000, appStatus: { analysis_active: true }, settings: { watch_enabled: true, watch_status: 'scanning' } });
   assert.equal(ui.get('operator-activity').textContent, 'Replay · analyzing');
   assert.match(ui.get('operator-source').textContent, /Folder watch: scanning/);
   assert.match(ui.get('operator-source').textContent, /No live match connection/);
@@ -134,7 +134,7 @@ test('fresh local engine is explicitly Replay and cannot masquerade as a live fe
 });
 
 test('permission failure takes precedence over a recently successful health response', () => {
-  const ui = statusUI({ connection: 'denied', checkedAt: 99000, health: { analysis_active: false } });
+  const ui = statusUI({ connection: 'denied', checkedAt: 99000, appStatus: { analysis_active: false } });
   assert.equal(ui.get('operator-connection').textContent, 'Access denied');
   assert.match(ui.get('operator-activity').textContent, /unknown/);
   assert.equal(ui.get('import-readiness').textContent, 'Engine not verified');
@@ -161,10 +161,10 @@ test('late connection callbacks cannot overwrite terminal shutdown status', () =
 });
 
 function healthProbe(fetchHealth, initial = {}) {
-  const state = { connection: 'checking', checkedAt: 0, health: null, ...initial };
+  const state = { connection: 'checking', checkedAt: 0, appStatus: null, ...initial };
   const calls = [], transitions = [];
   const context = run(section('  async function probeConnection(', '  // ---- match sections'), {
-    intentionallyStopped: false, healthProbePending: false, operatorState: state,
+    intentionallyStopped: false, statusProbePending: false, operatorState: state,
     getJSON: async url => { calls.push(url); return fetchHealth(); },
     setConnectionState: value => { state.connection = value === true ? 'online' : value; transitions.push(value); },
     updateOperatorStatus: () => {},
@@ -173,29 +173,54 @@ function healthProbe(fetchHealth, initial = {}) {
   return { probe: context.probeConnection, context, state, calls, transitions };
 }
 
-test('incomplete health payload never stamps a fresh healthy result', async () => {
-  for (const payload of [{}, { version: 'test' }, { analysis_active: false }, { version: 'test', analysis_active: 'false' }]) {
+test('incomplete or unversioned local status never stamps a fresh connection result', async () => {
+  for (const payload of [{}, { version: 'test' }, { analysis_active: false }, { version: 'test', analysis_active: false }, { schema_version: 'nevr-desktop-status/v1', version: 'test', analysis_active: 'false' }]) {
     const client = healthProbe(async () => payload);
     await client.probe();
     assert.equal(client.state.checkedAt, 0);
-    assert.equal(client.state.health, null);
+    assert.equal(client.state.appStatus, null);
     assert.deepEqual(client.transitions, ['unavailable']);
   }
 });
 
-test('concurrent health probes coalesce and stopped app does not reconnect', async () => {
+test('concurrent status probes use the lightweight route, coalesce and stop at shutdown', async () => {
   let complete;
   const client = healthProbe(() => new Promise(resolve => { complete = resolve; }));
   const first = client.probe();
   await client.probe();
-  assert.equal(client.calls.length, 1);
-  complete({ version: 'test', analysis_active: false });
+  assert.deepEqual(client.calls, ['api/status']);
+  complete({ schema_version: 'nevr-desktop-status/v1', version: 'test', analysis_active: false });
   await first;
   assert.equal(client.state.checkedAt, 100000);
   assert.deepEqual(client.transitions, [true]);
   client.context.intentionallyStopped = true;
   await client.probe();
   assert.equal(client.calls.length, 1);
+});
+
+test('detailed storage refresh cannot replace current connection activity or draft database identity', async () => {
+  const current = { connection: 'online', checkedAt: 1000, appStatus: { analysis_active: true } };
+  const element = { innerHTML: '', className: '', removeAttribute() {} };
+  const fullHealth = { version: 'test', analysis_active: false, database_path: 'isolated-evidence.db' };
+  const calls = [];
+  const context = run(section('  async function loadHealth(', '  const fmtVec ='), {
+    $: () => element, getJSON: async url => { calls.push(url); return fullHealth; }, operatorState: current,
+    setConnectionState: () => assert.fail('storage measurements are not a connection heartbeat'),
+    fmtInt: String, fmtNum: String, fmtBytes: String,
+    fmtAbs: value => { assert.equal(Object.prototype.toString.call(value), '[object Date]'); return '<received time>'; },
+    panelError: (_element, _purpose, error) => { throw error; },
+  });
+  await context.loadHealth();
+  assert.deepEqual(calls, ['api/health']);
+  assert.equal(current.checkedAt, 1000);
+  assert.equal(current.appStatus.analysis_active, true);
+  assert.equal(current.health.database_path, 'isolated-evidence.db');
+  assert.match(element.innerHTML, /Point-in-time storage measurements/);
+  assert.match(element.innerHTML, /Storage details received &lt;received time&gt;/);
+  assert.doesNotMatch(element.innerHTML, /<received time>/);
+  assert.match(element.innerHTML, /data-retry-panel="health"[^>]*>Refresh storage details/);
+  assert.match(script, /setInterval\(probeConnection, 5000\)/);
+  assert.doesNotMatch(script, /setInterval\([^;]*(?:loadHealth|refreshPanels)/);
 });
 
 function nodes() {

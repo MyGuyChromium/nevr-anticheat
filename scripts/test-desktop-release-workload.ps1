@@ -43,7 +43,8 @@ $script:finalWorkingSet = 0L
 $script:cpuSeconds = 0.0
 $script:healthFailures = 0
 $script:queueFailures = 0
-$script:healthTimeouts = 0
+$script:healthFailureKinds = [ordered]@{ deadline_cancelled = 0; transport_failure = 0; invalid_response = 0; cancelled = 0; request_failure = 0; http_status_failure = 0 }
+$script:queueFailureKinds = [ordered]@{ deadline_cancelled = 0; transport_failure = 0; invalid_response = 0; cancelled = 0; request_failure = 0; http_status_failure = 0; analysis_failure = 0 }
 $script:maxProbeLagMS = 0.0
 $script:activeHealthSamples = 0
 $script:checkpoint = 'initialization'
@@ -51,8 +52,8 @@ $script:exitCode = 1
 $rounds = 0
 $completedRounds = 0
 $frames = 0L
-$storedMatches = 0
-$databaseBytes = 0L
+$storedMatches = $null
+$databaseBytes = $null
 $provenance = $null
 $binaryHash = ''
 $binary = ''
@@ -93,6 +94,15 @@ function Add-WorkloadCheck([string]$ID, [string]$Status, [string]$Detail) {
     $checks.Add([pscustomobject]@{ id = $ID; status = $Status; detail = $Detail })
     Write-Host "$Status $ID - $Detail"
 }
+function Get-WorkloadFailureKind([Exception]$Exception, [bool]$DeadlineCancelled) {
+    # PowerShell may wrap the actual async exception. Inspect types only:
+    # messages can contain private URLs, filesystem paths or response bodies.
+    for ($current = $Exception; $null -ne $current; $current = $current.InnerException) {
+        if ($current -is [OperationCanceledException]) { return $(if ($DeadlineCancelled) { 'deadline_cancelled' } else { 'cancelled' }) }
+        if ($current -is [Net.Http.HttpRequestException]) { return 'transport_failure' }
+    }
+    return 'request_failure'
+}
 function Start-WorkloadRequest([string]$Method, [string]$Path, [object]$Body = $null, [string]$Upload = '', [string]$Origin = '', [int]$TimeoutSeconds = 5) {
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $script:appURL + $Path)
     $cts = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
@@ -107,17 +117,22 @@ function Start-WorkloadRequest([string]$Method, [string]$Path, [object]$Body = $
         } elseif ($null -ne $Body) {
             $request.Content = [Net.Http.StringContent]::new(($Body | ConvertTo-Json -Depth 8 -Compress), [Text.Encoding]::UTF8, 'application/json')
         }
-        return [pscustomobject]@{ request = $request; cts = $cts; watch = [Diagnostics.Stopwatch]::StartNew(); task = [NEVRWorkloadHttpTiming]::SendAsync($client, $request, $cts.Token) }
+        return [pscustomobject]@{ request = $request; cts = $cts; deadline_token = $cts.Token; failure_kind = ''; watch = [Diagnostics.Stopwatch]::StartNew(); task = [NEVRWorkloadHttpTiming]::SendAsync($client, $request, $cts.Token) }
     } catch { $request.Dispose(); $cts.Dispose(); throw }
 }
 function Finish-WorkloadRequest($Operation) {
     $response = $null
+    $stage = 'request'
     try {
         $completed = $Operation.task.GetAwaiter().GetResult()
         $response = $completed.Response
         $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $stage = 'response_parse'
         $body = if ($raw.TrimStart().StartsWith('{')) { $raw | ConvertFrom-Json } else { $null }
         return [pscustomobject]@{ status = [int]$response.StatusCode; body = $body; elapsed_ms = $completed.ElapsedMilliseconds }
+    } catch {
+        $Operation.failure_kind = if ($stage -eq 'response_parse') { 'invalid_response' } else { Get-WorkloadFailureKind $_.Exception $Operation.deadline_token.IsCancellationRequested }
+        throw
     } finally {
         if ($null -ne $response) { $response.Dispose() }
         $Operation.request.Dispose()
@@ -126,6 +141,15 @@ function Finish-WorkloadRequest($Operation) {
 }
 function Send-WorkloadRequest([string]$Method, [string]$Path, [object]$Body = $null, [string]$Origin = '') {
     return Finish-WorkloadRequest (Start-WorkloadRequest $Method $Path $Body '' $Origin)
+}
+function Read-FinalWorkloadSnapshot($Health) {
+    Assert-Workload ($Health.status -eq 200 -and $null -ne $Health.body.stored_matches -and $null -ne $Health.body.database_bytes) 'final database snapshot could not be measured'
+    return [pscustomobject]@{ stored_matches = [int]$Health.body.stored_matches; database_bytes = [long]$Health.body.database_bytes }
+}
+function Assert-ConnectionStatusResponse($Body, [string]$Commit, [string]$Hash) {
+    Assert-Workload ($Body.schema_version -ceq 'nevr-desktop-status/v1' -and $Body.version -is [string] -and $Body.version.Length -gt 0 -and $Body.analysis_active -is [bool]) 'connection status schema or activity is invalid'
+    $identity = $Body.provenance
+    Assert-Workload ($identity.version -ceq 'nevr-runtime-provenance/v1' -and $identity.app_version -ceq $Body.version -and $identity.build_commit -ceq $Commit -and $identity.source_revision -ceq $Commit -and $identity.source_modified -is [bool] -and $identity.source_modified -eq $false -and $identity.build_identity -ceq 'verified_clean_revision' -and $identity.executable_sha256 -ceq $Hash -and $identity.review_only -is [bool] -and $identity.review_only -eq $true -and $identity.enforcement_policy -ceq 'review-only-v1') 'connection status candidate identity or review-only policy changed'
 }
 function Start-WorkloadDesktop {
     $script:checkpoint = 'isolated desktop startup'
@@ -170,12 +194,18 @@ function Receive-WorkloadProbes {
         $script:pendingHealth = $null
         try {
             $result = Finish-WorkloadRequest $operation
-            if ($result.status -ne 200) { $script:healthFailures++ }
-            if ($result.body.analysis_active) { $script:activeHealthSamples++ }
-            $samples.Add([pscustomobject]@{ kind = 'health'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = $result.status; elapsed_ms = [math]::Round($result.elapsed_ms, 2) })
+            if ($result.status -ne 200) { $script:healthFailures++; $script:healthFailureKinds.http_status_failure++ }
+            else {
+                try { Assert-ConnectionStatusResponse $result.body $ExpectedCommit $binaryHash }
+                catch { $operation.failure_kind = 'invalid_response'; throw }
+                if ($result.body.analysis_active) { $script:activeHealthSamples++ }
+            }
+            $samples.Add([pscustomobject]@{ kind = 'connection_status'; endpoint = 'api/status'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = $result.status; elapsed_ms = [math]::Round($result.elapsed_ms, 2) })
         } catch {
-            $script:healthFailures++; $script:healthTimeouts++
-            $samples.Add([pscustomobject]@{ kind = 'health'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = 0; elapsed_ms = [math]::Round($operation.watch.Elapsed.TotalMilliseconds, 2); failure = 'timeout_or_transport_failure' })
+            $script:healthFailures++
+            $failure = if ($script:healthFailureKinds.Contains($operation.failure_kind)) { $operation.failure_kind } else { 'request_failure' }
+            $script:healthFailureKinds[$failure]++
+            $samples.Add([pscustomobject]@{ kind = 'connection_status'; endpoint = 'api/status'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = 0; elapsed_ms = [math]::Round($operation.watch.Elapsed.TotalMilliseconds, 2); failure = $failure; timing_basis = 'failure_observation_includes_runner_polling' })
         }
     }
     if ($null -ne $script:pendingQueue -and $script:pendingQueue.task.IsCompleted) {
@@ -183,9 +213,15 @@ function Receive-WorkloadProbes {
         $script:pendingQueue = $null
         try {
             $result = Finish-WorkloadRequest $operation
-            if ($result.status -ne 200 -or $result.body.failed -gt 0) { $script:queueFailures++ }
+            if ($result.status -ne 200) { $script:queueFailures++; $script:queueFailureKinds.http_status_failure++ }
+            elseif ($result.body.failed -gt 0) { $script:queueFailures++; $script:queueFailureKinds.analysis_failure++ }
             $samples.Add([pscustomobject]@{ kind = 'queue'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = $result.status; elapsed_ms = [math]::Round($result.elapsed_ms, 2); running = $result.body.running; failed = $result.body.failed })
-        } catch { $script:queueFailures++ }
+        } catch {
+            $script:queueFailures++
+            $failure = if ($script:queueFailureKinds.Contains($operation.failure_kind)) { $operation.failure_kind } else { 'request_failure' }
+            $script:queueFailureKinds[$failure]++
+            $samples.Add([pscustomobject]@{ kind = 'queue'; at_ms = [math]::Round($script:clock.Elapsed.TotalMilliseconds, 1); status = 0; elapsed_ms = [math]::Round($operation.watch.Elapsed.TotalMilliseconds, 2); failure = $failure; timing_basis = 'failure_observation_includes_runner_polling' })
+        }
     }
 }
 function Pump-Workload {
@@ -201,7 +237,7 @@ function Pump-Workload {
     if ($nowMS - $script:lastProbeMS -ge 500) {
         $script:maxProbeLagMS = [math]::Max($script:maxProbeLagMS, [math]::Max(0, $nowMS - $script:lastProbeMS - 500))
         $script:lastProbeMS = $nowMS
-        if ($null -eq $script:pendingHealth) { $script:pendingHealth = Start-WorkloadRequest 'GET' 'api/health' -TimeoutSeconds 2 }
+        if ($null -eq $script:pendingHealth) { $script:pendingHealth = Start-WorkloadRequest 'GET' 'api/status' -TimeoutSeconds 2 }
         if ($null -eq $script:pendingQueue) { $script:pendingQueue = Start-WorkloadRequest 'GET' 'api/queue' -TimeoutSeconds 2 }
     }
 }
@@ -309,11 +345,12 @@ try {
     $drainUntil = [DateTime]::UtcNow.AddSeconds(3)
     while (($null -ne $script:pendingHealth -or $null -ne $script:pendingQueue) -and [DateTime]::UtcNow -lt $drainUntil) { Receive-WorkloadProbes; Start-Sleep -Milliseconds 20 }
     $script:clock.Stop()
-    Assert-Workload ($script:healthFailures -eq 0 -and $script:queueFailures -eq 0) 'health or queue probe failed during workload'
-    Assert-Workload (@($samples | Where-Object { $_.kind -eq 'health' -and $_.status -eq 200 }).Count -gt 0 -and $script:activeHealthSamples -gt 0) 'no successful health samples proved responsiveness during active analysis'
+    Assert-Workload ($script:healthFailures -eq 0 -and $script:queueFailures -eq 0) 'connection status or queue probe failed during workload'
+    Assert-Workload (@($samples | Where-Object { $_.kind -eq 'connection_status' -and $_.status -eq 200 }).Count -gt 0 -and $script:activeHealthSamples -gt 0) 'no successful connection status samples proved responsiveness during active analysis'
     Add-WorkloadCheck 'long_lived_desktop_workload' 'PASS' "$rounds complete rounds and $($runs.Count) actual uploads/reanalyses completed in one long-lived process; responsive HTTP probes and sampled resource limits passed."
     $before = Send-WorkloadRequest 'GET' 'api/health'
-    $storedMatches = [int]$before.body.stored_matches; $databaseBytes = [long]$before.body.database_bytes
+    $finalSnapshot = Read-FinalWorkloadSnapshot $before
+    $storedMatches = $finalSnapshot.stored_matches; $databaseBytes = $finalSnapshot.database_bytes
     Stop-WorkloadDesktop
     Start-WorkloadDesktop
     $after = Send-WorkloadRequest 'GET' 'api/health'
@@ -372,16 +409,17 @@ try {
         $script:exitCode = 1
         Add-WorkloadCheck 'isolated_state_cleanup' 'FAIL' 'Isolated state cleanup was refused or failed; output remains private. No pre-existing directory was targeted.'
     }
-    $latencies = @($samples | Where-Object { $_.kind -eq 'health' -and $_.status -eq 200 } | ForEach-Object { [double]$_.elapsed_ms } | Sort-Object)
+    $latencies = @($samples | Where-Object { $_.kind -eq 'connection_status' -and $_.status -eq 200 } | ForEach-Object { [double]$_.elapsed_ms } | Sort-Object)
     $elapsed = $script:clock.Elapsed.TotalSeconds
     $metrics = [ordered]@{
         complete_rounds = $completedRounds; uploads = $runs.Count; workload_elapsed_seconds = [math]::Round($elapsed, 3); processed_frames = $frames
         frames_per_elapsed_second = if ($elapsed -gt 0) { [math]::Round($frames / $elapsed, 2) } else { $null }
         peak_sampled_working_set_bytes = $script:peakWorkingSet; final_sampled_working_set_bytes = $script:finalWorkingSet; cpu_seconds = [math]::Round($script:cpuSeconds, 3)
-        health_samples = $latencies.Count; health_failures = $script:healthFailures; health_timeouts_or_transport_failures = $script:healthTimeouts; active_analysis_health_samples = $script:activeHealthSamples; queue_failures = $script:queueFailures
-        health_median_ms = if ($latencies.Count) { $latencies[[math]::Floor(($latencies.Count - 1) / 2)] } else { $null }
-        health_p95_ms = if ($latencies.Count) { $latencies[[math]::Ceiling($latencies.Count * 0.95) - 1] } else { $null }
-        health_max_ms = if ($latencies.Count) { $latencies[-1] } else { $null }
+        connection_status_endpoint = 'api/status'; connection_status_successful_samples = $latencies.Count; connection_status_failures = $script:healthFailures; active_analysis_connection_status_samples = $script:activeHealthSamples; queue_failures = $script:queueFailures
+        connection_status_failure_kinds = $script:healthFailureKinds; queue_failure_kinds = $script:queueFailureKinds
+        connection_status_median_ms_successful = if ($latencies.Count) { $latencies[[math]::Floor(($latencies.Count - 1) / 2)] } else { $null }
+        connection_status_p95_ms_successful = if ($latencies.Count) { $latencies[[math]::Ceiling($latencies.Count * 0.95) - 1] } else { $null }
+        connection_status_max_ms_successful = if ($latencies.Count) { $latencies[-1] } else { $null }
         probe_scheduling_lag_max_ms = [math]::Round($script:maxProbeLagMS, 2); stored_matches = $storedMatches; final_database_bytes = $databaseBytes
     }
     $report = [ordered]@{
@@ -391,7 +429,7 @@ try {
         limits = @{ minimum_rounds = $MinRounds; minimum_seconds = $MinDurationSeconds; maximum_seconds = $MaxDurationSeconds; upload_timeout_seconds = $UploadTimeoutSeconds; maximum_working_set_mib = $MaxWorkingSetMiB; probe_interval_ms = 500; probe_timeout_seconds = 2 }
         metrics = $metrics; checks = @($checks.ToArray()); uploads = @($runs.ToArray()); probes = @($samples.ToArray())
         inputs = @($inputs | Select-Object ordinal, bytes, sha256_before, sha256_after, unchanged)
-        interpretation = @('Operational repeated-upload measurements, not detector accuracy, real-time latency or a production capacity guarantee.', 'Working-set peaks are sampled; CPU seconds are cumulative CPU time of the long-lived workload process. Health latency measures HttpClient send through full response-body completion inside the async task, excluding PowerShell completion polling; it includes local HTTP and backend work. Scheduling lag belongs to this runner.', 'Only explicit replay paths were read. Reports omit paths, filenames, raw telemetry, player identities and per-run URL tokens; output remains private.', 'No browser, updater, Spark, installer or external integration was invoked. Abrupt crash recovery and arbitrary third-party enforcement integrations remain untested.')
+        interpretation = @('Operational repeated-upload measurements, not detector accuracy, real-time latency or a production capacity guarantee.', 'Timed 2-second connection/activity probes use api/status, the current periodic UI endpoint. Earlier failed api/health baselines measure a different, detailed endpoint and remain failures. Full api/health still runs initially, after each round and finally; its detailed scans are not claimed to meet the connection polling deadline.', 'Working-set peaks are sampled; CPU seconds are cumulative CPU time of the long-lived workload process. Successful connection_status latency measures HttpClient send through full response-body completion inside the async task, excluding PowerShell completion polling. Percentiles exclude failed requests, which remain separately counted and fail the gate. Failed-request elapsed times are observation times including runner polling. Scheduling lag belongs to this runner.', 'Null final database metrics mean the final snapshot was not measured; they are not evidence of empty or lost data.', 'Only explicit replay paths were read. Reports omit paths, filenames, raw telemetry, player identities and per-run URL tokens; output remains private.', 'No browser, updater, Spark, installer or external integration was invoked. Abrupt crash recovery and arbitrary third-party enforcement integrations remain untested.')
     }
     $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runRoot 'desktop-workload-report.json') -Encoding utf8
     @($checks | ForEach-Object { "$($_.status) $($_.id) - $($_.detail)" }) | Set-Content -LiteralPath (Join-Path $runRoot 'workload.log') -Encoding utf8

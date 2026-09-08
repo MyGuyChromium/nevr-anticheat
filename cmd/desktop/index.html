@@ -642,7 +642,7 @@
     <h2 id="workspace-title">Your replay workspace</h2>
     <p class="section-intro">Check the local engine, import a recording, and review the evidence. A finding is a reason to investigate—not a cheating verdict.</p>
     <div class="status-grid" id="operator-status" aria-label="Workspace status">
-      <a class="status-card tone-neutral" href="#h-system"><span>Local connection</span><b id="operator-connection">Checking…</b><small id="operator-freshness">No successful health check yet</small></a>
+      <a class="status-card tone-neutral" href="#h-system"><span>Local connection</span><b id="operator-connection">Checking…</b><small id="operator-freshness">No successful connection check yet</small></a>
       <a class="status-card tone-neutral" href="#h-upload"><span>Mode &amp; activity</span><b id="operator-activity">Replay · checking</b><small id="operator-source">Live monitoring is not available in this desktop app.</small></a>
       <a class="status-card tone-neutral" href="#h-flagged"><span>Scored review queue</span><b id="operator-backlog">Not loaded</b><small id="operator-backlog-note">Observation-only findings are listed separately.</small></a>
       <div class="status-card tone-neutral"><span>Enforcement</span><b>Review only</b><small>No automatic punishment. A healthy feed does not prove fair play.</small></div>
@@ -777,8 +777,8 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   let intentionallyStopped = false;
-  const operatorState = { connection: 'checking', health: null, checkedAt: 0, settings: null, cases: null };
-  let healthProbePending = false;
+  const operatorState = { connection: 'checking', appStatus: null, health: null, checkedAt: 0, settings: null, cases: null };
+  let statusProbePending = false;
   function setConnectionState(value) {
     if (intentionallyStopped) return;
     const state = value === true ? 'online' : value === false ? 'offline' : value;
@@ -788,7 +788,7 @@
     el.querySelector('b').textContent = ({online:'CONNECTED', offline:'DISCONNECTED', denied:'ACCESS DENIED', checking:'CHECKING', unavailable:'UNAVAILABLE'})[state] || 'UNKNOWN';
     $('offline-banner').hidden = state === 'online' || state === 'checking';
     const message = $('offline-banner').querySelector('strong');
-    message.textContent = state === 'denied' ? 'This app session was denied access.' : state === 'unavailable' ? 'The local engine could not complete its health check.' : 'Analysis engine disconnected.';
+    message.textContent = state === 'denied' ? 'This app session was denied access.' : state === 'unavailable' ? 'The local app could not complete its connection check.' : 'Analysis engine disconnected.';
     updateOperatorStatus();
   }
   function updateOperatorStatus() {
@@ -796,12 +796,12 @@
     const fresh = operatorState.checkedAt > 0 && Date.now() - operatorState.checkedAt < 15000;
     const connected = operatorState.connection === 'online';
     $('operator-connection').textContent = ({online:'Connected', offline:'Disconnected', denied:'Access denied', checking:'Checking…', unavailable:'Check unavailable'})[operatorState.connection] || 'Unknown';
-    $('operator-freshness').textContent = operatorState.checkedAt ? `Health response ${Math.max(0, Math.floor((Date.now()-operatorState.checkedAt)/1000))}s ago${fresh ? '' : ' · status is stale'}. Not telemetry freshness.` : 'No successful health check yet';
+    $('operator-freshness').textContent = operatorState.checkedAt ? `Local app response ${Math.max(0, Math.floor((Date.now()-operatorState.checkedAt)/1000))}s ago${fresh ? '' : ' · status is stale'}. Not database health or telemetry freshness.` : 'No successful connection check yet';
     const ready = connected && fresh;
     $('operator-connection').closest('.status-card').className = 'status-card ' + (ready ? 'tone-ok' : operatorState.connection === 'checking' ? 'tone-neutral' : 'tone-warn');
-    $('operator-activity').textContent = !ready ? 'Replay · activity unknown' : operatorState.health?.analysis_active ? 'Replay · analyzing' : 'Replay · idle';
+    $('operator-activity').textContent = !ready ? 'Replay · activity unknown' : operatorState.appStatus?.analysis_active ? 'Replay · analyzing' : 'Replay · idle';
     $('operator-source').textContent = !ready ? 'Reconnect to check activity. Stored results are not live telemetry.' : operatorState.settings?.watch_enabled ? `Folder watch: ${operatorState.settings.watch_status || 'status unavailable'}. No live match connection.` : 'No live match connection. Import a recording to analyze.';
-    $('import-readiness').textContent = !ready ? 'Engine not verified' : operatorState.health?.analysis_active ? 'Analysis in progress' : 'Ready for a recording';
+    $('import-readiness').textContent = !ready ? 'Engine not verified' : operatorState.appStatus?.analysis_active ? 'Analysis in progress' : 'Ready for a recording';
   }
   function screenState(title, message, actions = '', tone = 'neutral') {
     tone = ['neutral','ok','warn','bad'].includes(tone) ? tone : 'neutral';
@@ -923,15 +923,15 @@
   const postJSON = (url, payload) => requestJSON('POST', url, payload);
   const deleteJSON = url => requestJSON('DELETE', url);
   async function probeConnection() {
-    if (intentionallyStopped || healthProbePending) return;
-    healthProbePending = true;
+    if (intentionallyStopped || statusProbePending) return;
+    statusProbePending = true;
     try {
-      const health = await getJSON('api/health');
-      if (typeof health.analysis_active !== 'boolean' || typeof health.version !== 'string') throw new Error('Health response is incomplete');
-      operatorState.health = health; operatorState.checkedAt = Date.now();
+      const status = await getJSON('api/status');
+      if (status.schema_version !== 'nevr-desktop-status/v1' || typeof status.analysis_active !== 'boolean' || typeof status.version !== 'string') throw new Error('Local app status is incomplete');
+      operatorState.appStatus = status; operatorState.checkedAt = Date.now();
       setConnectionState(true);
     } catch (error) { if (operatorState.connection !== 'denied' && operatorState.connection !== 'offline') setConnectionState('unavailable'); }
-    finally { healthProbePending = false; updateOperatorStatus(); }
+    finally { statusProbePending = false; updateOperatorStatus(); }
   }
 
   // ---- match sections ------------------------------------------------------
@@ -2011,10 +2011,12 @@
     try {
       const h = await getJSON('api/health');
       if (typeof h.analysis_active !== 'boolean' || typeof h.version !== 'string') throw new Error('Health response is incomplete. Retry the health check.');
-      operatorState.health = h; operatorState.checkedAt = Date.now(); setConnectionState(true);
+      // Full storage measurements are not the periodic connection heartbeat.
+      // Preserve their database identity for evidence-scoped draft recovery.
+      operatorState.health = h;
       el.className = ''; el.removeAttribute('aria-busy');
       const walLarge = h.database_wal_bytes > Math.max(64 * 1024 * 1024, h.database_main_bytes * .25);
-      el.innerHTML = `<div class="health-grid">
+      el.innerHTML = `<p class="help">Storage details received ${esc(fmtAbs(new Date()))}. Point-in-time storage measurements, refreshed after analysis or on request. The local connection indicator does not verify database health or telemetry freshness.</p><div class="health-grid">
         <div class="health-card"><span>Desktop</span><b>v${esc(h.version)}</b><small class="muted">schema ${fmtInt(h.schema_version)}</small></div>
         <div class="health-card"><span>Evidence store</span><b>${fmtInt(h.stored_matches)} matches</b><small class="${walLarge ? 'storage-warn' : 'muted'}">${fmtBytes(h.database_bytes)} total · ${fmtBytes(h.database_wal_bytes)} pending WAL</small></div>
         <div class="health-card"><span>Calibration library</span><b>${fmtInt(h.calibration_matches)} replays</b><small class="muted">${fmtInt(h.direct_label_count)} detector labels</small></div>
@@ -2028,8 +2030,8 @@
       ${h.provenance ? `<details class="advanced-section"><summary>Build &amp; configuration identity</summary><p class="help">Current runtime only, not the original analysis behind older findings. A hash identifies a file; it is not a publisher signature or an accuracy guarantee.</p><dl class="kv"><dt>Linked build</dt><dd class="mono">${esc(h.provenance.build_commit)}</dd><dt>Source revision</dt><dd class="mono">${esc(h.provenance.source_revision || 'Not recorded')}</dd><dt>Source modified</dt><dd>${h.provenance.source_modified === true ? 'Yes · development candidate' : h.provenance.source_modified === false ? 'No' : 'Unknown'}</dd><dt>Build identity</dt><dd>${esc(h.provenance.build_identity)}</dd><dt>Executable SHA-256</dt><dd class="mono">${esc(h.provenance.executable_sha256 || 'Unavailable')}</dd><dt>Current configuration</dt><dd class="mono">${esc(h.provenance.config_fingerprint)}</dd><dt>Enforcement policy</dt><dd>${esc(h.provenance.enforcement_policy)}</dd></dl></details>` : '<p class="notice">Exact runtime provenance is unavailable in this build.</p>'}
       <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span><br><strong>Archives:</strong> <span class="mono">${esc(h.archive_directory)}</span></p>
       ${walLarge ? '<p class="notice">The write-ahead log is large. Check &amp; checkpoint verifies the database, then safely folds committed WAL data into the main evidence file.</p>' : ''}
-      <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="checkpoint-db" class="btn">Check &amp; checkpoint</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
-    } catch (e) { if (operatorState.connection !== 'denied' && operatorState.connection !== 'offline') setConnectionState('unavailable'); panelError(el, 'system health', e); }
+      <div class="maintenance"><button data-retry-panel="health" class="btn">Refresh storage details</button><button id="backup-db" class="btn">Back up database</button><button id="checkpoint-db" class="btn">Check &amp; checkpoint</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
+    } catch (e) { panelError(el, 'system health', e); }
   }
 
   const fmtVec = (v) => Array.isArray(v) ? `[${v.map((n) => fmtNum(Number(n), 2)).join(', ')}]` : '—';
@@ -2692,6 +2694,7 @@
   });
 
   function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); loadStudio(); }
+  probeConnection();
   refreshPanels();
   setInterval(probeConnection, 5000);
   setInterval(updateOperatorStatus, 1000);

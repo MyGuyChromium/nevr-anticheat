@@ -30,18 +30,20 @@ public sealed class NEVRWorkloadTestHandler : HttpMessageHandler {
     public int Status = 200;
     public string Body = "{\"ok\":true}";
     public bool Cancel;
+    public bool ThrowTransport;
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) {
         LastUri = request.RequestUri.ToString();
         LastMethod = request.Method.Method;
         LastBody = request.Content == null ? "" : await request.Content.ReadAsStringAsync();
         LastOrigin = request.Headers.Contains("Origin") ? string.Join(",", request.Headers.GetValues("Origin")) : "";
+        if (ThrowTransport) throw new HttpRequestException("private-url-and-body-must-not-be-reported");
         if (Cancel) await Task.Delay(10000, token);
         return new HttpResponseMessage((HttpStatusCode)Status) { Content = new StringContent(Body) };
     }
 }
 '@
 }
-foreach ($name in @('Assert-Workload', 'Start-WorkloadRequest', 'Finish-WorkloadRequest', 'Pump-Workload')) {
+foreach ($name in @('Assert-Workload', 'Get-WorkloadFailureKind', 'Start-WorkloadRequest', 'Finish-WorkloadRequest', 'Read-FinalWorkloadSnapshot', 'Assert-ConnectionStatusResponse', 'Pump-Workload')) {
     $functionAst = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Assert-Runner ($null -ne $functionAst) "Required actual runner helper missing: $name"
     Invoke-Expression $functionAst.Extent.Text
@@ -78,10 +80,60 @@ try {
 
     $handler.Cancel = $true
     $cancelled = $false
-    try { $null = Finish-WorkloadRequest (Start-WorkloadRequest 'GET' 'api/health' -TimeoutSeconds 1) } catch { $cancelled = $true }
-    Assert-Runner $cancelled 'Request timeout failed to cancel the task.'
+    $operation = Start-WorkloadRequest 'GET' 'api/status' -TimeoutSeconds 1
+    try { $null = Finish-WorkloadRequest $operation } catch { $cancelled = $true }
+    Assert-Runner ($cancelled -and $operation.failure_kind -ceq 'deadline_cancelled') 'Request timeout failed to cancel the task or was misclassified.'
     Pass-Runner 'Bounded request cancellation'
+    $handler.Cancel = $false; $handler.ThrowTransport = $true
+    $operation = Start-WorkloadRequest 'GET' 'api/status'
+    $failed = $false
+    try { $null = Finish-WorkloadRequest $operation } catch { $failed = $true }
+    Assert-Runner ($failed -and $operation.failure_kind -ceq 'transport_failure') 'Transport exception was not safely distinguished from deadline cancellation.'
+    Pass-Runner 'Transport failure classification does not include private exception text'
+    $handler.ThrowTransport = $false; $handler.Status = 200; $handler.Body = '{"broken":'
+    $operation = Start-WorkloadRequest 'GET' 'api/status'
+    $failed = $false
+    try { $null = Finish-WorkloadRequest $operation } catch { $failed = $true }
+    Assert-Runner ($failed -and $operation.failure_kind -ceq 'invalid_response') 'Invalid JSON response was falsely counted as a transport timeout.'
+    Pass-Runner 'Invalid response classification preserves the failure without mislabeling timeout'
 } finally { $client.Dispose(); $handler.Dispose() }
+
+& {
+    $storedMatches = $null; $databaseBytes = $null
+    foreach ($snapshot in @([pscustomobject]@{status=500;body=[pscustomobject]@{stored_matches=9;database_bytes=123}}, [pscustomobject]@{status=200;body=[pscustomobject]@{stored_matches=9}})) {
+        $failed = $false
+        try {
+            $final = Read-FinalWorkloadSnapshot $snapshot
+            $storedMatches = $final.stored_matches; $databaseBytes = $final.database_bytes
+        } catch { $failed = $true }
+        Assert-Runner ($failed -and $null -eq $storedMatches -and $null -eq $databaseBytes) 'Unmeasured final data was fabricated as zero or accepted from a failed snapshot.'
+    }
+    $final = Read-FinalWorkloadSnapshot ([pscustomobject]@{status=200;body=[pscustomobject]@{stored_matches=0;database_bytes=456}})
+    Assert-Runner ($final.stored_matches -eq 0 -and $final.database_bytes -eq 456) 'A successfully observed zero was confused with unavailable data.'
+    Assert-Runner ($source.Contains('$storedMatches = $null') -and $source.Contains('$databaseBytes = $null')) 'Actual runner defaults still invent unmeasured final values.'
+    Pass-Runner 'Unmeasured final snapshots stay null; observed zeros remain valid'
+}
+
+& {
+    $commit = 'a' * 40; $hash = 'c' * 64
+    $good = [pscustomobject]@{ schema_version='nevr-desktop-status/v1'; version='0.14.0'; analysis_active=$true; provenance=[pscustomobject]@{version='nevr-runtime-provenance/v1';app_version='0.14.0';build_commit=$commit;source_revision=$commit;source_modified=$false;build_identity='verified_clean_revision';executable_sha256=$hash;review_only=$true;enforcement_policy='review-only-v1'} }
+    Assert-ConnectionStatusResponse $good $commit $hash
+    foreach ($mutation in @('schema', 'activity', 'commit', 'hash', 'policy', 'dirty')) {
+        $bad = $good | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        switch ($mutation) {
+            'schema' { $bad.schema_version = 'unknown' }
+            'activity' { $bad.analysis_active = 'true' }
+            'commit' { $bad.provenance.build_commit = 'b' * 40 }
+            'hash' { $bad.provenance.executable_sha256 = 'd' * 64 }
+            'policy' { $bad.provenance.review_only = $false }
+            'dirty' { $bad.provenance.source_modified = $true }
+        }
+        $failed = $false
+        try { Assert-ConnectionStatusResponse $bad $commit $hash } catch { $failed = $true }
+        Assert-Runner $failed 'An HTTP 200 with invalid status schema/activity/provenance was accepted.'
+    }
+    Pass-Runner 'Connection status requires schema boolean activity and unchanged review-only candidate'
+}
 
 # Exercise the actual upload response consumer without file/network I/O. This
 # shape follows analyzeEntry -> matches[] -> matchView.FramesProcessed, not the
@@ -174,4 +226,6 @@ Assert-Runner ($source.Contains('[IO.File]::OpenRead($Upload)') -and $source.Con
 Pass-Runner 'Read-only replay inputs and path-free input report'
 Assert-Runner ($source.Contains('$script:activeHealthSamples -gt 0') -and $source.Contains('while ($rounds -lt $MinRounds -or $script:clock.Elapsed.TotalSeconds -lt $MinDurationSeconds)')) 'Sustained workload must satisfy both floors and prove probes during active analysis.'
 Pass-Runner 'Sustained-workload and active-analysis evidence floors'
+Assert-Runner ($source.Contains("Start-WorkloadRequest 'GET' 'api/status' -TimeoutSeconds 2") -and -not $source.Contains("Start-WorkloadRequest 'GET' 'api/health' -TimeoutSeconds 2") -and [regex]::Matches($source, "Send-WorkloadRequest 'GET' 'api/health'").Count -ge 4 -and $source.Contains("connection_status_endpoint = 'api/status'")) 'Timed status polling or explicit detailed-health checks no longer match the actual UI split.'
+Pass-Runner 'Current UI status polling keeps 2-second deadline and detailed health checks separate'
 Write-Host "$passed workload runner regressions passed; no actual candidate or replay was exercised."

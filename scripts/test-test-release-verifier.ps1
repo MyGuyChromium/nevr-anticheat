@@ -110,6 +110,22 @@ try {
             checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status=$(if ($_ -eq 'abrupt_kill_recovery') {'NOT TESTED'} else {'PASS'})} })}
         Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'isolated_state_cleanup'
     }
+    Test-ReleaseContract 'desktop_child_receives_user_memory_cutoff' {
+        $parseErrors = $null; $tokens = $null
+        $wrapper = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'verify-test-release.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $launches = @($wrapper.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-ReleaseScript' -and $node.CommandElements[1].Value -eq 'test-desktop-release-workload.ps1' }, $true))
+        Assert-TestRelease ($parseErrors.Count -eq 0 -and $launches.Count -eq 1) 'Expected exactly one desktop workload launch.'
+        & {
+            $MaxWorkingSetMiB = 1536
+            $desktop = 'not-launched.exe'; $manifest = 'not-read.json'; $desktopRoot = 'not-created'; $ExpectedCommit = 'a' * 40; $DesktopMinDurationSeconds = 120
+            function Invoke-ReleaseScript([string]$Name, [string[]]$Arguments, [string]$LogName) {
+                $index = [Array]::IndexOf($Arguments, '-MaxWorkingSetMiB')
+                Assert-TestRelease ($index -ge 0 -and $Arguments[$index + 1] -ceq '1536') 'Desktop child ignored or changed the user-specified memory cutoff.'
+                return 0
+            }
+            Invoke-Expression $launches[0].Extent.Text | Out-Null
+        }
+    }
     if ($OutputDirectory) {
         [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)) | Out-Null
         [ordered]@{ schema_version = 'nevr-test-release-contract-tests/v1'; passed = $checks.Count; checks = @($checks); scope = 'Synthetic bytes and ZIPs only; no candidate, installer, database, network or process launched.' } |

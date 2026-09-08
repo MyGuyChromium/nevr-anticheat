@@ -234,7 +234,8 @@ try {
         ConvertTo-Json -InputObject @($ReplayFiles) | Set-Content -LiteralPath $manifest -Encoding utf8
         $desktopRoot = Join-Path $runRoot 'desktop-workload'
         $desktopCode = Invoke-ReleaseScript 'test-desktop-release-workload.ps1' @('-DesktopExecutable', $desktop, '-ExpectedCommit', $ExpectedCommit,
-            '-ReplayManifest', $manifest, '-OutputDirectory', $desktopRoot, '-MinDurationSeconds', [string]$DesktopMinDurationSeconds) 'desktop-workload.log'
+            '-ReplayManifest', $manifest, '-OutputDirectory', $desktopRoot, '-MinDurationSeconds', [string]$DesktopMinDurationSeconds,
+            '-MaxWorkingSetMiB', [string]$MaxWorkingSetMiB) 'desktop-workload.log'
         $desktopReports = @(Get-ChildItem -LiteralPath $desktopRoot -Filter 'desktop-workload-report.json' -File -Recurse)
         Assert-TestRelease ($desktopReports.Count -eq 1) 'Desktop workload did not produce exactly one report.'
         $desktopReport = Get-Content -Raw -LiteralPath $desktopReports[0].FullName | ConvertFrom-Json
