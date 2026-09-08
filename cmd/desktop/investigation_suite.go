@@ -26,8 +26,8 @@ type investigationPoint struct {
 	PlayerID       string                   `json:"player_id"`
 	PlayerName     string                   `json:"player_name,omitempty"`
 	PoseSpeed      float64                  `json:"pose_speed"`
-	GameSpeed      float64                  `json:"game_speed"`
-	DiscSpeed      float64                  `json:"disc_speed"`
+	GameSpeed      *float64                 `json:"game_speed"`
+	DiscSpeed      *float64                 `json:"disc_speed"`
 	LeftHandSpeed  float64                  `json:"left_hand_speed"`
 	RightHandSpeed float64                  `json:"right_hand_speed"`
 	PingMS         float64                  `json:"ping_ms"`
@@ -161,12 +161,16 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 		if (playerSeen[frame.PlayerID]-1)%playerStep != 0 && playerSeen[frame.PlayerID] != quality.PerPlayerRows[frame.PlayerID] {
 			continue
 		}
-		gameSpeed, discSpeed := 0.0, 0.0
+		// Unknown measurements remain null in the presentation contract. A
+		// measured stationary velocity is distinct from an absent source.
+		var gameSpeed, discSpeed *float64
 		if frame.ReportedVelocity != nil {
-			gameSpeed = frame.ReportedVelocity.Magnitude()
+			speed := frame.ReportedVelocity.Magnitude()
+			gameSpeed = &speed
 		}
 		if frame.Disc != nil {
-			discSpeed = frame.Disc.Speed
+			speed := frame.Disc.Speed
+			discSpeed = &speed
 		}
 		points = append(points, investigationPoint{Frame: frame.FrameIndex, Time: frame.Timestamp,
 			PlayerID: frame.PlayerID, PlayerName: nameOf(mc, frame.PlayerID), PoseSpeed: state.Speed,
