@@ -265,7 +265,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | MOV_003 | Zero-Inertia Direction Change | movement | 0.5 | **UNSAFE** — FPs on wall bounces |
 | MOV_004 | Boost Speed Cap Violation | movement | 0.5 | Disabled — needs is_boosting field |
 | MOV_005 | Boost Spam | movement | 0.6 | Disabled — needs is_boosting field |
-| MOV_006 | Physical Playspace Walking | movement | 0 (paused) | Temporarily disabled in the backend; legal leans cannot be excluded |
+| MOV_006 | Physical Playspace Walking | movement | 0 | Temporarily paused in the backend; legal leans cannot be excluded |
 | STATE_001 | Disc Grab Geometry Review | state | 0.0 | Diagnostic only — mags requires verified acquisition geometry and rule |
 | STATE_002 | Stun Recovery Exploit | state | 0.7 | Physics-grounded |
 | STATE_003 | Shield Duration Abuse | state | 0.6 | Disabled — needs shield_active field |
@@ -278,7 +278,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | PAT_002 | Identical Release Points | pattern | 0.6 | **UNSAFE** — FPs on consistent form |
 | PAT_003 | Cross-Match Consistency | pattern | 0.8 | Needs 3+ matches of DB history |
 | PAT_004 | Composite Multi-Cheat | pattern | 0.9 | Meta-detector (depends on upstream) |
-| PAT_005 | Playspace Abuse | pattern | 0 (paused) | Temporarily disabled in the backend |
+| PAT_005 | Playspace Abuse | pattern | 0 | Temporarily paused in the backend |
 
 **Status key**: Physics-grounded = based on game physics constraints (thresholds unvalidated). Unverified = needs real-data calibration. STUB = non-functional. UNSAFE = known FPs on legitimate play. SUSPENDED = disabled, no confirmed detection rule. Disabled = required telemetry field absent from every known source.
 

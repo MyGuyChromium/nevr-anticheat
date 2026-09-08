@@ -19,7 +19,9 @@ import (
 // DefaultConfig disables (UNSAFE / TELEMETRY_DEPENDENT / UNVERIFIED /
 // SUSPENDED / STUB / CROSS_MATCH_DEPENDENT) are proven absent from the
 // production build first, then exercised with the detector enabled and its
-// production params. Event counts are pinned to the measured values so a
+// production params. The two compiled-paused playspacing checks are exercised
+// only by the test-only direct math helper, never re-enabled in the pipeline.
+// Event counts are pinned to the measured values so a
 // threshold change is a test change.
 
 // detectorStatus is DefaultConfig's documented status of every detector.
@@ -27,10 +29,10 @@ var detectorStatus = map[string]string{
 	"THROW_001": "enabled", "THROW_002": "unverified", "THROW_003": "enabled", "THROW_004": "unsafe",
 	"THROW_005": "enabled", "THROW_006": "enabled", "THROW_007": "stub", "THROW_008": "enabled",
 	"BIO_001": "enabled", "BIO_002": "enabled", "BIO_003": "enabled", "BIO_004": "enabled",
-	"MOV_001": "enabled", "MOV_002": "enabled", "MOV_003": "unsafe", "MOV_004": "telemetry_dependent", "MOV_005": "telemetry_dependent", "MOV_006": "enabled",
+	"MOV_001": "enabled", "MOV_002": "enabled", "MOV_003": "unsafe", "MOV_004": "telemetry_dependent", "MOV_005": "telemetry_dependent", "MOV_006": "paused",
 	"STATE_001": "enabled", "STATE_002": "enabled", "STATE_003": "telemetry_dependent", "STATE_004": "telemetry_dependent",
 	"STATE_005": "telemetry_dependent", "STATE_006": "suspended", "STATE_007": "telemetry_dependent", "STATE_008": "observation_only",
-	"PAT_001": "unsafe", "PAT_002": "unsafe", "PAT_003": "cross_match_dependent", "PAT_004": "enabled", "PAT_005": "enabled",
+	"PAT_001": "unsafe", "PAT_002": "unsafe", "PAT_003": "cross_match_dependent", "PAT_004": "enabled", "PAT_005": "paused",
 }
 
 // TestDetectorStatus_MatchesDefaultConfig: the status table above is the
@@ -481,10 +483,11 @@ func TestDetector_PAT_004_CompositeMultiCheat(t *testing.T) {
 }
 
 func TestDetector_PAT_005_PlayspaceAbuse(t *testing.T) {
-	hr := runOnly(t, player1().ExtendedReach(100), "PAT_005")
+	// Retain the original math regression while production dispatch is paused.
+	hr := runPausedPlayspaceMath(t, player1().ExtendedReach(100), "PAT_005")
 	hr.AssertDetectorFiredN("PAT_005", 3)
 	hr.AssertMinConfidence("PAT_005", 0.79)
 	hr.AssertMinSeverity("PAT_005", 0.5)
-	runOnly(t, player1().NormalThrowSequence(6), "PAT_005").AssertNoDetections()
-	runOnly(t, player1().NormalMovingPlayer(300, 5), "PAT_005").AssertNoDetections()
+	runPausedPlayspaceMath(t, player1().NormalThrowSequence(6), "PAT_005").AssertNoDetections()
+	runPausedPlayspaceMath(t, player1().NormalMovingPlayer(300, 5), "PAT_005").AssertNoDetections()
 }

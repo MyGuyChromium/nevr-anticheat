@@ -12,7 +12,8 @@ import (
 // against the production FrameValidator in generators_test.go). The tests
 // here run them through the production pipeline with the production
 // detector set (DefaultConfig's enabled detectors, enforce mode) unless a
-// detector is named explicitly.
+// detector is named explicitly. Compiled-paused playspacing math regressions
+// use a separate test-only helper and do not run through production dispatch.
 
 // matchContextForPlayer returns a match context for a single-player test.
 func matchContextForPlayer(playerID string) *model.MatchContext {
@@ -297,7 +298,8 @@ func TestCheat_BotBehavior_Detected(t *testing.T) {
 }
 
 func TestCheat_ExtendedReach_Detected(t *testing.T) {
-	hr := runOnly(t, player1().ExtendedReach(100), "PAT_005")
+	// This tests retained heuristic math, not an enabled production finding.
+	hr := runPausedPlayspaceMath(t, player1().ExtendedReach(100), "PAT_005")
 	hr.AssertDetectorFiredN("PAT_005", 3) // at 30, 60 and 90 sustained frames
 	hr.AssertMinConfidence("PAT_005", 0.79)
 }
