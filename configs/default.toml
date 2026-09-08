@@ -383,7 +383,8 @@ sigmoid_steepness     = 0.5
 # ordinary locomotion and stacking. Feet/guardian origin are unavailable, so
 # a legal lean or lunge cannot be excluded automatically. Strict gates reduce
 # noise, but this remains a shadow-only review candidate.
-enabled            = true
+# Temporarily paused in this build, including older enabled=true overrides.
+enabled            = false
 enforcement_weight = 0.75
 auto_enforce       = false
 mode               = "shadow"
@@ -550,7 +551,8 @@ sigmoid_steepness = 1.0
 
 [detector.PAT_005]
 # Playspace Abuse. PHYSICS_GROUNDED: 1.6 m is ~2x arm reach; sustained window.
-enabled            = true
+# Temporarily paused with MOV_006; parameters retained for future review.
+enabled            = false
 enforcement_weight = 0.5
 mode               = "shadow"
 [detector.PAT_005.params]

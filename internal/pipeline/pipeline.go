@@ -166,6 +166,16 @@ func NewPipeline(
 	scorer *scoring.SuspicionScorer,
 	logger *slog.Logger,
 ) *Pipeline {
+	// Also guard callers supplying detector instances directly. Filter into a
+	// new slice so caller-owned instances/order are not mutated. The shared
+	// feature extractor remains intact for legal-motion context on other checks.
+	activeDetectors := make([]detect.Detector, 0, len(detectors))
+	for _, d := range detectors {
+		if !model.IsPlayspaceDetector(d.ID()) {
+			activeDetectors = append(activeDetectors, d)
+		}
+	}
+	detectors = activeDetectors
 	shadowIDs := make(map[string]bool)
 	for _, id := range cfg.Shadow.ShadowDetectors {
 		shadowIDs[id] = true

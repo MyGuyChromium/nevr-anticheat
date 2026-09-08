@@ -27,7 +27,8 @@ type HistoryProvider interface {
 // scored and must not be laundered into a scored event here), nor are
 // events from the meta-detectors PAT_003 and PAT_004 (otherwise PAT_003
 // re-fires on its own output forever). When trusted_detectors is set, only
-// those detector IDs are counted.
+// those detector IDs are counted. Paused playspacing checks are excluded even
+// when an older configuration explicitly trusts their historical findings.
 type Pat003 struct {
 	detect.BaseDetector
 	minMatches       int
@@ -48,7 +49,7 @@ func NewPat003(params map[string]any) *Pat003 {
 	d := &Pat003{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "PAT_003",
-			DetectorVersion:  "2.1.0",
+			DetectorVersion:  "2.1.1",
 			DetectorName:     "Cross-Match Consistency",
 			DetectorCategory: "pattern",
 			Inputs:           []string{"history"},
@@ -116,7 +117,7 @@ func (d *Pat003) eligible(evt model.DetectionEvent, currentMatchID string) bool 
 	if evt.IsShadow {
 		return false
 	}
-	if metaDetectors[evt.DetectorID] {
+	if metaDetectors[evt.DetectorID] || model.IsPlayspaceDetector(evt.DetectorID) {
 		return false
 	}
 	if evt.MatchID == "" || evt.MatchID == currentMatchID {

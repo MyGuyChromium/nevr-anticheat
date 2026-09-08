@@ -262,6 +262,9 @@ func (dc DetectorConfig) clone() DetectorConfig {
 // (disabled, shadow, weight 0.5, no params) for an unknown ID.
 func (c *Config) GetDetectorConfig(id string) DetectorConfig {
 	if dc, ok := c.Detectors[id]; ok {
+		if DetectorPauseReason(id) != "" {
+			dc.Enabled, dc.AutoEnforce, dc.EnforcementWeight, dc.Mode = false, false, 0, "shadow"
+		}
 		return dc
 	}
 	return DetectorConfig{
@@ -274,16 +277,16 @@ func (c *Config) GetDetectorConfig(id string) DetectorConfig {
 
 // IsDetectorEnabled returns whether a detector is enabled.
 func (c *Config) IsDetectorEnabled(id string) bool {
-	if dc, ok := c.Detectors[id]; ok {
-		return dc.Enabled
-	}
-	return false
+	return c.GetDetectorConfig(id).Enabled
 }
 
 // IsDetectorShadow returns whether a detector is in shadow mode: its own mode
 // is "shadow", or it is listed in shadow.shadow_detectors, or it has no
 // config entry at all (unknown detectors default to shadow for safety).
 func (c *Config) IsDetectorShadow(id string) bool {
+	if DetectorPauseReason(id) != "" {
+		return true
+	}
 	for _, sid := range c.Shadow.ShadowDetectors {
 		if sid == id {
 			return true

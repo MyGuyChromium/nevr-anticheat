@@ -233,6 +233,11 @@ func cloneConfig(in *config.Config) *config.Config {
 }
 
 func setSandboxParam(cfg *config.Config, req thresholdPreviewRequest) (any, string, error) {
+	if req.Enabled != nil && *req.Enabled {
+		if reason := config.DetectorPauseReason(req.Detector); reason != "" {
+			return nil, "", fmt.Errorf("cannot enable %s: %s", req.Detector, reason)
+		}
+	}
 	spec, ok := config.DetectorSpecFor(req.Detector)
 	if !ok {
 		return nil, "", fmt.Errorf("unknown detector %q", req.Detector)
@@ -289,7 +294,7 @@ func (s *server) handleThresholdSpecs(w http.ResponseWriter, _ *http.Request) {
 			}
 			params = append(params, map[string]any{"key": p.Key, "type": p.Type, "value": value, "unit": p.Unit, "doc": p.Doc})
 		}
-		items = append(items, map[string]any{"id": spec.ID, "name": spec.Name, "enabled": dc.Enabled, "params": params})
+		items = append(items, map[string]any{"id": spec.ID, "name": spec.Name, "enabled": dc.Enabled, "pause_reason": config.DetectorPauseReason(spec.ID), "params": params})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"detectors": items})
 }

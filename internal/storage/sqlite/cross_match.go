@@ -40,7 +40,7 @@ func (s *Store) GetDistinctPlayersWithEvents(ctx context.Context, since time.Tim
 
 // GetAllPlayerEvents returns independently score-eligible events for a player,
 // ordered by match then frame. StoredAt carries created_at. This is the
-// cross-match aggregator's input excludes zero-weight/meta observations and
+// cross-match aggregator's input excludes zero-weight/meta/paused observations and
 // evidence invalidated by the latest human review. Raw event readers do not.
 func (s *Store) GetAllPlayerEvents(ctx context.Context, playerID string) ([]model.DetectionEvent, error) {
 	return s.queryEvents(ctx,
@@ -122,7 +122,8 @@ func eventAnchorTime(ev model.DetectionEvent, matchStarts map[string]time.Time) 
 //     as for a single-match score
 //
 // Store callers filter human-invalidated events first. This pure function
-// independently rejects shadow, zero-weight, malformed and meta observations.
+// independently rejects shadow, zero-weight, malformed, meta and paused
+// playspacing observations, including when historical scoring config is supplied.
 func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts map[string]time.Time, cfg CrossMatchConfig) PlayerCrossMatchSummary {
 	s := PlayerCrossMatchSummary{
 		ByDetector:       make(map[string]int),
@@ -165,7 +166,7 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 
 	var totalSev, totalConf, decayedSum float64
 	for _, ev := range sorted {
-		if ev.PlayerID != s.PlayerID || ev.IsShadow || scoring.IsMetaDetector(ev.DetectorID) ||
+		if ev.PlayerID != s.PlayerID || ev.IsShadow || scoring.IsMetaDetector(ev.DetectorID) || model.IsPlayspaceDetector(ev.DetectorID) ||
 			!positiveFiniteUnit(ev.Severity) || !positiveFiniteUnit(ev.Confidence) || !positiveFiniteUnit(ev.EnforcementWeight) {
 			continue
 		}

@@ -774,7 +774,8 @@ func metricsForSamples(samples []calibrationSample, eventsByMatch map[string][]m
 }
 
 var promotionBlocked = map[string]string{
-	"MOV_006":   "room-scale walking cannot be reliably separated from legal leaning with replay-only telemetry; requires a separate observability validation design",
+	"MOV_006":   config.DetectorPauseReason("MOV_006"),
+	"PAT_005":   config.DetectorPauseReason("PAT_005"),
 	"BIO_001":   "wrist angular speed is capture-rate limited and aliased; requires a separate observability validation design",
 	"THROW_004": "known unsafe on legitimate regrab play",
 	"THROW_007": "stub detector without required telemetry",
@@ -1198,6 +1199,12 @@ func (s *server) handlePromoteDetector(w http.ResponseWriter, r *http.Request) {
 	detectorID := strings.ToUpper(strings.TrimSpace(r.PathValue("detector")))
 	if _, ok := config.DetectorSpecFor(detectorID); !ok {
 		writeError(w, 400, "unknown detector %q", detectorID)
+		return
+	}
+	if reason := config.DetectorPauseReason(detectorID); reason != "" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "detector is paused and cannot be promoted", "promotion_block": reason,
+		})
 		return
 	}
 	// This detector is immutable observation-only, even if stored calibration
