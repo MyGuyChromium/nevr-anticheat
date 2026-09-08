@@ -7,67 +7,126 @@
 <title>NEVR-Anticheat</title>
 <style>
   :root {
-    --bg: #f7f5f0; --ink: #1c1b18; --ink-2: #54514a; --muted: #7c786f;
-    --line: #e5e1d8; --line-2: #cbc6ba;
-    --accent: #0e6b66; --accent-ink: #ffffff; --accent-bg: #e2efec;
-    --blue: #2456b6; --blue-bg: #e6edfa; --orange: #c2611a; --orange-bg: #fae9d9;
-    --ok: #2b7a45; --ok-bg: #e3f0e6; --warn: #8a6300; --warn-bg: #f6edd0;
-    --hot: #b04a12; --hot-bg: #f8e3d4; --bad: #b1352c; --bad-bg: #f8e2df;
-    --neutral-bg: #ebe8e0; --code-bg: #f0ede6; --sk: #e9e6de;
+    color-scheme: dark;
+    --bg: #080f19; --panel: #101c2b; --panel-solid: #132133;
+    --ink: #f1f5fb; --ink-2: #c0cede; --muted: #9aadc3;
+    --line: #28384d; --line-2: #43566f;
+    --accent: #83baff; --accent-ink: #ffffff; --accent-bg: #163455;
+    --action: #176acb; --action-hover: #0f5db8; --focus: #a5ceff;
+    --blue: #86bdff; --blue-bg: #162f4d; --orange: #ffb67f; --orange-bg: #392a20;
+    --ok: #88d6b0; --ok-bg: #17362d; --warn: #f0cb7a; --warn-bg: #382f1c;
+    --hot: #ffac80; --hot-bg: #3d2b22; --bad: #ff9ba6; --bad-bg: #3d242e;
+    --neutral-bg: #1b2b3e; --code-bg: #0b1522; --sk: #24354b;
+    --overlay: rgba(2, 8, 15, .72); --shadow: 0 18px 56px rgba(0, 0, 0, .32);
+    --sans: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+    --display: var(--sans);
     --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    --text-sm: .8125rem; --text-xs: .75rem; --text-base: .875rem;
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 24px; --space-6: 32px; --space-7: 48px;
+    --radius-sm: 4px; --radius: 8px; --radius-lg: 12px;
+    --control-height: 38px; --cell-y: 12px; --panel-padding: 22px; --section-gap: 40px;
+    --header-height: 128px;
+    --chart-pose: var(--ok); --chart-game: var(--blue); --chart-disc: var(--orange);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #151412; --ink: #ebe8e1; --ink-2: #bcb7ad; --muted: #8e897f;
-      --line: #2a2825; --line-2: #403d37;
-      --accent: #62c6be; --accent-ink: #0f1c1b; --accent-bg: #17302d;
-      --blue: #82abff; --blue-bg: #1b2842; --orange: #f2a45c; --orange-bg: #3a2614;
-      --ok: #74c68e; --ok-bg: #17301f; --warn: #e2b84c; --warn-bg: #362c12;
-      --hot: #f18d58; --hot-bg: #3b2114; --bad: #f07d73; --bad-bg: #3d1a17;
-      --neutral-bg: #26241f; --code-bg: #1d1c19; --sk: #23211d;
+  html[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f2f5f9; --panel: #ffffff; --panel-solid: #edf2f8;
+    --ink: #142337; --ink-2: #344c68; --muted: #52677f;
+    --line: #d2dce8; --line-2: #94a6bc;
+    --accent: #145da8; --accent-bg: #e4effd; --focus: #145da8;
+    --blue: #155da6; --blue-bg: #e6f0fd; --orange: #97430d; --orange-bg: #fff0e2;
+    --ok: #226747; --ok-bg: #e5f3ec; --warn: #795500; --warn-bg: #fff3d3;
+    --hot: #a2461b; --hot-bg: #ffecdf; --bad: #ae263f; --bad-bg: #fde8ec;
+    --neutral-bg: #e5ebf3; --code-bg: #edf2f8; --sk: #dce5ef;
+    --overlay: rgba(13, 28, 47, .48); --shadow: 0 18px 56px rgba(31, 52, 80, .18);
+  }
+  @media (prefers-color-scheme: light) {
+    html[data-theme="system"] {
+      color-scheme: light;
+      --bg: #f2f5f9; --panel: #ffffff; --panel-solid: #edf2f8;
+      --ink: #142337; --ink-2: #344c68; --muted: #52677f;
+      --line: #d2dce8; --line-2: #94a6bc;
+      --accent: #145da8; --accent-bg: #e4effd; --focus: #145da8;
+      --blue: #155da6; --blue-bg: #e6f0fd; --orange: #97430d; --orange-bg: #fff0e2;
+      --ok: #226747; --ok-bg: #e5f3ec; --warn: #795500; --warn-bg: #fff3d3;
+      --hot: #a2461b; --hot-bg: #ffecdf; --bad: #ae263f; --bad-bg: #fde8ec;
+      --neutral-bg: #e5ebf3; --code-bg: #edf2f8; --sk: #dce5ef;
+      --overlay: rgba(13, 28, 47, .48); --shadow: 0 18px 56px rgba(31, 52, 80, .18);
     }
   }
+  html[data-density="compact"] { --cell-y: 8px; --panel-padding: 16px; --section-gap: 30px; }
+  html[data-text-size="large"] { font-size: 18px; }
   * { box-sizing: border-box; }
-  html { background: var(--bg); }
+  [hidden] { display: none !important; }
+  html { background: var(--bg); scroll-padding-top: calc(var(--header-height) + 16px); }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 14px/1.5 -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font: var(--text-base)/1.55 var(--sans);
     font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+  .wrap { width: min(100%, 1440px); margin: 0 auto; padding-inline: clamp(16px, 3vw, 48px); }
   a { color: var(--accent); text-underline-offset: 3px; }
   code, .mono { font-family: var(--mono); font-size: .93em; }
   code { background: var(--code-bg); padding: 0 3px; border-radius: 3px; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-  h2 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 16px; }
-  h3 { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 32px 0 8px; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: var(--radius-sm); }
+  h2 { font-size: clamp(1.5rem, 2.4vw, 2rem); line-height: 1.2; font-weight: 650; letter-spacing: -.03em; margin: 0 0 16px; overflow-wrap: anywhere; }
+  h3 { font-size: var(--text-xs); line-height: 1.45; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; color: var(--ink-2); margin: 28px 0 10px; }
   h3 .count { color: var(--ink-2); font-weight: 500; letter-spacing: 0; margin-left: 6px; }
   p { margin: 0 0 8px; }
   .muted { color: var(--muted); }
   .empty { color: var(--muted); max-width: 52ch; }
 
   /* header */
-  .top { border-bottom: 1px solid var(--line); }
-  .top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
-  .wordmark { font-size: 16px; font-weight: 650; letter-spacing: -.015em; margin: 0; }
-  .wordmark span { color: var(--muted); font-weight: 400; }
-  .tagline { color: var(--muted); font-size: 13px; }
+  .top { position: sticky; top: 0; z-index: 40; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .top .wrap { display: flex; align-items: center; gap: 14px; min-height: 74px; padding-block: 12px; }
+  .skip-link { position: fixed; z-index: 100; top: 8px; left: 16px; padding: 12px; background: var(--panel); border: 2px solid var(--focus); transform: translateY(-160%); }
+  .skip-link:focus { transform: none; }
+  .brand-lockup { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-glyph { display: grid; place-items: center; width: 40px; height: 40px; flex: none; color: var(--accent); }
+  .brand-glyph svg { display: block; width: 100%; height: 100%; }
+  .wordmark { font-size: 1rem; font-weight: 750; letter-spacing: -.02em; margin: 0; line-height: 1.2; }
+  .wordmark span { color: var(--accent); padding-inline: 3px; }
+  .tagline { display: block; margin-top: 4px; color: var(--muted); font-size: var(--text-xs); }
+  .connection { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: var(--text-xs)/1.3 var(--mono); color: var(--muted); white-space: nowrap; }
+  .connection i, .console-top b i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+  .connection.online b, .connection.online i { color: var(--ok); }
+  .connection.offline b, .connection.offline i { color: var(--bad); }
   .spacer { flex: 1; }
 
   /* buttons */
   .btn {
-    font: inherit; font-size: 13px; line-height: 1.3; padding: 6px 12px; border-radius: 4px;
-    border: 1px solid var(--line-2); background: transparent; color: var(--ink); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    font: 600 var(--text-sm)/1.35 var(--sans); min-height: var(--control-height); padding: 8px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); cursor: pointer; text-decoration: none;
+    transition: border-color .12s, background-color .12s; max-width: 100%; text-align: center; overflow-wrap: anywhere;
   }
-  .btn:hover { background: var(--neutral-bg); }
-  .btn:disabled { opacity: .5; cursor: default; }
-  .btn-text { border-color: transparent; padding: 4px 6px; color: var(--accent); background: none; }
+  .btn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--neutral-bg); border-color: var(--accent); text-decoration: none; }
+  .btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); background: var(--neutral-bg); border-color: var(--line); cursor: not-allowed; }
+  .btn-primary { color: var(--accent-ink); background: var(--action); border-color: var(--action); }
+  .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--accent-ink); background: var(--action-hover); border-color: var(--action-hover); }
+  .btn-text { border-color: transparent; padding-inline: 6px; color: var(--accent); background: transparent; }
   .btn-text:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
-  .btn-sm { font-size: 12px; padding: 2px 6px; }
+  .btn-sm { font-size: var(--text-xs); min-height: 32px; padding: 5px 9px; }
+  button, input, select, textarea { font: inherit; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea {
+    min-height: var(--control-height); max-width: 100%; min-width: 0; padding: 8px 10px;
+    border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-solid); color: var(--ink);
+    font: var(--text-sm)/1.45 var(--sans); letter-spacing: normal; text-transform: none;
+  }
+  textarea { width: 100%; min-height: 100px; resize: vertical; }
+  input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+  input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; color: var(--muted); background: var(--neutral-bg); }
+  input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; accent-color: var(--action); flex: none; }
+  input[type="range"] { accent-color: var(--action); width: 100%; }
+  input[type="file"] { overflow: hidden; }
+  input::file-selector-button { font: 600 var(--text-xs)/1.4 var(--sans); padding: 5px 8px; margin-right: 10px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); color: var(--ink); background: var(--neutral-bg); cursor: pointer; }
+  input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--bad); }
+  .check-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: var(--text-sm); }
 
   /* blocks */
-  main { padding: 40px 0 80px; }
-  .block { padding: 32px 0; border-top: 1px solid var(--line); }
+  main { padding-block: 24px 64px; }
+  .block { padding-block: var(--section-gap); border-top: 1px solid var(--line); min-width: 0; }
   .block:first-child { border-top: 0; padding-top: 0; }
 
   /* upload */
@@ -106,16 +165,13 @@
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
   .check label { font-weight: 500; cursor: pointer; }
   .check-mark { color: var(--accent); font: 700 18px/1 var(--display); flex: none; }
-  .help { color: var(--muted); font-size: 13px; margin: 2px 0 0; max-width: 64ch; }
+  .help { color: var(--muted); font-size: var(--text-sm); margin: 2px 0 0; max-width: 76ch; }
   .status { margin: 16px 0 0; color: var(--muted); min-height: 21px; }
   .status.ok { color: var(--ok); } .status.err { color: var(--bad); }
-  .queue-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .queue-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .queue-actions:empty { display: none; }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 16px; }
-  .filters input[type="search"], .filters select {
-    min-height: 36px; border: 1px solid var(--line-2); background: var(--panel-solid); color: var(--ink);
-    padding: 7px 10px; font: 13px/1.3 inherit;
-  }
+  .filters input[type="search"], .filters select { max-width: 100%; }
   .filters input[type="search"] { min-width: min(360px, 100%); flex: 1; }
   .filters .check-inline { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); }
   .history-count { color: var(--muted); font: 11px/1.3 var(--mono); margin-left: auto; }
@@ -131,7 +187,7 @@
   .lab-card h3 { margin-top: 0; }
   .form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 9px; margin-top: 12px; }
   .form-field { display: grid; gap: 5px; flex: 1; min-width: 150px; color: var(--muted); font: 10px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .05em; }
-  .form-field input, .form-field select { min-height: 38px; border: 1px solid var(--line-2); background: var(--panel-solid); color: var(--ink); padding: 7px 10px; font: 13px/1.3 var(--sans); text-transform: none; letter-spacing: normal; }
+  .form-field input, .form-field select { width: 100%; }
   .form-field.path { min-width: min(430px,100%); }
   .explain { display: block; margin-top: 6px; color: var(--ink-2); font-size: 11px; line-height: 1.45; max-width: 58ch; }
   .regression-pass { color: var(--ok); } .regression-fail { color: var(--bad); }
@@ -148,13 +204,14 @@
   .health-list li { margin: 5px 0; }
   .health-list .error { color: var(--bad); } .health-list .warning { color: var(--warn); } .health-list .info { color: var(--muted); }
   .action-stack { display: flex; flex-wrap: wrap; gap: 5px; min-width: 250px; }
-  dialog { width: min(1240px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line-2); color: var(--ink); background: #07111e; box-shadow: 0 40px 120px rgba(0,0,0,.72); }
+  dialog { width: min(1240px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--line-2); border-radius: var(--radius-lg); color: var(--ink); background: var(--panel); box-shadow: var(--shadow); overflow: auto; scrollbar-gutter: stable; }
   #lab-dialog-status:empty { display: none; }
   #lab-dialog-status { margin: 16px 22px 0; }
-  dialog::backdrop { background: rgba(0,5,12,.8); backdrop-filter: blur(7px); }
-  .inspector-head { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: rgba(7,17,30,.96); }
-  .inspector-head h2 { margin: 0; font: 20px/1.2 var(--mono); letter-spacing: -.03em; }
-  .inspector-body { padding: 22px; overflow: auto; }
+  dialog::backdrop { background: var(--overlay); }
+  .inspector-head { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .inspector-head h2 { margin: 0; font: 650 1.25rem/1.35 var(--sans); letter-spacing: -.02em; min-width: 0; }
+  .inspector-head .btn { flex: none; }
+  .inspector-body { padding: 22px; min-width: 0; overflow: auto; }
   .inspector-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-bottom: 20px; }
   .inspector-grid div { padding: 13px; border: 1px solid var(--line); background: var(--panel); }
   .inspector-grid span { display: block; color: var(--muted); font: 9px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -175,13 +232,13 @@
   .studio-card h3 { margin-top:0; }
   .studio-card.wide { grid-column:span 2; }
   .studio-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
-  .chart-shell { overflow:auto; border:1px solid var(--line); background:#07111e; padding:12px; }
-  .speed-chart { width:100%; min-width:720px; height:210px; display:block; }
-  .speed-chart .grid { stroke:#26384c; stroke-width:1; }
-  .speed-chart .pose { fill:none; stroke:#62c6be; stroke-width:2; }
-  .speed-chart .game { fill:none; stroke:#82abff; stroke-width:1.5; }
-  .speed-chart .disc { fill:none; stroke:#f2a45c; stroke-width:2; }
-  .speed-chart text { fill:#8ea0b5; font:10px var(--mono); }
+  .chart-shell { overflow:auto; border:1px solid var(--line); background:var(--bg); padding:12px; }
+  .speed-chart { width:100%; min-width:360px; height:auto; min-height:160px; display:block; }
+  .speed-chart .grid { stroke:var(--line-2); stroke-width:1; }
+  .speed-chart .pose { fill:none; stroke:var(--ok); stroke-width:2; }
+  .speed-chart .game { fill:none; stroke:var(--blue); stroke-width:1.5; }
+  .speed-chart .disc { fill:none; stroke:var(--orange); stroke-width:2; }
+  .speed-chart text { fill:var(--muted); font:11px var(--mono); }
   .legend { display:flex; gap:16px; color:var(--muted); font:11px var(--mono); margin:8px 0; }
   .legend i { display:inline-block; width:14px; height:2px; margin:0 5px 3px 0; }
   .playlist { max-height:320px; overflow:auto; border:1px solid var(--line); }
@@ -190,12 +247,13 @@
   .metric-note { color:var(--muted); font-size:11px; margin-top:8px; }
 
   /* tables */
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 16px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th:last-child, td:last-child { padding-right: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+  th, td { text-align: left; padding: var(--cell-y) 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th:first-child, td:first-child { padding-left: 10px; }
+  th:last-child, td:last-child { padding-right: 10px; }
   thead th {
-    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
-    white-space: nowrap; border-bottom-color: var(--line-2); position: sticky; top: 0; background: var(--bg); z-index: 1;
+    font-size: var(--text-xs); font-weight: 650; letter-spacing: .035em; text-transform: uppercase; color: var(--muted);
+    white-space: nowrap; border-bottom-color: var(--line-2); position: sticky; top: 0; background: var(--panel-solid); z-index: 1;
   }
   .num { text-align: right; white-space: nowrap; }
   td.dim, tr.shadow td { color: var(--muted); }
@@ -253,8 +311,7 @@
   .assessment-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .assessment-controls label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
   .assessment-controls select {
-    min-width: 280px; max-width: 100%; padding: 8px 34px 8px 10px; border: 1px solid var(--line-2); border-radius: 0;
-    background: var(--panel-solid); color: var(--ink); font: 12px/1.3 var(--mono); cursor: pointer;
+    min-width: 240px; max-width: 100%; padding-right: 30px; cursor: pointer;
   }
   .assessment-count { color: var(--muted); font: 11px/1.3 var(--mono); white-space: nowrap; }
   .assessment-players { margin-top: 8px; overflow-x: auto; }
@@ -307,7 +364,7 @@
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 0; font-size: 13px; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; }
-  pre { background: var(--code-bg); border-radius: 4px; padding: 12px; margin: 8px 0 0; overflow: auto; font: 12px/1.5 var(--mono); max-height: 400px; white-space: pre-wrap; word-break: break-all; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; margin: 8px 0 0; overflow: auto; font: var(--text-xs)/1.55 var(--mono); max-height: 400px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .foot { color: var(--muted); font-size: 13px; margin: 24px 0 0 21px; }
 
   /* failure card */
@@ -349,173 +406,197 @@
     .bar.wait > i { width: 100%; opacity: .45; }
   }
 
-  /* Sharplink-inspired operations console: disciplined navy, electric blue,
-     oversized type and visible system state, without external assets. */
-  :root {
-    color-scheme: dark;
-    --bg: #050b13; --ink: #f3f6fb; --ink-2: #c1ccda; --muted: #77869a;
-    --line: rgba(168, 190, 220, .14); --line-2: rgba(168, 190, 220, .28);
-    --accent: #0e76ff; --accent-ink: #ffffff; --accent-bg: rgba(14, 118, 255, .13);
-    --blue: #4d9bff; --blue-bg: rgba(14, 118, 255, .15);
-    --orange: #ff9b59; --orange-bg: rgba(255, 126, 45, .14);
-    --ok: #53e3a6; --ok-bg: rgba(45, 204, 143, .12);
-    --warn: #ffd36a; --warn-bg: rgba(255, 199, 74, .12);
-    --hot: #ff9158; --hot-bg: rgba(255, 116, 52, .13);
-    --bad: #ff6b76; --bad-bg: rgba(255, 76, 91, .12);
-    --neutral-bg: rgba(170, 191, 219, .08); --code-bg: rgba(3, 8, 15, .68); --sk: rgba(156, 181, 213, .09);
-    --panel: rgba(10, 20, 34, .86); --panel-solid: #0b1625;
-  }
-  html { background: var(--bg); scroll-behavior: smooth; }
-  body {
-    min-height: 100vh; overflow-x: hidden;
-    background:
-      radial-gradient(circle at 78% 6%, rgba(14,118,255,.23), transparent 32rem),
-      radial-gradient(circle at 15% 48%, rgba(9,67,143,.13), transparent 28rem),
-      linear-gradient(180deg, #050b13 0%, #07111e 52%, #050b13 100%);
-    color: var(--ink); font-family: Arial, "Segoe UI", sans-serif;
-  }
-  body::before {
-    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .25;
-    background-image: linear-gradient(rgba(132,167,207,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(132,167,207,.08) 1px, transparent 1px);
-    background-size: 64px 64px; mask-image: linear-gradient(to bottom, #000, transparent 78%);
-  }
-  .wrap { width: min(100%, 1440px); max-width: none; margin: 0 auto; padding-inline: clamp(24px, 4vw, 64px); }
-  a { color: #76b3ff; text-decoration-thickness: 1px; }
-  code { background: rgba(120,158,205,.1); border: 1px solid rgba(148,181,220,.12); padding: 2px 5px; border-radius: 0; }
-  :focus-visible { outline-color: #62a8ff; outline-offset: 4px; border-radius: 0; }
-
-  .top {
-    position: sticky; top: 0; z-index: 40; border-bottom: 1px solid var(--line);
-    background: rgba(5,11,19,.82); backdrop-filter: blur(20px) saturate(135%);
-  }
-  .top .wrap { min-height: 78px; height: auto; gap: 28px; }
-  .brand-lockup { display: flex; align-items: center; gap: 14px; }
-  .brand-glyph { position: relative; display: grid; place-items: center; width: 34px; height: 34px; transform: skewY(-10deg); }
-  .brand-glyph i { position: absolute; width: 23px; height: 7px; border: 2px solid #fff; transform: rotate(-30deg); }
-  .brand-glyph i:nth-child(1) { translate: 0 -8px; border-color: var(--accent); }
-  .brand-glyph i:nth-child(2) { translate: 0 0; }
-  .brand-glyph i:nth-child(3) { translate: 0 8px; opacity: .52; }
-  .wordmark { font-size: 17px; font-weight: 800; letter-spacing: -.035em; line-height: 1; }
-  .wordmark span { color: var(--accent); font-weight: 800; padding-inline: 3px; }
-  .tagline { display: block; margin-top: 6px; color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-  .connection { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line); font: 9px/1 var(--mono); letter-spacing: .11em; color: var(--muted); }
-  .connection i, .console-top b i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 16px var(--ok); }
-  .connection b { color: var(--ok); }
-  .connection.offline i { background: var(--bad); box-shadow: 0 0 16px var(--bad); }
-  .connection.offline b { color: var(--bad); }
-
-  .btn {
-    border: 1px solid var(--line-2); border-radius: 0; padding: 9px 14px; background: rgba(9,19,33,.72);
-    color: var(--ink); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase;
-    transition: border-color .18s, background .18s, color .18s, transform .18s;
-  }
-  .btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; transform: translateY(-1px); text-decoration: none; }
-  .btn-text { color: #73b1ff; background: transparent; border-color: transparent; }
-  .btn-text:hover { background: transparent; color: #fff; border-color: transparent; }
-  .btn-sm { font-size: 9px; padding: 6px 9px; }
-  .quit-btn span { color: var(--accent); margin-left: 8px; }
-
-  .offline-banner { position: sticky; top: 78px; z-index: 39; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px clamp(24px, 4vw, 64px); background: #7e1827; border-bottom: 1px solid #ff7281; box-shadow: 0 14px 40px rgba(0,0,0,.35); }
-  .offline-banner[hidden] { display: none; }
-  .offline-banner div { display: flex; gap: 14px; align-items: baseline; }
-  .offline-banner strong { text-transform: uppercase; letter-spacing: .06em; }
-  .offline-banner span { color: #ffdbe0; }
-  .offline-banner code { color: #fff; }
-
-  main { padding: 0 0 120px; }
-  .block { padding: clamp(58px, 8vw, 104px) 0; border-top: 1px solid var(--line); }
-  .block:first-child { padding-top: clamp(52px, 7vw, 96px); }
-  .section-kicker { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; color: #9eb1c8; font: 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
-  .section-kicker::after { content: ""; width: 72px; height: 1px; background: var(--accent); opacity: .7; }
+  /* The established navy / blue brand, sized as a working review console. */
+  .section-kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--muted); font: 600 var(--text-xs)/1.4 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
   .section-kicker span { color: var(--accent); }
-  h2 { margin-bottom: 30px; font-size: clamp(30px, 4vw, 54px); line-height: .96; font-weight: 500; letter-spacing: -.055em; }
-  h3 { color: #94a5bb; }
-
-  .hero { min-height: calc(100vh - 78px); display: flex; flex-direction: column; justify-content: center; }
-  .hero-grid { display: grid; grid-template-columns: minmax(0,.92fr) minmax(480px,1.08fr); align-items: stretch; gap: clamp(42px, 7vw, 112px); }
-  .hero-copy { align-self: center; }
-  .hero-copy h2 { margin: 0; font-size: clamp(56px, 7vw, 108px); line-height: .84; letter-spacing: -.075em; font-weight: 500; }
-  .hero-copy h2 span { color: #7091ba; }
-  .hero-deck { max-width: 580px; margin: 36px 0 0; color: #b3c0d1; font-size: clamp(17px, 1.5vw, 22px); line-height: 1.4; letter-spacing: -.02em; }
-  .protocol-grid { display: grid; grid-template-columns: repeat(3,1fr); max-width: 620px; margin-top: 52px; border-top: 1px solid var(--line); }
-  .protocol-grid div { padding: 18px 14px 0 0; border-right: 1px solid var(--line); }
-  .protocol-grid div + div { padding-left: 18px; }
-  .protocol-grid b { display: block; color: #fff; font: 18px/1 var(--mono); letter-spacing: -.04em; }
-  .protocol-grid span { display: block; margin-top: 8px; color: var(--muted); font: 9px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-
-  .upload-console { position: relative; padding: clamp(18px, 2.5vw, 34px); border: 1px solid rgba(118,174,244,.3); background: linear-gradient(145deg,rgba(13,29,50,.95),rgba(5,13,23,.92)); box-shadow: 0 36px 100px rgba(0,0,0,.44), inset 0 1px 0 rgba(255,255,255,.03); }
-  .upload-console::before { content: ""; position: absolute; inset: -1px; pointer-events: none; background: linear-gradient(115deg,rgba(14,118,255,.25),transparent 35%); opacity: .5; }
-  .console-top { position: relative; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; color: var(--muted); font: 9px/1 var(--mono); letter-spacing: .15em; }
-  .console-top b { display: flex; align-items: center; gap: 7px; color: var(--ok); font-weight: 600; }
-  .drop { position: relative; min-height: 280px; padding: 34px; border: 1px dashed rgba(123,169,226,.36); border-radius: 0; background: rgba(3,9,17,.48); text-align: left; justify-content: flex-end; overflow: hidden; }
-  .drop::before { content: "DROP ZONE"; position: absolute; top: 20px; left: 22px; color: rgba(147,177,214,.36); font: 9px/1 var(--mono); letter-spacing: .18em; }
-  .drop::after { content: ""; position: absolute; width: 230px; height: 230px; right: -85px; top: -80px; border: 1px solid rgba(49,132,237,.32); border-radius: 50%; box-shadow: 0 0 0 35px rgba(49,132,237,.04), 0 0 0 70px rgba(49,132,237,.025); }
-  .drop:hover { border-color: var(--accent); background: rgba(9,31,59,.62); }
-  .drop.over { border-style: solid; border-color: #67aaff; background: rgba(14,118,255,.14); }
-  .drop-mark { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 25px; background: var(--accent); color: #fff; font-size: 25px; }
-  .drop .lead { font-size: clamp(21px, 2.2vw, 31px); font-weight: 500; letter-spacing: -.035em; }
-  .drop .sub { margin-top: 11px; color: #8394aa; font: 11px/1.5 var(--mono); letter-spacing: .03em; }
-  .drop .sub a { color: #87bcff; }
-  .drop.busy { justify-content: flex-start; }
-  .drop.busy::after { opacity: .25; }
-  .controls { position: relative; margin-top: 20px; }
-  .check input { width: 17px; height: 17px; border-radius: 0; }
-  .check label { font-size: 12px; letter-spacing: .02em; }
-  .help { max-width: 48ch; color: #718197; font-size: 11px; }
-  .status { position: relative; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); font: 10px/1.5 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
-
-  .panel { min-height: 108px; overflow-x: auto; padding: 22px; border: 1px solid var(--line); background: linear-gradient(145deg,rgba(11,24,41,.88),rgba(7,15,26,.8)); }
-  .panel.status { padding: 20px; }
-  .empty { color: #718197; }
-  table { font-size: 12px; }
-  th, td { padding: 12px 18px 12px 0; border-bottom-color: rgba(158,184,216,.1); }
-  thead th { top: 0; color: #73849a; background: var(--panel-solid); border-bottom-color: rgba(146,183,230,.24); font-family: var(--mono); font-size: 9px; letter-spacing: .11em; }
-  tbody tr { transition: background .15s; }
-  tbody tr:hover { background: rgba(14,118,255,.055); }
-  .tag, .lvl, .team { border-radius: 0; border: 1px solid currentColor; background: transparent; font-family: var(--mono); font-size: 9px; letter-spacing: .08em; }
-  .bar { border-radius: 0; }
-
-  .match, .fail { margin-top: 18px; padding: 26px; border: 1px solid var(--line); background: rgba(8,18,31,.76); }
+  .section-intro { margin: -4px 0 20px; max-width: 76ch; color: var(--ink-2); }
+  .hero { min-height: 0; }
+  .hero-grid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 32px; align-items: center; }
+  .hero-copy h2 { margin: 0; font-size: clamp(2.5rem, 4.6vw, 4rem); line-height: 1.04; letter-spacing: -.055em; font-weight: 600; }
+  .hero-copy h2 span { color: var(--muted); }
+  .hero-deck { max-width: 54ch; margin: 20px 0 0; color: var(--ink-2); font-size: 1rem; line-height: 1.6; }
+  .protocol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 24px; border-top: 1px solid var(--line); gap: 16px; }
+  .protocol-grid div { min-width: 0; padding-top: 14px; }
+  .protocol-grid b { display: block; color: var(--ink); font: 600 1rem/1.4 var(--mono); overflow-wrap: anywhere; }
+  .protocol-grid span { display: block; margin-top: 4px; color: var(--muted); font-size: var(--text-xs); }
+  .upload-console { padding: var(--panel-padding); border: 1px solid var(--line-2); border-radius: var(--radius-lg); background: var(--panel); }
+  .console-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; color: var(--muted); font: 600 var(--text-xs)/1.4 var(--mono); letter-spacing: .03em; }
+  .console-top b { display: flex; align-items: center; gap: 7px; color: var(--ink-2); font-weight: 600; }
+  .drop { min-height: 188px; padding: 22px; border-radius: var(--radius); background: var(--bg); }
+  .drop-mark { display: inline-grid; place-items: center; width: 36px; height: 36px; margin-bottom: 12px; border-radius: var(--radius); background: var(--accent-bg); color: var(--accent); font-size: 22px; }
+  .drop .lead { font-size: clamp(1.125rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  .drop .sub { font-size: var(--text-sm); line-height: 1.7; margin-top: 8px; }
+  .drop .sub a { color: var(--accent); }
+  .status { font-size: var(--text-sm); line-height: 1.55; overflow-wrap: anywhere; }
+  .status:empty { display: none; }
+  .panel { min-height: 100px; padding: var(--panel-padding); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow-x: auto; }
+  .panel.status { padding: var(--panel-padding); }
+  .match, .fail { margin-top: 14px; padding: var(--panel-padding); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); min-width: 0; }
   .match:first-child, .fail:first-child { border-top: 1px solid var(--line); }
-  .match > summary { gap: 18px; }
-  .mtitle { font-size: 21px; }
-  .score .pts { font: 30px/1 var(--mono); }
-  .notice { background: var(--warn-bg); padding: 10px 14px; }
-  .team-card { border-radius: 0; padding: 20px; background: rgba(5,13,23,.58); }
-  .team-card.blue { border-top-width: 1px; box-shadow: inset 0 3px 0 var(--blue); }
-  .team-card.orange { border-top-width: 1px; box-shadow: inset 0 3px 0 var(--orange); }
-  .report-actions .btn { background: rgba(8,19,33,.8); }
-  pre { border: 1px solid var(--line); border-radius: 0; }
-  .flash { animation: flash 1.4s ease-out; }
-  @keyframes flash { from { box-shadow: 0 0 0 1px var(--accent), 0 0 50px var(--accent-bg); } to { box-shadow: none; } }
-  .skeleton .sk { border-radius: 0; background: linear-gradient(90deg,var(--sk),rgba(119,157,203,.17),var(--sk)); background-size: 220% 100%; animation: shimmer 1.6s linear infinite; }
-  @keyframes shimmer { to { background-position: -220% 0; } }
-  .stopped { min-height: calc(100vh - 78px); display: grid; place-content: center; text-align: center; }
+  .team-card { background: var(--bg); border-radius: var(--radius); }
+  .health-card, .lab-card, .studio-card, .inspector-grid div, .catch-projections figure { border-radius: var(--radius); }
+  .automatic-review, .match-tools, .throw-log, .physics-table, .playlist, .chart-shell { border-radius: var(--radius); }
+  .notice { background: var(--warn-bg); padding: 12px 14px; border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+  .notice.bad { background: var(--bad-bg); }
+  .notice-history { margin-top: 18px; max-height: 240px; overflow: auto; }
+  .notice-history ol { padding-left: 22px; }
+  .notice-history li { padding-block: 6px; overflow-wrap: anywhere; }
+  .offline-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px clamp(16px, 3vw, 48px); background: var(--bad-bg); color: var(--ink); border-bottom: 1px solid var(--bad); }
+  .offline-banner div { display: grid; gap: 4px; min-width: 0; }
+  .offline-banner span { color: var(--ink-2); overflow-wrap: anywhere; }
+  .offline-banner .btn { flex: none; }
+  .workspace-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-block: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .workspace-nav a { display: inline-flex; align-items: center; min-height: 36px; padding: 7px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--ink-2); font-size: var(--text-sm); text-decoration: none; }
+  .workspace-nav a:hover { background: var(--neutral-bg); border-color: var(--line); }
+  .workspace-nav a[aria-current], .workspace-nav a.selected { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); }
+  .top .workspace-nav { min-height: 0; margin-block: 0; padding-block: 8px; border-bottom: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  .workspace-nav a { flex: none; }
+  .operator-overview { margin-block: 20px 28px; }
+  .operator-overview h2 { font-size: 1.375rem; margin-bottom: 8px; }
+  .status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  a.status-card { text-decoration: none; }
+  .status-card { min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); border-top: 3px solid var(--line-2); }
+  .status-card .status-label, .status-card > span:first-child, .status-card dt { display: block; color: var(--muted); font-size: var(--text-xs); font-weight: 600; margin: 0 0 5px; }
+  .status-card strong, .status-card b, .status-card dd { display: block; color: var(--ink); font-size: 1rem; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+  .status-card p, .status-card small { display: block; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; margin: 6px 0 0; overflow-wrap: anywhere; }
+  .tone-ok { --tone: var(--ok); --tone-bg: var(--ok-bg); }
+  .tone-warn { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+  .tone-bad { --tone: var(--bad); --tone-bg: var(--bad-bg); }
+  .tone-neutral { --tone: var(--muted); --tone-bg: var(--neutral-bg); }
+  .status-card.tone-ok, .status-card.tone-warn, .status-card.tone-bad, .status-card.tone-neutral { border-top-color: var(--tone); }
+  .screen-state { padding: 20px; border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--line-2)); border-radius: var(--radius); background: var(--panel); }
+  .screen-state h3, .screen-state h4, .screen-state strong { margin: 0 0 6px; color: var(--ink); font-size: 1rem; letter-spacing: normal; text-transform: none; }
+  .screen-state p { max-width: 78ch; color: var(--ink-2); overflow-wrap: anywhere; }
+  .screen-state-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .advanced-section { margin-top: 24px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .advanced-section > summary { cursor: pointer; padding: 3px 0; color: var(--ink-2); font-weight: 600; }
+  .advanced-section[open] > summary { margin-bottom: 18px; }
+  .advanced-section > summary h2, .advanced-section > summary h3 { display: inline; font-size: 1rem; letter-spacing: normal; text-transform: none; }
+  .advanced-section .block { padding-block: 24px; }
+  .appearance-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 16px; margin-block: 18px; }
+  .appearance-controls label { display: grid; align-content: start; gap: 6px; min-width: 0; color: var(--ink-2); font-size: var(--text-sm); }
+  .appearance-controls select { width: 100%; }
+  .queue-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+  .queue-toolbar > * { min-width: 0; }
+  .queue-toolbar label { display: grid; gap: 6px; color: var(--ink-2); font-size: var(--text-sm); }
+  .queue-toolbar input[type="search"] { flex: 1; min-width: min(260px, 100%); }
+  .review-workspace { min-width: 0; }
+  .review-grid, .review-workspace-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.6fr) minmax(250px, 1fr); gap: 16px; align-items: start; }
+  .review-queue, .review-evidence, .review-details, .review-panel { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow-wrap: anywhere; }
+  .review-queue { max-height: min(64vh, 640px); overflow: auto; scrollbar-gutter: stable; }
+  .review-queue button, .review-queue a { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .incident-option { display: grid; justify-items: start; gap: 6px; width: 100%; margin-bottom: 8px; text-align: left; }
+  .review-details { max-height: min(64vh, 640px); overflow: auto; scrollbar-gutter: stable; }
+  .review-queue [aria-current], .review-queue [aria-selected="true"], .review-queue .selected { border-color: var(--accent); background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  .review-footer { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 0 16px; padding-block: 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .review-footer .help { flex: 1; min-width: min(260px, 100%); }
+  .note-editor { display: grid; gap: 8px; margin-top: 16px; }
+  .note-editor label { color: var(--ink-2); font-weight: 600; }
+  .note-status { font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
+  .note-status.ok { color: var(--ok); } .note-status.err { color: var(--bad); }
+  .stopped { min-height: 60vh; display: grid; place-content: center; text-align: center; }
+  .stopped p { max-width: 62ch; }
+  .skeleton .sk { animation: none; }
+  .flash { animation: flash .8s ease-out; }
+  @keyframes flash { from { background: var(--accent-bg); } to { background: transparent; } }
 
-  @media (max-width: 1060px) {
-    .hero { min-height: auto; }
-    .hero-grid { grid-template-columns: 1fr; }
-    .hero-copy h2 { font-size: clamp(60px, 12vw, 100px); }
-    .hero-deck { max-width: 720px; }
-    .upload-console { max-width: 780px; }
+  /* Tables retain their column meaning; constrained containers own scrolling. */
+  .events, .assessment-players, .stat-tables, .physics-table, .throw-table, .playlist { max-width: 100%; scrollbar-gutter: stable; overscroll-behavior: contain; }
+  .events, .assessment-players, .table-scroll, #history, #observations, #flagged { overflow-x: auto; min-width: 0; max-width: 100%; }
+  .who { overflow-wrap: anywhere; }
+  .who .name { font-weight: 600; }
+  .who .id { display: inline-block; font-size: var(--text-xs); max-width: 100%; overflow-wrap: anywhere; }
+  .kv { grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); }
+  .kv dd, .kv dt, .mmeta, .mtitle, .ftitle { overflow-wrap: anywhere; }
+  tbody tr:hover { background: var(--neutral-bg); }
+  .review-buttons .selected, .match-tools .selected { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+  .review-note, .review-reasons, .explain, .metric-note, .summary-note, .signal-list, .det-name { font-size: var(--text-xs); line-height: 1.55; overflow-wrap: anywhere; }
+  .review-note, .review-reasons, .signal-list { white-space: normal; }
+  .health-card span, .inspector-grid span, .team-card .team-stats span, .throw-tools .scroll-label, .match-tools .label, .form-field, .diag h4 { font-size: var(--text-xs); line-height: 1.45; letter-spacing: .035em; }
+  .form-field { text-transform: none; font-family: var(--sans); }
+  .match-tools .storage-note, .history-count, .assessment-count { font-size: var(--text-xs); }
+  .health-card b, .inspector-grid b { overflow-wrap: anywhere; }
+  .tag, .lvl, .team { font-size: var(--text-xs); line-height: 1.5; letter-spacing: .025em; border: 1px solid currentColor; border-radius: var(--radius-sm); }
+  .lvl-action_worthy { color: var(--bad); background: var(--bad-bg); }
+  .chart-shell { background: var(--bg); }
+  .speed-chart .grid { stroke: var(--line-2); }
+  .speed-chart .pose { stroke: var(--ok); }
+  .speed-chart .game { stroke: var(--blue); }
+  .speed-chart .disc { stroke: var(--orange); }
+  .speed-chart text { fill: var(--muted); font-size: 22px; }
+  .speed-chart .event-marker { stroke: var(--ink-2); stroke-width: 2; stroke-dasharray: 5 5; }
+  .legend, .catch-legend { flex-wrap: wrap; font-size: var(--text-xs); }
+  .catch-projections figcaption { font-size: var(--text-xs); }
+
+  @media (max-width: 1100px) {
+    .top .wrap { flex-wrap: wrap; gap: 10px; }
+    .top .spacer { min-width: 0; }
+    .hero-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 24px; }
+    .hero-copy h2 { font-size: clamp(2.5rem, 5vw, 3.5rem); }
+    .review-grid, .review-workspace-grid { grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); }
+    .review-details { grid-column: 1 / -1; }
+    .studio-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
-  @media (max-width: 720px) {
-    .top .wrap { min-height: 68px; }
-    .tagline, .connection span { display: none; }
-    .connection { padding: 7px; }
-    .quit-btn { padding: 8px 10px; }
-    .offline-banner { top: 68px; align-items: flex-start; }
-    .offline-banner div { display: grid; gap: 5px; }
-    .hero-copy h2 { font-size: clamp(48px, 16vw, 76px); }
-    .protocol-grid { grid-template-columns: 1fr; }
-    .protocol-grid div { padding: 14px 0; border-right: 0; border-bottom: 1px solid var(--line); }
-    .protocol-grid div + div { padding-left: 0; }
-    .upload-console { padding: 15px; }
-    .drop { min-height: 240px; padding: 24px; }
-    .panel { padding: 14px; }
-    .lab-grid, .studio-grid { grid-template-columns: 1fr; }
-    .studio-card.wide { grid-column:auto; }
-    .match, .fail { padding: 18px; }
+  @media (max-width: 760px) {
+    :root { --header-height: 174px; --panel-padding: 16px; --section-gap: 30px; }
+    .top .brand-lockup { flex: 1; }
+    .top .spacer { display: none; }
+    .top .wrap > .btn { flex: 1; }
+    .connection { font-size: .6875rem; padding: 6px 8px; }
+    .connection span { display: none; }
+    .tagline { font-size: .6875rem; }
+    .wordmark { font-size: .9375rem; }
+    .workspace-nav { gap: 4px; margin-block: 14px; }
+    .workspace-nav a { padding: 7px 9px; }
+    .hero-grid { grid-template-columns: 1fr; gap: 22px; }
+    .hero-copy h2 { font-size: clamp(2.5rem, 7vw, 3.25rem); }
+    .hero-deck { margin-top: 14px; font-size: var(--text-base); }
+    .protocol-grid { margin-top: 16px; }
+    .drop { min-height: 156px; padding: 16px; }
+    .status-grid, .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lab-grid, .studio-grid, .review-grid, .review-workspace-grid { grid-template-columns: 1fr; }
+    .studio-card.wide, .review-details { grid-column: auto; }
+    .review-queue { max-height: 300px; }
+    .review-footer { position: static; }
+    .offline-banner { align-items: flex-start; flex-direction: column; }
+    .inspector-head { padding: 14px 16px; gap: 12px; }
+    .inspector-head h2 { font-size: 1.125rem; }
+    .inspector-body { padding: 16px; }
+    .inspector-head .btn { flex: none; }
+    dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
+    .match > summary { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .score { text-align: left; margin-left: 20px; }
+    .score .lbl { justify-content: flex-start; }
+    .throw-tools, .report-head, .assessment-head { flex-wrap: wrap; }
+    .catch-projections { grid-template-columns: 1fr; }
+    .action-stack { min-width: 180px; }
+  }
+  @media (max-width: 440px) {
+    :root { --panel-padding: 14px; }
+    .status-card { padding: 12px; }
+    .status-card strong, .status-card b, .status-card dd { font-size: var(--text-base); }
+    .status-grid { gap: 8px; }
+    .health-grid, .team-grid { grid-template-columns: 1fr; }
+    .protocol-grid { gap: 10px; }
+    .protocol-grid b { font-size: var(--text-sm); }
+    .protocol-grid span { font-size: .6875rem; }
+    .controls { gap: 10px; }
+    .queue-actions { flex-wrap: wrap; }
+    .uploads li { grid-template-columns: minmax(0, 1fr); }
+    .uploads .name { white-space: normal; overflow-wrap: anywhere; }
+    .uploads .state { white-space: normal; }
+    .kv { grid-template-columns: 1fr; gap: 4px; }
+    .kv dd { margin-bottom: 8px; }
+    .cases li { grid-template-columns: 1fr; gap: 6px; padding-block: 14px; }
+    .form-field { min-width: 0; flex-basis: 100%; }
+    .form-field.path { min-width: 0; }
+    .throw-tools { align-items: flex-start; flex-direction: column; }
+    .screen-state { padding: 16px; }
+  }
+  html[data-motion="reduced"] *, html[data-motion="reduced"] ::before, html[data-motion="reduced"] ::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  html[data-motion="reduced"] .bar.wait > i { width: 100%; opacity: .45; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
   }
   @media print {
     body { background: #fff; color: #000; font-size: 11px; }
@@ -524,40 +605,64 @@
     thead th { position: static; }
     pre { max-height: none; }
   }
+  /* Navigation stays a single scrollable strip; header actions own their row. */
+  .top nav.workspace-nav { flex-wrap: nowrap; }
+  @media (max-width: 760px) {
+    .top > .wrap:first-child { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+    .top .brand-lockup { grid-column: 1 / 3; }
+    .top .connection { grid-column: 3; justify-self: end; }
+    .top .wrap > .btn { width: 100%; }
+    .review-footer { position: static; }
+  }
 </style>
 </head>
 <body>
+<a class="skip-link" href="#workspace">Skip to workspace</a>
 <header class="top">
   <div class="wrap">
     <div class="brand-lockup">
-      <span class="brand-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-glyph" role="img" aria-label="Echo Arena disc"><svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="23" stroke="var(--accent)" stroke-width="2"/><g stroke="currentColor" stroke-width="3" fill="var(--panel-solid)"><path d="M14 11A28 28 0 0 1 50 11L44 19A18 18 0 0 0 20 19Z"/><path d="M53 14A28 28 0 0 1 53 50L45 44A18 18 0 0 0 45 20Z"/><path d="M50 53A28 28 0 0 1 14 53L20 45A18 18 0 0 0 44 45Z"/><path d="M11 50A28 28 0 0 1 11 14L19 20A18 18 0 0 0 19 44Z"/></g><circle cx="32" cy="32" r="11" fill="var(--accent-bg)" stroke="var(--accent)" stroke-width="3"/><circle cx="32" cy="32" r="4" fill="currentColor"/><path d="M23 9H41M55 23V41M41 55H23M9 41V23" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg></span>
       <div><h1 class="wordmark">NEVR<span>/</span>ANTICHEAT</h1><span class="tagline">Replay intelligence console</span></div>
     </div>
     <span class="spacer"></span>
-    <div id="connection" class="connection online" role="status"><i></i><span>LOCAL ENGINE</span><b>ONLINE</b></div>
+    <div id="connection" class="connection checking" role="status"><i aria-hidden="true"></i><span>LOCAL ENGINE</span><b>CHECKING</b></div>
     <button id="open-viewer" class="btn" title="Open Spark Replay Viewer">Open replay viewer <span aria-hidden="true">↗</span></button>
-    <button id="quit" class="btn quit-btn" title="Stop the desktop app">Quit session <span aria-hidden="true">↗</span></button>
+    <button id="quick-setup" class="btn" title="Check storage and Spark readiness">Setup</button>
+    <button id="quit" class="btn quit-btn" title="Stop the desktop app">Quit</button>
   </div>
+  <nav class="workspace-nav wrap" aria-label="Workspace sections"><a href="#workspace" aria-current="location">Overview</a><a href="#h-upload">Import replay</a><a href="#h-flagged">Review queue</a><a href="#h-history">History</a><a href="#appearance">Appearance</a><a href="#h-automation">Settings &amp; recovery</a><a href="#advanced-tools">Advanced tools</a></nav>
 </header>
 <div id="offline-banner" class="offline-banner" hidden>
   <div><strong>Analysis engine disconnected.</strong><span>This browser tab is no longer connected to its local NEVR process. Relaunch <code>nevr-desktop.exe</code>, then use the new window it opens.</span></div>
   <button id="retry" class="btn">Retry connection</button>
 </div>
-<main class="wrap">
+<main class="wrap" id="workspace" tabindex="-1">
+  <section class="operator-overview" aria-labelledby="workspace-title">
+    <div class="section-kicker">Offline analysis · human review</div>
+    <h2 id="workspace-title">Your replay workspace</h2>
+    <p class="section-intro">Check the local engine, import a recording, and review the evidence. A finding is a reason to investigate—not a cheating verdict.</p>
+    <div class="status-grid" id="operator-status" aria-label="Workspace status">
+      <a class="status-card tone-neutral" href="#h-system"><span>Local connection</span><b id="operator-connection">Checking…</b><small id="operator-freshness">No successful health check yet</small></a>
+      <a class="status-card tone-neutral" href="#h-upload"><span>Mode &amp; activity</span><b id="operator-activity">Replay · checking</b><small id="operator-source">Live monitoring is not available in this desktop app.</small></a>
+      <a class="status-card tone-neutral" href="#h-flagged"><span>Scored review queue</span><b id="operator-backlog">Not loaded</b><small id="operator-backlog-note">Observation-only findings are listed separately.</small></a>
+      <div class="status-card tone-neutral"><span>Enforcement</span><b>Review only</b><small>No automatic punishment. A healthy feed does not prove fair play.</small></div>
+    </div>
+    <div id="continue-review" hidden></div>
+  </section>
   <section class="block upload hero" aria-labelledby="h-upload">
     <div class="section-kicker"><span>01</span> Replay intelligence</div>
     <div class="hero-grid">
       <div class="hero-copy">
-        <h2 id="h-upload">Every movement.<br><span>Under review.</span></h2>
-        <p class="hero-deck">Turn an Echo VR recording into a defensible, frame-level investigation—locally, privately, and without automatic punishment.</p>
+        <h2 id="h-upload">Analyze a replay.<br><span>Review the evidence.</span></h2>
+        <p class="hero-deck">Drop a recording or choose a file. The local engine reconstructs events and shows findings with their evidence limits.</p>
         <div class="protocol-grid" aria-label="Analysis guarantees">
-          <div><b>30</b><span>detector definitions</span></div>
-          <div><b>0</b><span>automatic actions</span></div>
-          <div><b>127.0.0.1</b><span>local-only surface</span></div>
+          <div><b id="catalog-count">—</b><span>detector definitions, not all enforceable</span></div>
+          <div><b>Local</b><span>recordings stay on this PC</span></div>
+          <div><b>Human review</b><span>no automatic punishment</span></div>
         </div>
       </div>
       <div class="upload-console">
-        <div class="console-top"><span>LOCAL ANALYSIS PORT</span><b><i></i> READY</b></div>
+        <div class="console-top"><span>Replay import</span><b id="import-readiness">Checking engine…</b></div>
         <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
           <input id="files" type="file" multiple accept=".echoreplay,.json">
           <input id="folder" type="file" multiple webkitdirectory directory accept=".echoreplay,.json">
@@ -578,7 +683,7 @@
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
         </div>
         <div id="queue-actions" class="queue-actions"></div>
-        <p id="status" class="status" role="status" aria-live="polite">Engine ready. Waiting for a replay.</p>
+        <p id="status" class="status" role="status" aria-live="polite">Choose .echoreplay or .json recordings to begin. Engine readiness is shown above.</p>
       </div>
     </div>
   </section>
@@ -592,6 +697,8 @@
   <section class="block" aria-labelledby="h-flagged">
     <div class="section-kicker"><span>03</span> Human review queue</div>
     <h2 id="h-flagged">Scored review cases</h2>
+    <p class="section-intro">Cases that reached the scoring review threshold. Technical errors and observation-only signals are not confirmed violations.</p>
+    <div class="queue-toolbar"><label class="form-field">Search this queue<input id="case-search" type="search" placeholder="Player, exact ID, match or detector"></label><label class="form-field">Review state<select id="case-state"><option value="">All returned cases</option><option value="pending">Awaiting review</option><option value="reviewed">Reviewed</option></select></label><button class="btn" id="refresh-cases">Refresh queue</button><span id="case-count" class="muted"></span></div>
     <div id="flagged" class="panel skeleton" aria-busy="true"><div class="sk" style="width:46%"></div><div class="sk" style="width:38%"></div><div class="sk" style="width:42%"></div></div>
   </section>
   <section class="block" aria-labelledby="h-observations">
@@ -599,6 +706,7 @@
     <h2 id="h-observations">Detector observations</h2>
     <div id="observations" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div><div class="sk" style="width:54%"></div></div>
   </section>
+  <details id="advanced-calibration" class="advanced-section"><summary>Calibration &amp; detector development <span class="muted">Advanced, optional</span></summary>
   <section class="block" aria-labelledby="h-calibration">
     <div class="section-kicker"><span>05</span> Ground-truth coverage</div>
     <h2 id="h-calibration">Calibration library</h2>
@@ -617,9 +725,11 @@
       <div class="lab-card"><h3>Blinded evidence review</h3><p class="help">Hide detector identity, confidence, and conclusion until you reveal them. Decisions made while hidden are recorded as blind reviews.</p><label class="check-inline"><input id="blind-review" type="checkbox"> Conceal detector conclusions</label><p class="metric-note">Open the Spark clip and physics inspector first, then label the behavior or reveal the signal.</p></div>
     </div>
   </section>
+  </details>
   <section class="block" aria-labelledby="h-history">
     <div class="section-kicker"><span>07</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
+    <p class="section-intro">Search the latest 200 stored matches. Filters and page position stay in this browser; refresh when you want new results.</p>
     <div class="filters" aria-label="History filters">
       <input id="history-search" type="search" placeholder="Search match, file, player, map…" aria-label="Search history">
       <select id="history-detector" aria-label="Filter history by detector"><option value="">All detectors</option></select>
@@ -627,9 +737,11 @@
       <select id="history-sort" aria-label="Sort history"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
       <label class="check-inline"><input id="history-flagged" type="checkbox"> Scored cases only</label>
       <span id="history-count" class="history-count"></span>
+      <button id="refresh-history" class="btn">Refresh history</button>
     </div>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
   </section>
+  <section class="block" id="appearance" aria-labelledby="h-appearance"><div class="section-kicker">Personal workspace</div><h2 id="h-appearance">Appearance &amp; controls</h2><p class="section-intro">These browser-local preferences change the interface only, never detector settings or enforcement.</p><div class="appearance-controls form-row"><label class="form-field">Theme<select id="pref-theme"><option value="dark">NEVR dark</option><option value="light">Light</option><option value="system">Follow system</option></select></label><label class="form-field">Table spacing<select id="pref-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="form-field">Text size<select id="pref-text-size"><option value="normal">Standard</option><option value="large">Larger</option></select></label><label class="form-field">Motion<select id="pref-motion"><option value="system">Follow system</option><option value="reduced">Reduced</option></select></label><label class="check-inline"><input type="checkbox" id="pref-shortcuts"> Enable J/K within the focused incident queue</label></div><p class="help">Tab and Enter always work. Arrow keys move within the incident queue. Shortcuts never act while typing notes.</p></section>
   <section class="block" aria-labelledby="h-automation">
     <div class="section-kicker"><span>08</span> Hands-free workflow</div>
     <h2 id="h-automation">Automation, recovery &amp; updates</h2>
@@ -640,12 +752,15 @@
     <h2 id="h-system">Health &amp; maintenance</h2>
     <div id="health" class="panel skeleton" aria-busy="true"><div class="sk" style="width:58%"></div><div class="sk" style="width:49%"></div></div>
   </section>
+  <details id="advanced-tools" class="advanced-section"><summary>Investigation &amp; reliability studio <span class="muted">Advanced diagnostics and configuration</span></summary>
   <section class="block" aria-labelledby="h-studio">
     <div class="section-kicker"><span>10</span> Research operations</div>
     <h2 id="h-studio">Investigation &amp; reliability studio</h2>
     <p class="help">Calibration, dataset splits, configuration provenance, evidence portability, queue performance, setup, and recovery in one place.</p>
     <div id="studio" class="panel skeleton" aria-busy="true"><div class="sk" style="width:70%"></div><div class="sk" style="width:54%"></div></div>
   </section>
+  </details>
+  <section class="block" aria-labelledby="h-notifications"><h2 id="h-notifications">Activity &amp; recovery messages</h2><p class="help">Messages from this browser session. Repeated messages are grouped; no desktop notifications or sounds.</p><div id="notice-history" class="notice-history"><p class="empty">No activity messages yet.</p></div></section>
 </main>
 <dialog id="physics-dialog" aria-labelledby="physics-title">
   <div class="inspector-head"><h2 id="physics-title">Physics inspector</h2><button id="close-physics" class="btn">Close</button></div>
@@ -662,15 +777,38 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   let intentionallyStopped = false;
-  function setConnectionState(online) {
+  const operatorState = { connection: 'checking', health: null, checkedAt: 0, settings: null, cases: null };
+  let healthProbePending = false;
+  function setConnectionState(value) {
+    if (intentionallyStopped) return;
+    const state = value === true ? 'online' : value === false ? 'offline' : value;
+    operatorState.connection = state;
     const el = $('connection');
-    el.classList.toggle('online', online);
-    el.classList.toggle('offline', !online);
-    el.querySelector('b').textContent = online ? 'ONLINE' : 'OFFLINE';
-    $('offline-banner').hidden = online;
+    el.className = 'connection ' + state;
+    el.querySelector('b').textContent = ({online:'CONNECTED', offline:'DISCONNECTED', denied:'ACCESS DENIED', checking:'CHECKING', unavailable:'UNAVAILABLE'})[state] || 'UNKNOWN';
+    $('offline-banner').hidden = state === 'online' || state === 'checking';
+    const message = $('offline-banner').querySelector('strong');
+    message.textContent = state === 'denied' ? 'This app session was denied access.' : state === 'unavailable' ? 'The local engine could not complete its health check.' : 'Analysis engine disconnected.';
+    updateOperatorStatus();
+  }
+  function updateOperatorStatus() {
+    if (intentionallyStopped || !$('operator-connection')) return;
+    const fresh = operatorState.checkedAt > 0 && Date.now() - operatorState.checkedAt < 15000;
+    const connected = operatorState.connection === 'online';
+    $('operator-connection').textContent = ({online:'Connected', offline:'Disconnected', denied:'Access denied', checking:'Checking…', unavailable:'Check unavailable'})[operatorState.connection] || 'Unknown';
+    $('operator-freshness').textContent = operatorState.checkedAt ? `Health response ${Math.max(0, Math.floor((Date.now()-operatorState.checkedAt)/1000))}s ago${fresh ? '' : ' · status is stale'}. Not telemetry freshness.` : 'No successful health check yet';
+    const ready = connected && fresh;
+    $('operator-connection').closest('.status-card').className = 'status-card ' + (ready ? 'tone-ok' : operatorState.connection === 'checking' ? 'tone-neutral' : 'tone-warn');
+    $('operator-activity').textContent = !ready ? 'Replay · activity unknown' : operatorState.health?.analysis_active ? 'Replay · analyzing' : 'Replay · idle';
+    $('operator-source').textContent = !ready ? 'Reconnect to check activity. Stored results are not live telemetry.' : operatorState.settings?.watch_enabled ? `Folder watch: ${operatorState.settings.watch_status || 'status unavailable'}. No live match connection.` : 'No live match connection. Import a recording to analyze.';
+    $('import-readiness').textContent = !ready ? 'Engine not verified' : operatorState.health?.analysis_active ? 'Analysis in progress' : 'Ready for a recording';
+  }
+  function screenState(title, message, actions = '', tone = 'neutral') {
+    tone = ['neutral','ok','warn','bad'].includes(tone) ? tone : 'neutral';
+    return `<div class="screen-state tone-${tone}"><strong>${esc(title)}</strong><p>${esc(message)}</p>${actions ? `<div class="screen-state-actions">${actions}</div>` : ''}</div>`;
   }
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const intFmt = new Intl.NumberFormat();
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
   const fmtInt = (n) => (typeof n === 'number' ? intFmt.format(n) : '—');
@@ -719,12 +857,37 @@
 
   const prefKey = 'nevr-desktop-preferences-v1';
   let prefs = {};
-  try { prefs = JSON.parse(localStorage.getItem(prefKey) || '{}') || {}; } catch (_) {}
+  try { const stored = JSON.parse(localStorage.getItem(prefKey) || '{}'); if (stored && typeof stored === 'object' && !Array.isArray(stored)) prefs = stored; } catch (_) {}
   const savePrefs = () => { try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {} };
+  function applyAppearance() {
+    const options = {theme:['dark','light','system'], density:['comfortable','compact'], textSize:['normal','large'], motion:['system','reduced']};
+    for (const [key, values] of Object.entries(options)) {
+      const value = values.includes(prefs[key]) ? prefs[key] : values[0];
+      document.documentElement.dataset[key] = value;
+      const control = $('pref-' + key.replace(/[A-Z]/g, c => '-' + c.toLowerCase())); if (control) control.value = value;
+    }
+    reduced = prefs.motion === 'reduced' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+    $('pref-shortcuts').checked = prefs.shortcuts === true;
+  }
+  applyAppearance();
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(entries => document.documentElement.style.setProperty('--header-height', Math.ceil(entries[0].target.getBoundingClientRect().height)+'px')).observe(document.querySelector('.top'));
+  }
+  const notices = [];
+  function recordNotice(message, tone) {
+    if (!message) return;
+    const previous = notices.find(n => n.message === message && n.tone === tone);
+    if (previous) { previous.count++; previous.at = new Date(); }
+    else notices.unshift({message, tone, count:1, at:new Date()});
+    notices.length = Math.min(notices.length, 30);
+    $('notice-history').innerHTML = notices.map(n => `<div class="screen-state tone-${n.tone === 'err' ? 'warn' : n.tone === 'ok' ? 'ok' : 'neutral'}"><p>${esc(n.message)}</p><small>${esc(fmtAbs(n.at))}${n.count > 1 ? ` · repeated ${n.count} times` : ''}</small></div>`).join('');
+  }
   $('history-search').value = prefs.historySearch || '';
   $('history-sort').value = prefs.historySort || 'newest';
   $('history-flagged').checked = !!prefs.historyFlagged;
   $('history-label').value = prefs.historyLabel || '';
+  $('case-search').value = prefs.caseSearch || '';
+  $('case-state').value = prefs.caseState || '';
   let blindReview = !!prefs.blindReview;
   const revealedEvents = new Set();
   $('blind-review').checked = blindReview;
@@ -732,49 +895,43 @@
     const el = $('status'); el.textContent = msg; el.className = 'status ' + cls;
     const modalStatus = $('lab-dialog-status');
     if ($('lab-dialog')?.open && modalStatus) { modalStatus.textContent = msg; modalStatus.className = 'status ' + cls; }
+    recordNotice(msg, cls);
   };
-  async function getJSON(url) {
+  async function requestJSON(method, url, payload) {
     let r;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), method === 'GET' ? 20000 : 90000);
     try {
-      r = await fetch(url, { cache: 'no-store' });
-    } catch (_) {
-      setConnectionState(false);
-      throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
-    }
-    setConnectionState(true);
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
-    return body;
-  }
-  async function postJSON(url, payload) {
-    let r;
-    try {
-      r = await fetch(url, { method: 'POST', cache: 'no-store',
+      r = await fetch(url, { method, cache: 'no-store', signal: controller.signal,
         headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
         body: payload === undefined ? undefined : JSON.stringify(payload) });
-    } catch (_) {
+      const body = await r.json().catch(() => null);
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) setConnectionState('denied');
+        const error = new Error(r.status === 401 || r.status === 403 ? 'Access denied. Reopen the current app window; do not reuse an old session link.' : r.status === 409 ? (body?.error || 'This operation conflicts with newer state. Reload before trying again.') : body?.error || `The local engine returned HTTP ${r.status}. Retry the affected operation.`);
+        error.status = r.status; throw error;
+      }
+      if (body === null) throw new Error('The engine returned an unreadable response. Retry the affected operation.');
+      return body;
+    } catch (error) {
+      if (r) throw error;
       setConnectionState(false);
-      throw new Error('local analysis engine is offline; relaunch nevr-desktop.exe');
-    }
-    setConnectionState(true);
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
-    return body;
+      throw new Error(controller.signal.aborted ? 'The engine did not respond in time. The operation may still be running; check its results before retrying.' : 'The local engine is disconnected. Your open evidence stays visible. Reopen NEVR or retry the connection.');
+    } finally { clearTimeout(timeout); }
   }
-  async function deleteJSON(url) {
-    const r = await fetch(url, { method: 'DELETE', cache: 'no-store' });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`);
-    return body;
-  }
+  const getJSON = url => requestJSON('GET', url);
+  const postJSON = (url, payload) => requestJSON('POST', url, payload);
+  const deleteJSON = url => requestJSON('DELETE', url);
   async function probeConnection() {
-    if (intentionallyStopped) return;
+    if (intentionallyStopped || healthProbePending) return;
+    healthProbePending = true;
     try {
-      await fetch('', { method: 'HEAD', cache: 'no-store' });
+      const health = await getJSON('api/health');
+      if (typeof health.analysis_active !== 'boolean' || typeof health.version !== 'string') throw new Error('Health response is incomplete');
+      operatorState.health = health; operatorState.checkedAt = Date.now();
       setConnectionState(true);
-    } catch (_) {
-      setConnectionState(false);
-    }
+    } catch (error) { if (operatorState.connection !== 'denied' && operatorState.connection !== 'offline') setConnectionState('unavailable'); }
+    finally { healthProbePending = false; updateOperatorStatus(); }
   }
 
   // ---- match sections ------------------------------------------------------
@@ -1209,7 +1366,7 @@
       body = `<p class="muted">This direct API request did not enable replacement. Upload through the desktop page to re-analyze automatically, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
     }
     return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
-      <p class="err">${esc(res.error)}</p>${body}</section>`;
+      ${res.already_stored ? `<p>${esc(res.error)}</p>${body}` : `<p>Analysis could not finish. Your original recording was not modified.</p><p class="help">Check the details below, then <a href="#h-upload">choose another recording</a> or retry after resolving the problem.</p><details class="sub"><summary>Analysis error &amp; file diagnostics</summary><p class="err">${esc(res.error)}</p>${body}</details>`}</section>`;
   }
 
   function prepend(html) {
@@ -1249,7 +1406,10 @@
   };
   const setQueueBar = (i, pct, wait = false) => {
     const b = $('ubar-' + i); if (!b) return;
-    b.classList.toggle('wait', wait); b.setAttribute('aria-valuenow', Number(pct).toFixed(0)); b.firstElementChild.style.width = pct + '%';
+    b.hidden = false;
+    b.classList.toggle('wait', wait);
+    if (wait || !Number.isFinite(pct)) { b.removeAttribute('aria-valuenow'); b.setAttribute('aria-valuetext', 'Analyzing; total work is unknown'); b.firstElementChild.style.width = '30%'; }
+    else { const value = Math.min(100,Math.max(0,pct)); b.setAttribute('aria-valuenow', value.toFixed(0)); b.setAttribute('aria-valuetext', value.toFixed(0)+'% uploaded'); b.firstElementChild.style.width = value+'%'; }
   };
   const overall = (text, sub = '') => { const el = $('overall'); if (el) el.innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
   const responseItems = (res) => (res.matches && res.matches.length ? res.matches : [res]);
@@ -1265,13 +1425,13 @@
     return new Promise((resolve) => {
       const fd = new FormData(); fd.append('files', item.file, item.file.name);
       const xhr = currentXHR = new XMLHttpRequest();
-      xhr.open('POST', 'api/analyze'); xhr.responseType = 'json';
+      xhr.open('POST', 'api/analyze'); xhr.responseType = 'json'; xhr.timeout = 30 * 60 * 1000;
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) return;
         const pct = Math.min(100, e.loaded / e.total * 100);
         setQueueBar(i, pct); setQueueState(i, `uploading ${pct.toFixed(0)}%`);
-        overall(`File ${i + 1} of ${queue.length}`, `${esc(item.file.name)} · ${fmtBytes(e.loaded)} of ${fmtBytes(e.total)}`);
+        overall(`File ${i + 1} of ${queue.length}`, `${item.file.name} · ${fmtBytes(e.loaded)} of ${fmtBytes(e.total)}`);
       };
       xhr.upload.onload = () => {
         setQueueBar(i, 100, true); setQueueState(i, 'analyzing');
@@ -1279,9 +1439,10 @@
         setStatus(`Analyzing ${item.file.name}; long replays can take a while.`);
       };
       xhr.onerror = () => { setConnectionState(false); resolve({ error: 'local engine disconnected' }); };
-      xhr.onabort = () => resolve({ cancelled: true });
+      xhr.ontimeout = () => { queueStopped = true; resolve({ error: 'No final response after 30 minutes. The engine may still be working. Remaining files were not started; check History before retrying.' }); };
+      xhr.onabort = () => resolve({ error: 'Upload connection stopped. Backend completion is unknown; check History before retrying.' });
       xhr.onload = () => {
-        setConnectionState(true);
+        if (xhr.status === 401 || xhr.status === 403) setConnectionState('denied');
         const body = xhr.response || {};
         if (xhr.status !== 200 || !Array.isArray(body.results)) resolve({ error: body.error || `${xhr.status} ${xhr.statusText}` });
         else resolve({ response: body.results[0] });
@@ -1292,29 +1453,28 @@
   async function runQueue(indices) {
     if (busy) return;
     busy = true; queueStopped = false; drop.setAttribute('aria-busy', 'true');
-    $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Cancel queue</button>';
+    $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Stop queue</button><a class="btn btn-text" href="#h-history">Browse stored results</a><span class="help">Analysis progress is indeterminate. Stopping requests cancellation; the current file may finish.</span>';
     const totals = { analyzed: 0, stored: 0, failed: 0, cancelled: 0 };
     for (const i of indices) {
-      if (queueStopped) { queue[i].state = 'cancelled'; setQueueState(i, 'cancelled', 'bad', true); totals.cancelled++; continue; }
+      if (queueStopped) { queue[i].state = 'cancelled'; setQueueState(i, 'not started · queue stopped', '', true); totals.cancelled++; continue; }
       const item = queue[i]; item.state = 'running';
       const result = await processQueueItem(item, i); currentXHR = null;
-      setQueueBar(i, 100, false);
-      if (result.cancelled || queueStopped) {
-        item.state = 'cancelled'; setQueueState(i, 'cancelled', 'bad', true); totals.cancelled++;
-      } else if (result.error || !result.response) {
-        item.state = 'failed'; item.error = result.error || 'empty response'; setQueueState(i, 'failed', 'bad', true); totals.failed++;
+      const progress = $('ubar-'+i); if (progress) { progress.classList.remove('wait'); progress.hidden = true; }
+      if (result.error || !result.response) {
+        item.state = 'failed'; item.error = result.error || 'empty response'; setQueueState(i, 'failed · '+item.error, 'bad', true); totals.failed++;
       } else {
         const counts = showResponse(result.response);
         Object.keys(counts).forEach((key) => { totals[key] += counts[key]; });
         item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : 'stored';
-        setQueueState(i, counts.analyzed ? 'analyzed' : counts.failed ? 'failed' : 'already stored', counts.failed ? 'bad' : 'ok', !!counts.failed);
+        setQueueState(i, counts.analyzed ? 'complete · results available' : counts.failed ? 'analysis did not complete · see details' : 'stored results available', counts.failed ? 'bad' : 'ok', !!counts.failed);
+        if (counts.analyzed) { const match = responseItems(result.response).find(r => r.ok && r.match); if (match) $('ust-'+i).insertAdjacentHTML('afterend', ` <button class="btn btn-text btn-sm" data-open="${esc(match.match.match_id)}">Open results</button>`); }
       }
     }
     busy = false; drop.removeAttribute('aria-busy');
     $('files').value = ''; $('folder').value = '';
     const failed = queue.filter((item) => item.state === 'failed' || item.state === 'cancelled').length;
-    $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / cancelled</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
-    const parts = [`${totals.analyzed} analyzed`]; if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} failed`); if (totals.cancelled) parts.push(`${totals.cancelled} cancelled`);
+    $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / not started</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
+    const parts = [`${totals.analyzed} analyzed`]; if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} did not complete`); if (totals.cancelled) parts.push(`${totals.cancelled} not started`);
     overall(queueStopped ? 'Queue stopped' : 'Queue complete', parts.join(' · '));
     setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : 'ok');
     refreshPanels();
@@ -1346,7 +1506,7 @@
   $('pick').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!busy) $('files').click(); });
   $('pick-folder').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!busy) $('folder').click(); });
   drop.addEventListener('click', (e) => { if (!busy && !e.target.closest('a, button')) $('files').click(); });
-  drop.addEventListener('keydown', (e) => { if (!busy && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('files').click(); } });
+  drop.addEventListener('keydown', (e) => { if (e.target === drop && !busy && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('files').click(); } });
   $('files').addEventListener('change', (e) => analyze(e.target.files));
   $('folder').addEventListener('change', (e) => analyze(e.target.files));
   $('clear').addEventListener('click', () => {
@@ -1356,28 +1516,38 @@
   });
 
   // ---- panels ---------------------------------------------------------------
-  function panelError(el, what, e) { el.className = 'panel status err'; el.textContent = `Could not load ${what}: ${e.message}`; }
-  async function loadFlagged() {
+  function panelError(el, what, e) {
+    el.className = 'panel'; el.removeAttribute('aria-busy');
+    el.innerHTML = screenState(e.status === 403 || e.status === 401 ? 'Access denied' : `Could not load ${what}`, e.message, `<button class="btn" data-retry-panel="${esc(el.id)}">Retry this section</button><a class="btn btn-text" href="#h-system">Check local engine</a>`, 'warn');
+    recordNotice(`Could not load ${what}: ${e.message}`, 'err');
+  }
+  let caseSnapshot = null, pendingCaseSnapshot = null;
+  function renderFlagged() {
+    const el = $('flagged'), snapshot = caseSnapshot;
+    if (!snapshot) return;
+    const query = $('case-search').value.trim().toLowerCase(), state = $('case-state').value;
+    const matches = c => (!query || [c.player_name,c.player_id,c.match_id,c.case_id,c.explanation,...Object.keys(c.detectors||{})].join(' ').toLowerCase().includes(query)) && (!state || (state === 'pending' ? c.status === 'pending' : ['reviewed','closed','dismissed','resolved'].includes(c.status)));
+    const f = {single_match:(snapshot.single_match || []).filter(matches), cross_match:(snapshot.cross_match || []).filter(matches)};
+    const all = [...(snapshot.single_match||[]),...(snapshot.cross_match||[])], shown = f.single_match.length + f.cross_match.length;
+    $('case-count').textContent = `${fmtInt(shown)} of ${fmtInt(all.length)} loaded cases`;
+    const pending = all.filter(c => c.status === 'pending').length;
+    $('operator-backlog').textContent = `${fmtInt(pending)} awaiting review`;
+    $('operator-backlog-note').textContent = `${fmtInt(all.length)} loaded cases · refresh for new arrivals. Not a count of confirmed violations.`;
+    if (!all.length) { el.innerHTML = screenState('No scored review cases', 'Observation-only findings do not create scored cases. Open a match from History to review its signals and evidence. An empty queue is not proof of fair play.', '<a class="btn" href="#h-history">Browse recorded matches</a><a class="btn btn-text" href="#h-upload">Import a replay</a>'); return; }
+    if (!shown) { el.innerHTML = screenState('No cases match these filters', 'Try a different name, exact identifier or review state.', '<button class="btn" id="reset-case-filters">Reset queue filters</button>'); return; }
+    let html = '';
+    if (f.cross_match.length) html += `<h3>Across matches <span class="count">${fmtInt(f.cross_match.length)}</span></h3><div class="table-scroll"><table><thead><tr><th>Player / case</th><th>State</th><th class="num">Scoring total</th><th>Recorded matches</th></tr></thead><tbody>${f.cross_match.map(c => `<tr><td>${who(c.player_name,c.player_id)}<span class="explain mono">${esc(c.case_id)}</span></td><td>${esc(c.status || 'Not recorded')}</td><td class="num">${fmtNum(c.decayed_score)}</td><td>${(c.match_ids||[]).map(id => `<button class="btn btn-text btn-sm" data-investigation-match="${esc(id)}">Review ${esc(id)}</button>`).join(' ') || 'Match links unavailable'}</td></tr>`).join('')}</tbody></table></div>`;
+    if (f.single_match.length) html += `<h3>Single match <span class="count">${fmtInt(f.single_match.length)}</span></h3><div class="table-scroll"><table><thead><tr><th>Player / case</th><th>State</th><th class="num">Scoring total</th><th>Finding context</th><th>Review</th></tr></thead><tbody>${f.single_match.map(c => `<tr><td>${who(c.player_name,c.player_id)}<span class="explain mono">${esc(c.case_id)}</span></td><td>${esc(c.status || 'Not recorded')}</td><td class="num">${fmtNum(c.suspicion_score)}</td><td>${esc(c.explanation || 'Review the underlying observations and their limitations.')}</td><td><button class="btn" data-investigation-match="${esc(c.match_id)}">Review evidence</button><button class="btn btn-text btn-sm" data-open="${esc(c.match_id)}">Full match</button></td></tr>`).join('')}</tbody></table></div>`;
+    el.innerHTML = html;
+  }
+  async function loadFlagged(force = false) {
     const el = $('flagged');
     try {
       const f = await getJSON('api/flagged');
       el.className = ''; el.removeAttribute('aria-busy');
-      if (!f.single_match.length && !f.cross_match.length) {
-        el.innerHTML = '<p class="empty">No scored review cases. Observation-only findings do not create scored cases: open a match from History to see its automatic assessment and replay evidence. A case appears here when scored signals reach the review threshold; it is not a cheating verdict.</p>';
-        return;
-      }
-      let html = '';
-      if (f.cross_match.length) {
-        html += `<h3>Across matches<span class="count">${fmtInt(f.cross_match.length)}</span></h3><table><thead><tr><th>Player</th><th class="num">Decayed</th><th class="num">Raw</th><th class="num">Matches</th><th>Severity</th></tr></thead><tbody>` +
-          f.cross_match.map((c) => `<tr><td>${who(c.player_name, c.player_id)}<br><span class="mono muted">${esc(c.case_id)}</span></td><td class="num">${fmtNum(c.decayed_score)}</td><td class="num dim">${fmtNum(c.cumulative_score)}</td><td class="num">${fmtInt(c.match_count)}</td><td>${sevBadge(c.severity)}</td></tr>`).join('') + '</tbody></table>';
-      }
-      if (f.single_match.length) {
-        html += `<h3>Single match<span class="count">${fmtInt(f.single_match.length)}</span></h3><table><thead><tr><th>Player</th><th class="num">Score</th><th>Level</th><th>Action</th><th></th></tr></thead><tbody>` +
-          f.single_match.map((c) => `<tr><td>${who(c.player_name, c.player_id)}<br><span class="mono muted">${esc(c.case_id)}</span></td><td class="num">${fmtNum(c.suspicion_score)}</td><td>${badge(c.level)}</td><td>${esc(lvlName(c.recommended_action))}</td>
-            <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(c.match_id)}">Open match</button></td></tr>`).join('') + '</tbody></table>';
-      }
-      el.innerHTML = html;
-    } catch (e) { panelError(el, 'the flagged cases', e); }
+      if (caseSnapshot && !force && JSON.stringify(f) !== JSON.stringify(caseSnapshot)) { pendingCaseSnapshot = f; $('refresh-cases').textContent = 'Queue changes available · refresh'; return; }
+      caseSnapshot = f; pendingCaseSnapshot = null; $('refresh-cases').textContent = 'Refresh queue'; renderFlagged();
+    } catch (e) { $('operator-backlog').textContent = 'Queue unavailable'; $('operator-backlog-note').textContent = 'Could not check cases. This does not mean the queue is empty.'; panelError(el, 'review cases', e); }
   }
 
   async function loadObservations() {
@@ -1418,10 +1588,22 @@
   }
 
   function openLabDialog(title, html) {
+    persistNoteDraft();
+    const request = ++investigationRequest;
     $('lab-dialog-title').textContent = title;
     $('lab-dialog-status').textContent = '';
     $('lab-dialog-content').innerHTML = html;
+    $('lab-dialog-content').removeAttribute('aria-busy');
     if (!$('lab-dialog').open) $('lab-dialog').showModal();
+    return request;
+  }
+  async function showSetup() {
+    const request = openLabDialog('Local setup check', screenState('Checking this installation', 'Testing evidence-folder access and looking for Spark Replay Viewer. This is not a live server connection test.'));
+    try {
+      const s = await getJSON('api/setup');
+      if (request !== investigationRequest || !$('lab-dialog').open) return;
+      $('lab-dialog-content').innerHTML = `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable === true ? 'Writable' : s.writable === false ? 'Needs attention' : 'Unknown'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed === true ? 'Found' : s.spark_installed === false ? 'Not found' : 'Unknown'}</b></div><div><span>Operating mode</span><b>Offline replay</b></div><div><span>Enforcement</span><b>Review only</b></div></div>${screenState(s.writable ? 'Ready to import recordings' : 'Evidence storage needs attention', s.spark_installed ? 'The local viewer was found. Open a recording to start reviewing; finding accuracy still requires validation.' : 'You can analyze replays without Spark. Exact replay playback needs Spark installed and discoverable on this PC.', '<button class="btn btn-primary" data-setup-done>Go to replay import</button><button class="btn" id="retry-setup">Run checks again</button>', s.writable ? 'neutral' : 'warn')}<h3>Setup steps</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="help">For a custom Spark location, set NEVR_REPLAY_VIEWER to its executable before launching NEVR. Secrets and server credentials do not belong in appearance settings.</p><details class="sub"><summary>Local diagnostic details</summary><p class="mono">${esc(s.data_folder||'Folder not reported')}</p><p>Live server discovery, connection profiles and team reviewer accounts are not available in this desktop surface.</p></details>`;
+    } catch(error) { if (request === investigationRequest && $('lab-dialog').open) $('lab-dialog-content').innerHTML = screenState('Setup check unavailable',error.message,'<button class="btn" id="retry-setup">Retry setup check</button>','warn'); }
   }
 
   function calibrationDetailsHTML(d) {
@@ -1493,43 +1675,157 @@
   }
 
   let activePlaylist = [], activePlaylistIndex = -1, activeInvestigationMatch = '';
-  function speedChart(points) {
-    if (!points.length) return '<p class="empty">No normalized timeline points are available.</p>';
-    const player = points[0].player_id;
-    const rows = points.filter((p) => p.player_id === player);
-    const maxT = Math.max(...rows.map((p) => p.time), 1), maxV = Math.max(20, ...rows.flatMap((p) => [p.pose_speed, p.game_speed, p.disc_speed]));
-    const path = (key) => rows.map((p, i) => `${i ? 'L' : 'M'} ${(p.time / maxT * 900).toFixed(1)} ${(185 - (Number(p[key]) || 0) / maxV * 170).toFixed(1)}`).join(' ');
-    return `<div class="legend"><span><i style="background:#62c6be"></i>pose speed</span><span><i style="background:#82abff"></i>game speed</span><span><i style="background:#f2a45c"></i>disc speed</span><span>${esc(rows[0].player_name || player)}</span></div>
-      <div class="chart-shell"><svg class="speed-chart" viewBox="0 0 900 210" role="img" aria-label="Synchronized player and disc speed chart">
-      <path class="grid" d="M0 185H900 M0 100H900 M0 15H900"/><text x="4" y="12">${fmtNum(maxV,1)} m/s</text><text x="4" y="182">0</text>
-      <path class="pose" d="${path('pose_speed')}"/><path class="game" d="${path('game_speed')}"/><path class="disc" d="${path('disc_speed')}"/></svg></div>`;
+  let activeInvestigationData = null, selectedIncidentIndex = 0, noteSavePending = false;
+  let noteDraft = null, investigationRequest = 0;
+  function speedChart(points, selectedPlayer = '', incident = null) {
+    const player = selectedPlayer || points[0]?.player_id;
+    const rows = points.filter(p => p.player_id === player && Number.isFinite(p.time)).slice().sort((a,b) => a.time-b.time);
+    if (!rows.length) return '<p class="empty">No normalized timeline points are available for this player.</p>';
+    const keys = ['pose_speed','game_speed','disc_speed'];
+    const finite = value => typeof value === 'number' && Number.isFinite(value);
+    const minT = Math.min(...rows.map(p => p.time)), maxT = Math.max(...rows.map(p => p.time), minT + .001);
+    const maxV = Math.max(20, ...rows.flatMap(p => keys.map(key => finite(p[key]) ? p[key] : 0)));
+    const x = t => 38 + (t-minT)/(maxT-minT)*842, y = v => 174-v/maxV*150;
+    const path = key => { let previous = false; return rows.map(p => { if (!finite(p[key])) { previous=false; return ''; } const segment = (previous ? 'L' : 'M')+' '+x(p.time).toFixed(1)+' '+y(p[key]).toFixed(1); previous=true; return segment; }).join(' '); };
+    const dots = key => rows.filter(p => finite(p[key])).map(p => '<circle class="'+key.replace('_speed','')+' sample-point" cx="'+x(p.time).toFixed(1)+'" cy="'+y(p[key]).toFixed(1)+'" r="1.8"/>').join('');
+    const marker = incident && Number.isFinite(incident.start_time) && incident.start_time >= minT && incident.start_time <= maxT ? '<path class="event-marker" d="M'+x(incident.start_time).toFixed(1)+' 24V176"/><text x="'+Math.min(680,Math.max(190,x(incident.start_time)+5)).toFixed(1)+'" y="20">Selected incident</text>' : '';
+    return '<div class="legend"><span><i style="background:var(--chart-pose)"></i>Derived pose speed</span><span><i style="background:var(--chart-game)"></i>Reported player speed</span><span><i style="background:var(--chart-disc)"></i>Reported disc speed</span></div>'+
+      '<div class="chart-shell"><svg class="speed-chart" viewBox="0 0 900 210" role="img" aria-label="Sampled speed overview for '+esc(rows[0].player_name||player)+'. Dots are recorded or derived sample values; connecting lines are visual guides, not recorded motion.">'+
+      '<path class="grid" d="M38 174H880 M38 99H880 M38 24H880"/><text x="2" y="20">'+fmtNum(maxV,1)+' m/s</text><text x="12" y="174">0</text><text x="38" y="200">'+fmtNum(minT,1)+' s</text><text x="880" y="200" text-anchor="end">'+fmtNum(maxT,1)+' s</text>'+
+      keys.map(key => '<path class="'+key.replace('_speed','')+'" d="'+path(key)+'"/>'+dots(key)).join('')+marker+'</svg></div>'+
+      '<p class="metric-note">Sampled overview for '+esc(rows[0].player_name||player)+'. Dots mark available values; lines interpolate visually between samples. Missing values leave gaps. Spark playback position is not available to this app.</p>';
   }
-
+  function draftKey(matchID) {
+    return 'nevr-review-draft-v1:' + JSON.stringify([operatorState.health?.database_path || location.pathname, matchID]);
+  }
+  function readNoteDraft(matchID) {
+    try { const d = JSON.parse(localStorage.getItem(draftKey(matchID)) || 'null'); if (d && d.matchID === matchID && typeof d.body === 'string' && typeof d.id === 'string') return {...d, body:d.body.slice(0,8000)}; } catch (_) {}
+    return {id:crypto.randomUUID(), matchID, body:'', frame:-1};
+  }
+  function persistNoteDraft() {
+    if (!noteDraft || !$('note-body')) return false;
+    noteDraft.body = $('note-body').value; noteDraft.frame = Number($('note-frame').value);
+    try { localStorage.setItem(draftKey(noteDraft.matchID), JSON.stringify(noteDraft)); return true; } catch (_) { return false; }
+  }
+  function noteStatus(message, tone = '') {
+    const el = $('note-status'); if (el) { el.textContent = message; el.className = 'note-status ' + tone; }
+  }
+  function renderNotes(notes) {
+    return (notes||[]).map(n => '<li><span class="tag">'+esc(n.kind)+'</span> '+(n.frame_index >= 0 ? 'frame '+fmtInt(n.frame_index)+' · ' : '')+esc(n.body||'Bookmark')+' <button class="btn btn-text btn-sm" data-delete-note="'+esc(n.note_id)+'">Delete note</button></li>').join('') || '<li class="muted">No saved notes yet. Drafts are not saved evidence.</li>';
+  }
+  async function refreshInvestigationNotes() {
+    const matchID = activeInvestigationMatch;
+    const result = await getJSON('api/match/'+encodeURIComponent(matchID)+'/notes');
+    if (matchID !== activeInvestigationMatch || !$('investigation-notes')) return;
+    activeInvestigationData.notes = result.notes || [];
+    $('investigation-notes').innerHTML = renderNotes(result.notes);
+    if ($('saved-note-count')) $('saved-note-count').textContent = fmtInt((result.notes || []).length);
+  }
+  async function saveInvestigationNote(bookmark = false) {
+    if (noteSavePending || !noteDraft || !$('note-body') || !$('note-frame')) return;
+    const body = $('note-body').value.trim(), frame = Number($('note-frame').value);
+    if (!bookmark && !body) { noteStatus('Write a note before saving.', 'err'); $('note-body').focus(); return; }
+    if (!Number.isInteger(frame) || frame < -1 || (bookmark && frame < 0)) { noteStatus('Choose an exact recorded frame for a bookmark, or −1 for a whole-match note.', 'err'); $('note-frame').focus(); return; }
+    persistNoteDraft();
+    const captured = {...noteDraft, body, frame}, storageKey = draftKey(noteDraft.matchID);
+    const request = investigationRequest;
+    let confirmed = false, completedEditor = false, retainedNewer = false;
+    noteSavePending = true;
+    document.querySelectorAll('[data-add-note], [data-add-bookmark]').forEach(b => b.disabled = true);
+    noteStatus('Saving to the evidence database…');
+    try {
+      const saved = await postJSON('api/match/'+encodeURIComponent(captured.matchID)+'/notes', {note_id:captured.id, kind:bookmark?'bookmark':'note', body, frame_index:frame});
+      if (saved.note_id !== captured.id) throw new Error('The save response did not confirm this note. Check saved notes before retrying.');
+      confirmed = true;
+      // Confirmation belongs to the submitted note, not the currently visible
+      // modal. A setup screen or another match may have replaced its editor.
+      const sameDraft = noteDraft?.id === captured.id && noteDraft.matchID === captured.matchID;
+      const editor = sameDraft && activeInvestigationMatch === captured.matchID && $('note-body') && $('note-frame');
+      completedEditor = !!editor;
+      let retained;
+      try { const stored = JSON.parse(localStorage.getItem(storageKey) || 'null'); if (stored?.id === captured.id && stored.matchID === captured.matchID) retained = stored; } catch (_) {}
+      if (sameDraft) retained = {...noteDraft, body:editor ? $('note-body').value : noteDraft.body, frame:editor ? Number($('note-frame').value) : noteDraft.frame};
+      if (retained) {
+        const newer = String(retained.body || '').trim() !== body || Number(retained.frame) !== frame;
+        retainedNewer = newer;
+        const nextDraft = newer ? {...retained,id:crypto.randomUUID()} : {id:crypto.randomUUID(),matchID:captured.matchID,body:'',frame:-1};
+        if (sameDraft) noteDraft = nextDraft;
+        try { if (newer) localStorage.setItem(storageKey, JSON.stringify(nextDraft)); else localStorage.removeItem(storageKey); } catch (_) {}
+        if (editor && !newer) { $('note-body').value = ''; $('note-frame').value = '-1'; }
+      }
+      if (request === investigationRequest && editor) {
+        noteStatus('Saved to the evidence database. '+(noteDraft.body ? 'Your newer edits remain a local draft.' : ''), 'ok');
+        try { await refreshInvestigationNotes(); } catch (_) { if (request === investigationRequest) noteStatus('Note saved, but the notes list could not refresh. Reopen this workspace to check it.', 'ok'); }
+      }
+      recordNotice(bookmark ? 'Bookmark saved to the evidence database.' : 'Investigator note saved to the evidence database.', 'ok');
+    } catch (error) {
+      if (activeInvestigationMatch === captured.matchID) noteStatus((error.status === 409 ? 'Save conflict. Your draft is retained; reload saved notes before retrying. ' : 'Save not confirmed. Your draft is retained in this browser if local storage is available. ')+error.message, 'err');
+      recordNotice('Note save not confirmed: '+error.message, 'err');
+    } finally {
+      noteSavePending = false;
+      document.querySelectorAll('[data-add-note], [data-add-bookmark]').forEach(b => b.disabled = false);
+      if (request !== investigationRequest && $('note-body')) noteStatus(confirmed ? completedEditor ? 'Earlier note save confirmed. '+(retainedNewer?'Your newer edits remain a local draft.':'The saved draft was cleared.') : 'Previous note save confirmed. Your current draft has not been changed.' : 'Previous note save was not confirmed. Its draft is retained separately; your current draft has not been changed.', confirmed ? '' : 'err');
+    }
+  }
+  function selectedIncidentDetails(d, incident) {
+    if (!incident) return screenState('No incident selected', 'This recording has no grouped detector findings. You can still inspect the match and add notes.');
+    const events = (d.match.events || []).filter(e => (incident.event_ids||[]).includes(e.event_id));
+    const concealed = blindReview;
+    return '<h3>Selected incident · '+esc(incident.id)+'</h3><p>'+who(incident.player_name,incident.player_id)+'</p><p>Frames '+fmtInt(incident.start_frame)+'–'+fmtInt(incident.end_frame)+' · '+fmtNum(incident.start_time,2)+' s</p>'+
+      '<p class="notice">These findings share a review window. Multiple detectors are not independent proof of cheating.</p>'+
+      events.slice(0,12).map(e => '<article class="finding-card" data-finding="'+esc(e.event_id)+'"><h4>'+esc(concealed&&!revealedEvents.has(e.event_id)?'Detector conclusion concealed':e.detector_name||e.detector_id)+'</h4><p>'+esc(concealed&&!revealedEvents.has(e.event_id)?'Inspect the recorded evidence before revealing the detector.':e.explanation||'Review the sampled observation and its known limits.')+'</p>'+
+        (concealed&&!revealedEvents.has(e.event_id) ? '<button class="btn btn-sm" data-reveal-finding="'+esc(e.event_id)+'">Reveal this finding</button>' : '<dl class="kv"><dt>Observed</dt><dd>'+esc(e.observed_value||'Not reported')+'</dd><dt>Comparison</dt><dd>'+esc(e.expected_range||'Not established')+'</dd></dl>')+
+        '<p><span class="tag">'+(e.is_shadow?'Observation only':'Scored review signal')+'</span> <span class="tag">'+esc(e.review_verdict ? 'Reviewed: '+({yes:'correct',no:'false positive',uncertain:'unsure'}[e.review_verdict]||e.review_verdict) : 'Awaiting review')+'</span></p><div class="review-cell">'+reviewControls(e,concealed&&!revealedEvents.has(e.event_id))+'</div></article>').join('')+
+      (events.length > 12 ? '<p class="help">'+fmtInt(events.length-12)+' more findings in this incident. Open Full match to inspect every detector row.</p>' : '');
+  }
   function renderInvestigation(d) {
-    const q = d.quality || {}, progress = d.review_progress || {};
-    activePlaylist = d.playlist || []; activePlaylistIndex = -1; activeInvestigationMatch = d.match.match_id;
-    const incidents = (d.incidents || []).map((x) => `<tr><td class="mono">${esc(x.id)}</td><td>${who(x.player_name,x.player_id)}</td><td class="num">${fmtInt(x.start_frame)}–${fmtInt(x.end_frame)}</td><td><span class="tag ${x.agreement > 1 ? 'warn' : ''}">${fmtInt(x.agreement)} detector${x.agreement === 1 ? '' : 's'}</span></td><td class="mono">${esc((x.detectors||[]).join(', '))}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-event="${esc((x.event_ids||[])[0])}">Open incident</button></td></tr>`).join('');
-    const throws = (d.throws || []).map((t) => `<tr class="${t.sample_above_guide ? 'cap-breach-row' : ''}"><td class="mono">${esc(t.clock || fmtClock(t.time))}</td><td>${who(t.player,t.player_id)}</td><td class="num">${fmtNum(t.speed,2)} m/s<span class="det-name">heuristic margin ${fmtNum(t.uncertainty,2)} m/s (not validated)</span></td><td>${t.sample_above_guide ? '<span class="tag warn">sample above guide</span>' : t.near_boundary ? '<span class="tag warn">near guide boundary</span>' : '<span class="tag">sample below guide</span>'}</td><td><button class="btn btn-sm" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(t.frame_index)}">Open throw</button></td></tr>`).join('');
-    const playlist = activePlaylist.map((x,i) => `<tr data-playlist-row="${i}"><td class="num">${i+1}</td><td>${esc(x.kind)}</td><td>${who(x.player_name,x.player_id)}</td><td class="mono">${esc(x.label)}</td><td class="num">${fmtInt(x.frame)}</td><td><button class="btn btn-sm" data-playlist-index="${i}" data-replay-match="${esc(d.match.match_id)}" data-replay-frame="${fmtInt(x.frame)}">Open</button></td></tr>`).join('');
-    const notes = (d.notes || []).map((n) => `<li><span class="tag">${esc(n.kind)}</span> ${n.frame_index >= 0 ? `frame ${fmtInt(n.frame_index)} · ` : ''}${esc(n.body || 'Bookmark')} <button class="btn btn-text btn-sm" data-delete-note="${esc(n.note_id)}">Delete</button></li>`).join('') || '<li class="muted">No investigator notes yet.</li>';
-    const contexts = Object.entries(d.legal_context_counts || {}).sort((a,b)=>b[1]-a[1]).map(([name,n])=>`<span class="tag">${esc(name || 'unclassified')} ${fmtInt(n)}</span>`).join(' ');
-    const runs = (d.analysis_runs || []).map((run) => `<tr><td>${esc(run.source)}</td><td class="mono">v${esc(run.app_version)} / ${esc(run.config_fingerprint)}</td><td>${esc(run.profile_name || 'default')}</td><td class="num">${fmtNum(run.telemetry_quality,1)}</td><td class="num">${fmtInt(run.pipeline_milliseconds)} ms</td><td>${timeAgo(run.created_at)}</td></tr>`).join('');
-    return `<div class="inspector-grid"><div><span>Telemetry quality</span><b class="quality-score">${fmtNum(q.score,0)}</b><small class="muted">${esc(q.grade)}${q.gated ? ' · hard gated' : ''}</small></div><div><span>Review progress</span><b>${fmtNum(progress.percent,0)}%</b><small class="muted">${fmtInt(progress.reviewed)} of ${fmtInt(progress.total)} observations</small></div><div><span>Grouped incidents</span><b>${fmtInt((d.incidents||[]).length)}</b><small class="muted">overlapping signals become one review unit</small></div><div><span>Throws reconstructed</span><b>${fmtInt((d.throws||[]).length)}</b><small class="muted">measurement envelopes shown</small></div></div>
-      <p class="notice ${q.gated ? 'bad' : ''}">${esc((q.reasons||[]).join(' · ') || 'Telemetry passed the pre-detector quality checks.')}</p>
-      <h3>Synchronized physics chart</h3>${speedChart(d.timeline || [])}
-      <h3>Legal-action context</h3><p>${contexts || '<span class="muted">No classified context.</span>'}</p>
-      <details class="sub" open><summary><span class="tog"></span><h3>Incident groups<span class="count">${fmtInt((d.incidents||[]).length)}</span></h3></summary><div class="physics-table"><table><thead><tr><th>ID</th><th>Player</th><th>Frames</th><th>Agreement</th><th>Detectors</th><th></th></tr></thead><tbody>${incidents || '<tr><td colspan="6" class="muted">No detector incidents.</td></tr>'}</tbody></table></div></details>
-      <details class="sub" open><summary><span class="tog"></span><h3>Throw reconstruction<span class="count">${fmtInt((d.throws||[]).length)}</span></h3></summary><div class="physics-table"><table><thead><tr><th>Clock</th><th>Player</th><th>Speed envelope</th><th>Assessment</th><th></th></tr></thead><tbody>${throws || '<tr><td colspan="5" class="muted">No reconstructed throws.</td></tr>'}</tbody></table></div></details>
-      <details class="sub"><summary><span class="tog"></span><h3>Replay clip playlist<span class="count">J/K + Enter</span></h3></summary><div class="playlist"><table><thead><tr><th>#</th><th>Kind</th><th>Player</th><th>Signal</th><th>Frame</th><th></th></tr></thead><tbody>${playlist || '<tr><td colspan="6" class="muted">No clip anchors.</td></tr>'}</tbody></table></div></details>
-      <details class="sub" open><summary><span class="tog"></span><h3>Bookmarks &amp; investigator notes</h3></summary><ul class="health-list" id="investigation-notes">${notes}</ul><div class="form-row"><label class="form-field">Frame (-1 = match)<input id="note-frame" type="number" value="-1" min="-1"></label><label class="form-field path">Note<input id="note-body" maxlength="8000" placeholder="What did you verify?"></label><button class="btn" data-add-note="${esc(d.match.match_id)}">Add note</button><button class="btn" data-add-bookmark="${esc(d.match.match_id)}">Bookmark frame</button></div></details>
-      <details class="sub"><summary><span class="tog"></span><h3>Detector/config provenance</h3></summary><div class="physics-table"><table><thead><tr><th>Source</th><th>Build / config</th><th>Profile</th><th>Quality</th><th>Runtime</th><th>Analyzed</th></tr></thead><tbody>${runs || '<tr><td colspan="6" class="muted">Provenance begins with v0.5 analyses.</td></tr>'}</tbody></table></div></details>
-      <details class="sub"><summary><span class="tog"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(d.limits||[]).map(x=>`<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
+    const same = activeInvestigationMatch === d.match.match_id;
+    activeInvestigationData = d; activeInvestigationMatch = d.match.match_id; activePlaylist = d.playlist || [];
+    if (!same) { selectedIncidentIndex = prefs.lastMatch === activeInvestigationMatch && Number.isInteger(prefs.lastIncident) ? prefs.lastIncident : 0; activePlaylistIndex = -1; noteDraft = readNoteDraft(activeInvestigationMatch); }
+    if (!noteDraft) noteDraft = readNoteDraft(activeInvestigationMatch);
+    const incidents = d.incidents || [], q = d.quality || {}, progress = d.review_progress || {};
+    selectedIncidentIndex = Math.max(0,Math.min(selectedIncidentIndex,incidents.length-1));
+    const incident = incidents[selectedIncidentIndex];
+    prefs.lastMatch = activeInvestigationMatch; prefs.lastIncident = selectedIncidentIndex; savePrefs();
+    const playlist = activePlaylist.map((x,i) => '<tr data-playlist-row="'+i+'"><td>'+fmtInt(i+1)+'</td><td>'+esc(x.kind)+'</td><td>'+who(x.player_name,x.player_id)+'</td><td>'+esc(blindReview?'Signal concealed':x.label)+'</td><td>'+fmtInt(x.frame)+'</td><td><button class="btn btn-sm" data-playlist-index="'+i+'" data-replay-match="'+esc(activeInvestigationMatch)+'" data-replay-frame="'+x.frame+'">Open in Spark</button></td></tr>').join('');
+    const anchorEvent = incident?.event_ids?.[0];
+    const spark = incident ? '<button class="btn btn-primary" data-replay-match="'+esc(activeInvestigationMatch)+'" data-replay-frame="'+incident.start_frame+'">Open selected clip in Spark</button>' : '';
+    const inspect = incident ? '<button class="btn" data-physics-match="'+esc(activeInvestigationMatch)+'" '+(blindReview ? 'data-physics-frame="'+incident.start_frame+'" data-physics-player="'+esc(incident.player_id)+'"' : 'data-physics-event="'+esc(anchorEvent)+'"')+'>Inspect recorded samples</button>' : '';
+    const saveDisabled = noteSavePending ? 'disabled aria-describedby="note-status"' : '';
+    const controls = '<nav class="review-footer" aria-label="Review controls"><button class="btn" data-incident-step="-1" '+(selectedIncidentIndex===0?'disabled aria-describedby="review-position"':'')+'>Previous incident</button><span id="review-position">'+(incidents.length ? (selectedIncidentIndex+1)+' of '+incidents.length : 'No incidents')+'</span><button class="btn btn-primary" data-add-note="'+esc(activeInvestigationMatch)+'" '+saveDisabled+'>Save note</button><button class="btn" data-add-bookmark="'+esc(activeInvestigationMatch)+'" '+saveDisabled+'>Bookmark frame</button><button class="btn" data-incident-step="1" '+(selectedIncidentIndex>=incidents.length-1?'disabled aria-describedby="review-position"':'')+'>Next incident</button><button class="btn btn-text" data-refresh-notes>Reload saved notes</button><button class="btn btn-text" data-open="'+esc(activeInvestigationMatch)+'">Full match</button></nav>';
+    return '<div class="review-workspace"><div class="inspector-grid"><div><span>Recorded data quality</span><b>'+esc(q.grade||'Unknown')+'</b><small>'+(!Number.isFinite(q.score)?'No quality score recorded':fmtNum(q.score,0)+' · data quality, not cheating probability')+'</small></div><div><span>Observation reviews</span><b>'+(progress.total > 0 ? fmtInt(progress.reviewed)+' / '+fmtInt(progress.total) : 'No observations')+'</b><small>Saved human labels</small></div><div><span>Grouped incidents</span><b>'+fmtInt(incidents.length)+'</b><small>Not independent proof</small></div><div><span>Workspace mode</span><b>Replay review</b><small>External Spark playback · no automatic punishment</small></div></div>'+
+      controls+'<div class="review-workspace-grid"><aside class="review-queue" aria-label="Incident queue"><h3>Incident queue</h3><p class="help">Select an incident to inspect. Selection does not launch playback.</p>'+
+      (incidents.map((x,i) => '<button class="incident-option btn" data-select-incident="'+i+'" '+(i===selectedIncidentIndex?'aria-current="true"':'')+'><b>'+esc(x.id)+' · '+esc(x.player_name||x.player_id)+'</b><span>Frames '+fmtInt(x.start_frame)+'–'+fmtInt(x.end_frame)+'</span><small>'+esc(blindReview?'Detector labels concealed':(x.detectors||[]).join(', '))+'</small></button>').join('') || '<p class="empty">No incident groups. This is not proof of fair play.</p>')+'</aside>'+
+      '<section class="review-evidence" aria-label="Recorded evidence"><h3>Recorded evidence</h3><div class="studio-actions">'+spark+inspect+'</div><p class="help">Selected evidence anchor: '+(incident?'frame '+fmtInt(incident.start_frame):'none')+'. Playback position and speed are controlled in Spark, not synchronized here.</p>'+speedChart(d.timeline||[],incident?.player_id,incident)+
+      '<details class="sub"><summary>Throw log · '+fmtInt((d.throws||[]).length)+' reconstructed throws</summary><div class="throw-scroll table-scroll" tabindex="0" role="region" aria-label="Scrollable throw log"><table><thead><tr><th>Time</th><th>Player</th><th>Sample speed</th><th>Replay</th></tr></thead><tbody>'+(d.throws||[]).map(t => '<tr><td>'+esc(t.clock||fmtClock(t.time))+'</td><td>'+esc(t.player||t.player_id)+'</td><td>'+fmtNum(t.speed,2)+' m/s</td><td><button class="btn btn-sm" data-replay-match="'+esc(activeInvestigationMatch)+'" data-replay-frame="'+t.frame_index+'">Open throw</button></td></tr>').join('')+'</tbody></table></div><p class="help">Sample speed is not an independently validated violation. Review contact and attribution.</p></details>'+
+      '<details class="sub"><summary>All replay clip anchors · '+fmtInt(activePlaylist.length)+'</summary><div class="playlist" tabindex="0" role="region" aria-label="Replay clip playlist"><table><thead><tr><th>#</th><th>Kind</th><th>Player</th><th>Signal</th><th>Frame</th><th>Replay</th></tr></thead><tbody>'+playlist+'</tbody></table></div></details></section>'+
+      '<aside class="review-details" aria-label="Finding explanation and limitations">'+selectedIncidentDetails(d,incident)+'<h3>Evidence limitations</h3><ul class="health-list">'+(d.limits||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul><p class="help">Build rules and contact geometry must be verified before enforcement. No automatic action is enabled.</p></aside></div>'+
+      '<section class="note-editor"><h3>Reviewer notes &amp; bookmarks</h3><p class="help">Drafts are retained in this browser when local storage is available. Click Save note to add evidence. This local desktop has no reviewer accounts or shared editing locks.</p><details class="sub"><summary>Saved notes · <span id="saved-note-count">'+fmtInt((d.notes||[]).length)+'</span></summary><ul class="health-list" id="investigation-notes">'+renderNotes(d.notes)+'</ul></details><div class="form-row"><label class="form-field">Frame (−1 = whole match)<input id="note-frame" type="number" value="'+(Number.isInteger(noteDraft.frame)?noteDraft.frame:-1)+'" min="-1"></label><label class="form-field path">Review note<textarea id="note-body" maxlength="8000" rows="3" placeholder="What did you verify? What remains uncertain?">'+esc(noteDraft.body)+'</textarea></label></div><p id="note-status" class="note-status" role="status" aria-live="polite">'+(noteSavePending?'Another note save is awaiting confirmation. Save controls unlock when it finishes.':noteDraft.body?'Recovered local draft · not yet saved to evidence.':'No unsaved draft.')+'</p></section>'+
+      '<details class="sub"><summary>Advanced provenance &amp; legal-action context</summary><p>'+Object.entries(d.legal_context_counts||{}).map(([k,v])=>esc(k)+': '+fmtInt(v)).join(' · ')+'</p><div class="table-scroll"><table><thead><tr><th>Source</th><th>Version / config</th><th>Profile</th><th>Analyzed</th></tr></thead><tbody>'+(d.analysis_runs||[]).map(run=>'<tr><td>'+esc(run.source)+'</td><td>v'+esc(run.app_version)+' / '+esc(run.config_fingerprint)+'</td><td>'+esc(run.profile_name||'default')+'</td><td>'+timeAgo(run.created_at)+'</td></tr>').join('')+'</tbody></table></div></details></div>';
   }
-
+  function selectIncident(index, focus = false) {
+    if (!activeInvestigationData) return;
+    persistNoteDraft();
+    const queueScroll = document.querySelector('.review-queue')?.scrollTop || 0, dialogScroll = $('lab-dialog').scrollTop;
+    selectedIncidentIndex = Math.max(0, Math.min(index, (activeInvestigationData.incidents||[]).length-1));
+    $('lab-dialog-content').innerHTML = renderInvestigation(activeInvestigationData);
+    const queueEl = document.querySelector('.review-queue'); if (queueEl) queueEl.scrollTop = queueScroll;
+    $('lab-dialog').scrollTop = dialogScroll;
+    if (focus) document.querySelector('[data-select-incident="'+selectedIncidentIndex+'"]')?.focus({preventScroll:true});
+  }
   async function openInvestigation(matchID) {
-    openLabDialog('Investigation studio', '<p class="status">Building the unified timeline and physics views…</p>');
-    const data = await getJSON(`api/match/${encodeURIComponent(matchID)}/investigation`);
-    $('lab-dialog-content').innerHTML = renderInvestigation(data);
+    persistNoteDraft();
+    const request = openLabDialog('Replay review workspace', screenState('Loading recorded evidence', 'Reading the stored timeline, findings and saved notes…'));
+    $('lab-dialog-content').setAttribute('aria-busy','true');
+    try {
+      const data = await getJSON('api/match/'+encodeURIComponent(matchID)+'/investigation');
+      if (request !== investigationRequest || !$('lab-dialog').open) return;
+      $('lab-dialog-content').innerHTML = renderInvestigation(data);
+      $('lab-dialog-title').textContent = 'Replay review · '+matchID;
+    } catch (error) {
+      if (request !== investigationRequest) return;
+      $('lab-dialog-content').innerHTML = screenState(error.status===403?'Evidence access denied':'Evidence could not be loaded', error.message, '<button class="btn" data-investigation-match="'+esc(matchID)+'">Retry loading evidence</button>', 'warn');
+    } finally { if (request === investigationRequest) $('lab-dialog-content').removeAttribute('aria-busy'); }
   }
 
   async function loadStudio() {
@@ -1560,9 +1856,9 @@
       </div>`;
       el.dataset.validation=JSON.stringify(v);el.dataset.setup=JSON.stringify(s);
       if ($('compare-b') && players.length>1) $('compare-b').selectedIndex=1;
-      if (!prefs.v05SetupSeen) {
+      if (!prefs.v05SetupSeen && !$('lab-dialog').open) {
         prefs.v05SetupSeen = true; savePrefs();
-        openLabDialog('Welcome to NEVR', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Ready':'Needs attention'}</b></div><div><span>Spark Replay Viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety posture</span><b>${(s.unsafe_detectors||[]).length?'Review config':'Shadow only'}</b></div><div><span>Existing matches</span><b>${fmtInt(s.stored_matches)}</b></div></div><h3>First-run checklist</h3><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="notice">Drop a replay to see automatic findings and review clips. Nothing in this app automatically punishes a player; detector accuracy still requires independent validation.</p>`);
+        if (!s.stored_matches && !prefs.lastMatch) showSetup();
       }
     } catch(e){ panelError(el,'the investigation studio',e); }
   }
@@ -1598,6 +1894,9 @@
     const current = preferred || select.value;
     select.innerHTML = historyMatches.length ? historyMatches.map((m) => `<option value="${esc(m.match_id)}">${esc(m.source_file || m.match_id)}</option>`).join('') : '<option value="">No stored matches</option>';
     if (historyMatches.some((m) => m.match_id === current)) select.value = current;
+    $('preview-threshold').disabled = !historyMatches.length || !labSpecs.length;
+    $('preview-threshold').setAttribute('aria-describedby', 'threshold-result');
+    if (!historyMatches.length) $('threshold-result').textContent = 'Import a recording before previewing a threshold. Preview does not change stored configuration.';
   }
   function populateLabParams() {
     const detector = labSpecs.find((d) => d.id === $('lab-detector').value);
@@ -1615,6 +1914,7 @@
   async function loadLabSpecs() {
     try {
       const data = await getJSON('api/lab/thresholds'); labSpecs = data.detectors || [];
+      $('catalog-count').textContent = fmtInt(labSpecs.length);
       $('lab-detector').innerHTML = labSpecs.map((d) => `<option value="${esc(d.id)}">${esc(d.id)} — ${esc(d.name)}</option>`).join('');
       populateLabParams(); populateLabMatches(); setTimeout(loadStudio, 0);
     } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
@@ -1624,6 +1924,7 @@
     const el = $('automation');
     try {
       const settings = await getJSON('api/settings');
+      operatorState.settings = settings; updateOperatorStatus();
       const recovery = await getJSON('api/recovery');
       let update = { error: 'Automatic checks are off.', available: false, current_version: '—' };
       if (settings.automatic_update_checks || forceUpdate) update = await getJSON('api/update');
@@ -1641,6 +1942,9 @@
   }
 
   let historyMatches = [];
+  let historyPage = Number.isInteger(prefs.historyPage) && prefs.historyPage >= 0 ? prefs.historyPage : 0;
+  let pendingHistory = null;
+  const HISTORY_PAGE_SIZE = 15;
   function renderHistory() {
     const el = $('history');
     const query = $('history-search').value.trim().toLowerCase();
@@ -1658,39 +1962,45 @@
     }).sort((a, b) => (oldest ? 1 : -1) * (new Date(a.analyzed_at || 0) - new Date(b.analyzed_at || 0)));
     $('history-count').textContent = `${fmtInt(rows.length)} of ${fmtInt(historyMatches.length)}`;
     if (!historyMatches.length) {
-      el.innerHTML = '<p class="empty">No match has been analyzed yet. Every replay you drop above is kept in the database and listed here.</p>';
+      el.innerHTML = screenState('Your replay library starts here', 'No match has been analyzed yet. Import a replay and its results will appear here.', '<a class="btn btn-primary" href="#h-upload">Import a replay</a>');
       return;
     }
     if (!rows.length) {
-      el.innerHTML = '<p class="empty">No stored match matches these filters.</p>';
+      el.innerHTML = screenState('No matching recordings', 'Your stored matches are still available. Broaden the search or reset the filters.', '<button class="btn" id="reset-history-filters">Reset history filters</button>');
       return;
     }
-    el.innerHTML = `<table><thead><tr><th>Match</th><th>Mode</th><th class="num">Start</th><th class="num">Duration</th><th>Players</th><th>Signals</th><th>Analyzed</th><th></th></tr></thead><tbody>` +
-        rows.map((m) => `<tr>
+    const pages = Math.max(1, Math.ceil(rows.length / HISTORY_PAGE_SIZE));
+    historyPage = Math.min(historyPage, pages - 1); prefs.historyPage = historyPage; savePrefs();
+    el.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Match</th><th>Mode</th><th class="num">Start</th><th class="num">Duration</th><th>Players</th><th>Signals</th><th>Analyzed</th><th>Review</th></tr></thead><tbody>` +
+        rows.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE).map((m) => `<tr ${prefs.lastMatch === m.match_id ? 'class="selected"' : ''}>
           <td><span class="mono">${esc(m.match_id)}</span><br><span class="muted">${esc(m.source_file || m.source)}</span></td>
           <td>${esc(m.game_mode) || '<span class="muted">—</span>'}${m.map ? `<br><span class="muted">${esc(m.map)}</span>` : ''}</td>
           <td class="num">${esc(fmtStart(m.start_time))}</td><td class="num">${fmtDur(m.duration_seconds)}</td>
           <td>${m.players.map((p) => `<span style="color:var(--${p.team === 'orange' ? 'orange' : p.team === 'blue' ? 'blue' : 'muted'})">${esc(p.name || p.player_id)}</span>`).join(', ') || '<span class="muted">—</span>'}</td>
-          <td>${m.calibration_label ? `<span class="tag ${m.calibration_label === 'known_clean' ? 'ok' : m.calibration_label === 'suspected' ? 'warn' : 'bad'}">${esc(labelName(m.calibration_label))}</span> ` : ''}${m.flagged ? '<span class="tag bad">flagged</span> ' : ''}${m.event_count ? `<span class="mono">${fmtInt(m.event_count)}</span> <span class="muted">events</span>` : '<span class="muted">clean</span>'}</td>
+          <td>${m.calibration_label ? `<span class="tag">Human label: ${esc(labelName(m.calibration_label))}</span> ` : ''}${m.flagged ? '<span class="tag warn">Review case</span> ' : ''}${typeof m.event_count !== 'number' ? '<span class="muted">Observations unknown</span>' : m.event_count ? `<span class="mono">${fmtInt(m.event_count)}</span> <span class="muted">observations</span>` : '<span class="muted">No recorded observations</span>'}</td>
           <td>${timeAgo(m.analyzed_at)}</td>
-          <td class="num"><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">Open</button></td></tr>`).join('') + '</tbody></table>';
+          <td><button class="btn btn-sm" data-investigation-match="${esc(m.match_id)}">Review</button><button class="btn btn-text btn-sm" data-open="${esc(m.match_id)}">Full match</button></td></tr>`).join('') + `</tbody></table></div><div class="queue-toolbar"><button class="btn" data-history-page="${historyPage-1}" ${historyPage === 0 ? 'disabled aria-describedby="history-pagination"' : ''}>Previous page</button><span id="history-pagination">Page ${historyPage+1} of ${pages} · ${rows.length} matching recordings</span><button class="btn" data-history-page="${historyPage+1}" ${historyPage === pages-1 ? 'disabled aria-describedby="history-pagination"' : ''}>Next page</button></div>`;
   }
 
-  async function loadHistory() {
+  async function loadHistory(force = false) {
     const el = $('history');
     try {
       const h = await getJSON('api/matches');
-      el.className = ''; el.removeAttribute('aria-busy'); historyMatches = h.matches || [];
+      el.className = ''; el.removeAttribute('aria-busy');
+      if (historyMatches.length && !force && JSON.stringify(h.matches || []) !== JSON.stringify(historyMatches)) { pendingHistory = h.matches || []; $('refresh-history').textContent = 'History changes available · refresh'; return; }
+      historyMatches = h.matches || []; pendingHistory = null; $('refresh-history').textContent = 'Refresh history';
       const detectors = [...new Set(historyMatches.flatMap((m) => m.detector_ids || []))].sort();
       const selected = prefs.historyDetector || '';
       $('history-detector').innerHTML = '<option value="">All detectors</option>' + detectors.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
       if (detectors.includes(selected)) $('history-detector').value = selected;
       renderHistory(); populateLabMatches();
+      if (prefs.lastMatch && historyMatches.some(m => m.match_id === prefs.lastMatch)) { $('continue-review').hidden = false; $('continue-review').innerHTML = `<button class="btn" data-investigation-match="${esc(prefs.lastMatch)}">Continue reviewing</button><span class="muted"> ${esc(prefs.lastMatch)} · restores the review workspace only</span>`; }
     } catch (e) { panelError(el, 'the history', e); }
   }
 
   ['history-search', 'history-detector', 'history-label', 'history-sort', 'history-flagged'].forEach((id) => {
     $(id).addEventListener(id === 'history-search' ? 'input' : 'change', () => {
+      historyPage = 0;
       prefs.historySearch = $('history-search').value; prefs.historyDetector = $('history-detector').value;
       prefs.historyLabel = $('history-label').value; prefs.historySort = $('history-sort').value; prefs.historyFlagged = $('history-flagged').checked; savePrefs(); renderHistory();
     });
@@ -1700,6 +2010,8 @@
     const el = $('health');
     try {
       const h = await getJSON('api/health');
+      if (typeof h.analysis_active !== 'boolean' || typeof h.version !== 'string') throw new Error('Health response is incomplete. Retry the health check.');
+      operatorState.health = h; operatorState.checkedAt = Date.now(); setConnectionState(true);
       el.className = ''; el.removeAttribute('aria-busy');
       const walLarge = h.database_wal_bytes > Math.max(64 * 1024 * 1024, h.database_main_bytes * .25);
       el.innerHTML = `<div class="health-grid">
@@ -1716,7 +2028,7 @@
       <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span><br><strong>Archives:</strong> <span class="mono">${esc(h.archive_directory)}</span></p>
       ${walLarge ? '<p class="notice">The write-ahead log is large. Check &amp; checkpoint verifies the database, then safely folds committed WAL data into the main evidence file.</p>' : ''}
       <div class="maintenance"><button id="backup-db" class="btn">Back up database</button><button id="checkpoint-db" class="btn">Check &amp; checkpoint</button><button id="open-data" class="btn">Open data folder</button><button id="clear-clips" class="btn">Clear generated clips</button></div>`;
-    } catch (e) { panelError(el, 'system health', e); }
+    } catch (e) { if (operatorState.connection !== 'denied' && operatorState.connection !== 'offline') setConnectionState('unavailable'); panelError(el, 'system health', e); }
   }
 
   const fmtVec = (v) => Array.isArray(v) ? `[${v.map((n) => fmtNum(Number(n), 2)).join(', ')}]` : '—';
@@ -1817,6 +2129,25 @@
   });
 
   document.addEventListener('click', async (e) => {
+    const nav = e.target.closest('a[href^="#"]');
+    if (nav && nav.getAttribute('href').length > 1) {
+      const target = document.getElementById(nav.getAttribute('href').slice(1));
+      if (target) { for (let parent=target; parent; parent=parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; }
+      if (nav.closest('.workspace-nav')) { document.querySelectorAll('.workspace-nav a').forEach(a=>a.removeAttribute('aria-current')); nav.setAttribute('aria-current','location'); }
+    }
+    if (e.target.closest('#quick-setup, #retry-setup')) { await showSetup(); return; }
+    if (e.target.closest('[data-setup-done]')) { $('lab-dialog').close(); $('drop').focus(); $('drop').scrollIntoView({block:'center',behavior:reduced?'auto':'smooth'}); return; }
+    const panelRetry = e.target.closest('[data-retry-panel]');
+    if (panelRetry) { const loaders = {flagged:()=>loadFlagged(true),history:()=>loadHistory(true),observations:loadObservations,calibration:loadCalibration,regression:loadRegression,health:loadHealth,automation:loadAutomation,studio:loadStudio}; const retry=loaders[panelRetry.dataset.retryPanel]; if(retry){panelRetry.disabled=true;await retry();} return; }
+    if (e.target.closest('#refresh-cases')) { const b=$('refresh-cases'); b.disabled=true; try{await loadFlagged(true);}finally{b.disabled=false;} return; }
+    if (e.target.closest('#reset-case-filters')) { $('case-search').value='';$('case-state').value='';prefs.caseSearch='';prefs.caseState='';savePrefs();renderFlagged();return; }
+    if (e.target.closest('#refresh-history')) { const b=$('refresh-history');b.disabled=true;try{await loadHistory(true);}finally{b.disabled=false;}return; }
+    if (e.target.closest('#reset-history-filters')) { for(const id of ['history-search','history-detector','history-label'])$(id).value='';$('history-flagged').checked=false;prefs.historySearch='';prefs.historyDetector='';prefs.historyLabel='';prefs.historyFlagged=false;historyPage=0;savePrefs();renderHistory();return; }
+    const pageButton=e.target.closest('[data-history-page]');if(pageButton){historyPage=Math.max(0,Number(pageButton.dataset.historyPage)||0);renderHistory();$('h-history').scrollIntoView({block:'start'});return;}
+    const select=e.target.closest('[data-select-incident]');if(select){selectIncident(Number(select.dataset.selectIncident),true);return;}
+    const step=e.target.closest('[data-incident-step]');if(step){selectIncident(selectedIncidentIndex+Number(step.dataset.incidentStep));return;}
+    if(e.target.closest('[data-refresh-notes]')){try{await refreshInvestigationNotes();noteStatus('Saved notes refreshed. Your draft has not been changed.');}catch(error){noteStatus('Could not refresh saved notes. '+error.message,'err');}return;}
+    const revealFinding=e.target.closest('[data-reveal-finding]');if(revealFinding){revealedEvents.add(revealFinding.dataset.revealFinding);selectIncident(selectedIncidentIndex);return;}
     const blindWorkspace = e.target.closest('button[data-blind-workspace]');
     if (blindWorkspace) {
       try { await openBlindWorkspace(blindWorkspace.dataset.blindWorkspace || ''); }
@@ -1928,17 +2259,16 @@
     }
     const noteButton = e.target.closest('button[data-add-note], button[data-add-bookmark]');
     if (noteButton) {
-      const bookmark = !!noteButton.dataset.addBookmark, matchID = noteButton.dataset.addNote || noteButton.dataset.addBookmark;
-      const body = $('note-body').value.trim(), frame = Number($('note-frame').value);
-      if (!bookmark && !body) { setStatus('Write a note first.', 'err'); return; }
-      try { await postJSON(`api/match/${encodeURIComponent(matchID)}/notes`, { kind: bookmark ? 'bookmark' : 'note', body, frame_index: Number.isInteger(frame) ? frame : -1 }); await openInvestigation(matchID); setStatus(bookmark ? 'Frame bookmarked.' : 'Investigator note saved.', 'ok'); }
-      catch (err) { setStatus(`Could not save note: ${err.message}`, 'err'); }
+      await saveInvestigationNote(!!noteButton.dataset.addBookmark);
       return;
     }
     const deleteNote = e.target.closest('button[data-delete-note]');
     if (deleteNote) {
-      try { await deleteJSON(`api/note/${encodeURIComponent(deleteNote.dataset.deleteNote)}`); await openInvestigation(activeInvestigationMatch); setStatus('Note removed.', 'ok'); }
+      if (!confirm('Delete this saved note? This cannot be undone here. Your unsaved draft is not affected.')) return;
+      deleteNote.disabled = true;
+      try { await deleteJSON(`api/note/${encodeURIComponent(deleteNote.dataset.deleteNote)}`); await refreshInvestigationNotes(); setStatus('Note removed.', 'ok'); }
       catch (err) { setStatus(`Could not remove note: ${err.message}`, 'err'); }
+      finally { deleteNote.disabled = false; }
       return;
     }
     const playlistButton = e.target.closest('button[data-playlist-index]');
@@ -1951,7 +2281,7 @@
       openLabDialog('Label disagreements', `<div class="physics-table"><table><thead><tr><th>Match</th><th>Human label</th><th>Signals</th><th>Why listed</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">No disagreements found.</td></tr>'}</tbody></table></div>`); return;
     }
     if (e.target.closest('#show-setup')) {
-      const s=JSON.parse($('studio').dataset.setup||'{}'); openLabDialog('First-run setup', `<div class="inspector-grid"><div><span>Evidence folder</span><b>${s.writable?'Writable':'Needs attention'}</b></div><div><span>Spark viewer</span><b>${s.spark_installed?'Ready':'Not found'}</b></div><div><span>Safety mode</span><b>${(s.unsafe_detectors||[]).length?'Check config':'Shadow only'}</b></div></div><ol class="health-list">${(s.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p class="mono muted">${esc(s.data_folder)}</p>`); return;
+      await showSetup(); return;
     }
     if (e.target.closest('#save-profile')) {
       const name=$('profile-name').value.trim(); if(!name){setStatus('Enter a profile name.','err');return}
@@ -2131,9 +2461,12 @@
     }
     if (e.target.closest('#cancel-queue')) {
       queueStopped = true;
-      if (currentXHR) currentXHR.abort();
-      try { await postJSON('api/analyze/cancel'); } catch (_) {}
-      setStatus('Cancelling the active replay and stopping the queue…');
+      const button = e.target.closest('#cancel-queue'); button.disabled = true;
+      setStatus('Remaining files stopped. Requesting cancellation of active analysis…');
+      try {
+        const result = await postJSON('api/analyze/cancel');
+        setStatus(result.cancelled === true ? 'The engine accepted the cancellation request. Waiting for the current file’s final result.' : 'Remaining files are stopped. The engine did not confirm an active cancellation; the current file may finish.');
+      } catch (error) { setStatus('Remaining files stopped, but analysis cancellation was not confirmed. The current file may continue. '+error.message, 'err'); }
       return;
     }
     if (e.target.closest('#retry-failed')) {
@@ -2153,8 +2486,9 @@
     const reviewButton = e.target.closest('button[data-review-event]');
     if (reviewButton) {
       const eventID = reviewButton.dataset.reviewEvent;
-      let event;
+      let event = (activeInvestigationData?.match?.events || []).find(item => item.event_id === eventID);
       for (const view of views) {
+        if (event) break;
         event = (view.events || []).find((item) => item.event_id === eventID);
         if (event) break;
       }
@@ -2174,13 +2508,14 @@
       try {
         const reviewedBlind = blindReview && !revealedEvents.has(eventID);
         const saved = await postJSON(`api/event/${encodeURIComponent(eventID)}/review`, { verdict, comment, blind_review: reviewedBlind });
-        for (const view of views) for (const item of (view.events || [])) if (item.event_id === eventID) {
+        for (const view of [...views, ...(activeInvestigationData ? [activeInvestigationData.match] : [])]) for (const item of (view.events || [])) if (item.event_id === eventID) {
           item.review_verdict = saved.verdict; item.review_comment = saved.comment; item.reviewed_at = saved.reviewed_at; item.blind_review = saved.blind_review;
         }
         document.querySelectorAll('tr[data-event-row]').forEach((row) => {
           if (row.dataset.eventRow === eventID) row.querySelector('.review-cell').innerHTML = reviewControls(event, reviewedBlind);
         });
-        setStatus(`Saved ${event.detector_id} as ${saved.verdict === 'yes' ? 'correct' : saved.verdict === 'no' ? 'a false positive' : 'unsure'}.`, 'ok');
+        if (activeInvestigationData && $('lab-dialog').open && document.querySelector('.review-workspace')) selectIncident(selectedIncidentIndex);
+        setStatus(`Saved ${reviewedBlind ? 'the concealed observation' : event.detector_id} as ${saved.verdict === 'yes' ? 'correct' : saved.verdict === 'no' ? 'a false positive' : 'unsure'}.`, 'ok');
         loadHealth(); loadRegression();
       } catch (err) {
         setStatus(`Could not save detector verdict: ${err.message}`, 'err');
@@ -2227,6 +2562,7 @@
     }
     const open = e.target.closest('button[data-open]');
     if (open) {
+      persistNoteDraft(); if ($('lab-dialog').open) $('lab-dialog').close();
       const id = open.dataset.open;
       const existing = document.getElementById(secId(id));
       if (existing) return reveal(existing);
@@ -2270,11 +2606,36 @@
   });
 
   $('quit').addEventListener('click', async () => {
+    if (intentionallyStopped || $('quit').disabled) return;
+    if (noteSavePending) { setStatus('A note save is still awaiting confirmation. Wait for its result before quitting; your current draft remains available.', 'err'); return; }
     if (!confirm('Stop the NEVR-Anticheat desktop app?')) return;
-    intentionallyStopped = true;
-    try { await fetch('quit'); } catch (_) {}
-    document.querySelector('main').innerHTML = '<section class="stopped"><h2>NEVR-Anticheat has stopped.</h2><p class="muted">You can close this tab.</p></section>';
-    $('quit').disabled = true;
+    persistNoteDraft();
+    const button = $('quit'), label = button.textContent, controller = new AbortController();
+    button.disabled = true; button.textContent = 'Stopping…';
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch('quit', {cache:'no-store', signal:controller.signal});
+      if (!response.ok) throw new Error('The engine returned HTTP '+response.status+'.');
+      intentionallyStopped = true;
+      if ($('lab-dialog').open) $('lab-dialog').close();
+      if ($('physics-dialog').open) $('physics-dialog').close();
+      operatorState.connection = 'closing';
+      $('connection').className = 'connection closing';
+      $('connection').querySelector('b').textContent = 'SHUTDOWN REQUESTED';
+      $('offline-banner').hidden = true;
+      for (const selector of ['.workspace-nav', '.skip-link']) { const element = document.querySelector(selector); if (element) element.hidden = true; }
+      document.querySelectorAll('.top button').forEach(control => {
+        control.disabled = true;
+        control.title = 'Unavailable because the local engine is closing. Reopen NEVR to start a new session.';
+        control.setAttribute('aria-describedby', 'shutdown-description');
+      });
+      $('retry').disabled = true;
+      document.querySelector('main').innerHTML = '<section class="stopped"><h2>Shutdown requested.</h2><p class="muted" id="shutdown-description">The local engine accepted the request and is closing. App controls are unavailable until you reopen NEVR. You can close this window.</p></section>';
+      button.textContent = 'Closing';
+    } catch (error) {
+      setStatus('Shutdown was not confirmed. The engine may still be running. Your workspace is retained; retry Quit or check the connection. '+(controller.signal.aborted?'The request timed out.':error.message), 'err');
+      button.disabled = false; button.textContent = label;
+    } finally { clearTimeout(timeout); }
   });
   $('retry').addEventListener('click', () => {
     $('retry').disabled = true;
@@ -2284,14 +2645,33 @@
 
   addEventListener('beforeprint', () => document.querySelectorAll('details').forEach((d) => { d.dataset.wasOpen = d.open ? '1' : ''; d.open = true; }));
   addEventListener('afterprint', () => document.querySelectorAll('details').forEach((d) => { d.open = d.dataset.wasOpen === '1'; }));
-  document.addEventListener('keydown',(e)=>{
-    if(!$('lab-dialog').open || !activePlaylist.length || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-    if(e.key==='j'||e.key==='ArrowDown') activePlaylistIndex=Math.min(activePlaylist.length-1,activePlaylistIndex+1);
-    else if(e.key==='k'||e.key==='ArrowUp') activePlaylistIndex=Math.max(0,activePlaylistIndex-1);
-    else if(e.key==='Enter'&&activePlaylistIndex>=0){document.querySelector(`button[data-playlist-index="${activePlaylistIndex}"]`)?.click();return}
-    else return;
-    e.preventDefault();document.querySelectorAll('[data-playlist-row]').forEach(row=>row.classList.toggle('active',+row.dataset.playlistRow===activePlaylistIndex));document.querySelector(`[data-playlist-row="${activePlaylistIndex}"]`)?.scrollIntoView({block:'nearest'});
+  function shortcutTarget(e) {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing || !e.target?.closest) return null;
+    if (e.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) return null;
+    if ((e.key === 'j' || e.key === 'k') && prefs.shortcuts !== true) return null;
+    if (!['j','k','ArrowDown','ArrowUp'].includes(e.key)) return null;
+    return e.target.closest('.review-queue, .playlist');
+  }
+  document.addEventListener('keydown', e => {
+    if (!$('lab-dialog').open) return;
+    const target = shortcutTarget(e); if (!target) return;
+    const direction = e.key === 'j' || e.key === 'ArrowDown' ? 1 : -1;
+    if (target.classList.contains('review-queue')) { e.preventDefault(); selectIncident(selectedIncidentIndex + direction, true); return; }
+    if (!activePlaylist.length) return;
+    e.preventDefault(); activePlaylistIndex = Math.max(0,Math.min(activePlaylist.length-1,activePlaylistIndex + direction));
+    document.querySelectorAll('[data-playlist-row]').forEach(row => row.classList.toggle('active',+row.dataset.playlistRow === activePlaylistIndex));
+    document.querySelector(`button[data-playlist-index="${activePlaylistIndex}"]`)?.focus();
   });
+  document.addEventListener('input', e => {
+    if (e.target.id === 'note-body' || e.target.id === 'note-frame') { const stored = persistNoteDraft(); noteStatus(stored ? 'Draft retained in this browser · not yet saved to evidence.' : 'Draft is only in this open editor. Browser storage is unavailable; save or copy it before closing.', stored?'':'err'); }
+    if (e.target.id === 'case-search') { prefs.caseSearch=e.target.value; savePrefs(); renderFlagged(); }
+  });
+  document.addEventListener('change', e => {
+    if (e.target.id === 'case-state') { prefs.caseState=e.target.value;savePrefs();renderFlagged(); }
+    const key = {'pref-theme':'theme','pref-density':'density','pref-text-size':'textSize','pref-motion':'motion','pref-shortcuts':'shortcuts'}[e.target.id];
+    if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); }
+  });
+  $('lab-dialog').addEventListener('close', () => { persistNoteDraft(); investigationRequest++; });
   document.addEventListener('change', async (e) => {
     if (e.target.id === 'br-match') {
       try { await openBlindWorkspace(e.target.value); }
@@ -2313,6 +2693,7 @@
   function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); loadStudio(); }
   refreshPanels();
   setInterval(probeConnection, 5000);
+  setInterval(updateOperatorStatus, 1000);
 })();
 </script>
 </body>

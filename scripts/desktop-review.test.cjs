@@ -291,8 +291,9 @@ test('revealed review and attached evidence links are escaped and integrity cons
 
 test('modal status messages are visible inside the active modal and never interpreted as HTML', () => {
   const nodes = { status:{}, 'lab-dialog':{open:true}, 'lab-dialog-status':{} };
-  const context = vm.createContext({$: (id) => nodes[id]});
-  const a = script.indexOf('  const setStatus ='), b = script.indexOf('  async function getJSON(',a);
+  const context = vm.createContext({$: (id) => nodes[id], recordNotice: () => {}});
+  const a = script.indexOf('  const setStatus ='), b = script.indexOf('  async function requestJSON(',a);
+  assert.ok(a >= 0 && b > a, 'status helper extraction boundaries exist');
   vm.runInContext(script.slice(a,b) + '\nsetStatus("<img src=x>", "err");',context);
   assert.equal(nodes['lab-dialog-status'].textContent,'<img src=x>');
   assert.equal(nodes['lab-dialog-status'].className,'status err');
