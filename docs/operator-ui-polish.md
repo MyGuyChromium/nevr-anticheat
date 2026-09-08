@@ -48,7 +48,7 @@ go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -severity medium -exclude 
 node --test scripts/desktop-review.test.cjs scripts/autopocket-review.test.cjs scripts/operator-ui.test.cjs scripts/release-gate.test.cjs
 ```
 
-The Node suite includes 55 operator workflow tests (91 total across those four
+The Node suite includes 57 operator workflow tests (93 total across those four
 files). The two obsolete title/cancellation assertions were updated; detector
 behavior assertions were not relaxed.
 
@@ -63,6 +63,9 @@ Rendered inspection used the actual embedded application, not a mock frontend:
 - Successful note saving, an injected 503 save failure, retained/reopened
   drafts, denied setup access, and switching to a draft while a delayed setup
   request finishes.
+- Confirmed shutdown with a neutral header and disabled actions, without
+  browser-console JavaScript errors. Late health responses cannot restore the
+  connected indicator after shutdown is accepted.
 - A separate isolated production desktop binary importing the checked-in
   synthetic replay through the real file chooser and analysis endpoint,
   accepting that stored replay again, and rejecting deliberately malformed

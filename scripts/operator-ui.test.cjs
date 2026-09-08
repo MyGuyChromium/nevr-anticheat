@@ -125,6 +125,17 @@ test('status refresh safely stops when app is closing or workspace was removed',
   }
 });
 
+test('late connection callbacks cannot overwrite terminal shutdown status', () => {
+  const state = { connection: 'closing' };
+  const context = run(section('  function setConnectionState(', '  function updateOperatorStatus('), {
+    intentionallyStopped: true, operatorState: state,
+    $: () => assert.fail('shutdown connection callback must not touch removed workspace or header'),
+    updateOperatorStatus: () => assert.fail('shutdown must not restart status updates'),
+  });
+  for (const lateStatus of [true, false, 'denied', 'unavailable']) context.setConnectionState(lateStatus);
+  assert.equal(state.connection, 'closing');
+});
+
 function healthProbe(fetchHealth, initial = {}) {
   const state = { connection: 'checking', checkedAt: 0, health: null, ...initial };
   const calls = [], transitions = [];
@@ -789,20 +800,25 @@ test('new investigation controls stay disabled with reason during an earlier not
 
 function quitUI(options = {}) {
   const get = nodes(), requests = [], messages = [], timers = [], removed = [], main = { innerHTML: 'Preserved workspace' };
+  const nav = { hidden: false }, skip = { hidden: false }, connectionLabel = { textContent: 'CONNECTED' };
+  const controls = ['quit', 'open-viewer', 'quick-setup'].map(get);
+  for (const control of controls) { control.attributes = {}; control.setAttribute = (key, value) => { control.attributes[key] = value; }; }
+  get('connection').querySelector = () => connectionLabel;
+  get('connection').className = 'connection online';
   let handler;
   get('quit').textContent = 'Quit';
   get('quit').addEventListener = (_name, callback) => { handler = callback; };
   get('lab-dialog').close = () => { get('lab-dialog').open = false; };
   const context = run(section("  $('quit').addEventListener('click'", "  $('retry').addEventListener('click'"), {
-    $: get, intentionallyStopped: false, noteSavePending: !!options.savePending, AbortController,
+    $: get, intentionallyStopped: false, noteSavePending: !!options.savePending, AbortController, operatorState: { connection: 'online' },
     confirm: () => true, persistNoteDraft: () => {},
     fetch: async (...args) => { requests.push(args); return options.fetch ? options.fetch(...args) : { ok: true, status: 200 }; },
     setStatus: (message, tone) => messages.push({ message, tone }),
-    document: { querySelector: () => main },
+    document: { querySelector: selector => ({ main, '.workspace-nav': nav, '.skip-link': skip }[selector] || null), querySelectorAll: selector => selector === '.top button' ? controls : [] },
     setTimeout: (callback, duration) => { const timer = { callback, duration }; timers.push(timer); return timer; },
     clearTimeout: timer => removed.push(timer),
   });
-  return { context, get, click: () => handler(), requests, messages, main, timers, removed };
+  return { context, get, click: () => handler(), requests, messages, main, timers, removed, nav, skip, connectionLabel, controls };
 }
 
 test('quit requires a successful response and reports accepted shutdown, not process completion', async () => {
@@ -818,6 +834,26 @@ test('quit requires a successful response and reports accepted shutdown, not pro
   assert.equal(ui.requests.length, 1);
 });
 
+test('accepted shutdown replaces connected header and disables terminal workspace actions', async () => {
+  const ui = quitUI();
+  ui.get('offline-banner').hidden = false;
+  await ui.click();
+  assert.equal(ui.context.operatorState.connection, 'closing');
+  assert.equal(ui.get('connection').className, 'connection closing');
+  assert.equal(ui.connectionLabel.textContent, 'SHUTDOWN REQUESTED');
+  assert.equal(ui.get('offline-banner').hidden, true);
+  assert.equal(ui.nav.hidden, true);
+  assert.equal(ui.skip.hidden, true);
+  assert.equal(ui.get('retry').disabled, true);
+  for (const control of ui.controls) {
+    assert.equal(control.disabled, true);
+    assert.match(control.title, /local engine is closing/);
+    assert.equal(control.attributes['aria-describedby'], 'shutdown-description');
+  }
+  assert.match(ui.main.innerHTML, /id="shutdown-description"/);
+  assert.match(ui.main.innerHTML, /controls are unavailable until you reopen/);
+});
+
 test('failed quit retains workspace and permits retry without claiming shutdown', async () => {
   for (const failure of [() => ({ ok: false, status: 403 }), () => { throw new Error('Network error'); }]) {
     const ui = quitUI({ fetch: failure });
@@ -825,6 +861,9 @@ test('failed quit retains workspace and permits retry without claiming shutdown'
     assert.equal(ui.context.intentionallyStopped, false);
     assert.equal(ui.main.innerHTML, 'Preserved workspace');
     assert.equal(ui.get('quit').disabled, false);
+    assert.equal(ui.get('connection').className, 'connection online');
+    assert.equal(ui.nav.hidden, false);
+    assert.ok(ui.controls.filter(control => control.id !== 'quit').every(control => !control.disabled));
     assert.match(ui.messages.at(-1).message, /Shutdown was not confirmed/);
     assert.deepEqual(ui.removed, ui.timers);
   }

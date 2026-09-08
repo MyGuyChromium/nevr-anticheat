@@ -780,6 +780,7 @@
   const operatorState = { connection: 'checking', health: null, checkedAt: 0, settings: null, cases: null };
   let healthProbePending = false;
   function setConnectionState(value) {
+    if (intentionallyStopped) return;
     const state = value === true ? 'online' : value === false ? 'offline' : value;
     operatorState.connection = state;
     const el = $('connection');
@@ -2617,7 +2618,19 @@
       if (!response.ok) throw new Error('The engine returned HTTP '+response.status+'.');
       intentionallyStopped = true;
       if ($('lab-dialog').open) $('lab-dialog').close();
-      document.querySelector('main').innerHTML = '<section class="stopped"><h2>Shutdown requested.</h2><p class="muted">The local engine accepted the request and is closing. You can close this window.</p></section>';
+      if ($('physics-dialog').open) $('physics-dialog').close();
+      operatorState.connection = 'closing';
+      $('connection').className = 'connection closing';
+      $('connection').querySelector('b').textContent = 'SHUTDOWN REQUESTED';
+      $('offline-banner').hidden = true;
+      for (const selector of ['.workspace-nav', '.skip-link']) { const element = document.querySelector(selector); if (element) element.hidden = true; }
+      document.querySelectorAll('.top button').forEach(control => {
+        control.disabled = true;
+        control.title = 'Unavailable because the local engine is closing. Reopen NEVR to start a new session.';
+        control.setAttribute('aria-describedby', 'shutdown-description');
+      });
+      $('retry').disabled = true;
+      document.querySelector('main').innerHTML = '<section class="stopped"><h2>Shutdown requested.</h2><p class="muted" id="shutdown-description">The local engine accepted the request and is closing. App controls are unavailable until you reopen NEVR. You can close this window.</p></section>';
       button.textContent = 'Closing';
     } catch (error) {
       setStatus('Shutdown was not confirmed. The engine may still be running. Your workspace is retained; retry Quit or check the connection. '+(controller.signal.aborted?'The request timed out.':error.message), 'err');
