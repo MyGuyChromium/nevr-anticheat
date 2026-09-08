@@ -50,12 +50,25 @@ func (q Quat) IsUnit() bool {
 	return m >= 0.99 && m <= 1.01
 }
 
-// AngularDistance returns the angle in radians between two quaternions.
-// Handles quaternion double-cover (q and -q represent the same rotation).
+// AngularDistance returns the shortest angle in radians between two finite,
+// near-unit quaternions, normalized before the comparison. Invalid rotations
+// return NaN; callers must preserve observation validity rather than treating
+// that result as a stationary wrist. q and -q represent the same rotation.
 func (q Quat) AngularDistance(o Quat) float64 {
+	var valid bool
+	q, valid = q.NormalizedRotation()
+	if !valid {
+		return math.NaN()
+	}
+	o, valid = o.NormalizedRotation()
+	if !valid {
+		return math.NaN()
+	}
 	d := math.Abs(q.Dot(o))
-	if d > 1.0 {
-		d = 1.0
+	if d >= 1-1e-15 {
+		// Normalizing rounded samples can leave the self-dot a few ulps
+		// below one. That is not measured motion, including for q versus -q.
+		return 0
 	}
 	return 2.0 * math.Acos(d)
 }
@@ -192,14 +205,14 @@ func QuatFromDirectionVectorsChecked(forward, left, up Vec3) (Quat, BasisQuality
 	fMag := forward.Magnitude()
 	uMag := up.Magnitude()
 	lMag := left.Magnitude()
-	if fMag < 1e-9 || uMag < 1e-9 {
+	if fMag < 1e-9 || uMag < 1e-9 || math.IsInf(fMag, 0) || math.IsInf(uMag, 0) {
 		return Quat{}, BasisDegenerate
 	}
 
 	f := forward.Scale(1.0 / fMag)
 	uProj := up.Sub(f.Scale(up.Dot(f)))
 	uProjMag := uProj.Magnitude()
-	if uProjMag < 1e-6 {
+	if uProjMag < 1e-6 || math.IsNaN(uProjMag) || math.IsInf(uProjMag, 0) {
 		// up is (anti)parallel to forward: no plane, no rotation.
 		return Quat{}, BasisDegenerate
 	}

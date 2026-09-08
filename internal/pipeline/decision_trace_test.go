@@ -248,7 +248,7 @@ func TestDecisionTraceLegalContextNeverAmplifiesOrRewritesEvidence(t *testing.T)
 		{"slap or block push", "BIO_001", "context_possible_slap_or_push", model.LegalMotionContext{PossibleSlapOrPush: true, Confidence: 1}, .6},
 		{"possible headbutt", "BIO_001", "context_possible_head_contact", model.LegalMotionContext{PossibleHeadContact: true, Confidence: 1}, .35},
 		{"lean", "MOV_001", "context_lean_or_step", model.LegalMotionContext{Leaning: true, Confidence: 1}, .65},
-		{"boost", "MOV_001", "context_boost", model.LegalMotionContext{Boosting: true, Confidence: 1}, .75},
+		{"boost", "MOV_001", "context_boost", model.LegalMotionContext{BoostingKnown: true, Boosting: true, Confidence: 1}, .75},
 		{"tracking uncertain", "MOV_006", "context_tracking_limited", model.LegalMotionContext{TrackingLimited: true, Confidence: 1}, .55},
 		{"no blanket playspace exemption", "MOV_006", "", model.LegalMotionContext{Leaning: true, PlayspaceStep: true, Confidence: 1}, 1},
 	} {

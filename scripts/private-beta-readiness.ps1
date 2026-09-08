@@ -135,13 +135,13 @@ try {
             Add-Check "source_regressions" "automated" "not_run" "Source tests require Go plus a C compiler; source-test execution was unavailable or explicitly skipped."
         } else {
             Run-Check "source_regressions" {
-                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance|Settings).*|TestApplyPendingRestore.*|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths|TestSparkReplay.*|TestWatchScan.*|TestRecoveryReports.*|TestSupportBundleRepeated.*)$'
+                $pattern = '^(TestDesktop_(AnalyzeFixture|BadUploads|FailureDiagnostics|MatchSummaryDownloads|QoLHealthMaintenanceAndCancel|Quit)|TestDesktop(SingleInstance|Instance|Settings).*|TestDesktopFirstLaunchRun|TestPrepareDesktopDatabaseDirectory.*|TestApplyPendingRestore.*|TestDownloadVerifiedUpdate|TestInstallUpdateRejectsActiveAnalysis|TestApplyStagedUpdate.*|TestWaitForDesktopExit|TestLaunchUpdateHelper.*|TestGitHubGet.*|TestValidateUpdateHelperPaths|TestSparkReplay.*|TestWatchScan.*|TestRecoveryReports.*|TestSupportBundleRepeated.*)$'
                 $logPath = Join-Path $runRoot "source-tests.jsonl"
                 & go test -json -count=1 -timeout=3m ./cmd/desktop -run $pattern 2>&1 | ForEach-Object { [string]$_ } | Set-Content -LiteralPath $logPath -Encoding utf8
                 $testExit = $LASTEXITCODE
                 $events = @(Get-Content -LiteralPath $logPath | ForEach-Object { if ($_.StartsWith("{")) { $_ | ConvertFrom-Json } })
                 $passed = @($events | Where-Object { $_.Action -eq "pass" -and $_.Test -and -not $_.Test.Contains("/") } | ForEach-Object { $_.Test })
-                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestApplyPendingRestoreRollsBackEveryMovedFile", "TestSparkReplayClipRequiresExactIncidentFrame", "TestWatchScanRetriesPersistenceFailure", "TestRecoveryReportsPersistenceFailureAndRetainsReplay", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
+                foreach ($required in @("TestDesktop_AnalyzeFixture", "TestDesktop_BadUploads", "TestDesktop_MatchSummaryDownloads", "TestDesktopFirstLaunchRun", "TestPrepareDesktopDatabaseDirectoryCreatesNestedParents", "TestApplyPendingRestorePreservesAndReplacesDatabase", "TestApplyPendingRestoreRollsBackEveryMovedFile", "TestSparkReplayClipRequiresExactIncidentFrame", "TestWatchScanRetriesPersistenceFailure", "TestRecoveryReportsPersistenceFailureAndRetainsReplay", "TestDownloadVerifiedUpdate", "TestApplyStagedUpdateRefusesUnverifiedExit", "TestWaitForDesktopExit", "TestDesktopSingleInstanceDatabaseHashCollision")) {
                     Assert-Beta ($passed -contains $required) "Required regression did not pass: $required. See source-tests.jsonl."
                 }
                 Assert-Beta ($testExit -eq 0) "Source regression tests failed; see source-tests.jsonl."
@@ -227,20 +227,28 @@ try {
     }
 
     if (Has-Passed "desktop_binary") {
-        $dbPath = Join-Path $isolatedRoot "beta.db"
+        # A fresh install has no evidence directory. Keep this parent absent
+        # until the application itself creates it, rather than masking startup
+        # failures by preparing the data directory in the test harness.
+        $freshDataRoot = Join-Path $isolatedRoot "O'Brien first launch\evidence"
+        $dbPath = Join-Path $freshDataRoot "beta.db"
         $configPath = Join-Path $isolatedRoot "beta.toml"
         $config = "[general]`ndb_path = " + (ConvertTo-Json -InputObject $dbPath -Compress) + "`nlog_level = 'error'`n"
         [IO.File]::WriteAllText($configPath, $config)
-        [IO.File]::WriteAllText((Join-Path $isolatedRoot "nevr-desktop-settings.json"), '{"watch_enabled":false,"automatic_update_checks":false,"seen_files":{}}')
         $fixture = Join-Path $repoRoot "tests\fixtures\synthetic_session.echoreplay"
         $corrupt = Join-Path $isolatedRoot "corrupt.echoreplay"
         [IO.File]::WriteAllText($corrupt, "This is deliberately invalid replay data.")
         Run-Check "isolated_startup" {
+            Assert-Beta (-not (Test-Path -LiteralPath $freshDataRoot)) "Fresh-start data directory was prepared before the application launched."
             Start-BetaDesktop $script:binary $configPath
             $health = Send-BetaRequest "GET" "api/health"
             Assert-Beta ($health.status -eq 200 -and [IO.Path]::GetFullPath($health.body.database_path) -eq $dbPath -and $health.body.stored_matches -eq 0) "Desktop did not open the empty isolated database."
+            Assert-Beta (Test-Path -LiteralPath $dbPath -PathType Leaf) "Desktop did not create the fresh database."
+            # No browser is opened, so frontend update polling never runs.
+            # Seed disabled settings only AFTER proving first-launch creation.
+            [IO.File]::WriteAllText((Join-Path $freshDataRoot "nevr-desktop-settings.json"), '{"watch_enabled":false,"automatic_update_checks":false,"seen_files":{}}')
             $script:testedVersion = [string]$health.body.version
-            "Desktop $($script:testedVersion) opened an empty temporary database on loopback without a browser."
+            "Desktop $($script:testedVersion) created a previously absent nested evidence directory and opened an empty temporary database on loopback without a browser."
         }
         if (Has-Passed "isolated_startup") {
             Run-Check "runtime_build_identity" {
@@ -344,7 +352,7 @@ try {
         automated_status = if ($failed) { "fail" } elseif ($missing) { "incomplete" } else { "pass" }
         beta_status = if ($failed) { "fail" } else { "manual_validation_pending" }
         artifacts = @($script:artifacts); checks = @($script:checks)
-        limits = @("Synthetic fixtures do not establish cheat detection accuracy or final thresholds.", "No installed app, live database, real installer, GitHub authentication or Spark process was used.")
+        limits = @("Synthetic fixtures do not establish cheat detection accuracy or final thresholds.", "The supplied or source-built executable used isolated temporary data; no existing application data, real installer, GitHub authentication or Spark process was used.")
     }
     $reportPath = Join-Path $runRoot "readiness-report.json"
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8

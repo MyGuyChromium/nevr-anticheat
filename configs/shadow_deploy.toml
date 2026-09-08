@@ -23,6 +23,8 @@
 #   3. PAT_003 stays disabled until 3+ matches of history exist.
 #   4. enforcement_weight has no effect while mode = "shadow"; the weights
 #      below are the values that WOULD apply once a detector is promoted.
+#      STATE_008 is an exception: its weight is fixed at zero and promotion
+#      is rejected until its catch signature has independent calibration.
 
 [general]
 log_level   = "info"                  # "debug" for the first match, then "info"
@@ -49,9 +51,9 @@ auto_enforce       = false
 mode               = "shadow"
 
 [detector.THROW_006]
-# Trajectory Correction (Mags): straight-line physics; angle thresholds UNVERIFIED.
+# Free-flight Trajectory Review: diagnostic only; not disc-grab reach (mags).
 enabled            = true
-enforcement_weight = 0.8
+enforcement_weight = 0.0
 auto_enforce       = false
 mode               = "shadow"
 
@@ -151,6 +153,14 @@ mode               = "shadow"
 # Validates whether per-frame stun counts update at all.
 enabled            = true
 enforcement_weight = 0.0
+mode               = "shadow"
+
+[detector.STATE_008]
+# Pre-catch Trajectory Review: provisional observations, mechanism unverified.
+# Permanently shadow-only in this build; no scoring or automatic enforcement.
+enabled            = true
+enforcement_weight = 0.0
+auto_enforce       = false
 mode               = "shadow"
 
 # ==============================================================================

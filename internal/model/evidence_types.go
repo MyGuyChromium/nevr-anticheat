@@ -52,6 +52,8 @@ type ReleaseAngleEvidence struct {
 	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
 	DiscSpeed                 float64 `json:"disc_speed"`
 	WristOrientation          Quat    `json:"wrist_orientation"`
+	WristOrientationValid     bool    `json:"wrist_orientation_valid"`
+	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
 	ThrowingHand              string  `json:"throwing_hand"`
 	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
 	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
@@ -207,11 +209,27 @@ func (MovementEvidence) EvidenceType() string { return "movement" }
 
 // StateEvidence is generic evidence for state/interaction detectors.
 type StateEvidence struct {
-	DetectorSpecific string             `json:"detector_specific"`
-	Metrics          map[string]float64 `json:"metrics"`
+	DetectorSpecific string                  `json:"detector_specific"`
+	Metrics          map[string]float64      `json:"metrics"`
+	CatchTrajectory  []CatchTrajectorySample `json:"catch_trajectory,omitempty"`
+	Attribution      string                  `json:"attribution,omitempty"`
+	Limitations      []string                `json:"limitations,omitempty"`
 }
 
 func (StateEvidence) EvidenceType() string { return "state" }
+
+// CatchTrajectorySample preserves only the FREE-disc observations used by a
+// catch-approach review. ExpectedPosition is a constant-velocity comparison,
+// not the game's collision/attachment physics or proof of an automated input.
+type CatchTrajectorySample struct {
+	FrameIndex       int     `json:"frame_index"`
+	Timestamp        float64 `json:"timestamp"`
+	DiscPosition     Vec3    `json:"disc_position"`
+	DiscVelocity     Vec3    `json:"disc_velocity"`
+	ExpectedPosition Vec3    `json:"expected_position"`
+	LeftHand         Vec3    `json:"left_hand"`
+	RightHand        Vec3    `json:"right_hand"`
+}
 
 // PatternEvidence is generic evidence for pattern detectors.
 type PatternEvidence struct {

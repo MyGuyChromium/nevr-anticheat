@@ -7,7 +7,11 @@ import (
 
 // PlayerTelemetryFrame represents a single frame of telemetry data for one player.
 type PlayerTelemetryFrame struct {
-	PlayerID string `json:"player_id"`
+	Observation             *ObservationContext `json:"observation,omitempty"`
+	HeldItems               *HandAttachments    `json:"held_items,omitempty"`
+	GameLastThrowProvenance *ObservationContext `json:"game_last_throw_provenance,omitempty"`
+	IsBoostingKnown         *bool               `json:"is_boosting_known,omitempty"`
+	PlayerID                string              `json:"player_id"`
 	// Team is "blue" or "orange" when known, empty otherwise. Producers
 	// (adapter.Mapper, cmd/bridge) populate it; ingest uses it to build
 	// MatchContext.TeamAssignments for live matches.
@@ -18,6 +22,9 @@ type PlayerTelemetryFrame struct {
 
 	Position Vec3 `json:"position"`
 	Rotation Quat `json:"rotation"`
+	// HeadPosition is the explicitly tracked head, never a body-position
+	// substitute. Nil means unavailable; the zero vector is tracking loss.
+	HeadPosition *Vec3 `json:"head_position,omitempty"`
 	// ReportedVelocity is Echo VR's game-authored player velocity. It is a
 	// pointer because [0,0,0] is a valid stationary value while nil means the
 	// producer did not supply the field. Keeping this separate from the
@@ -29,6 +36,12 @@ type PlayerTelemetryFrame struct {
 	RightHandPosition Vec3 `json:"right_hand_position"`
 	LeftHandRotation  Quat `json:"left_hand_rotation"`
 	RightHandRotation Quat `json:"right_hand_rotation"`
+	// Explicit provenance distinguishes a genuinely observed identity from an
+	// identity substituted by a producer for missing tracking. Nil is unknown
+	// (legacy normalized sources), false is unavailable, and true still requires
+	// a finite, near-unit quaternion. Raw replay reprocessing can recover this.
+	LeftHandRotationValid  *bool `json:"left_hand_rotation_valid,omitempty"`
+	RightHandRotationValid *bool `json:"right_hand_rotation_valid,omitempty"`
 
 	IsStunned     bool `json:"is_stunned"`
 	IsBoosting    bool `json:"is_boosting"`
@@ -99,9 +112,19 @@ func (g GameThrowDetails) Valid() bool {
 
 // DiscState represents the state of the disc at a single frame.
 type DiscState struct {
-	Position Vec3    `json:"position"`
-	Velocity Vec3    `json:"velocity"`
-	Speed    float64 `json:"speed"`
+	Attachment *DiscAttachment `json:"attachment,omitempty"`
+	Position   Vec3            `json:"position"`
+	Velocity   Vec3            `json:"velocity"`
+	Speed      float64         `json:"speed"`
+	// BounceCount preserves the difference between an observed zero and an
+	// unavailable counter. Older normalized telemetry leaves it nil.
+	BounceCount *int `json:"bounce_count,omitempty"`
+	// PossessionKnown requires explicit hand-held item observations for all
+	// sampled blue/orange players. Count includes entries later rejected by
+	// validation; consumers can detect an incomplete view of this tick.
+	PossessionKnown    bool `json:"possession_known,omitempty"`
+	PossessionConflict bool `json:"possession_conflict,omitempty"`
+	SampledPlayerCount int  `json:"sampled_player_count,omitempty"`
 
 	PreviousVelocity      *Vec3   `json:"previous_velocity,omitempty"`
 	Acceleration          *Vec3   `json:"acceleration,omitempty"`

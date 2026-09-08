@@ -71,6 +71,7 @@
 | STATE_005 | **TELEMETRY_DEPENDENT** | Only if ShieldActive present | No | Same as STATE_003 |
 | STATE_006 | **SUSPENDED** | No | No | No confirmed impossible score invariant; delta=1 proved legitimate in real profiler data |
 | STATE_007 | **TELEMETRY_DEPENDENT** | Only if per-frame stun count updates | After validation | Per-frame stun count granularity UNCONFIRMED; may be round-end only |
+| STATE_008 | **OBSERVATION_ONLY** | Only with complete explicit possession and tracked head/hand/bounce inputs | No; immutable observation-only | Free-disc path comparison is not exact catch physics; cause and actor unverified. See [autopocket review](autopocket_review.md). |
 | PAT_001 | **UNSAFE** | Log only | No | Regrab rhythm produces low CoV naturally |
 | PAT_002 | **UNSAFE** | Log only | No | Consistent throwing form produces < 2 cm spread |
 | PAT_003 | **CROSS_MATCH_DEPENDENT** | After history collected | After validation | Reads prior non-shadow, non-meta events; nothing until `min_matches` of history |

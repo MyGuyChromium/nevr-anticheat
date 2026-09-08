@@ -8,8 +8,8 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// ExpectedDetectorCount is the documented detector count (README: 30).
-const ExpectedDetectorCount = 30
+// ExpectedDetectorCount is the documented detector count (README: 31).
+const ExpectedDetectorCount = 31
 
 func allEnabled() *config.Config {
 	cfg := config.DefaultConfig()
@@ -20,7 +20,7 @@ func allEnabled() *config.Config {
 	return cfg
 }
 
-func TestCatalogHas30UniqueDetectors(t *testing.T) {
+func TestCatalogHas31UniqueDetectors(t *testing.T) {
 	dets := detect.BuildAll(nil)
 	if len(dets) != ExpectedDetectorCount {
 		t.Fatalf("BuildAll built %d detectors, want %d", len(dets), ExpectedDetectorCount)
@@ -38,7 +38,7 @@ func TestCatalogHas30UniqueDetectors(t *testing.T) {
 	for _, prefix := range []struct {
 		prefix string
 		n      int
-	}{{"THROW_", 8}, {"BIO_", 4}, {"MOV_", 6}, {"STATE_", 7}, {"PAT_", 5}} {
+	}{{"THROW_", 8}, {"BIO_", 4}, {"MOV_", 6}, {"STATE_", 8}, {"PAT_", 5}} {
 		got := 0
 		for id := range seen {
 			if len(id) > len(prefix.prefix) && id[:len(prefix.prefix)] == prefix.prefix {
@@ -119,4 +119,25 @@ func TestBuildAppliesConfigAndStampsWeightOnEvents(t *testing.T) {
 	if len(Names()) != ExpectedDetectorCount || Names()["THROW_001"] == "" {
 		t.Errorf("Names() = %d entries", len(Names()))
 	}
+}
+
+func TestCatalogAutopocketRemainsObservationOnlyWithoutValidation(t *testing.T) {
+	cfg := config.DefaultConfig()
+	dc := cfg.Detectors["STATE_008"]
+	dc.Mode = "enforce"
+	dc.AutoEnforce = true
+	dc.EnforcementWeight = 1
+	cfg.Detectors["STATE_008"] = dc
+	// Build can be used directly by tests/tools without the config loader. Its
+	// setter calls must not promote the observation-only detector in that path.
+	for _, d := range Build(cfg, nil) {
+		if d.ID() != "STATE_008" {
+			continue
+		}
+		if d.Name() != "Pre-catch Trajectory Review" || d.DefaultEnforcementWeight() != 0 || d.AutoEnforce() {
+			t.Fatalf("catalog promoted STATE_008: name=%q weight=%v auto=%v", d.Name(), d.DefaultEnforcementWeight(), d.AutoEnforce())
+		}
+		return
+	}
+	t.Fatal("enabled STATE_008 missing from catalog build")
 }

@@ -110,6 +110,7 @@ func newMatchPoller(m DiscoveredMatch, cfg *BridgeConfig, sender *wsSender, stat
 	// previous poll (the broadcaster updates slower than we sample), so no
 	// zero-velocity frame followed by a double-distance frame reaches ingest.
 	mapper := adapter.NewMapper()
+	mapper.SetObservationSource("echovr_http", "http_response_body_received", fmt.Sprintf("%s:%d", m.BroadcasterIP, cfg.APIPort))
 	mapper.SetDedupeIdentical(true)
 	return &matchPoller{
 		match:  m,

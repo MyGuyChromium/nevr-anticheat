@@ -299,13 +299,13 @@ func (fb *FrameBuilder) ExtendedReach(nFrames int) []model.PlayerTelemetryFrame 
 	return frames
 }
 
-// CompositeCheater generates one player exhibiting three cheat categories
-// in sequence: a sustained speed hack (movement, MOV_001), impossible grabs
-// (state, STATE_001) and aimbot releases (throw, THROW_001). Each fires
-// with confidence >= 0.7, so PAT_004 (min_categories 3) fires as well.
+// CompositeCheater combines movement, independent hand-speed and over-cap
+// release fixtures. Unverified grab geometry is also included but cannot count
+// as a third category; its diagnostic-only output must not feed PAT_004.
 func (fb *FrameBuilder) CompositeCheater() []model.PlayerTelemetryFrame {
 	speed := fb.SpeedHackFrames(90, 75)
 	grabs := fb.After(speed).ImpossibleGrabs(3)
-	aimbot := fb.After(grabs).AimbotThrows(3)
-	return Concat(speed, grabs, aimbot)
+	hands := fb.After(grabs).HandSpeedHack(100)
+	aimbot := fb.After(hands).AimbotThrows(3)
+	return Concat(speed, grabs, hands, aimbot)
 }

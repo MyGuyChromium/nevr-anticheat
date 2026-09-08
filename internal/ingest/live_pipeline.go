@@ -682,6 +682,12 @@ func (mm *MatchManager) priorSummary(ctx context.Context, matchID string) (prior
 
 // recordResult folds a batch result into the match counters and metrics.
 func (mm *MatchManager) recordResult(match *LiveMatch, result *pipeline.MatchResult) {
+	if err := mm.store.MergeMatchCatchReviews(context.Background(), match.MatchCtx.MatchID, result.PlayerCoverage); err != nil {
+		mm.logger.Error("failed to store live catch diagnostics", "match", match.MatchCtx.MatchID, "error", err)
+		if mm.metrics != nil {
+			mm.metrics.StoreErrors.Inc()
+		}
+	}
 	for _, ev := range result.DetectionEvents {
 		match.eventsByDetector[ev.DetectorID]++
 		match.totalEvents++

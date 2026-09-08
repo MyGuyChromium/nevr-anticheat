@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -509,7 +510,7 @@ func TestMapper_MappedFrameFieldsUnchanged(t *testing.T) {
 	if p2 == nil || p2.Team != "orange" {
 		t.Errorf("player two frame = %+v", p2)
 	}
-	if p1.Disc == nil || p2.Disc == nil || *p1.Disc != *p2.Disc {
+	if p1.Disc == nil || p2.Disc == nil || !reflect.DeepEqual(p1.Disc, p2.Disc) {
 		t.Errorf("disc differs between frames: %+v vs %+v", p1.Disc, p2.Disc)
 	}
 }

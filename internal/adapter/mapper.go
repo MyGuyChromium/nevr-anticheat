@@ -127,8 +127,11 @@ type Mapper struct {
 	lastFingerprint uint64
 	haveFingerprint bool
 
-	lastThrow     EchoVRLastThrow
-	haveLastThrow bool
+	lastThrow                                                    EchoVRLastThrow
+	haveLastThrow                                                bool
+	throwClientID                                                string
+	throwSessionID                                               string
+	observationSource, observationTimeBasis, observationSourceID string
 
 	stats MapperStats
 
@@ -139,9 +142,10 @@ type Mapper struct {
 // NewMapper creates a new Echo VR telemetry mapper.
 func NewMapper() *Mapper {
 	return &Mapper{
-		prevTimestamp: make(map[string]float64),
-		warnedFields:  make(map[string]bool),
-		physics:       model.DefaultPhysics(),
+		prevTimestamp:     make(map[string]float64),
+		warnedFields:      make(map[string]bool),
+		physics:           model.DefaultPhysics(),
+		observationSource: "echovr_session", observationTimeBasis: "supplied_sample_time",
 	}
 }
 
@@ -174,6 +178,7 @@ func (m *Mapper) NewMatch() {
 	m.lastFingerprint = 0
 	m.lastThrow = EchoVRLastThrow{}
 	m.haveLastThrow = false
+	m.throwClientID, m.throwSessionID = "", ""
 }
 
 // NewFile resets both per-match state and file-level diagnostics. NewMatch
@@ -230,6 +235,11 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 
 	result.MatchCtx = m.mapMatchContext(raw, result)
 
+	clientID := uniqueClientPlayer(raw)
+	if clientID != m.throwClientID || raw.SessionID != m.throwSessionID {
+		m.haveLastThrow, m.haveFingerprint = false, false
+		m.throwClientID, m.throwSessionID = clientID, raw.SessionID
+	}
 	if m.dedupe {
 		fp := sessionFingerprint(raw)
 		if m.haveFingerprint && fp == m.lastFingerprint {
@@ -243,27 +253,45 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 
 	timestamp, backwards := m.tickTimestamp(sampleTime, result)
 	reportedThrow := m.changedLastThrow(raw.LastThrow)
+	if clientID == "" {
+		reportedThrow = nil
+	}
 
 	// Build ONE disc state per tick. Explicit hand-held item fields are the
-	// authoritative release signal; older sources fall back to Possession.
+	// preferred sampled attachment signal; legacy booleans remain separately
+	// compatible, while the explicit Attachment state never uses that fallback.
 	// The disc is held by whichever mapped player reports it. Every frame
 	// of this tick gets the same values so detectors that look at "the disc"
 	// through any player's frame agree on whether it is held and by whom.
 	var tickDisc *model.DiscState
-	if raw.Disc != nil {
+	if raw.Disc.hasPosition() && raw.Disc.hasVelocity() {
 		vel := model.Vec3(raw.Disc.Velocity)
 		tickDisc = &model.DiscState{
 			Position: model.Vec3(raw.Disc.Position),
 			Velocity: vel,
 			Speed:    vel.Magnitude(),
 		}
+		if raw.Disc.BounceCount != nil && *raw.Disc.BounceCount >= 0 {
+			count := *raw.Disc.BounceCount
+			tickDisc.BounceCount = &count
+		}
+		tickDisc.Attachment = observedDiscAttachment(raw)
+	} else if raw.Disc != nil {
+		m.warnOnce(result, "disc", "disc_motion_unavailable", "disc position or velocity is absent/null/incomplete; disc observation omitted rather than manufacturing a zero vector")
 	}
 	holders := 0
+	sampledPlayers := 0
+	allHoldingKnown := true
 	for teamIdx, team := range raw.Teams {
 		if _, ok := mappedTeamName(team.TeamName, teamIdx); !ok {
 			continue
 		}
 		for i := range team.Players {
+			sampledPlayers++
+			p := &team.Players[i]
+			// Both fields must be explicit. HasDisc keeps its established
+			// one-field/legacy fallback semantics for existing detectors.
+			allHoldingKnown = allHoldingKnown && heldItemKnown(p.HoldingLeft) && heldItemKnown(p.HoldingRight)
 			if team.Players[i].HasDisc() {
 				holders++
 				if tickDisc != nil && !tickDisc.IsHeld {
@@ -272,6 +300,11 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 				}
 			}
 		}
+	}
+	if tickDisc != nil {
+		tickDisc.SampledPlayerCount = sampledPlayers
+		tickDisc.PossessionKnown = sampledPlayers > 0 && allHoldingKnown
+		tickDisc.PossessionConflict = holders > 1
 	}
 	if holders > 1 {
 		m.stats.PossessionConflicts++
@@ -442,10 +475,25 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 		}
 	}
 	h.Write([]byte(raw.GameStatus))
+	writeF(float64(len(raw.ClientName)))
+	h.Write([]byte(raw.ClientName))
+	writeF(float64(len(raw.SessionID)))
+	h.Write([]byte(raw.SessionID))
 	writeF(raw.GameClock)
+	writeB(raw.Disc != nil)
 	if raw.Disc != nil {
+		writeB(raw.Disc.hasPosition())
+		writeB(raw.Disc.hasVelocity())
 		writeV(raw.Disc.Position)
 		writeV(raw.Disc.Velocity)
+		writeB(raw.Disc.BounceCount != nil)
+		if raw.Disc.BounceCount != nil {
+			// Preserve signed raw values (including invalid negatives) in a
+			// self-delimiting encoding without unsigned conversion overflow.
+			var buf [binary.MaxVarintLen64]byte
+			n := binary.PutVarint(buf[:], int64(*raw.Disc.BounceCount))
+			h.Write(buf[:n])
+		}
 	}
 	writeF(float64(raw.BluePoints))
 	writeF(float64(raw.OrangePoints))
@@ -471,15 +519,25 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			p := &team.Players[i]
 			writeF(float64(p.UserID))
 			h.Write([]byte(p.Name))
+			writeB(p.hasVelocity())
 			writeV(p.Velocity)
 			writeV(p.Body.Position)
+			writeV(p.Head.Position)
 			writeV(p.Body.Forward)
+			writeV(p.Body.Left)
+			writeV(p.Body.Up)
 			writeV(p.LHand.Position)
 			writeV(p.RHand.Position)
 			writeV(p.LHand.Forward)
+			writeV(p.LHand.Left)
+			writeV(p.LHand.Up)
 			writeV(p.RHand.Forward)
+			writeV(p.RHand.Left)
+			writeV(p.RHand.Up)
 			writeB(p.Possession)
+			writeF(float64(len(p.HoldingLeft)))
 			h.Write([]byte(p.HoldingLeft))
+			writeF(float64(len(p.HoldingRight)))
 			h.Write([]byte(p.HoldingRight))
 			writeB(p.Stunned)
 			writeB(p.Blocking)
@@ -584,6 +642,10 @@ func (m *Mapper) mapPlayer(
 	if pos.HasNaN() || pos.HasInf() {
 		return nil, nil, &MappingError{PlayerName: p.Name, Field: "body.position", Message: "NaN/Inf position"}
 	}
+	var headPosition *model.Vec3
+	if head := model.Vec3(p.Head.Position); !head.IsZero() && !head.HasNaN() && !head.HasInf() {
+		headPosition = &head
+	}
 
 	// CONFIRMED from real replay: body rotation from body.forward/left/up direction vectors.
 	// A degenerate basis (missing vectors) yields the ZERO quaternion, which
@@ -610,13 +672,18 @@ func (m *Mapper) mapPlayer(
 	// Lost tracking (any direction vector zero) is encoded as the ZERO
 	// quaternion so the feature extractor's IsUnit guard skips wrist rates and
 	// BIO_004 never mixes a fake identity pose into its variance window.
-	leftHandRot := m.convertHand(&p.LHand, &warnings, "left_hand_rotation", "lhand_rot")
-	rightHandRot := m.convertHand(&p.RHand, &warnings, "right_hand_rotation", "rhand_rot")
+	leftHandRot, leftHandRotationValid := m.convertHand(&p.LHand, &warnings, "left_hand_rotation", "lhand_rot")
+	rightHandRot, rightHandRotationValid := m.convertHand(&p.RHand, &warnings, "right_hand_rotation", "rhand_rot")
 
 	// CONFIRMED: disc state is shared by every frame of the tick (see MapSessionAt).
 	var disc *model.DiscState
 	if tickDisc != nil {
 		d := *tickDisc
+		d.Attachment = tickDisc.Attachment.Clone()
+		if tickDisc.BounceCount != nil {
+			count := *tickDisc.BounceCount
+			d.BounceCount = &count
+		}
 		disc = &d
 	}
 
@@ -641,7 +708,13 @@ func (m *Mapper) mapPlayer(
 
 	// CONFIRMED: per-player ping exists in Echo VR API
 	pingMs := float64(p.Ping) // int ms to float64
-	reportedVelocity := model.Vec3(p.Velocity)
+	var reportedVelocity *model.Vec3
+	if p.hasVelocity() {
+		value := model.Vec3(p.Velocity)
+		reportedVelocity = &value
+	} else {
+		warnings = m.appendWarningOnce(warnings, "player_velocity_unavailable", "player velocity is absent/null/incomplete; reported velocity omitted rather than manufacturing stationary motion")
+	}
 
 	// Map game phase
 	gamePhase := mapGamePhase(session.GameStatus)
@@ -655,35 +728,43 @@ func (m *Mapper) mapPlayer(
 	stuns := p.Stats.Stuns
 
 	frame := &model.PlayerTelemetryFrame{
-		PlayerID:          pid,
-		Team:              team,
-		FrameIndex:        frameIdx,
-		Timestamp:         timestamp,
-		DeltaTime:         dt,
-		Position:          pos,
-		Rotation:          bodyRot,
-		ReportedVelocity:  &reportedVelocity,
-		LeftHandPosition:  leftHandPos,
-		RightHandPosition: rightHandPos,
-		LeftHandRotation:  leftHandRot,
-		RightHandRotation: rightHandRot,
-		IsStunned:         isStunned,
-		IsBoosting:        isBoosting,
-		ShieldActive:      shieldActive,
-		IsImmune:          isImmune,
-		HasPossession:     hasPossession,
-		Disc:              disc,
-		EstimatedPingMs:   pingMs,
-		GamePhase:         gamePhase,
-		HasScore:          true,
-		BlueScore:         blueScore,
-		OrangeScore:       orangeScore,
-		Goals:             goals,
-		Stuns:             stuns,
+		Observation:            m.observation(session, frameIdx, timestamp),
+		HeldItems:              handAttachments(p),
+		IsBoostingKnown:        new(bool),
+		PlayerID:               pid,
+		Team:                   team,
+		FrameIndex:             frameIdx,
+		Timestamp:              timestamp,
+		DeltaTime:              dt,
+		Position:               pos,
+		HeadPosition:           headPosition,
+		Rotation:               bodyRot,
+		ReportedVelocity:       reportedVelocity,
+		LeftHandPosition:       leftHandPos,
+		RightHandPosition:      rightHandPos,
+		LeftHandRotation:       leftHandRot,
+		RightHandRotation:      rightHandRot,
+		LeftHandRotationValid:  &leftHandRotationValid,
+		RightHandRotationValid: &rightHandRotationValid,
+		IsStunned:              isStunned,
+		IsBoosting:             isBoosting,
+		ShieldActive:           shieldActive,
+		IsImmune:               isImmune,
+		HasPossession:          hasPossession,
+		Disc:                   disc,
+		EstimatedPingMs:        pingMs,
+		GamePhase:              gamePhase,
+		HasScore:               true,
+		BlueScore:              blueScore,
+		OrangeScore:            orangeScore,
+		Goals:                  goals,
+		Stuns:                  stuns,
 	}
-	if reportedThrow != nil && session.ClientName != "" && p.Name == session.ClientName {
+	if reportedThrow != nil && m.throwClientID != "" && pid == m.throwClientID {
 		details := *reportedThrow
 		frame.GameLastThrow = &details
+		frame.GameLastThrowProvenance = frame.Observation.Clone()
+		frame.GameLastThrowProvenance.Freshness = "value_change"
 	}
 
 	return frame, warnings, nil
@@ -718,26 +799,32 @@ func (m *Mapper) convertBasis(forward, left, up [3]float64) (model.Quat, model.B
 }
 
 // convertHand maps a hand's direction vectors to a quaternion. All three
-// vectors are required; otherwise tracking is considered lost and the zero
-// quaternion is returned.
-func (m *Mapper) convertHand(h *EchoVRHand, warnings *[]MappingWarning, field, warnKey string) model.Quat {
-	if isZeroVec(h.Forward) || isZeroVec(h.Up) || isZeroVec(h.Left) {
+// vectors are required, finite and orthonormal within the conversion tolerance.
+// Reflected Echo conventions remain valid; a repaired or missing basis does not
+// become an observed wrist orientation merely because it produces a unit value.
+func (m *Mapper) convertHand(h *EchoVRHand, warnings *[]MappingWarning, field, warnKey string) (model.Quat, bool) {
+	invalid := false
+	for _, raw := range [][3]float64{h.Forward, h.Up, h.Left} {
+		v := model.Vec3(raw)
+		invalid = invalid || v.IsZero() || v.HasNaN() || v.HasInf()
+	}
+	if invalid {
 		m.stats.HandTrackingLost++
 		if !m.warnedFields[warnKey] {
 			m.warnedFields[warnKey] = true
 			*warnings = append(*warnings, MappingWarning{
 				Field:   field,
-				Message: "hand direction vectors are zero (tracking lost); emitting zero quaternion so BIO_001/BIO_004 skip the frame.",
+				Message: "hand direction vectors are missing or non-finite; emitting unavailable wrist orientation so BIO_001/BIO_004 skip the frame.",
 			})
 		}
-		return model.Quat{}
+		return model.Quat{}, false
 	}
 	q, quality := m.convertBasis(h.Forward, h.Left, h.Up)
-	if quality.Degenerate() {
+	if quality.Degenerate() || quality.NonOrthonormal() || !q.IsUnit() {
 		m.stats.HandTrackingLost++
-		return model.Quat{}
+		return model.Quat{}, false
 	}
-	return q
+	return q, true
 }
 
 // PlayerIDOf is the player id the mapper keys everything by ("echovr:<userid>",

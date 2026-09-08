@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
+	"time"
+)
 
 // DefaultConfig returns a fully populated Config with conservative defaults.
 // It is byte-for-byte the same configuration as configs/default.toml
@@ -10,6 +13,7 @@ import "time"
 // detector is promoted to scored review mode.
 func DefaultConfig() *Config {
 	return &Config{
+		ProjectRules: model.DefaultProjectRules(),
 		General: GeneralConfig{
 			LogLevel:   "info",
 			LogFormat:  "json",
@@ -103,10 +107,8 @@ func defaultDetectors() map[string]DetectorConfig {
 		"THROW_004": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{
 			"min_throws": 12, "min_generalized_variance": 1e-8,
 		}},
-		"THROW_005": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
-			"max_mean_deviation": 2.0, "max_stddev_deviation": 1.5, "min_throws_for_pattern": 8,
-		}},
-		"THROW_006": {Enabled: true, EnforcementWeight: 0.8, Mode: "shadow", Params: map[string]any{
+		"THROW_005": {Enabled: true, EnforcementWeight: 0.0, Mode: "shadow", Params: map[string]any{}},
+		"THROW_006": {Enabled: true, EnforcementWeight: 0.0, Mode: "shadow", Params: map[string]any{
 			"min_trajectory_change": 8.0, "post_release_frames": 15, "min_distance_from_thrower": 2.0,
 			"max_cumulative_change": 130.0,
 		}},
@@ -164,10 +166,7 @@ func defaultDetectors() map[string]DetectorConfig {
 			"min_playspace_speed": 1.0, "min_playspace_distance": 0.55, "min_rig_coherence": 0.65,
 			"min_observed_pose_speed": 0.35, "min_sustained_frames": 5, "min_sustained_seconds": 0.3, "max_ping_ms": 150.0,
 		}},
-		"STATE_001": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
-			"grab_distance_threshold": 3.0, "closing_velocity_scale": 0.25, "desync_margin": 3.0,
-			"sigmoid_steepness": 2.0,
-		}},
+		"STATE_001": {Enabled: true, EnforcementWeight: 0.0, Mode: "shadow", Params: map[string]any{}},
 		"STATE_002": {Enabled: true, EnforcementWeight: 0.7, Mode: "shadow", Params: map[string]any{
 			"min_stun_frames": 20, "min_stun_seconds": 0.0, "min_incidents": 2, "sigmoid_steepness": 0.2,
 		}},
@@ -189,6 +188,15 @@ func defaultDetectors() map[string]DetectorConfig {
 		"STATE_007": {Enabled: false, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
 			"punch_range_threshold": 10.0, "velocity_adjust_scale": 0.15, "min_incidents": 3,
 			"sigmoid_steepness": 1.0, "attribution_window_frames": 2, "max_range": 25.0,
+		}},
+		// OBSERVATION_ONLY: pre-catch trajectory review has no validated cheat signature.
+		"STATE_008": {Enabled: true, EnforcementWeight: 0.0, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
+			"baseline_samples": 4, "min_correction_samples": 2, "max_sample_gap_s": 0.12,
+			"baseline_duration_s": 0.20, "min_correction_duration_s": 0.12,
+			"min_turn_rate_deg_s": 60.0, "max_turn_rate_deg_s": 300.0,
+			"max_window_s": 1.5, "max_step_error_m": 0.20, "min_lateral_deviation_m": 0.30,
+			"contact_margin_m": 0.65, "contact_accel_allowance_mps2": 30.0,
+			"min_miss_improvement_m": 0.50, "max_catch_approach_m": 1.5, "regrab_grace_s": 0.35,
 		}},
 		// UNSAFE: regrab rhythm produces low CoV naturally.
 		"PAT_001": {Enabled: false, EnforcementWeight: 0.6, Mode: "shadow", Params: map[string]any{

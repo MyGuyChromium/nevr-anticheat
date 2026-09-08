@@ -32,42 +32,9 @@ func players(ps ...*model.PlayerState) map[string]*model.PlayerState {
 	return m
 }
 
-// ---- STATE_001 ----
-
-func grabAt(d *State001, dist, speed float64) []model.DetectionEvent {
-	mc := ctx()
-	p0 := active("p1", 10)
-	d.Evaluate(mc, players(p0), 10)
-	p1 := active("p1", 11)
-	p1.HasDisc = true
-	p1.Speed = speed
-	p1.CurrentDisc = &model.DiscState{Position: p1.RightHand.Add(model.Vec3{dist, 0, 0})}
-	return d.Evaluate(mc, players(p1), 11)
-}
-
-func TestState001_FastPlayersAreNotExempt(t *testing.T) {
-	// closing_velocity_scale = 0 exercises the one-frame (FrameDt) credit;
-	// the shipped 0.25 s would credit 3 m at 12 m/s and legitimately absorb
-	// a 5.9 m grab.
-	frameDt := map[string]any{"closing_velocity_scale": 0.0}
-	if ev := grabAt(NewState001(frameDt), 5.9, 0); len(ev) != 1 {
-		t.Fatalf("5.9 m grab at rest must fire, got %d", len(ev))
-	}
-	ev := grabAt(NewState001(frameDt), 5.9, 12)
-	if len(ev) != 1 {
-		t.Fatalf("5.9 m grab at 12 m/s must still fire (window must not close), got %d", len(ev))
-	}
-	m := ev[0].Evidence.(model.StateEvidence).Metrics
-	if m["closing_credit_m"] > 1.0 {
-		t.Errorf("one frame of latency at 12 m/s should credit ~0.8 m, got %.2f", m["closing_credit_m"])
-	}
-	if ev := grabAt(NewState001(nil), 1.0, 20); len(ev) != 0 {
-		t.Fatalf("1 m grab is legitimate, got %d events", len(ev))
-	}
-	if ev := grabAt(NewState001(nil), 9.0, 0); len(ev) != 0 {
-		t.Fatalf("9 m raw distance at rest is a desync artifact, got %d events", len(ev))
-	}
-}
+// STATE_001's former 3 m/latency-credit heuristic was removed. Its exact
+// project-rule and diagnostic-only regressions live in state_001_test.go and
+// internal/mechanics/grab_test.go; a 1 m sample is not asserted legal here.
 
 // ---- STATE_002 ----
 

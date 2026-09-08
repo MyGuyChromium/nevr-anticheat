@@ -27,6 +27,7 @@ type Mov004 struct {
 	preBoostSpeed   map[string]float64 // speed on the last non-boosting frame
 	boostStartFrame map[string]int
 	baselineSpeed   map[string]float64 // pre-boost speed captured at the boost start
+	observations    map[string]*boostSample
 }
 
 // NewMov004 creates a new MOV_004 Boost Speed Cap detector.
@@ -34,13 +35,14 @@ func NewMov004(params map[string]any) *Mov004 {
 	d := &Mov004{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_004",
-			DetectorVersion:  "2.1.0",
+			DetectorVersion:  "2.2.0",
 			DetectorName:     "Boost Speed Cap Violation",
 			DetectorCategory: "movement",
 			Inputs:           []string{"speed", "boosting"},
 			Warmup:           5,
 			Weight:           0.7,
 			IsAutoEnforce:    false,
+			TraceBranches:    true,
 		},
 		boostCapMargin:   detect.GetFloatAlias(params, 1.5, "boost_cap_margin", "boost_margin"),
 		sigmoidSteepness: detect.GetFloat(params, "sigmoid_steepness", 0.8),
@@ -55,6 +57,16 @@ func (d *Mov004) Reset() {
 	d.preBoostSpeed = make(map[string]float64)
 	d.boostStartFrame = make(map[string]int)
 	d.baselineSpeed = make(map[string]float64)
+	d.observations = make(map[string]*boostSample)
+}
+
+func (d *Mov004) clearBoost(pid string) {
+	delete(d.wasBoosting, pid)
+	delete(d.peakSpeed, pid)
+	delete(d.preBoostSpeed, pid)
+	delete(d.boostStartFrame, pid)
+	delete(d.baselineSpeed, pid)
+	delete(d.observations, pid)
 }
 
 func (d *Mov004) Configure(params map[string]any) error {
@@ -74,13 +86,30 @@ func (d *Mov004) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
+		current := readBoostSample(ps, frameIdx)
+		if current == nil {
+			d.clearBoost(pid)
+			d.TraceDecision(pid, frameIdx, "boost_input_unavailable")
+			continue
+		}
+		if !continuousBoostSample(d.observations[pid], current, ps.FrameDt) {
+			d.clearBoost(pid)
+			d.observations[pid] = current
+			if !ps.IsBoosting {
+				d.preBoostSpeed[pid] = ps.Speed
+			}
+			d.TraceDecision(pid, frameIdx, "boost_baseline_unavailable")
+			continue
+		}
+		d.observations[pid] = current
 
 		if ps.IsBoosting {
 			if !d.wasBoosting[pid] {
 				d.boostStartFrame[pid] = frameIdx
 				base, ok := d.preBoostSpeed[pid]
 				if !ok {
-					base = ps.Speed
+					d.TraceDecision(pid, frameIdx, "boost_baseline_unavailable")
+					continue
 				}
 				d.baselineSpeed[pid] = base
 				d.peakSpeed[pid] = 0

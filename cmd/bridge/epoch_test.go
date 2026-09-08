@@ -7,6 +7,25 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
+func TestFrameEpochRestampsObservationWithoutAliasing(t *testing.T) {
+	e := &frameEpoch{}
+	o := &model.ObservationContext{Source: "echovr_http", SourceID: "endpoint", Authority: "client_reported", TimeBasis: "http_response_body_received", SessionID: "m", SourcePlayerID: "p", FrameIndex: 99, Timestamp: 7, Freshness: "sampled_snapshot"}
+	throw := o.Clone()
+	throw.Freshness = "value_change"
+	frames := []model.PlayerTelemetryFrame{{PlayerID: "p", Observation: o, GameLastThrowProvenance: throw}}
+	e.stamp(time.Unix(1000, 0), frames)
+	f := frames[0]
+	if !f.GameLastThrowProvenance.BoundLocalThrow("p", f.FrameIndex, f.Timestamp) || !f.Observation.SameSource(f.GameLastThrowProvenance) {
+		t.Fatal("restamping lost local binding")
+	}
+	if o.FrameIndex != 99 || o.Timestamp != 7 || throw.FrameIndex != 99 || throw.Timestamp != 7 {
+		t.Fatal("epoch mutated mapper observation")
+	}
+	if f.Observation.TimeBasis != "http_response_body_received" || f.Observation.Authority != "client_reported" {
+		t.Fatal("restamping invented time/authority")
+	}
+}
+
 func TestFrameEpoch_StampsMonotonicIndexAndRealTime(t *testing.T) {
 	e := &frameEpoch{}
 	t0 := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)

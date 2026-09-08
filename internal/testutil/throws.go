@@ -125,6 +125,11 @@ func (fb *FrameBuilder) ThrowSequence(specs []ThrowSpec) []model.PlayerTelemetry
 		}
 		f.LeftHandPosition = restL.Add(tuck).Add(deterministicJitter3(fi, 11, humanHandJitter))
 		d := disc
+		d.Attachment = &model.DiscAttachment{State: "free"}
+		if has {
+			d.IsHeld, d.PossessorID = true, f.PlayerID
+			d.Attachment = &model.DiscAttachment{State: "held", HolderID: f.PlayerID, HandCandidates: []string{"left", "right"}}
+		}
 		f.Disc = &d
 		frames = append(frames, f)
 		fi++
@@ -336,9 +341,9 @@ func (fb *FrameBuilder) NearCapThrows(nThrows int) []model.PlayerTelemetryFrame 
 	return fb.ThrowSequence(specs)
 }
 
-// PrecisionAimbot generates sub-cap throws that land 0.3-0.5 degrees off
-// the goal every time. THROW_005 fires on the 8th goal-directed throw
-// (mean < 2 deg, stddev < 1.5 deg).
+// PrecisionAimbot is a historical fixture name for sub-cap throws directed
+// 0.3-0.5 degrees from the reported goal. It does not establish made goals or
+// cheating: THROW_005 retains supporting diagnostics without scored output.
 func (fb *FrameBuilder) PrecisionAimbot(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {
@@ -353,15 +358,15 @@ func (fb *FrameBuilder) PrecisionAimbot(nThrows int) []model.PlayerTelemetryFram
 }
 
 // MagnetismBendDegPerFrame is the homing bend of MagnetismCheat: above
-// THROW_006's 8 deg/frame violation threshold and below its 15 deg/frame
-// elastic-bounce filter.
+// THROW_006's provisional 8 deg/sample bend filter and below its 15 deg/sample
+// possible-contact filter. Neither is a verified engine bound.
 const MagnetismBendDegPerFrame = 10.0
 
 // MagnetismCheat generates throws released 120 degrees away from the goal
-// whose disc homes onto the goal at MagnetismBendDegPerFrame with constant
-// speed: a magnetism cheat. Over the 15 tracked frames the disc bends ~100
-// degrees in >= 5 violation frames and its goal alignment improves from ~0
-// to 1, which passes THROW_006's alignment gate at production thresholds.
+// whose disc curves toward the goal at MagnetismBendDegPerFrame with constant
+// speed. The historical fixture name is not ground truth for a cheat mechanism.
+// THROW_006 records bounded free-flight diagnostics, never a goal-alignment
+// violation; the old best-of-two-goals scoring gate has been removed.
 func (fb *FrameBuilder) MagnetismCheat(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {
@@ -426,13 +431,14 @@ func (fb *FrameBuilder) MacroThrows(nThrows int) []model.PlayerTelemetryFrame {
 }
 
 // ImpossibleGrabDistance is the hand-to-disc distance ImpossibleGrabs uses
-// on the possession-gain frame: over STATE_001's 3 m threshold and under
-// its 6 m desync guard (threshold + zero closing credit + 3 m margin).
+// on the possession-gain frame. STATE_001 no longer uses the former 3 m
+// threshold/latency credit: sampled geometry is explicitly unverified.
 const ImpossibleGrabDistance = 4.5
 
 // ImpossibleGrabs generates normal throws whose every grab happens with the
-// disc ImpossibleGrabDistance metres from the nearest hand. STATE_001
-// fires on each possession gain.
+// disc ImpossibleGrabDistance metres from the nearest hand. The historical
+// fixture name is not a verified grab violation. STATE_001 records only
+// witnessed free-to-held transitions as inconclusive geometry reviews.
 func (fb *FrameBuilder) ImpossibleGrabs(nThrows int) []model.PlayerTelemetryFrame {
 	specs := make([]ThrowSpec, nThrows)
 	for t := range specs {

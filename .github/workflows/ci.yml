@@ -30,7 +30,7 @@ jobs:
         run: go vet ./...
 
       - name: Desktop assessment rendering regression tests
-        run: node --test scripts/desktop-review.test.cjs
+        run: node --test scripts/desktop-review.test.cjs scripts/autopocket-review.test.cjs
 
       - name: Release gate policy regressions
         run: node --test scripts/release-gate.test.cjs

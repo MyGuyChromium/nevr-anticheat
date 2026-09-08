@@ -280,3 +280,45 @@ test('modal status messages are visible inside the active modal and never interp
   assert.equal(nodes['lab-dialog-status'].className,'status err');
   assert.equal(nodes['lab-dialog-status'].innerHTML,undefined);
 });
+
+function mechanicsFixture() {
+  return { version:1,total:4,consistent:1,inconclusive:1,anomaly:1,validated_violation:1,records:
+    ['consistent','inconclusive','anomaly','validated_violation'].map((result,i)=>({result,kind:['grab_geometry_violation','shot_targeting_anomaly','throw_physics_violation','settings_integrity_violation'][i],frame_index:10+i,interval_start:1,interval_end:1.1,event_id:'same-release',rule_version:'owner-test',reason:'required_input_unavailable',raw_samples:[{frame_index:10,disc_position:[1,2,3]}],limitations:['Unknown build'],metrics:{legal_limit_m:.25}})) };
+}
+
+test('mechanics reports show precise outcomes and raw inputs without becoming score or cheating counts',()=>{
+  const render=ui(),m=fixture(),p=m.players[0],log=mechanicsFixture();
+  const html=render.mechanicsReviewDetails(m,p,{mechanics_review:log});
+  for(const phrase of ['4 assessed transitions','do not score','not independent cheating incidents','Disc grab geometry (mags)','Inconclusive','Rule','same-release','Open in Spark','data-replay-frame="10"','data-physics-frame="13"','legal_limit_m','Unknown build','verified_engine_build']) assert.ok(html.includes(phrase),phrase);
+  assert.doesNotMatch(html,/NaN|Infinity|undefined/);
+  render.blindReview=true;assert.equal(render.mechanicsReviewDetails(m,p,{mechanics_review:log}),'');
+});
+
+test('mechanics diagnostics remain accessible in a zero-signal detector filter',()=>{
+  const render=ui(),m=fixture(),p=m.players[0];
+  p.coverage.detectors.push({detector_id:'STATE_001',status:'limited',enabled:true,mechanics_review:mechanicsFixture()});
+  const html=render.playersTable(m,'STATE_001');
+  assert.match(html,/A spectator-independent fair reference|Explain checks/);
+  assert.doesNotMatch(html,/review needed/);
+  assert.match(render.decisionTraceDetails(m,p,'STATE_001'),/Mechanics assessments|same-release/);
+});
+
+test('mechanics diagnostics cap evidence and escape untrusted input',()=>{
+  const render=ui(),m=fixture(),log=mechanicsFixture();
+  log.records=Array.from({length:300},(_,i)=>({...log.records[0],frame_index:i}));log.dropped=172;
+  log.records[0]={...log.records[0],frame_index:'1" onclick="bad()',reason:'<img src=x>',metrics:{nan:NaN,bad:Infinity},raw_samples:[{attachment:'<script>bad()</script>'}]};
+  const html=render.mechanicsReviewDetails(m,m.players[0],{mechanics_review:log});
+  assert.equal((html.match(/data-replay-frame=/g)||[]).length,127);
+  assert.match(html,/172 evidence records omitted|&lt;script|&lt;img/);
+  assert.doesNotMatch(html,/<img|<script|onclick=|NaN|Infinity/);
+  assert.equal(render.mechanicsReviewDetails(m,m.players[0],{}),'');
+});
+
+test('mechanics raw evidence preserves full trajectory windows within the storage cap',()=>{
+  const render=ui(),m=fixture(),log=mechanicsFixture();
+  log.records=[log.records[0]];
+  log.records[0].raw_samples=Array.from({length:130},(_,i)=>({frame_index:i,sample_role:`flight-evidence-${i}-end`}));
+  const html=render.mechanicsReviewDetails(m,m.players[0],{mechanics_review:log});
+  for(const i of [0,8,50,120,127]) assert.ok(html.includes(`flight-evidence-${i}-end`));
+  assert.doesNotMatch(html,/flight-evidence-12[89]-end/);
+});

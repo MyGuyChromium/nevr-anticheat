@@ -224,26 +224,47 @@ func TestCheat_Teleport_SlowCadence_Detected(t *testing.T) {
 }
 
 func TestCheat_Aimbot_Detected(t *testing.T) {
-	hr := runOnly(t, player1().AimbotThrows(8), "THROW_001", "THROW_003", "THROW_005")
+	hr := runOnly(t, mechanicsObservedFrames(player1().AimbotThrows(8)), "THROW_001", "THROW_003", "THROW_005")
 	hr.AssertDetectorFiredN("THROW_001", 8)
 	hr.AssertMinSeverity("THROW_001", 0.99)
-	// The releases are aimed 1 degree off the goal: THROW_005 fires on the
-	// 8th goal-directed throw (mean deviation < 2, stddev < 1.5).
-	hr.AssertDetectorFiredN("THROW_005", 1)
+	// Over-cap speed and precision are separate claims. All eight precise
+	// releases retain supporting diagnostics; precision never adds a score.
+	hr.AssertDetectorNotFired("THROW_005")
+	var review *model.MechanicsReviewLog
+	for _, d := range hr.Result.PlayerCoverage["player1"].Detectors {
+		if d.DetectorID == "THROW_005" {
+			review = d.MechanicsReview
+		}
+	}
+	if review == nil || review.Total != 8 || review.Inconclusive != 8 || review.Records[7].Metrics["observed_release_count"] != 8 {
+		t.Fatalf("precise releases lost diagnostic context: %+v", review)
+	}
+	if hr.PlayerScores["player1"].ScoreByDetector["THROW_005"] != 0 {
+		t.Fatal("accuracy contributed to score")
+	}
 	// The hand moves along the disc's path, so the release angle is small.
 	hr.AssertDetectorNotFired("THROW_003")
 }
 
 func TestCheat_Magnetism_Detected(t *testing.T) {
-	// Production thresholds, no overrides. The attacked goal must be known
-	// (production learns it from the first scored goal): with it the disc's
-	// alignment with the goal improves from ~0 to 1 over the tracked flight.
+	// The historical generator name does not verify a mechanism. Production
+	// filters retain bounded free-flight diagnostics without scored output or
+	// a guessed goal-alignment rule, whether or not a goal side is configured.
 	hr := testutil.NewHarness(t).WithDetectors("THROW_006").WithBlueGoalSide(1).
 		WithMatchContext(matchContextForPlayer("player1")).
-		Run(t, player1().MagnetismCheat(4))
-	hr.AssertDetectorFiredN("THROW_006", 4)
-	hr.AssertMinSeverity("THROW_006", 0.9)
-	hr.AssertMinConfidence("THROW_006", 0.9)
+		Run(t, mechanicsObservedFrames(player1().MagnetismCheat(4)))
+	review := assertMechanicsOnly(t, hr, "THROW_006")
+	if review.Total != 4 {
+		t.Fatalf("flight diagnostics: %+v", review)
+	}
+	for _, record := range review.Records {
+		if record.Kind != model.MechanicsThrowPhysics || record.Result == model.MechanicsValidatedViolation {
+			t.Fatalf("unverified trajectory became violation: %+v", record)
+		}
+		if _, ok := record.Metrics["alignment_improvement"]; ok {
+			t.Fatal("unverified goal model contributed")
+		}
+	}
 }
 
 func TestCheat_StunBypass_Detected(t *testing.T) {
@@ -286,13 +307,27 @@ func TestCheat_ExtendedReach_Detected(t *testing.T) {
 // ============================================================================
 
 func TestScoring_MultipleCheatTypes_HighScore(t *testing.T) {
-	// Movement (MOV_001), state (STATE_001) and throw (THROW_001) evidence
-	// on one player: three categories reach PAT_004 and the review tier.
-	hr := runEnabled(t, player1().CompositeCheater())
+	// Independent movement, hand-speed and over-cap release events provide
+	// three scored categories. Unverified grab geometry must not contribute
+	// to either the score or PAT_004's category count.
+	hr := runEnabled(t, mechanicsObservedFrames(player1().CompositeCheater()))
 	hr.AssertDetectorFired("MOV_001")
-	hr.AssertDetectorFired("STATE_001")
+	hr.AssertDetectorFired("BIO_002")
+	hr.AssertDetectorNotFired("STATE_001")
 	hr.AssertDetectorFired("THROW_001")
 	hr.AssertDetectorFiredN("PAT_004", 1)
+	if hr.PlayerScores["player1"].ScoreByDetector["STATE_001"] != 0 || hr.PlayerScores["player1"].ScoreByCategory["state"] != 0 {
+		t.Fatal("unverified grab diagnostics contributed to composite scoring")
+	}
+	var grabs *model.MechanicsReviewLog
+	for _, d := range hr.Result.PlayerCoverage["player1"].Detectors {
+		if d.DetectorID == "STATE_001" {
+			grabs = d.MechanicsReview
+		}
+	}
+	if grabs == nil || grabs.Total == 0 || grabs.Inconclusive != grabs.Total {
+		t.Fatalf("grab context lost or upgraded: %+v", grabs)
+	}
 	levels := testutil.NewHarness(t).Config().Scoring.LevelTable()
 	hr.AssertScoreAbove("player1", levels.HighRisk)
 }

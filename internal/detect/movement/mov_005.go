@@ -39,6 +39,7 @@ type Mov005 struct {
 	consecutiveBoosts map[string]int
 	lastBoostEndFrame map[string]int // -1 until the first boost ends
 	sequenceCount     map[string]int
+	observations      map[string]*boostSample
 }
 
 // NewMov005 creates a new MOV_005 Boost Spam detector.
@@ -46,13 +47,14 @@ func NewMov005(params map[string]any) *Mov005 {
 	d := &Mov005{
 		BaseDetector: detect.BaseDetector{
 			DetectorID:       "MOV_005",
-			DetectorVersion:  "2.1.0",
+			DetectorVersion:  "2.2.0",
 			DetectorName:     "Boost Spam",
 			DetectorCategory: "movement",
 			Inputs:           []string{"boosting", "speed"},
 			Warmup:           10,
 			Weight:           0.6,
 			IsAutoEnforce:    false,
+			TraceBranches:    true,
 		},
 		windowSeconds:       detect.GetFloat(params, "window_seconds", 10.0),
 		maxBoostsPerWindow:  detect.GetIntAlias(params, 25, "max_boosts_per_window", "max_boosts_per_10s"),
@@ -71,6 +73,16 @@ func (d *Mov005) Reset() {
 	d.consecutiveBoosts = make(map[string]int)
 	d.lastBoostEndFrame = make(map[string]int)
 	d.sequenceCount = make(map[string]int)
+	d.observations = make(map[string]*boostSample)
+}
+
+func (d *Mov005) clearBoost(pid string) {
+	delete(d.boostTimestamps, pid)
+	delete(d.wasBoosting, pid)
+	delete(d.consecutiveBoosts, pid)
+	delete(d.lastBoostEndFrame, pid)
+	delete(d.sequenceCount, pid)
+	delete(d.observations, pid)
 }
 
 func (d *Mov005) Configure(params map[string]any) error {
@@ -88,6 +100,20 @@ func (d *Mov005) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 
 	for _, ps := range detect.ActivePlayers(players, frameIdx) {
 		pid := ps.PlayerID
+		current := readBoostSample(ps, frameIdx)
+		if current == nil {
+			d.clearBoost(pid)
+			d.TraceDecision(pid, frameIdx, "boost_input_unavailable")
+			continue
+		}
+		if !continuousBoostSample(d.observations[pid], current, ps.FrameDt) {
+			d.clearBoost(pid)
+			d.observations[pid] = current
+			d.wasBoosting[pid] = ps.IsBoosting
+			d.TraceDecision(pid, frameIdx, "boost_baseline_unavailable")
+			continue
+		}
+		d.observations[pid] = current
 		wasBoosting := d.wasBoosting[pid]
 		d.wasBoosting[pid] = ps.IsBoosting
 		lastEnd, hasEnd := d.lastBoostEndFrame[pid]
@@ -99,7 +125,7 @@ func (d *Mov005) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 				d.boostTimestamps[pid] = append(d.boostTimestamps[pid], ps.LastTimestamp)
 			}
 		} else {
-			if wasBoosting {
+			if wasBoosting && d.consecutiveBoosts[pid] > 0 {
 				// Falling edge: the boost ended on this frame.
 				d.lastBoostEndFrame[pid] = frameIdx
 				lastEnd, hasEnd = frameIdx, true

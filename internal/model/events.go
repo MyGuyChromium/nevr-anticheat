@@ -2,8 +2,8 @@ package model
 
 // Goal selection labels recorded in ThrowEvent.GoalSelection. Only
 // GoalSelectionTeam means the attacked goal is actually known; the other two
-// are guesses from the release geometry, and detectors that judge a flight
-// against a goal (THROW_006) treat them as "side unknown".
+// are guesses from the release geometry, not verified scoring-region geometry.
+// Free-flight review (THROW_006) does not use a goal model.
 const (
 	GoalSelectionTeam    = "team"    // goal the thrower's team attacks (configured or learned)
 	GoalSelectionAngular = "angular" // goal the release velocity points at most closely
@@ -12,8 +12,13 @@ const (
 
 // ThrowEvent represents a detected throw (disc release from a player).
 type ThrowEvent struct {
-	ThrowerID   string           `json:"thrower_id"`
-	Attribution ThrowAttribution `json:"attribution"`
+	ObservedFrameIndex      *int                `json:"observed_frame_index,omitempty"`
+	ReleaseWindow           *ReleaseObservation `json:"release_window,omitempty"`
+	GameLastThrowProvenance *ObservationContext `json:"game_last_throw_provenance,omitempty"`
+	WristOrientationValid   bool                `json:"wrist_orientation_valid"`
+	WristKinematicsValid    bool                `json:"wrist_kinematics_valid"`
+	ThrowerID               string              `json:"thrower_id"`
+	Attribution             ThrowAttribution    `json:"attribution"`
 
 	FrameIndex int     `json:"frame_index"`
 	Timestamp  float64 `json:"timestamp"`
@@ -22,11 +27,11 @@ type ThrowEvent struct {
 	ReleaseVelocity Vec3    `json:"release_velocity"`
 	ReleaseSpeed    float64 `json:"release_speed"`
 	// SampledDiscSpeed is the magnitude reported on the disc snapshot at
-	// release. ReleaseSpeed uses the higher of this sample and the engine's
-	// last_throw.total_speed; both are retained so reviewers can compare them.
+	// first-free observation. A bound local last_throw.total_speed remains
+	// separate; choosing the larger number would not establish launch authority.
 	SampledDiscSpeed float64 `json:"sampled_disc_speed,omitempty"`
-	// GameLastThrow is the engine-authored component breakdown when this is a
-	// local-client throw and the source supplies Echo VR's last_throw object.
+	// GameLastThrow is a changed local-client component report bound to this
+	// sample. Its provenance does not establish exact capture time or authority.
 	GameLastThrow *GameThrowDetails `json:"game_last_throw,omitempty"`
 
 	ThrowingHand string  `json:"throwing_hand"` // "left", "right", "unknown"
@@ -88,6 +93,18 @@ type ThrowEvent struct {
 	PreReleaseFrames []ThrowFrameSnapshot `json:"pre_release_frames,omitempty"`
 }
 
+// ObservedAt separates a sampled release's original causal frame from the
+// later frame on which sufficient confirmation made it available to consumers.
+func (t *ThrowEvent) ObservedAt(frame int) bool {
+	if t == nil {
+		return false
+	}
+	if t.ObservedFrameIndex != nil {
+		return *t.ObservedFrameIndex == frame
+	}
+	return t.FrameIndex == frame
+}
+
 // ThrowAttribution holds the result of thrower identification.
 type ThrowAttribution struct {
 	PlayerID      string  `json:"player_id"`
@@ -99,14 +116,15 @@ type ThrowAttribution struct {
 // ThrowFrameSnapshot captures hand and disc state for a single frame near a throw event.
 // Hand fields refer to the throwing hand.
 type ThrowFrameSnapshot struct {
-	FrameIndex     int     `json:"frame_index"`
-	Timestamp      float64 `json:"timestamp"`
-	HandPosition   Vec3    `json:"hand_position"`
-	HandVelocity   Vec3    `json:"hand_velocity"`
-	HandRotation   Quat    `json:"hand_rotation"`
-	DiscPosition   Vec3    `json:"disc_position"`
-	DiscVelocity   Vec3    `json:"disc_velocity"`
-	PlayerPosition Vec3    `json:"player_position"`
+	FrameIndex        int     `json:"frame_index"`
+	Timestamp         float64 `json:"timestamp"`
+	HandPosition      Vec3    `json:"hand_position"`
+	HandVelocity      Vec3    `json:"hand_velocity"`
+	HandRotation      Quat    `json:"hand_rotation"`
+	HandRotationValid bool    `json:"hand_rotation_valid"`
+	DiscPosition      Vec3    `json:"disc_position"`
+	DiscVelocity      Vec3    `json:"disc_velocity"`
+	PlayerPosition    Vec3    `json:"player_position"`
 	// DiscMissing is true when the source frame carried no disc state; the
 	// disc fields are then zero placeholders, not observations.
 	DiscMissing bool `json:"disc_missing,omitempty"`

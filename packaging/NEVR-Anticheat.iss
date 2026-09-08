@@ -75,6 +75,10 @@ ButtonNext=&Install
 FinishedHeadingLabel=NEVR-Anticheat is ready
 FinishedLabel=Installation is complete. NEVR can launch now.
 
+[Dirs]
+; SQLite needs this parent before the first launch. Evidence survives uninstall.
+Name: "{localappdata}\NEVR-Anticheat"; Flags: uninsneveruninstall
+
 [Files]
 Source: "{#SourceDir}\nevr-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\nevr-ac.exe"; DestDir: "{app}"; Flags: ignoreversion

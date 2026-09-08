@@ -67,6 +67,13 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			d.TraceDecision(pid, frameIdx, "release_hand_unavailable")
 			continue
 		}
+		if t.HandVelocity.HasNaN() || t.HandVelocity.HasInf() || t.ReleaseVelocity.HasNaN() || t.ReleaseVelocity.HasInf() ||
+			t.PlayerVelocity.HasNaN() || t.PlayerVelocity.HasInf() || t.HandRelativeVelocity.HasNaN() || t.HandRelativeVelocity.HasInf() ||
+			math.IsNaN(t.HandSpeed) || math.IsInf(t.HandSpeed, 0) || math.IsNaN(t.ReleaseSpeed) || math.IsInf(t.ReleaseSpeed, 0) ||
+			math.IsNaN(t.HandRelativeSpeed) || math.IsInf(t.HandRelativeSpeed, 0) || math.IsInf(t.ReleaseAngle, 0) {
+			d.TraceDecision(pid, frameIdx, "release_hand_unavailable")
+			continue
+		}
 		if t.PossibleHeadContact {
 			d.TraceDecision(pid, frameIdx, "possible_head_contact")
 			continue
@@ -98,13 +105,20 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		if t.HandAttributionConfidence > 0 {
 			confidence *= t.HandAttributionConfidence
 		}
+		// This comparison uses sampled world-frame velocities, not controller
+		// forward or a WristAngleOffset setting. Missing orientation therefore
+		// does not invalidate the velocity angle, but must remain explicit in
+		// the optional pose evidence (including legacy identity fallbacks).
+		wristOrientation, wristOrientationValid := model.ObservedHandRotation(t.WristOrientation, &t.WristOrientationValid)
 		ev := d.MakeEvent(matchCtx, pid, frameIdx, t.Timestamp, severity, confidence,
 			model.ReleaseAngleEvidence{
 				ReleaseAngle: t.ReleaseAngle, HandVelocity: t.HandVelocity,
 				HandRelativeVelocity: t.HandRelativeVelocity,
 				DiscVelocity:         t.ReleaseVelocity, HandSpeed: t.HandSpeed,
 				HandRelativeSpeed: t.HandRelativeSpeed,
-				DiscSpeed:         t.ReleaseSpeed, WristOrientation: t.WristOrientation,
+				DiscSpeed:         t.ReleaseSpeed, WristOrientation: wristOrientation,
+				WristOrientationValid:     wristOrientationValid,
+				HandKinematicsValid:       t.HandKinematicsValid,
 				ThrowingHand:              t.ThrowingHand,
 				HandAttributionConfidence: t.HandAttributionConfidence,
 				HandAttributionAnchor:     t.HandAttributionAnchor,

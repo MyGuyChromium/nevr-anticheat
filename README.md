@@ -1,10 +1,12 @@
 # NEVR-Anticheat
 
-Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 30 detectors analyse it there.
+Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR community servers (EchoTools / Nakama). It never runs inside a game server: telemetry is collected into a SQLite profiler database and 31 detectors analyse it there.
 
 **Windows:** [Download NEVR-Anticheat-Setup.exe](https://github.com/MyGuyChromium/nevr-anticheat/releases/download/windows-latest/NEVR-Anticheat-Setup.exe), double-click it, and choose **Install**. No ZIP extraction, command prompt, administrator access, or manual folder selection is required.
 
-**Validation status: 0 of 30 detectors have been validated on labelled real Echo VR telemetry.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
+**Validation status: 0 of 31 detectors have completed representative, independently labelled real-telemetry validation.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
+
+Desktop 0.13.0 adds [grab, release and settings hardening](docs/mechanics_capability_audit.md): explicit hand attachments, confirmed sampled releases, rotation validity, correctly attributed local diagnostics, and bounded mechanics assessments with Spark/physics links. The owner's inclusive **0.25 m disc-grab rule** and **≥19 m/s requires ≥4.7 m/s movement** rule are preserved separately from the existing 18.9 m/s cap; their engine/build validity remains unverified. Accuracy alone is not a cheat finding. Re-import original replays to recover source fields that older normalized caches cannot provide.
 
 **Automatic findings:** the installed app analyzes replays itself; no assistant,
 cloud upload, admission list or player-name rules are needed. Each analyzed match
@@ -22,6 +24,12 @@ Connected-group and legal-context metrics expose gaps in the evaluation data.
 See the [hardening and acceptance record](docs/comprehensive_readiness.md) for
 reliability fixes, verification scope, and the remaining real-world requirements.
 
+**0.11.1 first-launch fix:** Setup creates the per-user evidence directory, and
+desktop startup creates a missing parent for a normal configured database path.
+Windows release checks now launch the actual installed app with its installed
+configuration before preparing preservation-test data. See the
+[first-launch regression record](docs/first_launch_regression.md).
+
 ## Architecture
 
 ```
@@ -38,7 +46,7 @@ OFFLINE PATH
   .echoreplay / legacy JSON replay ──▶ nevr-ac analyze|batch (internal/adapter + internal/replay)
 
 BOTH PATHS
-  SQLite (source of truth) ──▶ feature extraction ──▶ 30 detectors ──▶ per-match scores
+  SQLite (source of truth) ──▶ feature extraction ──▶ 31 detectors ──▶ per-match scores
         ──▶ review cases (single-match RC-*, cross-match XM-*) ──▶ moderator verdicts ──▶ calibration
 ```
 
@@ -244,8 +252,8 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |
 | THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data; skips possible sampled headbutts |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
-| THROW_005 | Superhuman Target Precision | throw | 0.7 | Unverified — needs accuracy data |
-| THROW_006 | Trajectory Correction (Mags) | throw | 0.8 | Physics-grounded |
+| THROW_005 | Shot Targeting Review | throw | 0.0 | Diagnostic only — descriptive release statistics, no accuracy violation |
+| THROW_006 | Free-flight Trajectory Review | throw | 0.0 | Diagnostic only — sampled bend/contact model remains unvalidated |
 | THROW_007 | Penalty Field Tampering | throw | 0.6 | **STUB** — no penalty field telemetry |
 | THROW_008 | Speed-Distance Anomaly | throw | 0.5 | Unverified — needs arena physics data |
 | BIO_001 | Impossible Wrist Rotation | bio | 0.6 | Unverified — rotation convention unconfirmed; unreachable at 15 Hz |
@@ -258,13 +266,14 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | MOV_004 | Boost Speed Cap Violation | movement | 0.5 | Disabled — needs is_boosting field |
 | MOV_005 | Boost Spam | movement | 0.6 | Disabled — needs is_boosting field |
 | MOV_006 | Physical Playspace Walking | movement | 0.75 | EchoTools-grounded translation candidate; shadow-only because legal leans cannot be excluded |
-| STATE_001 | Impossible Grab Distance | state | 0.5 | Unverified — needs grab range data |
+| STATE_001 | Disc Grab Geometry Review | state | 0.0 | Diagnostic only — mags requires verified acquisition geometry and rule |
 | STATE_002 | Stun Recovery Exploit | state | 0.7 | Physics-grounded |
 | STATE_003 | Shield Duration Abuse | state | 0.6 | Disabled — needs shield_active field |
 | STATE_004 | Damage Immunity Exploit | state | 0.8 | Disabled — needs is_immune validation |
 | STATE_005 | Cooldown Bypass | state | 0.6 | Disabled — needs shield_active field |
 | STATE_006 | Score Manipulation | state | 1.0 | **SUSPENDED** — no confirmed invariant |
 | STATE_007 | Impossible Punch Range | state | 0.5 | Disabled — needs per-frame stun data |
+| STATE_008 | Pre-catch Trajectory Review | state | 0.0 | Experimental — immutable observation-only; cause and actor unverified |
 | PAT_001 | Frame-Perfect Timing | pattern | 0.6 | **UNSAFE** — FPs on skilled players |
 | PAT_002 | Identical Release Points | pattern | 0.6 | **UNSAFE** — FPs on consistent form |
 | PAT_003 | Cross-Match Consistency | pattern | 0.8 | Needs 3+ matches of DB history |
@@ -302,7 +311,7 @@ Derived data: `detection_events` (`is_shadow`, `analysis_source` = initial/repro
 
 ## Shadow Mode
 
-`mode = "shadow"` means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. Both shipped configurations use this mode for all 30 detectors. `verdict` and `calibration-report` provide the calibration path before promoting anything.
+`mode = "shadow"` means: the detector runs, its events are stored with `is_shadow = 1`, and nothing else happens. Shadow events are excluded from scoring, from single-match and cross-match cases, from `flagged`, `player-history` and PAT_003 history, and from per-event log lines. Both shipped configurations use this mode for all 31 detectors. `verdict` and `calibration-report` provide the calibration path before promoting anything. STATE_008 cannot be promoted by configuration or the calibration UI: its current observation does not establish a violation or identify the responsible actor.
 
 Weights and `auto_enforce` come from config: the binaries build detectors through `detect.BuildAll`, which applies `enforcement_weight` via `SetWeight` and `auto_enforce` via `SetAutoEnforce`, so `MakeEvent` stamps the configured weight on every event.
 

@@ -9,6 +9,31 @@ import (
 // of replay length. It is not an event cap and never affects detector output.
 const MaxDecisionReasons = 48
 
+func (c *coverageTracker) mechanicsRecord(detectorID, playerID string, record model.MechanicsAssessment) {
+	index, ok := c.index[detectorID]
+	if !ok || playerID == "" || !c.mechanicsLogs[detectorID] {
+		return
+	}
+	player := c.players[playerID]
+	if player == nil {
+		return
+	}
+	player.Detectors[index].MechanicsReview.Add(record)
+}
+
+func (c *coverageTracker) catchRecord(detectorID, playerID string, record model.CatchReviewRecord) {
+	index, ok := c.index[detectorID]
+	if !ok || playerID == "" || !c.catchLogs[detectorID] {
+		return
+	}
+	player := c.players[playerID]
+	if player == nil {
+		return // diagnostics cannot manufacture an unobserved roster entry
+	}
+	record.ReasonDescription = detect.DecisionReasonDescription(record.Reason)
+	player.Detectors[index].CatchReview.Add(record)
+}
+
 func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason string) {
 	index, ok := c.index[detectorID]
 	if !ok || playerID == "" {
@@ -31,9 +56,16 @@ func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason s
 		t.OverflowCount++
 		return
 	}
+	// STATE_008 checks the whole sampled roster, not just one player's pose.
+	// Count inputs only after that detector actually passes its global checks.
+	// Repeated diagnostic calls for one frame must not inflate coverage.
+	catchInputs := detectorID == "STATE_008" && reason == "catch_inputs_ready"
 	for i := range t.Reasons {
 		r := &t.Reasons[i]
 		if r.Code == reason {
+			if catchInputs && frame > r.LastFrame {
+				c.player(playerID).Detectors[index].InputFrames++
+			}
 			r.Count++
 			if frame < r.FirstFrame {
 				r.FirstFrame = frame
@@ -47,6 +79,9 @@ func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason s
 	if len(t.Reasons) >= MaxDecisionReasons {
 		t.OverflowCount++
 		return
+	}
+	if catchInputs {
+		c.player(playerID).Detectors[index].InputFrames++
 	}
 	t.Reasons = append(t.Reasons, model.DetectorDecisionReason{Code: reason, Description: detect.DecisionReasonDescription(reason), Count: 1, FirstFrame: frame, LastFrame: frame})
 }
@@ -67,20 +102,44 @@ func (p *Pipeline) traceEvent(event model.DetectionEvent, reason string) {
 
 func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 	p.decisionCoverage = c
+	p.extractor.SetReleaseObserver(p.reviewCancelledRelease)
 	for _, d := range p.detectors {
+		if observed, ok := d.(detect.MechanicsObservable); ok {
+			detectorID := d.ID()
+			observed.SetMechanicsObserver(func(id, playerID string, record model.MechanicsAssessment) {
+				if id == detectorID {
+					c.mechanicsRecord(id, playerID, record)
+				}
+			})
+		}
 		if observed, ok := d.(detect.DecisionObservable); ok {
 			observed.SetDecisionObserver(c.trace)
+		}
+		if observed, ok := d.(detect.CatchObservable); ok {
+			detectorID := d.ID()
+			observed.SetCatchObserver(func(id, playerID string, record model.CatchReviewRecord) {
+				if id == detectorID {
+					c.catchRecord(id, playerID, record)
+				}
+			})
 		}
 	}
 	p.dedup.decisionObserver = func(e model.DetectionEvent) { p.traceEvent(e, "emission_merged") }
 	p.rateLimiter.decisionObserver = func(e model.DetectionEvent) { p.traceEvent(e, "incident_rate_limited") }
 	return func() {
 		for _, d := range p.detectors {
+			if observed, ok := d.(detect.MechanicsObservable); ok {
+				observed.SetMechanicsObserver(nil)
+			}
 			if observed, ok := d.(detect.DecisionObservable); ok {
 				observed.SetDecisionObserver(nil)
+			}
+			if observed, ok := d.(detect.CatchObservable); ok {
+				observed.SetCatchObserver(nil)
 			}
 		}
 		p.dedup.decisionObserver, p.rateLimiter.decisionObserver = nil, nil
 		p.decisionCoverage = nil
+		p.extractor.SetReleaseObserver(nil)
 	}
 }

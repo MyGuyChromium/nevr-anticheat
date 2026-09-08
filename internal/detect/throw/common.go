@@ -100,7 +100,7 @@ func currentDisc(players map[string]*model.PlayerState, frameIdx int) (disc *mod
 
 // throwAt returns the player's throw event if it was released at frameIdx.
 func throwAt(ps *model.PlayerState, frameIdx int) *model.ThrowEvent {
-	if ps == nil || ps.LastThrow == nil || ps.LastThrow.FrameIndex != frameIdx {
+	if ps == nil || !ps.LastThrow.ObservedAt(frameIdx) {
 		return nil
 	}
 	return ps.LastThrow

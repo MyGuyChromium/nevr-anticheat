@@ -121,23 +121,28 @@ func (fb *FrameBuilder) dt() float64 {
 // first sample) and DeltaTime = 0 on the first frame (unknown), else the
 // real spacing.
 func (fb *FrameBuilder) baseFrame(index int, pos model.Vec3, rot model.Quat) model.PlayerTelemetryFrame {
+	// Synthetic profiles deliberately specify both boosting and non-boosting
+	// states; raw Echo inputs do not supply this presence claim.
+	boostObserved := true
 	dt := fb.dt()
 	deltaTime := dt
 	if index == 0 {
 		deltaTime = 0
 	}
 	f := model.PlayerTelemetryFrame{
-		PlayerID:   fb.playerID,
-		Team:       fb.team,
-		FrameIndex: index,
-		Timestamp:  float64(index) * dt,
-		DeltaTime:  deltaTime,
-		Position:   pos,
-		Rotation:   rot,
-		GamePhase:  fb.gamePhase,
+		PlayerID:        fb.playerID,
+		IsBoostingKnown: &boostObserved,
+		Team:            fb.team,
+		FrameIndex:      index,
+		Timestamp:       float64(index) * dt,
+		DeltaTime:       deltaTime,
+		Position:        pos,
+		Rotation:        rot,
+		GamePhase:       fb.gamePhase,
 		Disc: &model.DiscState{
-			Position: model.Vec3{0, 2, 0},
-			Velocity: model.Vec3{0, 0, 0},
+			Position:   model.Vec3{0, 2, 0},
+			Velocity:   model.Vec3{0, 0, 0},
+			Attachment: &model.DiscAttachment{State: "free"},
 		},
 		EstimatedPingMs: fb.pingMs,
 	}
@@ -152,6 +157,8 @@ func (fb *FrameBuilder) humanHands(f *model.PlayerTelemetryFrame, index int) {
 	f.RightHandPosition = f.Position.Add(rightHandOffset).Add(deterministicJitter3(index, 17, humanHandJitter))
 	f.LeftHandRotation = humanWobble(index, 1.0)
 	f.RightHandRotation = humanWobble(index, 5.0)
+	leftObserved, rightObserved := true, true
+	f.LeftHandRotationValid, f.RightHandRotationValid = &leftObserved, &rightObserved
 }
 
 // ---------- Helper functions ----------

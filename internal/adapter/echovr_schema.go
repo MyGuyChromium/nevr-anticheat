@@ -81,12 +81,14 @@ type EchoVRLastThrow struct {
 
 // EchoVRDisc represents the disc state in the Echo VR API.
 type EchoVRDisc struct {
-	Position [3]float64 `json:"position"` // CONFIRMED: [x, y, z] in meters
-	Velocity [3]float64 `json:"velocity"` // CONFIRMED: [vx, vy, vz] in m/s
+	Position         [3]float64 `json:"position"` // CONFIRMED: [x, y, z] in meters
+	Velocity         [3]float64 `json:"velocity"` // CONFIRMED: [vx, vy, vz] in m/s
+	positionObserved *bool
+	velocityObserved *bool
 
-	// UNKNOWN: The API may include additional fields like "bounce_count".
-	// These are not confirmed and are ignored during mapping.
-	BounceCount int `json:"bounce_count"` // UNKNOWN
+	// Some sources omit the counter. A pointer retains that absence rather
+	// than inventing a zero-bounce observation when decoding or reserializing.
+	BounceCount *int `json:"bounce_count,omitempty"`
 }
 
 // EchoVRTeam represents a team in the Echo VR API.
@@ -111,7 +113,8 @@ type EchoVRPlayer struct {
 	Head EchoVRBodyHead `json:"head"` // CONFIRMED: head position + orientation (== body.position in practice)
 
 	// CONFIRMED: Player velocity as top-level [3]float64.
-	Velocity [3]float64 `json:"velocity"` // CONFIRMED
+	Velocity         [3]float64 `json:"velocity"` // CONFIRMED
+	velocityObserved *bool
 
 	// CONFIRMED: Hand data is nested objects with pos + direction vectors.
 	LHand EchoVRHand `json:"lhand"` // CONFIRMED: left hand/controller

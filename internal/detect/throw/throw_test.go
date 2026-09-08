@@ -1,7 +1,6 @@
 package throw
 
 import (
-	"fmt"
 	"math"
 	"testing"
 
@@ -29,23 +28,25 @@ func newState(pid string, frameIdx int) *model.PlayerState {
 
 func mkThrow(pid string, frameIdx int, speed, angle float64) model.ThrowEvent {
 	return model.ThrowEvent{
-		ThrowerID:           pid,
-		Attribution:         model.ThrowAttribution{PlayerID: pid, Confidence: 0.9, Method: "possession_track"},
-		FrameIndex:          frameIdx,
-		Timestamp:           float64(frameIdx) * 0.067,
-		ReleasePosition:     model.Vec3{5, 0, 0},
-		ReleaseVelocity:     model.Vec3{speed, 0, 0},
-		ReleaseSpeed:        speed,
-		ThrowingHand:        "right",
-		HandPosition:        model.Vec3{5.3, 0.3, 0},
-		HandVelocity:        model.Vec3{speed * 0.5, 0, 0},
-		HandSpeed:           speed * 0.5,
-		HandKinematicsValid: true,
-		WristOrientation:    model.QuatIdentity(),
-		PlayerPosition:      model.Vec3{5, 0, 0},
-		HandToDiscDistance:  0.3,
-		ReleaseAngle:        angle,
-		PossessionDuration:  1.0,
+		ThrowerID:             pid,
+		Attribution:           model.ThrowAttribution{PlayerID: pid, Confidence: 0.9, Method: "possession_track"},
+		FrameIndex:            frameIdx,
+		Timestamp:             float64(frameIdx) * 0.067,
+		ReleasePosition:       model.Vec3{5, 0, 0},
+		ReleaseVelocity:       model.Vec3{speed, 0, 0},
+		ReleaseSpeed:          speed,
+		ThrowingHand:          "right",
+		HandPosition:          model.Vec3{5.3, 0.3, 0},
+		HandVelocity:          model.Vec3{speed * 0.5, 0, 0},
+		HandSpeed:             speed * 0.5,
+		HandKinematicsValid:   true,
+		WristOrientation:      model.QuatIdentity(),
+		WristOrientationValid: true,
+		WristKinematicsValid:  true,
+		PlayerPosition:        model.Vec3{5, 0, 0},
+		HandToDiscDistance:    0.3,
+		ReleaseAngle:          angle,
+		PossessionDuration:    1.0,
 	}
 }
 
@@ -447,104 +448,9 @@ func TestThrow004_SeverityRanks(t *testing.T) {
 	}
 }
 
-// ---- THROW_005 ----
-
-func feedThrow005(d *Throw005, mc *model.MatchContext, pid string, start, n int, speedOf, devOf func(i int) float64) []model.DetectionEvent {
-	var all []model.DetectionEvent
-	goal := model.Vec3{0, 0, 36.078}
-	for i := 0; i < n; i++ {
-		frame := (start + i) * 30
-		te := mkThrow(pid, frame, speedOf(i), 5)
-		te.TargetPosition = &goal
-		te.TargetDeviation = devOf(i)
-		ps := newState(pid, frame)
-		ps.LastThrow = &te
-		all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{pid: ps}, frame)...)
-	}
-	return all
-}
-
-func corrEvents(events []model.DetectionEvent) []model.DetectionEvent {
-	var out []model.DetectionEvent
-	for _, ev := range events {
-		if ev.CausalKey.AnomalyType == "speed_accuracy_correlation" {
-			out = append(out, ev)
-		}
-	}
-	return out
-}
-
-func TestThrow005_CorrelationGateNeeds30PairsAndFiresOnce(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow005(nil)
-	// Strong negative speed/deviation relationship, deviations 5-15 deg so
-	// the precision path stays quiet.
-	speed := func(i int) float64 { return 8 + float64(i%10) }
-	dev := func(i int) float64 { return 15 - float64(i%10) }
-	if ev := corrEvents(feedThrow005(d, mc, "p1", 0, 29, speed, dev)); len(ev) != 0 {
-		t.Fatalf("correlation must not fire below %d pairs: %d events", corrMinPairs, len(ev))
-	}
-	ev := corrEvents(feedThrow005(d, mc, "p1", 29, 1, speed, dev))
-	if len(ev) != 1 {
-		t.Fatalf("expected the correlation gate to fire at pair 30, got %d", len(ev))
-	}
-	if ev[0].CausalKey.FrameStart != 0 || ev[0].CausalKey.FrameEnd != 29*30 {
-		t.Fatalf("causal key should span the pair window: %+v", ev[0].CausalKey)
-	}
-	evd := ev[0].Evidence.(model.PrecisionEvidence)
-	if evd.PairCount != 30 || evd.CorrelationUpperCI >= corrMaxUpperCI || evd.SpeedAccuracyCorrelation > -0.9 {
-		t.Fatalf("evidence %+v", evd)
-	}
-	// Window resets: the next throws do not re-fire until 30 new pairs.
-	if ev := corrEvents(feedThrow005(d, mc, "p1", 30, 29, speed, dev)); len(ev) != 0 {
-		t.Fatalf("correlation re-fired within the reset window: %d", len(ev))
-	}
-}
-
-func TestThrow005_ConstantSpeedIsUndefinedNotZeroCorrelation(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow005(nil)
-	speed := func(int) float64 { return 12 }
-	dev := func(i int) float64 { return 5 + float64(i%7) }
-	if ev := corrEvents(feedThrow005(d, mc, "p1", 0, 40, speed, dev)); len(ev) != 0 {
-		t.Fatalf("identical speeds must not read as zero correlation: %d events", len(ev))
-	}
-}
-
-func TestThrow005_WeakNoisyCorrelationDoesNotFire(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow005(nil)
-	// True positive relationship with noise: r well above the gate.
-	speed := func(i int) float64 { return 8 + float64(i%10) }
-	dev := func(i int) float64 { return 4 + float64(i%10)*0.8 + float64((i*7)%5) }
-	if ev := corrEvents(feedThrow005(d, mc, "p1", 0, 40, speed, dev)); len(ev) != 0 {
-		t.Fatalf("positively correlated human data fired: %+v", ev[0].ObservedValue)
-	}
-}
-
-func TestThrow005_PrecisionResetsWindow(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow005(nil)
-	speed := func(i int) float64 { return 8 + float64(i) }
-	dev := func(i int) float64 { return 0.3 + float64(i)*0.03 }
-	events := feedThrow005(d, mc, "p1", 0, 8, speed, dev)
-	if len(events) != 1 || events[0].CausalKey.AnomalyType != "target_precision" {
-		t.Fatalf("expected one precision event on the 8th throw, got %+v", events)
-	}
-	if len(d.speedDeviationPairs["p1"]) != 0 {
-		t.Fatal("pairs must reset with the precision window")
-	}
-	if _, ok := d.firstFrame["p1"]; ok {
-		t.Fatal("firstFrame must be cleared so the next window re-initializes")
-	}
-	next := feedThrow005(d, mc, "p1", 8, 1, speed, dev)
-	if len(next) != 0 {
-		t.Fatalf("no event expected on the first throw of a new window: %+v", next)
-	}
-	if d.firstFrame["p1"] != 8*30 {
-		t.Fatalf("new window should start at frame %d, got %d", 8*30, d.firstFrame["p1"])
-	}
-}
+// THROW_005's former precision-only scored gates were removed. Supporting
+// statistics, independent releases and diagnostic-only safety are tested in
+// throw_005_test.go.
 
 // ---- disc selection ----
 
@@ -622,277 +528,8 @@ func TestCurrentDisc_HeldFromHasPossessionAlone(t *testing.T) {
 	}
 }
 
-// ---- THROW_006 ----
-
-// bendingFlight feeds a track for pid: release at frame `release` along +X,
-// then `frames` frames each rotating the velocity by `degPerFrame` about Y at
-// constant speed, positions moving away from the release point.
-func bendingFlight(d *Throw006, mc *model.MatchContext, pid string, release, frames int, degPerFrame float64) []model.DetectionEvent {
-	var all []model.DetectionEvent
-	ps := newState(pid, release)
-	te := mkThrow(pid, release, 12, 5)
-	te.ReleasePosition = model.Vec3{0, 0, 0}
-	te.ReleaseVelocity = model.Vec3{12, 0, 0}
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{0, 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
-	all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{pid: ps}, release)...)
-	for j := 1; j <= frames; j++ {
-		frame := release + j
-		ang := float64(j) * degPerFrame * math.Pi / 180
-		ps := newState(pid, frame)
-		ps.CurrentDisc = &model.DiscState{
-			Position: model.Vec3{3 * float64(j), 0, 0},
-			Velocity: model.Vec3{12 * math.Cos(ang), 0, 12 * math.Sin(ang)},
-			Speed:    12,
-		}
-		all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{pid: ps}, frame)...)
-	}
-	return all
-}
-
-func TestThrow006_RegrabRethrowFinalizesOpenTrack(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow006(map[string]any{"max_cumulative_change": 50.0})
-	if ev := bendingFlight(d, mc, "p1", 0, 8, 10); len(ev) != 0 {
-		t.Fatalf("track should still be open, got %d events", len(ev))
-	}
-	track := d.activeThrows["p1"]
-	if track == nil || track.violationFrames < 5 || track.cumulativeAngle <= 50 {
-		t.Fatalf("track not built as expected: %+v", track)
-	}
-	// New throw by the same player while the track is open: previous track
-	// is finalized (and qualifies), not silently dropped.
-	ps := newState("p1", 9)
-	te := mkThrow("p1", 9, 12, 5)
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{5, 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
-	events := d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 9)
-	if len(events) != 1 || events[0].FrameRangeStart != 0 {
-		t.Fatalf("expected the earlier track's event, got %+v", events)
-	}
-	if d.activeThrows["p1"].releaseFrame != 9 {
-		t.Fatal("new track should replace the finalized one")
-	}
-	ev := events[0]
-	if ev.DetectorVersion != d.Version() || ev.EnforcementWeight != d.Weight {
-		t.Fatal("event must carry the detector's version/weight")
-	}
-	evd := ev.Evidence.(model.TrajectoryEvidence)
-	if !near(evd.FinalSpeed, 12, 1e-9) || evd.ViolationFrameCount != 8 {
-		t.Fatalf("evidence %+v", evd)
-	}
-	if ev.Confidence != ev.Severity { // 8 violation frames -> full confidence
-		t.Fatalf("confidence %v severity %v", ev.Confidence, ev.Severity)
-	}
-}
-
-func TestThrow006_ConfidenceScalesWithViolationFrames(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow006(map[string]any{"max_cumulative_change": 40.0})
-	bendingFlight(d, mc, "p1", 0, 5, 10) // 5 violation frames, 50 deg
-	held := newState("p1", 6)
-	held.CurrentDisc = &model.DiscState{IsHeld: true}
-	events := d.Evaluate(mc, map[string]*model.PlayerState{"p1": held}, 6)
-	if len(events) != 1 {
-		t.Fatalf("expected event on catch, got %d", len(events))
-	}
-	want := events[0].Severity * 5.0 / fullConfidenceViolationFrames
-	if !near(events[0].Confidence, want, 1e-9) {
-		t.Fatalf("confidence %v want %v", events[0].Confidence, want)
-	}
-}
-
-func TestThrow006_GoalFixedAtReleaseNoMidCourtFlip(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow006(nil)
-	goal := model.Vec3{0, 0, 36.078}
-	// Straight throw from z=-5 across mid-court toward +Z.
-	ps := newState("p1", 0)
-	te := mkThrow("p1", 0, 12, 5)
-	te.ReleasePosition = model.Vec3{0, 0, -5}
-	te.ReleaseVelocity = model.Vec3{0, 0, 12}
-	te.GoalPosition = goal
-	te.GoalSelection = "angular"
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: te.ReleasePosition, Velocity: te.ReleaseVelocity, Speed: 12}
-	d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 0)
-	for j := 1; j <= 12; j++ {
-		s := newState("p1", j)
-		s.CurrentDisc = &model.DiscState{Position: model.Vec3{0, 0, -5 + float64(j)}, Velocity: model.Vec3{0, 0, 12}, Speed: 12}
-		if ev := d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j); len(ev) != 0 {
-			t.Fatalf("straight flight fired at frame %d", j)
-		}
-	}
-	track := d.activeThrows["p1"]
-	if track == nil || len(track.goals) != 2 || track.goalLabel != goalLabelUnknownSide {
-		t.Fatalf("side unknown: both goals should be candidates, got %+v", track)
-	}
-	// Both candidates stay fixed at +-GoalZ and neither sees an improvement.
-	for _, g := range track.goals {
-		if !g.set {
-			t.Fatal("alignment should be tracked against every candidate goal")
-		}
-		if imp := g.improvement(); math.Abs(imp) > 0.01 {
-			t.Fatalf("straight flight crossing z=0 fabricated alignment improvement %v against %v", imp, g.pos)
-		}
-		if math.Abs(g.pos.Z()) != goal.Z() || g.pos.X() != 0 {
-			t.Fatalf("goal changed during flight: %v", g.pos)
-		}
-	}
-	if best := track.bestGoal(); best == nil || best.improvement() > 0.01 {
-		t.Fatalf("best-of-both improvement %v", best)
-	}
-}
-
-// homingFlight releases along +X rotated by releaseDeg toward -Z (so the
-// release points at the WRONG goal) and then bends the disc by degPerFrame
-// toward +Z at constant speed, integrating the position along the velocity.
-// It returns every event emitted plus the events from a final catch frame.
-func homingFlight(d *Throw006, mc *model.MatchContext, sel string, goalPos model.Vec3, frames int) []model.DetectionEvent {
-	var all []model.DetectionEvent
-	const dt = 0.25
-	release := 0
-	dir := func(deg float64) model.Vec3 {
-		a := deg * math.Pi / 180
-		return model.Vec3{12 * math.Cos(a), 0, 12 * math.Sin(a)}
-	}
-	ps := newState("p1", release)
-	te := mkThrow("p1", release, 12, 5)
-	te.ReleasePosition = model.Vec3{0, 0, 0}
-	te.ReleaseVelocity = dir(-20)
-	te.GoalPosition = goalPos
-	te.GoalSelection = sel
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: te.ReleasePosition, Velocity: te.ReleaseVelocity, Speed: 12}
-	all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, release)...)
-	pos := te.ReleasePosition
-	for j := 1; j <= frames; j++ {
-		vel := dir(-20 + 10*float64(j))
-		pos = pos.Add(vel.Scale(dt))
-		s := newState("p1", j)
-		s.CurrentDisc = &model.DiscState{Position: pos, Velocity: vel, Speed: 12}
-		all = append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)...)
-	}
-	held := newState("p1", frames+1)
-	held.CurrentDisc = &model.DiscState{IsHeld: true, Position: pos}
-	held.HasDisc = true
-	return append(all, d.Evaluate(mc, map[string]*model.PlayerState{"p1": held}, frames+1)...)
-}
-
-func TestThrow006_UnknownSideJudgesAgainstBothGoals(t *testing.T) {
-	mc := testCtx()
-	gz := mc.Physics.GoalZ
-	wrongGoal := model.Vec3{0, 0, -gz}
-	rightGoal := model.Vec3{0, 0, gz}
-
-	// Side unknown: the extractor recorded the goal the release pointed at
-	// (-Z), but the disc homes onto +Z. Production thresholds (no
-	// override): the cumulative bend (~120 deg) stays under 130, so only
-	// the alignment gate can fire.
-	events := homingFlight(NewThrow006(nil), mc, model.GoalSelectionAngular, wrongGoal, 12)
-	if len(events) != 1 {
-		t.Fatalf("homing throw with the side unknown must fire once, got %d", len(events))
-	}
-	evd := events[0].Evidence.(model.TrajectoryEvidence)
-	if evd.AlignmentImprovement <= alignmentImprovementGate || evd.CumulativeAngleChange > 130 {
-		t.Fatalf("expected the alignment gate to carry the detection: %+v", evd)
-	}
-	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, goalLabelUnknownSide) {
-		t.Fatalf("correction target %q", evd.CorrectionTarget)
-	}
-
-	// Side known and the attacked goal is +Z: same flight, same verdict,
-	// labelled as the team goal.
-	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, rightGoal, 12)
-	if len(events) != 1 {
-		t.Fatalf("homing throw with the side known must fire once, got %d", len(events))
-	}
-	evd = events[0].Evidence.(model.TrajectoryEvidence)
-	if evd.CorrectionTarget != fmt.Sprintf("goal z=%+.1f (%s)", gz, model.GoalSelectionTeam) {
-		t.Fatalf("correction target %q", evd.CorrectionTarget)
-	}
-
-	// Side known and the attacked goal is -Z: the configured/learned side is
-	// kept, so a bend toward the OTHER goal is not an alignment improvement
-	// (it is still reported by the cumulative-angle gate when large enough,
-	// which this flight is not).
-	events = homingFlight(NewThrow006(nil), mc, model.GoalSelectionTeam, wrongGoal, 12)
-	if len(events) != 0 {
-		t.Fatalf("known side must not be replaced by the better goal: %+v", events)
-	}
-}
-
-func TestThrow006_StaleDiscCopyIgnored(t *testing.T) {
-	mc := testCtx()
-	d := NewThrow006(map[string]any{"max_cumulative_change": 50.0})
-	// A departed player whose last copy says IsHeld would previously end the
-	// track on every frame depending on map order.
-	stale := newState("a", -100)
-	stale.CurrentDisc = &model.DiscState{IsHeld: true, PossessorID: "a"}
-	stale.HasDisc = true
-	ps := newState("p1", 0)
-	te := mkThrow("p1", 0, 12, 5)
-	te.ReleasePosition = model.Vec3{0, 0, 0}
-	te.ReleaseVelocity = model.Vec3{12, 0, 0}
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{0, 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
-	d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps, "a": stale}, 0)
-	for j := 1; j <= 8; j++ {
-		ang := float64(j) * 10 * math.Pi / 180
-		s := newState("p1", j)
-		s.CurrentDisc = &model.DiscState{Position: model.Vec3{3 * float64(j), 0, 0}, Velocity: model.Vec3{12 * math.Cos(ang), 0, 12 * math.Sin(ang)}, Speed: 12}
-		d.Evaluate(mc, map[string]*model.PlayerState{"p1": s, "a": stale}, j)
-	}
-	if track := d.activeThrows["p1"]; track == nil || track.violationFrames != 8 {
-		t.Fatalf("track was disturbed by the stale held copy: %+v", track)
-	}
-}
-
-func TestThrow006_TrackEndsOnHasPossessionAlone(t *testing.T) {
-	// A catcher whose producer omits is_held: the shared disc copy keeps
-	// IsHeld=false and only the catcher's has_possession marks the catch.
-	// The thrower's track must end there instead of consuming the held
-	// disc's motion (a catcher turning toward the goal while holding).
-	mc := testCtx()
-	d := NewThrow006(nil)
-	ps := newState("p1", 0)
-	te := mkThrow("p1", 0, 12, 5)
-	te.ReleasePosition = model.Vec3{0, 0, 0}
-	te.ReleaseVelocity = model.Vec3{12, 0, 0}
-	te.GoalPosition = model.Vec3{0, 0, 36}
-	te.GoalSelection = "team"
-	ps.LastThrow = &te
-	ps.CurrentDisc = &model.DiscState{Position: model.Vec3{0, 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
-	d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, 0)
-	for j := 1; j <= 3; j++ {
-		s := newState("p1", j)
-		s.CurrentDisc = &model.DiscState{Position: model.Vec3{3 * float64(j), 0, 0}, Velocity: model.Vec3{12, 0, 0}, Speed: 12}
-		d.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)
-	}
-	// Frame 4: p2 catches (has_possession only), shared copy IsHeld=false.
-	shared := &model.DiscState{Position: model.Vec3{12, 0, 0}, Velocity: model.Vec3{1, 0, 0}, Speed: 1}
-	p1 := newState("p1", 4)
-	p1.CurrentDisc = shared
-	p2 := newState("p2", 4)
-	p2.CurrentDisc = shared
-	p2.HasDisc = true
-	d.Evaluate(mc, map[string]*model.PlayerState{"p1": p1, "p2": p2}, 4)
-	if _, open := d.activeThrows["p1"]; open {
-		t.Fatal("track still open after catch signalled only by has_possession")
-	}
-	// The held disc turning toward the goal must not produce an event.
-	for j := 5; j <= 20; j++ {
-		ang := float64(j-4) * 10 * math.Pi / 180
-		a := newState("p1", j)
-		a.CurrentDisc = shared
-		b := newState("p2", j)
-		b.HasDisc = true
-		b.CurrentDisc = &model.DiscState{Position: model.Vec3{12, 0, 0}, Velocity: model.Vec3{1 * math.Cos(ang), 0, 1 * math.Sin(ang)}, Speed: 1}
-		if ev := d.Evaluate(mc, map[string]*model.PlayerState{"p1": a, "p2": b}, j); len(ev) != 0 {
-			t.Fatalf("held-disc motion produced an event at frame %d: %+v", j, ev)
-		}
-	}
-}
+// THROW_006's former scored goal-alignment/"mags" model was removed.
+// Explicit free-flight continuity and diagnostics are tested in throw_006_test.go.
 
 func TestThrow008_TrackEndsOnHasPossessionAlone(t *testing.T) {
 	mc := testCtx()
@@ -1011,16 +648,6 @@ func TestThrow008_RegrabRethrowFinalizesOpenTrack(t *testing.T) {
 
 func TestFlushTracks_FinalizesOpenTracksAtMatchEnd(t *testing.T) {
 	mc := testCtx()
-	d6 := NewThrow006(map[string]any{"max_cumulative_change": 50.0})
-	bendingFlight(d6, mc, "p1", 0, 8, 10)
-	events := d6.FlushTracks(mc, 8)
-	if len(events) != 1 || events[0].DetectorID != "THROW_006" || events[0].FrameRangeEnd != 8 {
-		t.Fatalf("THROW_006 flush: %+v", events)
-	}
-	if len(d6.activeThrows) != 0 {
-		t.Fatal("THROW_006 tracks not cleared by flush")
-	}
-
 	d8 := NewThrow008(nil)
 	ps := newState("p1", 0)
 	te := mkThrow("p1", 0, 8, 5)
@@ -1033,7 +660,7 @@ func TestFlushTracks_FinalizesOpenTracksAtMatchEnd(t *testing.T) {
 		s.CurrentDisc = &model.DiscState{Position: model.Vec3{5 + float64(j), 0, 0}, Velocity: model.Vec3{spd, 0, 0}, Speed: spd}
 		d8.Evaluate(mc, map[string]*model.PlayerState{"p1": s}, j)
 	}
-	events = d8.FlushTracks(mc, 10)
+	events := d8.FlushTracks(mc, 10)
 	if len(events) != 1 || events[0].DetectorID != "THROW_008" {
 		t.Fatalf("THROW_008 flush: %+v", events)
 	}

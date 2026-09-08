@@ -68,20 +68,22 @@ func matchCtx(players ...string) *model.MatchContext {
 
 // cleanFrame is a plausible, slowly moving frame.
 func cleanFrame(pid string, i int) model.PlayerTelemetryFrame {
+	leftObserved, rightObserved := true, true
 	z := 5.0 + 0.1*float64(i)
 	pos := model.Vec3{1, 1, z}
 	return model.PlayerTelemetryFrame{
-		PlayerID:          pid,
-		FrameIndex:        i,
-		Timestamp:         float64(i) * 0.067,
-		DeltaTime:         0.067,
-		Position:          pos,
-		Rotation:          model.QuatIdentity(),
-		LeftHandPosition:  model.Vec3{pos[0] - 0.3, 1.3, z + 0.2},
-		RightHandPosition: model.Vec3{pos[0] + 0.3, 1.3, z - 0.2},
-		LeftHandRotation:  model.QuatIdentity(),
-		RightHandRotation: model.QuatIdentity(),
-		GamePhase:         "playing",
+		PlayerID:              pid,
+		FrameIndex:            i,
+		Timestamp:             float64(i) * 0.067,
+		DeltaTime:             0.067,
+		Position:              pos,
+		Rotation:              model.QuatIdentity(),
+		LeftHandPosition:      model.Vec3{pos[0] - 0.3, 1.3, z + 0.2},
+		RightHandPosition:     model.Vec3{pos[0] + 0.3, 1.3, z - 0.2},
+		LeftHandRotation:      model.QuatIdentity(),
+		RightHandRotation:     model.QuatIdentity(),
+		LeftHandRotationValid: &leftObserved, RightHandRotationValid: &rightObserved,
+		GamePhase: "playing",
 	}
 }
 
@@ -313,6 +315,9 @@ func TestValidator_SanitizesAndDerivesBounds(t *testing.T) {
 	}
 	if !f.LeftHandPosition.IsZero() || f.RightHandRotation != (model.Quat{}) || f.Disc != nil {
 		t.Errorf("not sanitized: hand=%v rot=%v disc=%v", f.LeftHandPosition, f.RightHandRotation, f.Disc)
+	}
+	if f.RightHandRotationValid == nil || *f.RightHandRotationValid {
+		t.Error("invalid hand rotation retained observed-valid provenance")
 	}
 	if len(sanitized) != 3 {
 		t.Errorf("sanitized=%v", sanitized)

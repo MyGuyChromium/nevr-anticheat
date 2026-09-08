@@ -55,8 +55,16 @@ max_throw_speed  = 18.9     # m/s, reference only
 stun_duration    = 3.0      # s, reference for STATE_002 evidence
 shield_cooldown  = 5.0      # s, reference for STATE_005 evidence
 immunity_window  = 1.5      # s, post-respawn immunity (reference)
-grab_range       = 0.8      # m, disc grab range (reference)
+grab_range       = 0.8      # legacy unused reference; NOT the disc-grab legality rule
 goal_z           = 36.078   # m, |Z| of both goal centres; confirmed from a real replay
+
+# Owner-supplied rules pending engine/build, geometry and measurement validation.
+# Uncertainty never expands the inclusive 0.25 m legal boundary.
+[project_rules]
+version = "owner-2026-09-08-v1"
+disc_grab_limit_m = 0.25
+fast_throw_speed_mps = 19.0
+required_movement_mps = 4.7
 
 # =============================================================================
 # Pipeline
@@ -204,28 +212,25 @@ min_throws               = 12      # throws before the 6-dim signature variance 
 min_generalized_variance = 1e-8    # generalized variance below which signatures are identical
 
 [detector.THROW_005]
-# Superhuman Target Precision. UNVERIFIED: the "faster throws deviate more"
-# premise is unvalidated; the correlation gate needs >= 30 pairs.
+# Shot Targeting Review. Bounded statistics include misses/non-goal releases.
+# Accuracy has no cheating cutoff and never produces a scored detection.
 enabled            = true
-enforcement_weight = 0.7
+enforcement_weight = 0.0
 mode               = "shadow"
 [detector.THROW_005.params]
-max_mean_deviation     = 2.0   # m, mean goal-line deviation
-max_stddev_deviation   = 1.5   # m
-min_throws_for_pattern = 8     # goal-directed throws before evaluation
 
 [detector.THROW_006]
-# Trajectory Correction (Mags). PHYSICS_GROUNDED: free-flight discs travel
-# straight; angle thresholds are UNVERIFIED. Requires 5 sustained violation
+# Free-flight Trajectory Review. NOT a disc-grab reach check.
+# Angle thresholds are UNVERIFIED. Requires 5 sustained unusual
 # frames (code constant) and 5 tracked frames.
 enabled            = true
-enforcement_weight = 0.8
+enforcement_weight = 0.0
 mode               = "shadow"
 [detector.THROW_006.params]
 min_trajectory_change     = 8.0    # deg per frame counted as a bend
 post_release_frames       = 15     # frames tracked after release
 min_distance_from_thrower = 2.0    # m before bends count
-max_cumulative_change     = 130.0  # deg, cumulative bend that saturates severity
+max_cumulative_change     = 130.0  # deg, completed-window sampled anomaly filter; no scored output
 
 [detector.THROW_007]
 # Penalty Field Tampering. STUB: Evaluate() returns nil; no penalty-field
@@ -393,15 +398,12 @@ max_ping_ms            = 150.0  # skip less trustworthy samples above this laten
 # ----------------------------------------------------------------------------- state
 
 [detector.STATE_001]
-# Impossible Grab Distance. UNVERIFIED: network desync inflates grab distance.
+# Disc Grab Geometry Review (Mags). Project limit is separate from uncertainty.
+# Unknown acquisition geometry/rule validity produces inconclusive, never extra reach.
 enabled            = true
-enforcement_weight = 0.5
+enforcement_weight = 0.0
 mode               = "shadow"
 [detector.STATE_001.params]
-grab_distance_threshold = 3.0    # m hand-to-disc at possession gain
-closing_velocity_scale  = 0.25   # s of latency credited to closing speed (0 = use frame dt)
-desync_margin           = 3.0    # m tolerated as desync
-sigmoid_steepness       = 2.0
 
 [detector.STATE_002]
 # Stun Recovery Exploit. PHYSICS_GROUNDED: stun duration is a game mechanic;
@@ -472,6 +474,31 @@ sigmoid_steepness         = 1.0
 attribution_window_frames = 2      # frames a stun start may lag the punch
 max_range                 = 25.0   # m; beyond this the attribution failed
 
+[detector.STATE_008]
+# Pre-catch Trajectory Review. OBSERVATION_ONLY: these engineering filters are
+# provisional, not verified catch physics or a calibrated cheat signature.
+# This detector cannot be promoted to scoring or automatic enforcement.
+enabled            = true
+enforcement_weight = 0.0
+auto_enforce       = false
+mode               = "shadow"
+[detector.STATE_008.params]
+baseline_samples           = 4      # free-flight baseline samples
+min_correction_samples     = 2      # consecutive approach corrections
+baseline_duration_s        = 0.20   # s; minimum reference span as well as sample floor
+min_correction_duration_s  = 0.12   # s; sustained turning as well as sample floor
+min_turn_rate_deg_s        = 60.0   # deg/s; provisional correction rate
+max_turn_rate_deg_s        = 300.0  # deg/s; larger turns are ambiguous
+max_sample_gap_s           = 0.12   # s; reject larger adjacent sample gaps
+max_window_s               = 1.5    # s; maximum pre-catch window
+max_step_error_m           = 0.20   # m; displacement/velocity consistency
+min_lateral_deviation_m    = 0.30   # m; deviation from baseline trajectory
+contact_accel_allowance_mps2 = 30.0 # m/s^2; provisional envelope, not a measured legal bound
+contact_margin_m           = 0.65   # m; possible-contact exclusion, not a game radius
+min_miss_improvement_m     = 0.50   # m; projected miss-distance improvement
+max_catch_approach_m       = 1.5    # m; last-free-sample hand distance
+regrab_grace_s             = 0.35   # s; exclude rapid regrabs
+
 # ----------------------------------------------------------------------------- pattern
 
 [detector.PAT_001]
@@ -532,6 +559,7 @@ sigmoid_steepness      = 2.0
 
 # =============================================================================
 # Renamed and removed keys (accepted with a warning, then ignored)
+# STATE_008 min_correction_angle_deg / max_turn_angle_deg -> removed; replaced by explicit time-based rate/duration controls, not numerically reinterpreted
 # =============================================================================
 # general.mode                                     -> ignored (binary decides)
 # scoring.auto_enforce_min_confidence              -> removed (THROW_001 gates auto-enforce per event on severity > 0.95, attribution >= 0.9 and a 5 m/s over-cap margin; every other detector stamps the flag whenever auto_enforce is true)

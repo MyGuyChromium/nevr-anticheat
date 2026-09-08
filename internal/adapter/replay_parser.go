@@ -123,8 +123,10 @@ var ErrMultipleSessions = errors.New("replay contains more than one session")
 
 // NewEchoReplayParser creates a parser for .echoreplay files.
 func NewEchoReplayParser() *EchoReplayParser {
+	mapper := NewMapper()
+	mapper.SetObservationSource("echoreplay", "recorder_prefix", "")
 	return &EchoReplayParser{
-		mapper:         NewMapper(),
+		mapper:         mapper,
 		maxLineBytes:   DefaultMaxLineBytes,
 		maxReplayBytes: DefaultMaxReplayBytes,
 		rawByFrame:     make(map[int]string),

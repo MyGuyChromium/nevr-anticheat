@@ -13,7 +13,7 @@ import (
 
 // syntheticReplay is a 120-line .echoreplay in the real recorder layout:
 // "YYYY/MM/DD HH:MM:SS.mmm\t{session}" at 67 ms, three teams (BLUE TEAM,
-// ORANGE TEAM, SPECTATORS), a possession -> release -> flight sequence by
+// ORANGE TEAM, SPECTATORS), an explicit right-hand hold -> release -> flight sequence by
 // BlueOne, a "score" line with blue_points 0 -> 2 and the disc at the +Z
 // goal, a two-line round_start reset, and a punch (OrangeOne's stun stat
 // increments while BlueTwo is stunned). Generated deterministically; no

@@ -153,7 +153,7 @@ type fakeBroadcaster struct {
 	requests atomic.Int64
 	static   bool // do not vary the body between requests
 	// bytesOnly varies a field the mapper's fingerprint ignores
-	// (client_name) so every body differs byte-wise while the game state
+	// (an unknown test-only member) so every body differs byte-wise while the game state
 	// stays identical.
 	bytesOnly bool
 }
@@ -174,7 +174,7 @@ func newFakeBroadcaster(t *testing.T, responseBody string, statusCode int) *fake
 		body := fb.body.Load().(string)
 		switch {
 		case fb.bytesOnly:
-			body = strings.Replace(body, `"client_name":"test"`, fmt.Sprintf(`"client_name":"test-%d"`, n), 1)
+			body = strings.Replace(body, `{`, fmt.Sprintf(`{"test_ignored_poll":%d,`, n), 1)
 		case !fb.static:
 			body = varySession(body, n)
 		}

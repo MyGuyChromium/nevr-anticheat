@@ -33,9 +33,13 @@ func replayLine(s replaySnapshot) string {
 		return fmt.Sprintf(`{"pos":%s,%s}`, vec(model.Vec3{p[0] + dx, p[1] + 0.3, p[2]}), basis)
 	}
 	player := func(name string, userID int64, p model.Vec3, possession bool) string {
+		holdingRight := "none"
+		if possession {
+			holdingRight = "disc"
+		}
 		return fmt.Sprintf(`{"name":%q,"userid":%d,"playerid":0,"body":{"position":%s,%s},"head":{"position":%s,%s},`+
-			`"velocity":[0,0,0],"lhand":%s,"rhand":%s,"stunned":false,"invulnerable":false,"possession":%v,"blocking":false,"ping":40,"stats":{}}`,
-			name, userID, vec(p), basis, vec(p), basis, hand(p, -0.3), hand(p, 0.3), possession)
+			`"velocity":[0,0,0],"lhand":%s,"rhand":%s,"holding_left":"none","holding_right":%q,"stunned":false,"invulnerable":false,"possession":%v,"blocking":false,"ping":40,"stats":{}}`,
+			name, userID, vec(p), basis, vec(p), basis, hand(p, -0.3), hand(p, 0.3), holdingRight, possession)
 	}
 	json := fmt.Sprintf(`{"sessionid":"TS-E2E","match_type":"Echo_Arena","map_name":"mpl_arena_a","game_status":"playing","game_clock":200.0,`+
 		`"disc":{"position":%s,"velocity":%s},"blue_points":0,"orange_points":0,`+

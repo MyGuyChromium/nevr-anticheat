@@ -85,13 +85,23 @@ func TestLegalMechanicsGameVelocityDoesNotBecomePhysicalWalking(t *testing.T) {
 
 func TestLegalMechanicsPossibleHeadContactIsNotWristAngleEvidence(t *testing.T) {
 	pos := model.Vec3{1, 1.7, 0}
-	frames := make([]model.PlayerTelemetryFrame, 21)
+	frames := make([]model.PlayerTelemetryFrame, 22)
 	for i := range frames {
 		frames[i] = legalMechanicsFrame(i, pos)
 		zero := model.Vec3{}
 		frames[i].ReportedVelocity = &zero
+		frames[i].HeadPosition = &pos
+		observed := true
+		frames[i].LeftHandRotationValid, frames[i].RightHandRotationValid = &observed, &observed
+		frames[i].Observation = &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "capture", SessionID: "legal-head-contact", FrameIndex: i, Timestamp: frames[i].Timestamp}
 		frames[i].HasPossession = i < 20
-		frames[i].Disc = &model.DiscState{Position: frames[i].RightHandPosition, IsHeld: i < 20, PossessorID: "synthetic-player"}
+		attachment := &model.DiscAttachment{State: "free"}
+		holder := ""
+		if i < 20 {
+			attachment.State, attachment.HolderID, attachment.HandCandidates = "held", "synthetic-player", []string{"right"}
+			holder = "synthetic-player"
+		}
+		frames[i].Disc = &model.DiscState{Position: frames[i].RightHandPosition, IsHeld: i < 20, PossessorID: holder, Attachment: attachment}
 	}
 	// The first free sample is beside the head and not either controller.
 	// The pipeline must reconstruct and guard this release, not simply fail
@@ -99,9 +109,15 @@ func TestLegalMechanicsPossibleHeadContactIsNotWristAngleEvidence(t *testing.T) 
 	release := &frames[20]
 	release.LeftHandPosition = pos.Add(model.Vec3{-.7, .2, 0})
 	release.RightHandPosition = pos.Add(model.Vec3{.7, .2, 0})
-	release.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0, .08, .1}), Velocity: model.Vec3{0, 0, -12}, Speed: 12}
+	release.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0, .08, .1}), Velocity: model.Vec3{0, 0, -12}, Speed: 12, Attachment: &model.DiscAttachment{State: "free"}}
+	// A second explicit free sample confirms this actual release. Its later
+	// motion must not replace the head-adjacent first-free release evidence.
+	confirmation := &frames[21]
+	confirmation.LeftHandPosition, confirmation.RightHandPosition = release.LeftHandPosition, release.RightHandPosition
+	confirmation.Disc = &model.DiscState{Position: release.Disc.Position.Add(release.Disc.Velocity.Scale(1.0 / 15)), Velocity: release.Disc.Velocity, Speed: 12, Attachment: &model.DiscAttachment{State: "free"}}
 	result := testutil.NewHarness(t).WithDetectors("THROW_003").WithShadowMode().Run(t, frames)
 	result.AssertNoDetections()
+	result.AssertAllFramesValid(len(frames))
 	counts := legalMechanicsReasons(t, result, "THROW_003")
 	if counts["possible_head_contact"] != 1 || counts["release_angle_candidate"] != 0 {
 		t.Fatalf("head contact did not use actual release guard: %v", counts)

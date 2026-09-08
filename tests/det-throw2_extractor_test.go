@@ -21,7 +21,10 @@ func dt2Ctx() *model.MatchContext {
 }
 
 func dt2Frame(pid string, idx int, ts float64, pos model.Vec3) model.PlayerTelemetryFrame {
+	observed := true
 	return model.PlayerTelemetryFrame{
+		Observation:           &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "fixture_time", SessionID: "dt2-test", FrameIndex: idx, Timestamp: ts},
+		LeftHandRotationValid: &observed, RightHandRotationValid: &observed,
 		PlayerID:          pid,
 		FrameIndex:        idx,
 		Timestamp:         ts,
@@ -97,7 +100,7 @@ func TestExtractor_SnapshotFrameIndexFollowsSeenFrames(t *testing.T) {
 	hold := func(idx int) {
 		f := dt2Frame("p1", idx, float64(idx)*dt, pos)
 		f.HasPossession = true
-		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), IsHeld: true, PossessorID: "p1"}
+		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), IsHeld: true, PossessorID: "p1", Attachment: &model.DiscAttachment{State: "held", HolderID: "p1", HandCandidates: []string{"right"}}}
 		fe.UpdatePlayerState(ps, &f, mc)
 	}
 	for idx := 90; idx <= 97; idx++ {
@@ -105,7 +108,13 @@ func TestExtractor_SnapshotFrameIndexFollowsSeenFrames(t *testing.T) {
 	}
 	hold(99) // frame 98 never seen (0.134 s spacing: still under the gap threshold)
 	f := dt2Frame("p1", 100, 100*dt, pos)
-	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0.2, 0}), Velocity: model.Vec3{0, 0, 15}, Speed: 15}
+	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0.2, 0}), Velocity: model.Vec3{0, 0, 15}, Speed: 15, Attachment: &model.DiscAttachment{State: "free"}}
+	fe.UpdatePlayerState(ps, &f, mc)
+	if ps.LastThrow != nil {
+		t.Fatal("first free sample must await confirmation")
+	}
+	f.FrameIndex, f.Timestamp = 101, 101*dt
+	f.Observation.FrameIndex, f.Observation.Timestamp = f.FrameIndex, f.Timestamp
 	fe.UpdatePlayerState(ps, &f, mc)
 	if ps.LastThrow == nil {
 		t.Fatal("expected a throw at frame 100")
@@ -133,12 +142,12 @@ func TestExtractor_ReleaseAcrossGapIsNotAThrow(t *testing.T) {
 	hold := func(ps *model.PlayerState, idx int, ts float64) {
 		f := dt2Frame(ps.PlayerID, idx, ts, pos)
 		f.HasPossession = true
-		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), IsHeld: true, PossessorID: ps.PlayerID}
+		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), IsHeld: true, PossessorID: ps.PlayerID, Attachment: &model.DiscAttachment{State: "held", HolderID: ps.PlayerID, HandCandidates: []string{"right"}}}
 		fe.UpdatePlayerState(ps, &f, mc)
 	}
 	release := func(ps *model.PlayerState, idx int, ts float64) {
 		f := dt2Frame(ps.PlayerID, idx, ts, pos)
-		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{20, 0.2, 0}), Velocity: model.Vec3{15, 0, 0}, Speed: 15}
+		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{20, 0.2, 0}), Velocity: model.Vec3{15, 0, 0}, Speed: 15, Attachment: &model.DiscAttachment{State: "free"}}
 		fe.UpdatePlayerState(ps, &f, mc)
 	}
 
@@ -166,6 +175,7 @@ func TestExtractor_ReleaseAcrossGapIsNotAThrow(t *testing.T) {
 		hold(ps, idx, 9*dt+2.0+float64(idx-10)*dt)
 	}
 	release(ps, 21, 9*dt+2.0+11*dt)
+	release(ps, 22, 9*dt+2.0+12*dt)
 	if ps.LastThrow == nil || ps.LastThrow.FrameIndex != 21 || ps.ThrowCount != 1 {
 		t.Fatalf("throw after the gap should be detected normally: %+v", ps.LastThrow)
 	}
@@ -174,10 +184,16 @@ func TestExtractor_ReleaseAcrossGapIsNotAThrow(t *testing.T) {
 	fe2.SetMaxFrameDt(3.0)
 	ps3 := &model.PlayerState{PlayerID: "p3", Team: "blue"}
 	for idx := 0; idx < 10; idx++ {
-		hold(ps3, idx, float64(idx)*dt)
+		f := dt2Frame("p3", idx, float64(idx)*dt, pos)
+		f.HasPossession = true
+		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), IsHeld: true, PossessorID: "p3", Attachment: &model.DiscAttachment{State: "held", HolderID: "p3", HandCandidates: []string{"right"}}}
+		fe2.UpdatePlayerState(ps3, &f, mc)
 	}
 	f := dt2Frame("p3", 10, 9*dt+2.0, pos)
-	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{20, 0.2, 0}), Velocity: model.Vec3{15, 0, 0}, Speed: 15}
+	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{20, 0.2, 0}), Velocity: model.Vec3{15, 0, 0}, Speed: 15, Attachment: &model.DiscAttachment{State: "free"}}
+	fe2.UpdatePlayerState(ps3, &f, mc)
+	f.FrameIndex, f.Timestamp = 11, f.Timestamp+dt
+	f.Observation.FrameIndex, f.Observation.Timestamp = f.FrameIndex, f.Timestamp
 	fe2.UpdatePlayerState(ps3, &f, mc)
 	if ps3.LastThrow == nil {
 		t.Fatal("with max_frame_dt=3 a 2 s spacing is not a gap")

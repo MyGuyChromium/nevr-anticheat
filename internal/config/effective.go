@@ -77,6 +77,9 @@ func (c *Config) EffectiveTable() []EffectiveDetector {
 			Weight:      dc.EnforcementWeight,
 			AutoEnforce: dc.AutoEnforce,
 		}
+		if id == "STATE_001" || id == "THROW_005" || id == "THROW_006" || id == "STATE_008" {
+			row.Mode, row.Shadow, row.Weight, row.AutoEnforce = "shadow", true, 0, false
+		}
 		if !known {
 			row.Name = "(unknown detector)"
 			for k := range dc.Params {
