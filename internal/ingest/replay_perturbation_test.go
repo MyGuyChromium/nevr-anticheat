@@ -80,8 +80,8 @@ func readPerturbedReplay(t *testing.T, options replayPerturbation) []model.Playe
 			p.Head = pose([3]float64{x, 2.2, 3 + float64(j)*5}, 0)
 			left := pose([3]float64{x - .3, 2.3, 3.2 + float64(j)*5}, float64(i)*.1)
 			right := pose([3]float64{x + .3, 2.3, 2.8 + float64(j)*5}, float64(i)*.1)
-			p.LHand = adapter.EchoVRHand{Position: left.Position, Forward: left.Forward, Left: left.Left, Up: left.Up}
-			p.RHand = adapter.EchoVRHand{Position: right.Position, Forward: right.Forward, Left: right.Left, Up: right.Up}
+			p.LHand = adapter.EchoVRHand(left)
+			p.RHand = adapter.EchoVRHand(right)
 			if options.trackingLoss && i >= 40 && i <= 42 {
 				p.LHand = adapter.EchoVRHand{}
 			}

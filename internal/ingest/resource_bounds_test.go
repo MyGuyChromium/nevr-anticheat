@@ -47,7 +47,7 @@ func TestConcurrentConnectionAdmissionIsBounded(t *testing.T) {
 	accepted, refused := 0, 0
 	for res := range results {
 		if res.conn != nil {
-			defer res.conn.Close()
+			t.Cleanup(func() { _ = res.conn.Close() })
 		}
 		if res.err != nil {
 			t.Fatal(res.err)
