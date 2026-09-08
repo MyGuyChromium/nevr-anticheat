@@ -163,7 +163,8 @@ func defaultDetectors() map[string]DetectorConfig {
 		// is removed from arena pose motion, then coherent physical rig
 		// translation is surfaced as an observation. Feet and guardian origin
 		// are unavailable, so legal leaning cannot be ruled out automatically.
-		"MOV_006": {Enabled: true, EnforcementWeight: 0.75, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
+		// Temporarily paused; DetectorPauseReason also covers saved overrides.
+		"MOV_006": {Enabled: false, EnforcementWeight: 0.75, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
 			"min_playspace_speed": 1.0, "min_playspace_distance": 0.55, "min_rig_coherence": 0.65,
 			"min_observed_pose_speed": 0.35, "min_sustained_frames": 5, "min_sustained_seconds": 0.3, "max_ping_ms": 150.0,
 		}},
@@ -215,7 +216,7 @@ func defaultDetectors() map[string]DetectorConfig {
 		"PAT_004": {Enabled: true, EnforcementWeight: 0.9, Mode: "shadow", Params: map[string]any{
 			"min_categories": 3, "sigmoid_steepness": 1.0,
 		}},
-		"PAT_005": {Enabled: true, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
+		"PAT_005": {Enabled: false, EnforcementWeight: 0.5, Mode: "shadow", Params: map[string]any{
 			"hand_to_head_threshold": 1.6, "min_sustained_frames": 30, "sigmoid_steepness": 2.0,
 		}},
 	}

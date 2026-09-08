@@ -75,13 +75,13 @@ func TestBuildAppliesConfigAndStampsWeightOnEvents(t *testing.T) {
 	cfg.Detectors["STATE_001"] = state1
 
 	dets := Build(cfg, nil)
-	if len(dets) != ExpectedDetectorCount-1 {
-		t.Fatalf("built %d detectors with one disabled, want %d", len(dets), ExpectedDetectorCount-1)
+	if len(dets) != ExpectedDetectorCount-3 {
+		t.Fatalf("built %d detectors with one disabled and two paused, want %d", len(dets), ExpectedDetectorCount-3)
 	}
 	var m2 detect.Detector
 	for _, d := range dets {
-		if d.ID() == "STATE_001" {
-			t.Error("disabled detector was built")
+		if d.ID() == "STATE_001" || model.IsPlayspaceDetector(d.ID()) {
+			t.Errorf("disabled/paused detector %s was built", d.ID())
 		}
 		if d.ID() == "MOV_002" {
 			m2 = d
@@ -118,6 +118,23 @@ func TestBuildAppliesConfigAndStampsWeightOnEvents(t *testing.T) {
 	}
 	if len(Names()) != ExpectedDetectorCount || Names()["THROW_001"] == "" {
 		t.Errorf("Names() = %d entries", len(Names()))
+	}
+}
+
+func TestCatalogPausePreservesFocusDetectors(t *testing.T) {
+	for _, cfg := range []*config.Config{config.DefaultConfig(), allEnabled()} {
+		seen := map[string]bool{}
+		for _, d := range Build(cfg, nil) {
+			seen[d.ID()] = true
+			if model.IsPlayspaceDetector(d.ID()) {
+				t.Fatalf("paused detector %s was built", d.ID())
+			}
+		}
+		for _, id := range []string{"THROW_003", "BIO_001", "STATE_001", "STATE_008"} {
+			if !seen[id] {
+				t.Errorf("focus detector %s missing from catalog", id)
+			}
+		}
 	}
 }
 

@@ -57,8 +57,9 @@ func TestConfigDocs_ReadmeDetectorTable(t *testing.T) {
 			t.Errorf("README %s category %q != code category %q", id, category, spec.Category)
 		}
 		weight, err := strconv.ParseFloat(weightStr, 64)
-		if err != nil || weight != cfg.Detectors[id].EnforcementWeight {
-			t.Errorf("README %s weight %s != config enforcement_weight %v", id, weightStr, cfg.Detectors[id].EnforcementWeight)
+		effective := cfg.GetDetectorConfig(id)
+		if err != nil || weight != effective.EnforcementWeight {
+			t.Errorf("README %s weight %s != effective enforcement_weight %v", id, weightStr, effective.EnforcementWeight)
 		}
 	}
 	want := config.KnownDetectorIDs()

@@ -84,6 +84,19 @@ substituting any third party's recording.
 
 ## Identity and result limits
 
+Playspacing checks (`MOV_006` and `PAT_005`) are temporarily paused in the
+backend, including when an older saved configuration enables them. The review
+focus is wrist/release angle (`THROW_003`, `BIO_001`), mags/grab geometry
+(`STATE_001`) and autopocket/pre-catch trajectory (`STATE_008`). These remain
+enabled by default with their existing shadow/review restrictions; no detector
+thresholds have been recalibrated. Shared lean, slap and movement context is
+still available to other checks to avoid losing false-positive protections.
+
+Old playspacing findings remain in saved history until a replay is re-analyzed.
+They cannot feed new cross-match scoring or pattern findings while paused.
+Disabled coverage is not a clean-play verdict. Updating source does not change
+an already installed executable; use the newly built candidate for this check.
+
 Health and diagnostic runtime provenance identifies the application producing
 the report, not necessarily the application that generated a stored finding.
 Case reports list historical run records separately. Missing historical

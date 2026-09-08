@@ -70,9 +70,11 @@ func TestLegalMechanicsGameVelocityDoesNotBecomePhysicalWalking(t *testing.T) {
 				frames[i].ReportedVelocity = &v
 				frames[i].IsBoosting = kind == "boost" && i >= 25 && i < 40
 			}
-			result := testutil.NewHarness(t).WithDetectors("MOV_006").WithShadowMode().Run(t, frames)
+			// The compiled pause must not make legal-motion regressions pass
+			// vacuously: exercise the retained detector and extractor directly.
+			result := runPausedPlayspaceMath(t, frames, "MOV_006")
 			result.AssertNoDetections()
-			counts := legalMechanicsReasons(t, result, "MOV_006")
+			counts := result.Reasons
 			if counts["playspace_speed_below_gate"] < 40 {
 				t.Fatalf("game movement failed to subtract: %v", counts)
 			}
@@ -167,9 +169,9 @@ func TestLegalMechanicsDroppedSampleBreaksPlayspaceDuration(t *testing.T) {
 		frame.ReportedVelocity = &zero
 		frames = append(frames, frame)
 	}
-	result := testutil.NewHarness(t).WithDetectors("MOV_006").WithShadowMode().Run(t, frames)
+	result := runPausedPlayspaceMath(t, frames, "MOV_006")
 	result.AssertNoDetections()
-	counts := legalMechanicsReasons(t, result, "MOV_006")
+	counts := result.Reasons
 	if counts["playspace_observation_gap"] != 1 || counts["playspace_duration_pending"] == 0 {
 		t.Fatalf("fixture bypassed burst continuity guard: %v", counts)
 	}

@@ -81,7 +81,8 @@ mode               = "shadow"
 [detector.MOV_006]
 # Physical translation is observation-only; feet/guardian origin are absent,
 # so the replay cannot prove walking rather than a legal lean.
-enabled            = true
+# Temporarily paused in this build, even if a saved profile enables it.
+enabled            = false
 enforcement_weight = 0.75
 auto_enforce       = false
 mode               = "shadow"
@@ -103,7 +104,8 @@ mode               = "shadow"
 
 [detector.PAT_005]
 # Playspace Abuse: 1.6 m hand-to-head sustained for 30 frames.
-enabled            = true
+# Temporarily paused with MOV_006.
+enabled            = false
 enforcement_weight = 0.5
 auto_enforce       = false
 mode               = "shadow"

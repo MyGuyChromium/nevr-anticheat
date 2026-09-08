@@ -66,6 +66,9 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 		}
 		if !d.Enabled {
 			d.Status = "disabled"
+			if reason := config.DetectorPauseReason(id); reason != "" {
+				d.Limitations = append(d.Limitations, reason)
+			}
 		}
 		switch id {
 		case "THROW_001":

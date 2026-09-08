@@ -42,6 +42,13 @@
 
 ## 2. Detector Viability Matrix
 
+**Current operational pause:** `MOV_006` and `PAT_005` do not run, even in
+shadow mode or when an older saved configuration enables them. Their viability
+descriptions below are retained as background, not permission to enable them.
+Review is focused on wrist/release angle (`THROW_003`, `BIO_001`), mags/grab
+geometry (`STATE_001`) and autopocket/pre-catch trajectory (`STATE_008`). This
+pause is not detector calibration or a change to the review-only policy.
+
 **IMPORTANT**: no detector has been validated against real Echo VR telemetry. "PHYSICS_GROUNDED" means the detection logic has a sound physics basis and conservative thresholds, NOT that it has been proven correct on real data. This table is the single source of status labels (README, `configs/*.toml`, `internal/config/defaults.go` and the tests copy it). Labels are unchanged from the original assessment with one exception: THROW_002 moved from BROKEN to UNVERIFIED because the mechanism the BROKEN label described no longer exists (removed in the v2.0.0 rewrite, commit 3ab978b); the replacement is unvalidated, so this is not an upgrade to any validated status. Every other change requires real-data evidence.
 
 | Detector | Status | Safe for Shadow? | Safe to score? | Primary Risk |
@@ -86,7 +93,8 @@
 
 In shadow mode `enforcement_weight` has **no effect**: shadow events are never scored, whatever the weight. The split below is about which weight *would* apply after promotion, and it is what `configs/shadow_deploy.toml` encodes.
 
-- **Enabled, weight as configured for promotion:** THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, MOV_006, STATE_002, PAT_004, PAT_005
+- **Enabled, weight as configured for promotion:** THROW_001, THROW_006, BIO_002, MOV_001, MOV_002, STATE_002, PAT_004
+- **Temporarily paused in the backend (effective weight 0):** MOV_006, PAT_005
 - **Enabled at weight 0.0 (observation only):** THROW_003, THROW_005, THROW_008, BIO_001, BIO_003, BIO_004, STATE_001, STATE_007
 - **Disabled until telemetry fields confirmed:** MOV_004, MOV_005, STATE_003, STATE_004, STATE_005
 - **Disabled until calibrated:** THROW_004, MOV_003, PAT_001, PAT_002

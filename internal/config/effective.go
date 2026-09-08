@@ -25,6 +25,7 @@ type EffectiveDetector struct {
 	Category    string
 	Configured  bool // false when the Config has no entry (defaults apply)
 	Enabled     bool
+	PauseReason string // nonempty when this build refuses to run the detector
 	Mode        string
 	Shadow      bool // Mode == "shadow" or listed in shadow.shadow_detectors
 	Weight      float64
@@ -61,10 +62,8 @@ func (c *Config) EffectiveTable() []EffectiveDetector {
 
 	out := make([]EffectiveDetector, 0, len(ids))
 	for _, id := range ids {
-		dc, configured := c.Detectors[id]
-		if !configured {
-			dc = c.GetDetectorConfig(id)
-		}
+		_, configured := c.Detectors[id]
+		dc := c.GetDetectorConfig(id)
 		spec, known := detectorSpecs[id]
 		row := EffectiveDetector{
 			ID:          id,
@@ -72,6 +71,7 @@ func (c *Config) EffectiveTable() []EffectiveDetector {
 			Category:    spec.Category,
 			Configured:  configured,
 			Enabled:     dc.Enabled,
+			PauseReason: DetectorPauseReason(id),
 			Mode:        dc.Mode,
 			Shadow:      dc.Mode == "shadow" || shadowList[id],
 			Weight:      dc.EnforcementWeight,
@@ -157,6 +157,9 @@ func FormatEffectiveTable(rows []EffectiveDetector) string {
 			auto = "yes"
 		}
 		fmt.Fprintf(&b, "%-10s %-8s %-8s %-7.2f %-5s %s\n", r.ID, enabled, mode, r.Weight, auto, r.Name)
+		if r.PauseReason != "" {
+			fmt.Fprintf(&b, "           PAUSED: %s\n", r.PauseReason)
+		}
 		if len(r.Params) > 0 {
 			parts := make([]string, 0, len(r.Params))
 			for _, p := range r.Params {

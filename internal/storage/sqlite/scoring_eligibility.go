@@ -5,9 +5,11 @@ package sqlite
 // earning fresh cross-match points or being recycled through PAT_003. A newer
 // verdict replaces an older verdict. A direct label survives same-version
 // re-analysis only when the sampled observation and evidence are identical.
+// Paused playspacing observations are likewise retained, but are ineligible
+// for newly computed history/aggregate findings (model.IsPlayspaceDetector).
 const eligibleScoringEventSQL = `de.is_shadow = 0
  AND de.enforcement_weight > 0 AND de.severity > 0 AND de.confidence > 0
- AND de.detector_id NOT IN ('PAT_003', 'PAT_004')
+ AND de.detector_id NOT IN ('PAT_003', 'PAT_004', 'MOV_006', 'PAT_005')
  AND COALESCE((SELECT er.verdict FROM event_reviews er
    WHERE er.event_id = de.event_id OR
      (er.match_id = de.match_id AND er.player_id = de.player_id

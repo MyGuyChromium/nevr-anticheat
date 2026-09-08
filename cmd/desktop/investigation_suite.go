@@ -818,7 +818,9 @@ func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) 
 	sparkPath, sparkErr := findSparkReplayViewer()
 	sparkOK := sparkErr == nil
 	unsafe := []string{}
-	for id, dc := range s.engine.Config().Detectors {
+	cfg := s.engine.Config()
+	for id := range cfg.Detectors {
+		dc := cfg.GetDetectorConfig(id)
 		if dc.Mode != "shadow" {
 			unsafe = append(unsafe, id)
 		}

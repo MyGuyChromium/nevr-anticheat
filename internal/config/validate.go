@@ -214,6 +214,9 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 	// --- detectors ---
 	for _, id := range cfg.DetectorIDs() {
 		dc := cfg.Detectors[id]
+		if reason := DetectorPauseReason(id); reason != "" && dc.Enabled {
+			warn("detector.%s.enabled=true is ignored: %s", id, reason)
+		}
 		spec, known := detectorSpecs[id]
 		if !known {
 			add("detector.%s: unknown detector ID", id)
