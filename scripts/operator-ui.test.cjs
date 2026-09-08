@@ -92,6 +92,30 @@ function statusUI(state, now = 100000) {
   return { get };
 }
 
+test('health provenance renders current identity honestly and escapes export metadata', async () => {
+  async function render(provenance) {
+    const element = { innerHTML: '', className: '', removeAttribute() {} };
+    const context = run(section('  async function loadHealth(', '  const fmtVec ='), {
+      $: () => element,
+      getJSON: async () => ({ version: 'test', analysis_active: false, provenance }),
+      operatorState: {}, setConnectionState() {}, fmtInt: String, fmtNum: String, fmtBytes: String,
+      panelError: (_element, _purpose, error) => { throw error; },
+    });
+    await context.loadHealth();
+    return element.innerHTML;
+  }
+  const html = await render({ build_commit: '<script>commit</script>', source_revision: 'revision', source_modified: null,
+    build_identity: 'unverified_build', executable_sha256: 'synthetic-sha256', config_fingerprint: '<img>config', enforcement_policy: 'review-only-v1' });
+  assert.match(html, /Current runtime only, not the original analysis/);
+  assert.match(html, /Source modified<\/dt><dd>Unknown/);
+  assert.match(html, /synthetic-sha256/);
+  assert.match(html, /review-only-v1/);
+  assert.match(html, /&lt;script&gt;commit/);
+  assert.match(html, /&lt;img&gt;config/);
+  assert.doesNotMatch(html, /<script>|<img>/);
+  assert.match(await render(undefined), /Exact runtime provenance is unavailable/);
+});
+
 test('stale successful health cannot show an idle or ready engine', () => {
   const ui = statusUI({ connection: 'online', checkedAt: 80000, health: { analysis_active: false }, settings: { watch_enabled: true, watch_status: 'watching' } });
   assert.match(ui.get('operator-freshness').textContent, /status is stale/);

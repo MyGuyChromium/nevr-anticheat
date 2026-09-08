@@ -3,47 +3,30 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"runtime/debug"
 	"strings"
 	"time"
 )
 
 type diagnosticManifest struct {
-	Version           int      `json:"version"`
-	CreatedAt         string   `json:"created_at"`
-	AppVersion        string   `json:"app_version"`
-	BuildRevision     string   `json:"build_revision,omitempty"`
-	SchemaVersion     int      `json:"schema_version"`
-	ConfigFingerprint string   `json:"config_fingerprint"`
-	Contents          []string `json:"contents"`
-	Privacy           string   `json:"privacy"`
+	Version           int               `json:"version"`
+	CreatedAt         string            `json:"created_at"`
+	AppVersion        string            `json:"app_version"`
+	BuildRevision     string            `json:"build_revision,omitempty"`
+	SchemaVersion     int               `json:"schema_version"`
+	ConfigFingerprint string            `json:"config_fingerprint"`
+	Contents          []string          `json:"contents"`
+	Privacy           string            `json:"privacy"`
+	RuntimeProvenance runtimeProvenance `json:"runtime_provenance"`
 }
 
 func buildRevision() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
-	}
-	return ""
+	return analysisBuildRevision()
 }
 
 func (s *server) configFingerprint() string {
-	data, _ := json.Marshal(struct {
-		Detectors any `json:"detectors"`
-		Physics   any `json:"physics"`
-		Levels    any `json:"levels"`
-	}{s.engine.Config().EffectiveTable(), s.engine.Physics(), s.engine.Levels()})
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:12])
+	return displayConfigFingerprint(s.engine.Config())
 }
 
 type diagnosticRedactor struct {
@@ -131,11 +114,12 @@ func (s *server) buildDiagnosticBundle(inspection *physicsInspection) ([]byte, e
 	manifest := diagnosticManifest{
 		Version: 1, CreatedAt: time.Now().UTC().Format(time.RFC3339), AppVersion: appVersion, BuildRevision: buildRevision(),
 		SchemaVersion: s.schemaVersion(), ConfigFingerprint: s.configFingerprint(),
-		Contents: []string{"manifest.json", "physics-inspector.redacted.json", "README.txt"},
-		Privacy:  "Player names and identifiers are redacted or replaced with local pseudonyms. Review before sharing.",
+		Contents:          []string{"manifest.json", "physics-inspector.redacted.json", "README.txt"},
+		Privacy:           "Known identity fields are redacted or pseudonymized. Raw source and evidence may contain unknown identifying fields or free text; this is not guaranteed anonymous. Inspect before sharing only with authorized private reviewers.",
+		RuntimeProvenance: s.currentRuntimeProvenance(),
 	}
 	manifestJSON, _ := json.MarshalIndent(manifest, "", "  ")
-	readme := []byte("NEVR-Anticheat diagnostic bundle\n\nThis bundle contains the incident's normalized source values, recomputed derived physics, detector rationale, telemetry health, and a redacted copy of the focus raw tick. It contains no executable code. Replays are client-side observations and may be interpolated.\n")
+	readme := []byte("NEVR-Anticheat diagnostic bundle\n\nThis bundle contains the incident's normalized source values, recomputed derived physics, detector rationale, telemetry health, and a key-redacted copy of the focus raw tick. Unknown source fields, map keys, and free text may still identify people. It is not guaranteed anonymous: inspect every entry and share only through the agreed private channel with authorized reviewers. No automatic upload occurs.\n\nRuntime provenance identifies the exporting process and its current inspector configuration, not the historical process that generated stored detector findings. Replays are client-side observations and may be interpolated. A build hash is not a publisher signature or detector-accuracy guarantee.\n")
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, entry := range []struct {

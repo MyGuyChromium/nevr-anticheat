@@ -7,7 +7,9 @@
 // that are stored in the database for moderator review.
 //
 // Default mode is "shadow" (logging only). The "enforce" mode generates the
-// strongest possible recommendations but still requires moderator confirmation.
+// strongest possible recommendations, but this build cannot dispatch punitive
+// callbacks, even after moderator confirmation. ReviewOnly is a compiled safety
+// boundary, not a mode, configuration default, or credential permission.
 // The canonical workflow is: detect → score → review case → moderator decision.
 //
 // # Score semantics
@@ -60,8 +62,8 @@ type ActionStore interface {
 }
 
 // DurableActionStore claims an immutable recommendation once and verifies its
-// evidence exists. A duplicate returns false. Callbacks require this interface;
-// they remain review notifications, never authorization for a live ban.
+// evidence exists. A duplicate returns false. Non-punitive notifications require
+// this interface; they are never authorization for a live ban.
 type DurableActionStore interface {
 	StoreEnforcementActionOnce(ctx context.Context, action model.EnforcementAction) (bool, error)
 }
@@ -74,12 +76,13 @@ type Engine struct {
 	levels model.LevelTable
 	mu     sync.Mutex
 
-	// Recommendation callbacks — notify external systems of recommended actions.
-	// These are recommendations for moderator review, not automatic enforcement.
-	// Callbacks are invoked WITHOUT the engine lock held, so they may safely
-	// call back into the engine.
-	OnKick       func(playerID, matchID, reason string)
-	OnBan        func(playerID string, duration time.Duration, reason string)
+	// Deprecated: OnKick and OnBan are retained for source compatibility only.
+	// This review-only build NEVER invokes them, including in ModeEnforce after
+	// a successful durable claim. Assigning them cannot enable punitive dispatch.
+	OnKick func(playerID, matchID, reason string)
+	OnBan  func(playerID string, duration time.Duration, reason string)
+	// Non-punitive review notifications run WITHOUT the engine lock held, so
+	// they may safely call back into the engine.
 	OnFlag       func(playerID, matchID string, score float64, events []model.DetectionEvent)
 	OnReviewCase func(rc model.ReviewCase)
 
@@ -178,9 +181,10 @@ func (e *Engine) SetClock(now func() time.Time) {
 // Levels returns the tier table the engine gates on.
 func (e *Engine) Levels() model.LevelTable { return e.levels }
 
-// Evaluate processes a player's score and events, returning any enforcement action taken.
-// The action is persisted (when a store is configured) and callbacks are
-// invoked after the engine lock is released.
+// Evaluate processes a player's score and events, returning a recommendation,
+// never an action taken. The recommendation is persisted when a durable store is
+// configured. Only non-punitive notifications can run, after the engine lock is
+// released. OnKick and OnBan are unconditionally inert in this review-only build.
 func (e *Engine) Evaluate(
 	ctx context.Context,
 	playerID string,
@@ -211,23 +215,19 @@ func (e *Engine) Evaluate(
 	if !created {
 		return nil // already recorded by an earlier attempt/process
 	}
-	e.logger.Info("enforcement_action",
+	e.logger.Info("enforcement_recommendation",
 		"player", playerID, "action", action.ActionType,
 		"score", fmt.Sprintf("%.1f", score.TotalScore), "reason", action.Reason,
+		"review_only", ReviewOnly, "policy_version", PolicyVersion, "executed", false,
 	)
 
+	// Deliberate allowlist: never dispatch legacy punitive hooks. A durable
+	// recommendation (or a retry of one) does not grant permission to affect a
+	// player. There is no runtime/configuration override of this boundary.
 	switch action.ActionType {
 	case model.ActionFlag:
 		if e.OnFlag != nil {
 			e.OnFlag(playerID, matchID, score.TotalScore, playerEvents)
-		}
-	case model.ActionTempBan:
-		if e.OnBan != nil {
-			e.OnBan(playerID, action.Duration, action.Reason)
-		}
-	case model.ActionKick:
-		if e.OnKick != nil {
-			e.OnKick(playerID, matchID, action.Reason)
 		}
 	}
 	return action

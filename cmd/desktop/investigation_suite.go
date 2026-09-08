@@ -913,7 +913,7 @@ func (s *server) handleCaseReport(w http.ResponseWriter, r *http.Request) {
 	incidents := doc["incidents"].([]investigationIncident)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="nevr-case-%s.html"`, safeClipName(match.MatchID)))
-	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>NEVR case %s</title><style>body{font:14px system-ui;max-width:960px;margin:40px auto;padding:0 24px;color:#17202b}table{width:100%%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #ccd5df;padding:8px}code{font-family:monospace}</style><h1>NEVR investigation report</h1><p><b>Match:</b> <code>%s</code><br><b>Generated:</b> %s<br><b>Configuration:</b> <code>%s</code></p><h2>Telemetry</h2><p>Quality %.1f/100 (%s); gated: %t.</p><h2>Assessment</h2><p>Review needed includes shadow-only observations that add zero score. No signals means no detector finding, not verified fair play. Scoring level is separate from this assessment and is not a cheating verdict.</p><table><tr><th>Player</th><th>Assessment</th><th>Score</th><th>Scoring level</th><th>Signals</th></tr>", html.EscapeString(match.MatchID), html.EscapeString(match.MatchID), html.EscapeString(fmtTime(time.Now())), html.EscapeString(s.configFingerprint()), quality.Score, html.EscapeString(quality.Grade), quality.Gated)
+	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>NEVR case %s</title><style>body{font:14px system-ui;max-width:960px;margin:40px auto;padding:0 24px;color:#17202b}table{width:100%%;border-collapse:collapse}th,td{text-align:left;overflow-wrap:anywhere;border-bottom:1px solid #ccd5df;padding:8px}code{font-family:monospace;overflow-wrap:anywhere}dd{margin-bottom:10px}</style><h1>NEVR investigation report</h1><p><b>Match:</b> <code>%s</code><br><b>Generated:</b> %s<br><b>Current export configuration (not original analysis):</b> <code>%s</code></p><h2>Telemetry recomputed by the current runtime</h2><p>Quality %.1f/100 (%s); gated: %t.</p><h2>Assessment</h2><p>Review needed includes shadow-only observations that add zero score. No signals means no detector finding, not verified fair play. Scoring level is separate from this assessment and is not a cheating verdict.</p><table><tr><th>Player</th><th>Assessment</th><th>Score</th><th>Scoring level</th><th>Signals</th></tr>", html.EscapeString(match.MatchID), html.EscapeString(match.MatchID), html.EscapeString(fmtTime(time.Now())), html.EscapeString(s.configFingerprint()), quality.Score, html.EscapeString(quality.Grade), quality.Gated)
 	for _, p := range match.Players {
 		assessment := "No signals"
 		if p.Assessment.Status == model.ReviewStatusReviewNeeded {
@@ -927,5 +927,8 @@ func (s *server) handleCaseReport(w http.ResponseWriter, r *http.Request) {
 	for _, x := range incidents {
 		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%d–%d</td><td>%d</td><td>%s</td></tr>", x.ID, html.EscapeString(x.PlayerName), x.StartFrame, x.EndFrame, x.Agreement, html.EscapeString(strings.Join(x.Detectors, ", ")))
 	}
-	fmt.Fprint(w, "</table><p><small>Evidence-only output. Human review is required; detector agreement is not proof.</small></p>")
+	fmt.Fprint(w, "</table>")
+	runs, _ := doc["analysis_runs"].([]sqlite.AnalysisRun)
+	writeCaseReportProvenance(w, s.currentRuntimeProvenance(), runs)
+	fmt.Fprint(w, "<p><small>Evidence-only output. Human review is required; detector agreement is not proof. This report contains player identities and must remain in the authorized private review channel.</small></p>")
 }
