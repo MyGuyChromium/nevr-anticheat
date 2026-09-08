@@ -105,4 +105,3 @@ Unset these variables before running normal Go tests.
   multi-hour uploads, installation/update dialogs, and screen-reader behavior
   were not exhaustively exercised. Full Windows release/installer checks remain
   the responsibility of CI. Signing/SmartScreen reputation is unchanged.
-
