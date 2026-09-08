@@ -27,11 +27,13 @@ type hardeningCase struct {
 }
 
 func goodHardeningFrame() model.PlayerTelemetryFrame {
+	leftObserved, rightObserved := true, true
 	return model.PlayerTelemetryFrame{
 		PlayerID: "p1", FrameIndex: 10, Timestamp: 0.67, DeltaTime: 0.067,
 		Position: model.Vec3{2, 1.6, 0}, Rotation: model.QuatIdentity(),
 		LeftHandPosition: model.Vec3{1.7, 1.9, 0.2}, RightHandPosition: model.Vec3{2.3, 1.9, -0.2},
 		LeftHandRotation: model.QuatIdentity(), RightHandRotation: model.QuatIdentity(),
+		LeftHandRotationValid: &leftObserved, RightHandRotationValid: &rightObserved,
 		GamePhase: "playing",
 		Disc:      &model.DiscState{Position: model.Vec3{0, 2, 0}},
 	}

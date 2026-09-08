@@ -12,13 +12,14 @@ func ctx() *model.MatchContext {
 
 func active(pid string, fi int) *model.PlayerState {
 	return &model.PlayerState{
-		PlayerID:      pid,
-		Position:      model.Vec3{2, 1.6, 3},
-		Rotation:      model.QuatIdentity(),
-		FrameDt:       0.067,
-		FrameCount:    fi + 1,
-		LastFrameIdx:  fi,
-		LastTimestamp: float64(fi) * 0.067,
+		PlayerID:        pid,
+		IsBoostingKnown: true,
+		Position:        model.Vec3{2, 1.6, 3},
+		Rotation:        model.QuatIdentity(),
+		FrameDt:         0.067,
+		FrameCount:      fi + 1,
+		LastFrameIdx:    fi,
+		LastTimestamp:   float64(fi) * 0.067,
 	}
 }
 

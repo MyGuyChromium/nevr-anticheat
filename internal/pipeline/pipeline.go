@@ -250,6 +250,9 @@ func (p *Pipeline) ProcessMatch(
 	frames []model.PlayerTelemetryFrame,
 ) (*MatchResult, error) {
 	start := time.Now()
+	// Rules are the active local project configuration, not a producer's claim
+	// of engine verification. This does not change the independent speed cap.
+	matchCtx.ProjectRules = p.cfg.ProjectRules
 	result := newMatchResult(matchCtx.MatchID)
 	if !p.skipReset {
 		p.quality = AssessTelemetryQuality(frames, p.cfg)
@@ -300,6 +303,7 @@ func (p *Pipeline) ProcessMatch(
 		// Validate and update player states. framePlayers holds only the
 		// players that produced a valid frame at this index.
 		framePlayers := make(map[string]*model.PlayerState, len(pFrames))
+		sourceReset := false
 		sort.SliceStable(pFrames, func(i, j int) bool { return pFrames[i].PlayerID < pFrames[j].PlayerID })
 		for i := range pFrames {
 			pf := &pFrames[i]
@@ -308,6 +312,14 @@ func (p *Pipeline) ProcessMatch(
 				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, err)
 				coverage.player(pf.PlayerID).RejectedFrames++
 				coverage.allEnabled(pf.PlayerID, fi, "frame_rejected")
+				continue
+			}
+			// Keep malformed time/identity classified by the validator. Only
+			// valid observations reach ordering checks, before any history write.
+			if previous := p.players[pf.PlayerID]; previous != nil && previous.FrameCount > 0 && (pf.FrameIndex <= previous.LastFrameIdx || pf.Timestamp <= previous.LastTimestamp) {
+				p.recordInvalid(result, matchCtx.MatchID, pf.PlayerID, &ValidationError{Reason: "stale_player_sample", PlayerID: pf.PlayerID, Detail: "frame index and timestamp must both advance"})
+				coverage.player(pf.PlayerID).RejectedFrames++
+				coverage.allEnabled(pf.PlayerID, fi, "stale_player_sample")
 				continue
 			}
 			coverage.player(pf.PlayerID).ValidFrames++
@@ -322,14 +334,31 @@ func (p *Pipeline) ProcessMatch(
 			if pf.Team != "" {
 				ps.Team = pf.Team
 			}
+			if !sourceReset && ps.FrameCount > 0 && !sameObservationSource(ps.Observation, pf.Observation) {
+				// Do not combine behavioral windows from different recording
+				// sources. Prior independent incidents retain their existing score.
+				p.extractor.DrainPendingReleases("release_source_changed")
+				p.emit(p.dedup.Flush(), result)
+				for _, d := range p.detectors {
+					if resetter, ok := d.(interface{ ResetSource() }); ok {
+						resetter.ResetSource()
+					} else {
+						d.Reset()
+					}
+				}
+				sourceReset = true
+			}
 			p.extractor.UpdatePlayerState(ps, pf, matchCtx)
+			p.reviewRelease(ps, fi)
 			framePlayers[pf.PlayerID] = ps
 		}
 		if len(framePlayers) == 0 {
 			continue
 		}
 		result.FramesProcessed++
-		p.lastFrameIdx = fi
+		if fi > p.lastFrameIdx {
+			p.lastFrameIdx = fi
+		}
 
 		// Skip detectors during non-active game phases (round_start, score, pre_match, post_match).
 		// CONFIRMED from real replay: players teleport during round transitions, causing
@@ -408,6 +437,7 @@ func (p *Pipeline) ProcessMatch(
 	// Offline mode: the match is complete. Judge the throws still in flight,
 	// then close every open incident.
 	if !p.skipReset {
+		p.extractor.DrainPendingReleases("release_confirmation_unavailable")
 		p.flushTracks(matchCtx, result)
 		p.emit(p.dedup.Flush(), result)
 	}
@@ -435,6 +465,7 @@ func (p *Pipeline) Finalize(matchCtx *model.MatchContext) *MatchResult {
 	}
 	detach := p.attachDecisionCoverage(coverage)
 	defer detach()
+	p.extractor.DrainPendingReleases("release_confirmation_unavailable")
 	p.flushTracks(matchCtx, result)
 	p.emit(p.dedup.Flush(), result)
 	p.scorer.ApplyCorrelationBonus()
@@ -500,7 +531,7 @@ func (p *Pipeline) applyLegalContext(ev *model.DetectionEvent) {
 	case (ctx.Leaning || ctx.PlayspaceStep) && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
 		p.traceEvent(*ev, "context_lean_or_step")
 		multiplier = 0.65
-	case ctx.Boosting && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
+	case ctx.BoostingKnown && ctx.Boosting && (ev.DetectorID == "MOV_001" || ev.DetectorID == "MOV_002" || ev.DetectorID == "MOV_003"):
 		p.traceEvent(*ev, "context_boost")
 		multiplier = 0.75
 	}

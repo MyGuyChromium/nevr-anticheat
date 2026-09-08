@@ -84,7 +84,9 @@ type FeatureExtractor struct {
 	configuredBlueSign int
 	learned            goalSides
 
-	discHistory map[string][]discSample
+	discHistory     map[string][]discSample
+	pendingReleases map[string]*pendingRelease
+	releaseObserver func(string, model.ReleaseObservation, string)
 }
 
 // NewFeatureExtractor creates a new feature extractor.
@@ -97,6 +99,7 @@ func NewFeatureExtractor(historyWindow int) *FeatureExtractor {
 		highPingThresholdMs: DefaultHighPingThresholdMs,
 		maxFrameDt:          MaxFrameDt,
 		discHistory:         make(map[string][]discSample),
+		pendingReleases:     make(map[string]*pendingRelease),
 	}
 }
 
@@ -180,6 +183,11 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	frame *model.PlayerTelemetryFrame,
 	matchCtx *model.MatchContext,
 ) {
+	// Rejected samples must not rewind attachment state or become a new
+	// derivative/release baseline for direct extractor callers.
+	if ps.FrameCount > 0 && (frame.FrameIndex <= ps.LastFrameIdx || frame.Timestamp <= ps.LastTimestamp) {
+		return
+	}
 	// Capture PREVIOUS state before overwriting — critical for delta computations.
 	prevPos := ps.Position
 	prevVel := ps.Velocity
@@ -187,21 +195,28 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	prevRightHand := ps.RightHand
 	prevLeftHandRot := ps.LeftHandRot
 	prevRightHandRot := ps.RightHandRot
+	prevLeftHandRotationValid := ps.LeftHandRotationValid
+	prevRightHandRotationValid := ps.RightHandRotationValid
 	prevPlayspaceAnchor := ps.PlayspaceAnchor
 	prevReportedVelocity := ps.ReportedVelocity
 	prevTimestamp := ps.LastTimestamp
-	prevHasDisc := ps.HasDisc
+	prevFrameIndex := ps.LastFrameIdx
+	prevObservation := ps.Observation.Clone()
+	prevAttachment := ps.DiscAttachment.Clone()
+	prevHasReportedVelocity := ps.HasReportedVelocity
 	prevBlueScore := ps.PrevBlueScore
 	prevOrangeScore := ps.PrevOrangeScore
 	wasStunned := ps.IsStunned
 	wasShieldActive := ps.ShieldActive
 	wasBoosting := ps.IsBoosting
+	wasBoostingKnown := ps.IsBoostingKnown
 	firstFrame := ps.FrameCount == 0
 
 	if firstFrame {
 		// Fresh PlayerState (new match or new player): drop any side history
 		// left over from an earlier state with the same ID.
 		delete(fe.discHistory, ps.PlayerID)
+		fe.rejectRelease(ps.PlayerID, "release_state_reset")
 	}
 
 	// Update raw state from frame
@@ -220,9 +235,14 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	}
 	ps.LeftHand = frame.LeftHandPosition
 	ps.RightHand = frame.RightHandPosition
-	ps.LeftHandRot = frame.LeftHandRotation
-	ps.RightHandRot = frame.RightHandRotation
+	ps.LeftHandRot, ps.LeftHandRotationValid = model.ObservedHandRotation(frame.LeftHandRotation, frame.LeftHandRotationValid)
+	ps.RightHandRot, ps.RightHandRotationValid = model.ObservedHandRotation(frame.RightHandRotation, frame.RightHandRotationValid)
+	ps.LeftWristAngularRateValid, ps.RightWristAngularRateValid = false, false
 	ps.CurrentDisc = frame.Disc
+	ps.Observation = frame.Observation.Clone()
+	ps.DiscAttachment = observedAttachment(frame)
+	ps.HeldItems = frame.HeldItems.Clone()
+	ps.IsBoostingKnown = frame.IsBoostingKnown != nil && *frame.IsBoostingKnown
 	ps.IsStunned = frame.IsStunned
 	ps.IsBoosting = frame.IsBoosting
 	ps.ShieldActive = frame.ShieldActive
@@ -248,7 +268,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// the frame still updates raw state but kinematics are skipped.
 	maxDt := fe.MaxFrameDtSeconds()
 	rawDt := frame.Timestamp - prevTimestamp
-	dtKnown := !firstFrame && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
+	sourceContinuous := sameObservationSource(prevObservation, ps.Observation)
+	if !firstFrame && !sourceContinuous {
+		fe.rejectRelease(ps.PlayerID, "release_source_changed")
+		fe.clearSourceHistory(ps)
+	}
+	dtKnown := !firstFrame && sourceContinuous && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
 	largeGap := dtKnown && rawDt > maxDt
 	dt := 0.0
 	if dtKnown {
@@ -299,14 +324,22 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		}
 
 		// Wrist angular rates — quaternion angular distance / dt
-		if prevLeftHandRot.IsUnit() && frame.LeftHandRotation.IsUnit() {
-			ps.LeftWristAngularRate = prevLeftHandRot.AngularDistance(frame.LeftHandRotation) / dt
+		if prevLeftHandRotationValid && ps.LeftHandRotationValid {
+			ps.LeftWristAngularRate = prevLeftHandRot.AngularDistance(ps.LeftHandRot) / dt
+			ps.LeftWristAngularRateValid = !math.IsNaN(ps.LeftWristAngularRate) && !math.IsInf(ps.LeftWristAngularRate, 0)
 		} else {
 			ps.LeftWristAngularRate = 0
 		}
-		if prevRightHandRot.IsUnit() && frame.RightHandRotation.IsUnit() {
-			ps.RightWristAngularRate = prevRightHandRot.AngularDistance(frame.RightHandRotation) / dt
+		if prevRightHandRotationValid && ps.RightHandRotationValid {
+			ps.RightWristAngularRate = prevRightHandRot.AngularDistance(ps.RightHandRot) / dt
+			ps.RightWristAngularRateValid = !math.IsNaN(ps.RightWristAngularRate) && !math.IsInf(ps.RightWristAngularRate, 0)
 		} else {
+			ps.RightWristAngularRate = 0
+		}
+		if !ps.LeftWristAngularRateValid {
+			ps.LeftWristAngularRate = 0
+		}
+		if !ps.RightWristAngularRateValid {
 			ps.RightWristAngularRate = 0
 		}
 
@@ -332,6 +365,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.RightHandRelativeSpeed = 0
 		ps.LeftWristAngularRate = 0
 		ps.RightWristAngularRate = 0
+		if !firstFrame {
+			// An invalid interval must not seed the next derivative or a wrist
+			// variance window with a duplicate, stale, or discontinuous pose.
+			ps.LeftHandRotationValid, ps.RightHandRotationValid = false, false
+			ps.LeftHandRot, ps.RightHandRot = model.Quat{}, model.Quat{}
+		}
 	}
 
 	// EchoTools/Spark reconstructs physical playspace motion by advancing an
@@ -406,10 +445,48 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// speed, signature, spread, trajectory anchor) would be fed the wrong
 	// moment. Such a release is skipped, consistent with "gap = no
 	// kinematics"; the next possession starts a fresh track.
-	if prevHasDisc && !ps.HasDisc && !firstFrame && dtKnown && !largeGap && matchCtx.IsActivePhase(frame.GamePhase) {
+	continuousRelease := !firstFrame && dtKnown && !largeGap && frame.FrameIndex == prevFrameIndex+1 && sourceContinuous
+	fe.confirmRelease(ps, frame, continuousRelease, matchCtx.IsActivePhase(frame.GamePhase))
+	if !sourceContinuous {
+		delete(fe.discHistory, ps.PlayerID)
+	}
+	if prevAttachment.HeldBy(ps.PlayerID) && ps.DiscAttachment.Free() && sourceContinuous {
 		possessionFrames := frame.FrameIndex - ps.PossessionStartFrame
-		if possessionFrames >= 2 {
-			fe.detectThrow(ps, frame, matchCtx, prevPos, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot)
+		var oldReported *model.Vec3
+		if prevHasReportedVelocity {
+			v := prevReportedVelocity
+			oldReported = &v
+		}
+		observation := &model.ReleaseObservation{PlayerID: ps.PlayerID, FirstFreeFrame: frame.FrameIndex,
+			StartFrame: prevFrameIndex, EndFrame: frame.FrameIndex, StartTime: prevTimestamp, EndTime: frame.Timestamp,
+			Source: frame.Observation.Clone(), HandCandidates: append([]string(nil), prevAttachment.HandCandidates...),
+			PlayerMovement: []model.MovementObservation{movementObservation(prevFrameIndex, prevTimestamp, prevPos, oldReported),
+				movementObservation(frame.FrameIndex, frame.Timestamp, frame.Position, frame.ReportedVelocity)}}
+		pending := &pendingRelease{observation: observation, unavailableReason: "release_attachment_history_short"}
+		immediateReason := ""
+		if !continuousRelease {
+			immediateReason = "release_observation_gap"
+		} else if !matchCtx.IsActivePhase(frame.GamePhase) {
+			immediateReason = "release_inactive_phase"
+		}
+		if possessionFrames >= 2 && immediateReason == "" {
+			pending.unavailableReason = "release_motion_unavailable"
+			pending.event = fe.detectThrow(ps, frame, matchCtx, prevPos, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot,
+				prevLeftHandRotationValid, prevRightHandRotationValid, prevAttachment)
+			if pending.event != nil {
+				pending.event.ReleaseWindow = observation.Clone()
+			}
+		}
+		if immediateReason != "" {
+			// A known sampled state change across this broad interval is not
+			// a confirmed release or a valid release-analysis opportunity.
+			if fe.releaseObserver != nil {
+				fe.releaseObserver(ps.PlayerID, *observation.Clone(), immediateReason)
+			}
+		} else if len(fe.pendingReleases) < maxTrackedDiscHistories {
+			fe.pendingReleases[ps.PlayerID] = pending
+		} else if fe.releaseObserver != nil {
+			fe.releaseObserver(ps.PlayerID, *observation.Clone(), "release_tracking_capacity")
 		}
 	}
 
@@ -425,7 +502,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	fe.pushDiscHistory(ps, frame.Disc, frame.FrameIndex)
 
 	// Possession start tracking
-	if !prevHasDisc && ps.HasDisc {
+	if (!prevAttachment.HeldBy(ps.PlayerID) || !sourceContinuous) && ps.DiscAttachment.HeldBy(ps.PlayerID) {
 		ps.PossessionStartFrame = frame.FrameIndex
 		ps.PossessionStartTime = frame.Timestamp
 	}
@@ -458,8 +535,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.InvulnerableFrames++
 	}
 
-	// Boost tracking
-	if ps.IsBoosting && !wasBoosting {
+	// Activation timing needs two consecutive known samples. Unknown boost
+	// input does not establish an off-state or complete an existing interval.
+	if !ps.IsBoostingKnown || !wasBoostingKnown || !continuousRelease {
+		ps.BoostTimestamps = nil
+		ps.LastBoostFrame = -1
+	} else if ps.IsBoosting && !wasBoosting {
 		model.PushFloat64History(&ps.BoostTimestamps, frame.Timestamp, 100)
 		ps.LastBoostFrame = frame.FrameIndex
 	}
@@ -474,7 +555,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 // a collision, so contact flags are intentionally phrased as candidates.
 func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetryFrame, previousReported model.Vec3, dtKnown bool, dt float64) model.LegalMotionContext {
 	ctx := model.LegalMotionContext{
-		Boosting:       ps.IsBoosting,
+		Boosting:       ps.IsBoostingKnown && ps.IsBoosting,
+		BoostingKnown:  ps.IsBoostingKnown,
 		GameLocomotion: ps.HasReportedVelocity && ps.ReportedVelocity.Magnitude() >= 0.25,
 		TrackingLimited: frame.LeftHandPosition.IsZero() || frame.RightHandPosition.IsZero() ||
 			!frame.LeftHandRotation.IsUnit() || !frame.RightHandRotation.IsUnit(),
@@ -488,14 +570,14 @@ func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetry
 	}
 	if ps.PlayspaceValid && ps.PlayspaceRigCoherence >= 0.4 {
 		ctx.Leaning = ps.PlayspaceDistance >= 0.08 && ps.PlayspaceDistance <= 0.65 && ps.PlayspaceSpeed < 0.35
-		ctx.PlayspaceStep = !ps.IsBoosting && ps.PlayspaceSpeed >= 0.35 && ps.PlayspaceSpeed <= 2.2
+		ctx.PlayspaceStep = ps.IsBoostingKnown && !ps.IsBoosting && ps.PlayspaceSpeed >= 0.35 && ps.PlayspaceSpeed <= 2.2
 	}
-	if dtKnown && dt > 0 && !ps.IsBoosting && ps.HasReportedVelocity {
+	if dtKnown && dt > 0 && ps.IsBoostingKnown && !ps.IsBoosting && ps.HasReportedVelocity {
 		reportedAcceleration := ps.ReportedVelocity.Sub(previousReported).Magnitude() / dt
 		handBurst := math.Max(ps.LeftHandRelativeSpeed, ps.RightHandRelativeSpeed)
 		ctx.PossibleSlapOrPush = reportedAcceleration >= 6 && handBurst >= 1.2
 	}
-	if ps.LastThrow != nil && ps.LastThrow.FrameIndex == frame.FrameIndex {
+	if ps.LastThrow.ObservedAt(frame.FrameIndex) {
 		ctx.PossibleHeadContact = ps.LastThrow.PossibleHeadContact
 	}
 	ctx.CannotDistinguishContact = ctx.PossibleSlapOrPush || (ctx.GameLocomotion && !ctx.Boosting)
@@ -712,6 +794,9 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 		}
 		if ri := tailIndex(len(rotHist), histLen, i); ri >= 0 {
 			snap.HandRotation = rotHist[ri]
+			// These histories hold only explicitly observed normalized poses
+			// or zero sentinels; an unobserved identity is never inserted.
+			snap.HandRotationValid = rotHist[ri].IsUnit()
 		}
 		if vi := tailIndex(len(ps.DiscVelocityHistory), histLen, i); vi >= 0 {
 			snap.DiscVelocity = ps.DiscVelocityHistory[vi]
@@ -780,16 +865,17 @@ func (fe *FeatureExtractor) detectThrow(
 	prevHead model.Vec3,
 	prevLeftHand, prevRightHand model.Vec3,
 	prevLeftHandRot, prevRightHandRot model.Quat,
-) {
+	prevLeftRotationValid, prevRightRotationValid bool,
+	attachment *model.DiscAttachment,
+) *model.ThrowEvent {
 	disc := frame.Disc
 	if disc == nil {
-		return
+		return nil
 	}
 
-	// Release speed comes from game telemetry, never from position deltas, so
-	// it does not depend on the sampling interval. For local-client throws the
-	// engine's last_throw.total_speed is the authoritative value; the sampled
-	// disc magnitude is retained separately for corroboration.
+	// Keep sampled disc velocity separate from the local client's last_throw
+	// report. Neither identifies the exact release instant inside the sampled
+	// held-to-free interval, and a larger value is not a more authoritative one.
 	releaseVel := disc.Velocity
 	sampledDiscSpeed := disc.Speed
 	if sampledDiscSpeed <= 0 {
@@ -797,16 +883,20 @@ func (fe *FeatureExtractor) detectThrow(
 	}
 	releaseSpeed := sampledDiscSpeed
 	var gameLastThrow *model.GameThrowDetails
-	if frame.GameLastThrow != nil && frame.GameLastThrow.Valid() {
+	if frame.GameLastThrow != nil && frame.GameLastThrow.Valid() &&
+		frame.GameLastThrowProvenance.BoundLocalThrow(ps.PlayerID, frame.FrameIndex, frame.Timestamp) &&
+		frame.Observation != nil && frame.Observation.FrameIndex == frame.FrameIndex && frame.Observation.Timestamp == frame.Timestamp &&
+		frame.Observation.SameSource(frame.GameLastThrowProvenance) {
 		details := *frame.GameLastThrow
 		gameLastThrow = &details
-		releaseSpeed = math.Max(releaseSpeed, details.TotalSpeed)
+		// Keep both measured values; disagreement is not permission to choose
+		// the larger one as an authoritative launch-speed measurement.
 	}
 	releasePos := disc.Position
 
 	// Guard against NaN/Inf
 	if math.IsNaN(releaseSpeed) || math.IsInf(releaseSpeed, 0) || releaseSpeed <= 0 || releaseVel.HasNaN() || releaseVel.HasInf() {
-		return
+		return nil
 	}
 
 	// Choose the hand against the prior held-disc position when possible.
@@ -814,6 +904,19 @@ func (fe *FeatureExtractor) detectThrow(
 	handAnchor, handAnchorName, anchorQuality := fe.throwHandAnchor(ps.PlayerID, releasePos)
 	throwingHand, handPos, handToDiscDist, handAttributionConfidence :=
 		selectThrowingHand(prevLeftHand, prevRightHand, handAnchor, anchorQuality)
+	if attachment.Known() && len(attachment.HandCandidates) == 1 {
+		throwingHand = attachment.HandCandidates[0]
+		handPos = prevLeftHand
+		if throwingHand == "right" {
+			handPos = prevRightHand
+		}
+		if handPos.IsZero() {
+			throwingHand, handAttributionConfidence = "unknown", 0
+		} else {
+			handToDiscDist, handAttributionConfidence = handPos.Distance(handAnchor), 1
+			handAnchorName = "reported_attachment_hand"
+		}
+	}
 	releaseHandDist := nearestTrackedHandDistance(releasePos, frame.LeftHandPosition, frame.RightHandPosition)
 	headDist := releasePos.Distance(ps.Position)
 	if !prevHead.IsZero() {
@@ -826,6 +929,7 @@ func (fe *FeatureExtractor) detectThrow(
 	var handSpeed, handRelativeSpeed, wristAngVel float64
 	var wristRot model.Quat
 	handKinematicsValid := false
+	wristOrientationValid, wristKinematicsValid := false, false
 	switch throwingHand {
 	case "left":
 		handVel = ps.LeftHandVelocity
@@ -834,6 +938,7 @@ func (fe *FeatureExtractor) detectThrow(
 		handRelativeSpeed = ps.LeftHandRelativeSpeed
 		wristRot = prevLeftHandRot
 		wristAngVel = ps.LeftWristAngularRate
+		wristOrientationValid, wristKinematicsValid = prevLeftRotationValid, ps.LeftWristAngularRateValid
 		handKinematicsValid = !frame.LeftHandPosition.IsZero()
 	case "right":
 		handVel = ps.RightHandVelocity
@@ -842,6 +947,7 @@ func (fe *FeatureExtractor) detectThrow(
 		handRelativeSpeed = ps.RightHandRelativeSpeed
 		wristRot = prevRightHandRot
 		wristAngVel = ps.RightWristAngularRate
+		wristOrientationValid, wristKinematicsValid = prevRightRotationValid, ps.RightWristAngularRateValid
 		handKinematicsValid = !frame.RightHandPosition.IsZero()
 	default:
 		handAnchorName = "none"
@@ -881,21 +987,20 @@ func (fe *FeatureExtractor) detectThrow(
 		Method: "possession_track", LookbackDepth: 1,
 	}
 	if gameLastThrow != nil {
-		attribution.Confidence = 1
-		attribution.Method = "game_last_throw"
-		attribution.LookbackDepth = 0
+		attribution.Method = "client_last_throw"
 	}
 
 	throw := model.ThrowEvent{
-		ThrowerID:                 ps.PlayerID,
-		Attribution:               attribution,
-		FrameIndex:                frame.FrameIndex,
-		Timestamp:                 frame.Timestamp,
-		ReleasePosition:           releasePos,
-		ReleaseVelocity:           releaseVel,
-		ReleaseSpeed:              releaseSpeed,
-		SampledDiscSpeed:          sampledDiscSpeed,
-		GameLastThrow:             gameLastThrow,
+		ThrowerID:             ps.PlayerID,
+		Attribution:           attribution,
+		FrameIndex:            frame.FrameIndex,
+		Timestamp:             frame.Timestamp,
+		ReleasePosition:       releasePos,
+		ReleaseVelocity:       releaseVel,
+		ReleaseSpeed:          releaseSpeed,
+		SampledDiscSpeed:      sampledDiscSpeed,
+		GameLastThrow:         gameLastThrow,
+		WristOrientationValid: wristOrientationValid, WristKinematicsValid: wristKinematicsValid,
 		ThrowingHand:              throwingHand,
 		HandPosition:              handPos,
 		HandVelocity:              handVel,
@@ -923,9 +1028,10 @@ func (fe *FeatureExtractor) detectThrow(
 		PreReleaseFrames:          preRelease,
 	}
 
-	ps.LastThrow = &throw
-	ps.ThrowHistory = append(ps.ThrowHistory, throw)
-	ps.ThrowCount++
+	if gameLastThrow != nil {
+		throw.GameLastThrowProvenance = frame.GameLastThrowProvenance.Clone()
+	}
+	return &throw
 }
 
 // nearestTrackedHandDistance returns -1 when neither controller is tracked.

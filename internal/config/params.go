@@ -113,16 +113,16 @@ var detectorSpecs = map[string]DetectorSpec{
 		Removed: map[string]string{
 			"min_bhattacharyya": "population comparison was never implemented",
 		}},
-	"THROW_005": {ID: "THROW_005", Name: "Superhuman Target Precision", Category: "throw",
-		Params: []ParamSpec{
-			f("max_mean_deviation", 2.0, "m", "mean goal-line deviation below which precision is superhuman"),
-			f("max_stddev_deviation", 1.5, "m", "deviation stddev below which precision is superhuman"),
-			i("min_throws_for_pattern", 8, "count", "goal-directed throws needed before evaluation"),
+	"THROW_005": {ID: "THROW_005", Name: "Shot Targeting Review", Category: "throw",
+		Removed: map[string]string{
+			"max_mean_deviation":     "accuracy alone is not a violation; bounded supporting statistics have no human-impossibility cutoff",
+			"max_stddev_deviation":   "accuracy alone is not a violation; bounded supporting statistics have no human-impossibility cutoff",
+			"min_throws_for_pattern": "descriptive coverage includes every observed release, not just selected accurate throws",
 		}},
-	"THROW_006": {ID: "THROW_006", Name: "Trajectory Correction (Mags)", Category: "throw",
+	"THROW_006": {ID: "THROW_006", Name: "Free-flight Trajectory Review", Category: "throw",
 		Params: []ParamSpec{
 			f("min_trajectory_change", 8.0, "deg", "per-frame heading change counted as a bend"),
-			f("max_cumulative_change", 130.0, "deg", "cumulative bend that saturates severity"),
+			f("max_cumulative_change", 130.0, "deg", "completed-window sampled bend filter; diagnostic anomaly only, not severity or a verified physics limit"),
 			i("post_release_frames", 15, "frames", "frames tracked after release"),
 			f("min_distance_from_thrower", 2.0, "m", "disc must be this far from the thrower before bends count"),
 		}},
@@ -237,13 +237,13 @@ var detectorSpecs = map[string]DetectorSpec{
 			f("min_sustained_seconds", 0.3, "s", "minimum real elapsed time across qualifying samples"),
 			f("max_ping_ms", 150.0, "ms", "skip samples above this latency; 0 disables the hard cap"),
 		}},
-	"STATE_001": {ID: "STATE_001", Name: "Impossible Grab Distance", Category: "state",
-		Params: []ParamSpec{
-			f("grab_distance_threshold", 3.0, "m", "hand-to-disc distance at possession gain above which a grab is impossible"),
-			f("closing_velocity_scale", 0.25, "s", "latency credited to closing speed; 0 = use the frame dt"),
-			f("desync_margin", 3.0, "m", "extra distance tolerated as network desync"),
-			f("sigmoid_steepness", 2.0, "", sigmoidDoc),
-		}},
+	"STATE_001": {ID: "STATE_001", Name: "Disc Grab Geometry Review", Category: "state",
+		Removed: map[string]string{
+			"grab_distance_threshold": "replaced by project_rules.disc_grab_limit_m; sampled held-frame distance is not acquisition geometry",
+			"closing_velocity_scale":  "removed; measurement uncertainty must not enlarge the legal grab radius",
+			"desync_margin":           "removed; uncertain acquisition evidence is inconclusive, not extra legal reach",
+			"sigmoid_steepness":       "removed; grab assessment reports rule prerequisites rather than an unvalidated violation score",
+		}, Params: []ParamSpec{}},
 	"STATE_002": {ID: "STATE_002", Name: "Stun Recovery Exploit", Category: "state",
 		Params: []ParamSpec{
 			i("min_stun_frames", 20, "frames", "shortest legitimate stun, converted to seconds with the match tick rate"),
@@ -281,7 +281,7 @@ var detectorSpecs = map[string]DetectorSpec{
 			i("attribution_window_frames", 2, "frames", "frames a stun start may lag the punch"),
 			f("max_range", 25.0, "m", "distances above this are attribution failures, not punches"),
 		}},
-	"STATE_008": {ID: "STATE_008", Name: "Autopocket Catch Review", Category: "state",
+	"STATE_008": {ID: "STATE_008", Name: "Pre-catch Trajectory Review", Category: "state",
 		Removed: map[string]string{
 			"min_correction_angle_deg": "per-sample angles were replaced by min_turn_rate_deg_s and min_correction_duration_s; old values are not automatically reinterpreted as rates",
 			"max_turn_angle_deg":       "per-sample turn limits were replaced by max_turn_rate_deg_s; old values are not automatically reinterpreted as rates",

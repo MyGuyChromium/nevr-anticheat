@@ -9,13 +9,16 @@ import (
 )
 
 func qualityFrame(i int) model.PlayerTelemetryFrame {
+	leftObserved, rightObserved := true, true
 	velocity := model.Vec3{0, 0, 1}
 	return model.PlayerTelemetryFrame{PlayerID: "P1", FrameIndex: i, Timestamp: float64(i) / 15,
 		DeltaTime: 1.0 / 15, Position: model.Vec3{0, 1.7, float64(i) / 15},
 		Rotation: model.QuatIdentity(), LeftHandPosition: model.Vec3{-0.3, 1.4, float64(i) / 15},
 		RightHandPosition: model.Vec3{0.3, 1.4, float64(i) / 15}, LeftHandRotation: model.QuatIdentity(),
 		RightHandRotation: model.QuatIdentity(), ReportedVelocity: &velocity,
-		Disc: &model.DiscState{Position: model.Vec3{0, 1.5, 0}}, GamePhase: "playing"}
+		LeftHandRotationValid: &leftObserved, RightHandRotationValid: &rightObserved,
+		IsBoostingKnown: &leftObserved,
+		Disc:            &model.DiscState{Position: model.Vec3{0, 1.5, 0}}, GamePhase: "playing"}
 }
 
 func TestAssessTelemetryQualityHealthyAndCorrupt(t *testing.T) {

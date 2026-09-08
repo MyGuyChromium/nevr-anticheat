@@ -14,12 +14,14 @@ func ctx() *model.MatchContext {
 // active returns a PlayerState that the extractor updated at frame fi.
 func active(pid string, fi int) *model.PlayerState {
 	return &model.PlayerState{
-		PlayerID:      pid,
-		Position:      model.Vec3{2, 1.6, 3},
-		LeftHand:      model.Vec3{1.7, 1.9, 3.2},
-		RightHand:     model.Vec3{2.3, 1.9, 2.8},
-		LeftHandRot:   model.QuatIdentity(),
-		RightHandRot:  model.QuatIdentity(),
+		PlayerID:              pid,
+		Position:              model.Vec3{2, 1.6, 3},
+		LeftHand:              model.Vec3{1.7, 1.9, 3.2},
+		RightHand:             model.Vec3{2.3, 1.9, 2.8},
+		LeftHandRot:           model.QuatIdentity(),
+		RightHandRot:          model.QuatIdentity(),
+		LeftHandRotationValid: true, RightHandRotationValid: true,
+		LeftWristAngularRateValid: true, RightWristAngularRateValid: true,
 		Rotation:      model.QuatIdentity(),
 		FrameDt:       0.067,
 		FrameCount:    fi + 1,

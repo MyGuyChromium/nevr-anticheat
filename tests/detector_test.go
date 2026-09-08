@@ -333,13 +333,13 @@ func TestDetectors(t *testing.T) {
 			wantEvents: true,
 		},
 
-		// ---- THROW_005: Target Precision ----
+		// ---- THROW_005: diagnostic-only targeting context ----
 		{
 			name:     "THROW_005/clean_pass",
 			category: "clean_pass",
 			detector: func() detect.Detector {
-				// Feed 10 throws with human-level deviation (5-15 degrees).
-				// Mean ~10 deg > maxMeanDev(2.0), so no precision alert.
+				// Legacy direct events have no observed release interval; their
+				// accuracy must not become a scored targeting accusation.
 				d := throw.NewThrow005(nil)
 				dc := cfg.GetDetectorConfig("THROW_005")
 				_ = d.Configure(dc.Params)
@@ -370,12 +370,12 @@ func TestDetectors(t *testing.T) {
 			wantEvents: false,
 		},
 		{
-			name:     "THROW_005/clear_violation",
-			category: "clear_violation",
+			name:     "THROW_005/precise_accuracy_is_not_a_violation",
+			category: "clean_pass",
 			detector: func() detect.Detector {
-				// Feed 7 throws with near-perfect precision (0.3-0.5 degrees).
-				// On the 8th throw (minThrows=8), mean deviation < maxMeanDev(2.0)
-				// AND stddev < maxStddevDev(1.5), so it fires.
+				// Even near-perfect repeated accuracy is not a verified rule
+				// violation. Real diagnostic persistence is asserted in the
+				// production-path mechanics tests, with explicit release data.
 				d := throw.NewThrow005(nil)
 				dc := cfg.GetDetectorConfig("THROW_005")
 				_ = d.Configure(dc.Params)
@@ -385,7 +385,7 @@ func TestDetectors(t *testing.T) {
 					ps := testutil.NewPlayerState("p1")
 					te := testutil.MakeThrowEvent("p1", i*30, 10.0, 5.0)
 					te.TargetPosition = &goalPos
-					te.TargetDeviation = 0.3 + float64(i)*0.03 // 0.30 to 0.48 degrees — aimbot-level
+					te.TargetDeviation = 0.3 + float64(i)*0.03
 					te.ReleaseSpeed = 8.0 + float64(i)*1.0
 					ps.LastThrow = &te
 					d.Evaluate(mc, map[string]*model.PlayerState{"p1": ps}, i*30)
@@ -398,12 +398,12 @@ func TestDetectors(t *testing.T) {
 				goalPos := model.Vec3{-40, 0, 0}
 				te := testutil.MakeThrowEvent("p1", 210, 14.0, 5.0)
 				te.TargetPosition = &goalPos
-				te.TargetDeviation = 0.4 // 8th throw with aimbot precision
+				te.TargetDeviation = 0.4 // eighth precise throw, not proof of assistance
 				te.ReleaseSpeed = 14.0
 				ps.LastThrow = &te
 				return mc, map[string]*model.PlayerState{"p1": ps}, 210
 			},
-			wantEvents: true,
+			wantEvents: false,
 		},
 
 		// ---- THROW_008: Speed-Distance Anomaly ----

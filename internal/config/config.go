@@ -43,10 +43,11 @@ import (
 
 // Config is the top-level configuration structure.
 type Config struct {
-	General  GeneralConfig  `toml:"general"`
-	Physics  PhysicsConfig  `toml:"physics"`
-	Pipeline PipelineConfig `toml:"pipeline"`
-	Scoring  ScoringConfig  `toml:"scoring"`
+	General      GeneralConfig      `toml:"general"`
+	Physics      PhysicsConfig      `toml:"physics"`
+	ProjectRules model.ProjectRules `toml:"project_rules"`
+	Pipeline     PipelineConfig     `toml:"pipeline"`
+	Scoring      ScoringConfig      `toml:"scoring"`
 	// Baseline is EXPERIMENTAL: no code path consumes it yet (there is no
 	// BaselineProvider implementation). It is kept so the section can be
 	// present in a file without being rejected as unknown.
@@ -393,6 +394,7 @@ func applyOverlay(cfg, overlay *Config, md toml.MetaData, errs *[]string) []stri
 
 	overlayStruct(reflect.ValueOf(&cfg.General).Elem(), reflect.ValueOf(&overlay.General).Elem(), md, "general")
 	overlayStruct(reflect.ValueOf(&cfg.Physics).Elem(), reflect.ValueOf(&overlay.Physics).Elem(), md, "physics")
+	overlayStruct(reflect.ValueOf(&cfg.ProjectRules).Elem(), reflect.ValueOf(&overlay.ProjectRules).Elem(), md, "project_rules")
 	overlayStruct(reflect.ValueOf(&cfg.Pipeline).Elem(), reflect.ValueOf(&overlay.Pipeline).Elem(), md, "pipeline")
 	overlayStruct(reflect.ValueOf(&cfg.Scoring).Elem(), reflect.ValueOf(&overlay.Scoring).Elem(), md, "scoring")
 	overlayStruct(reflect.ValueOf(&cfg.Baseline).Elem(), reflect.ValueOf(&overlay.Baseline).Elem(), md, "baseline")

@@ -49,10 +49,22 @@ func catchTestFlight(dt float64, curved bool) []map[string]*model.PlayerState {
 				CurrentDisc: &model.DiscState{Position: position, Velocity: velocity, Speed: velocity.Magnitude(),
 					PossessorID: holder, IsHeld: holder != "", PossessionKnown: true, SampledPlayerCount: 2, BounceCount: &bounce},
 			}
+			catchFixtureObservation(players[id])
 		}
 		ticks = append(ticks, players)
 	}
 	return ticks
+}
+
+// Synthetic metadata declares presence and one capture source, not trust in a
+// real engine rule. Tests that mutate identity/time must do so explicitly.
+func catchFixtureObservation(p *model.PlayerState) {
+	p.Observation = &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "capture", SessionID: "catch-fixture", FrameIndex: p.LastFrameIdx, Timestamp: p.LastTimestamp}
+	a := &model.DiscAttachment{State: "free"}
+	if p.CurrentDisc.IsHeld {
+		a.State, a.HolderID, a.HandCandidates = "held", p.CurrentDisc.PossessorID, []string{"left", "right"}
+	}
+	p.CurrentDisc.Attachment, p.DiscAttachment = a.Clone(), a.Clone()
 }
 
 func catchRun(d *State008, ticks []map[string]*model.PlayerState) []model.DetectionEvent {
@@ -141,16 +153,16 @@ func TestState008AbstainsOnLegalAndUnavailableWindows(t *testing.T) {
 			catchDiscEach(s, 5, func(d *model.DiscState) { d.BounceCount = nil })
 			return s
 		}},
-		{"unknown possession", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
-			catchDiscEach(s, 5, func(d *model.DiscState) { d.PossessionKnown = false })
+		{"unknown attachment despite legacy known", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
+			catchDiscEach(s, 5, func(d *model.DiscState) { d.Attachment = nil })
 			return s
 		}},
 		{"holder conflict", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
 			catchDiscEach(s, 10, func(d *model.DiscState) { d.PossessionConflict = true })
 			return s
 		}},
-		{"two holders", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
-			s[10]["other"].HasDisc = true
+		{"two explicit holders", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
+			s[10]["other"].CurrentDisc.Attachment.HolderID = "other"
 			return s
 		}},
 		{"missing other player", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
@@ -232,6 +244,9 @@ func TestState008AbstainsOnLegalAndUnavailableWindows(t *testing.T) {
 			s[11]["receiver"].HasDisc = false
 			s[11]["other"].HasDisc = true
 			catchDiscEach(s, 11, func(d *model.DiscState) { d.PossessorID = "other" })
+			for _, p := range s[11] {
+				catchFixtureObservation(p)
+			}
 			return s
 		}},
 	}
@@ -330,6 +345,9 @@ func TestState008ShortRegrabHasNoUsableBaseline(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		ticks[i]["receiver"].HasDisc = true
 		catchDiscEach(ticks, i, func(d *model.DiscState) { d.IsHeld, d.PossessorID = true, "receiver" })
+		for _, p := range ticks[i] {
+			catchFixtureObservation(p)
+		}
 	}
 	if ev := catchRun(NewState008(nil), ticks); len(ev) != 0 {
 		t.Fatalf("rapid regrab was judged: %+v", ev)
@@ -365,6 +383,7 @@ func TestState008UsesMeasuredVariableIntervals(t *testing.T) {
 		now += dt
 		for _, p := range ticks[i] {
 			p.LastTimestamp = now
+			p.Observation.Timestamp = now
 		}
 		if i < 10 {
 			previous, current := ticks[i-1]["receiver"].CurrentDisc, ticks[i]["receiver"].CurrentDisc
@@ -440,6 +459,7 @@ func TestState008LegacyFixtureTransformsBoundsAndReset(t *testing.T) {
 		for _, p := range tick {
 			p.LastFrameIdx = i
 			p.LastTimestamp = 10 + float64(i)/15
+			p.Observation.FrameIndex, p.Observation.Timestamp = i, p.LastTimestamp
 			p.CurrentDisc.Position[0] += 10.0 / 15
 		}
 		d.Evaluate(ctx(), tick, i)

@@ -31,6 +31,11 @@ func DecisionReasonDescription(code string) string {
 }
 
 var decisionReasonDescriptions = map[string]string{
+	"boost_input_unavailable":           "Explicit boost state or compatible sampled timing and speed was unavailable",
+	"boost_baseline_unavailable":        "No known pre-boost baseline was observed; an already-active boost is not an activation event",
+	"catch_attachment_unknown":          "Explicit disc attachment was missing, ambiguous or inconsistent; no catch was inferred from possession alone",
+	"catch_source_unavailable":          "Fresh bound source and timing context was unavailable for this catch sample",
+	"catch_source_changed":              "Source context changed before catch confirmation; the pending comparison is inconclusive",
 	"catch_inputs_ready":                "Complete sampled roster passed catch-input checks; not a verified catch opportunity",
 	"catch_approach_evaluated":          "A free-disc approach was evaluated and possession persisted for a second sample",
 	"catch_baseline_pending":            "Collecting a stable free-disc reference path",
@@ -94,6 +99,7 @@ var decisionReasonDescriptions = map[string]string{
 	"player_immune":                     "Respawn-immunity guard reset wrist-rate streaks",
 	"wrist_interval_too_short":          "Sample interval guard reset wrist-rate streaks",
 	"wrist_at_or_below_threshold":       "Sampled hand rate did not sustain a threshold violation",
+	"wrist_rotation_unknown":            "Wrist orientation provenance, valid rotation pair, or sample continuity was unavailable; no wrist-rate conclusion",
 	"wrist_streak_pending":              "Wrist violation streak was too short or its next emission was deferred",
 	"wrist_sustained_candidate":         "Wrist streak reached the detector's emission condition",
 	"playspace_unavailable":             "Playspace residual reconstruction was unavailable",

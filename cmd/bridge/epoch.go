@@ -53,6 +53,16 @@ func (e *frameEpoch) stamp(sample time.Time, frames []model.PlayerTelemetryFrame
 		f := &frames[i]
 		f.FrameIndex = idx
 		f.Timestamp = ts
+		// Rebase the binding with the normalized frame, preserving the actual
+		// caller's time-basis label and never inventing engine capture time.
+		f.Observation = f.Observation.Clone()
+		if f.Observation != nil {
+			f.Observation.FrameIndex, f.Observation.Timestamp = idx, ts
+		}
+		f.GameLastThrowProvenance = f.GameLastThrowProvenance.Clone()
+		if f.GameLastThrowProvenance != nil {
+			f.GameLastThrowProvenance.FrameIndex, f.GameLastThrowProvenance.Timestamp = idx, ts
+		}
 		if prev, ok := e.playerTS[f.PlayerID]; ok {
 			f.DeltaTime = ts - prev
 		} else {

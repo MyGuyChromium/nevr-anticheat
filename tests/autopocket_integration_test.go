@@ -50,13 +50,18 @@ func autopocketIntegrationFrames() []model.PlayerTelemetryFrame {
 				left, team = model.Vec3{3, 2, 20}, "orange"
 			}
 			head, bounce := left.Add(model.Vec3{0, 1.2, 0}), 0
+			attachment := &model.DiscAttachment{State: "free"}
+			if holder != "" {
+				attachment.State, attachment.HolderID, attachment.HandCandidates = "held", holder, []string{"left", "right"}
+			}
 			frames = append(frames, model.PlayerTelemetryFrame{
 				PlayerID: id, Team: team, FrameIndex: i + 1, Timestamp: 10 + float64(i)*dt, DeltaTime: dt,
-				Position: left.Add(model.Vec3{0, 1, 0}), Rotation: model.QuatIdentity(), HeadPosition: &head,
+				Observation: &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "capture", SessionID: "catch-integration", FrameIndex: i + 1, Timestamp: 10 + float64(i)*dt},
+				Position:    left.Add(model.Vec3{0, 1, 0}), Rotation: model.QuatIdentity(), HeadPosition: &head,
 				LeftHandPosition: left, RightHandPosition: left.Add(model.Vec3{0, 0, .5}),
 				LeftHandRotation: model.QuatIdentity(), RightHandRotation: model.QuatIdentity(),
 				GamePhase: "playing", EstimatedPingMs: 30, HasPossession: holder == id,
-				Disc: &model.DiscState{Position: position, Velocity: velocity, Speed: velocity.Magnitude(),
+				Disc: &model.DiscState{Position: position, Velocity: velocity, Speed: velocity.Magnitude(), Attachment: attachment,
 					PossessorID: holder, IsHeld: holder != "", PossessionKnown: true, SampledPlayerCount: 2, BounceCount: &bounce},
 			})
 		}
@@ -228,7 +233,7 @@ func TestAutopocketPipelineStorageAndLiveChunksStayObservationOnly(t *testing.T)
 }
 
 func TestAutopocketLegacyNormalizedInputsRemainUnavailableAfterStorage(t *testing.T) {
-	for _, missing := range []string{"head", "bounce_count", "possession_observation"} {
+	for _, missing := range []string{"head", "bounce_count", "possession_observation", "attachment", "source"} {
 		t.Run(missing, func(t *testing.T) {
 			frames := autopocketIntegrationFrames()
 			for i := range frames {
@@ -240,6 +245,10 @@ func TestAutopocketLegacyNormalizedInputsRemainUnavailableAfterStorage(t *testin
 				case "possession_observation":
 					frames[i].Disc.PossessionKnown = false
 					frames[i].Disc.SampledPlayerCount = 0
+				case "attachment":
+					frames[i].Disc.Attachment = nil // old booleans stay true but cannot grant knowledge
+				case "source":
+					frames[i].Observation = nil
 				}
 			}
 			h := testutil.NewHarness(t).WithDetectors("STATE_008")

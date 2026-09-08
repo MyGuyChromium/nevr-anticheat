@@ -393,6 +393,7 @@ func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*ad
 
 	roster := buildRoster(&session)
 	mapper := adapter.NewMapper()
+	mapper.SetObservationSource("echovr_http", "http_response_headers_received", fmt.Sprintf("%s:%d", m.BroadcasterIP, cfg.APIPort))
 	mapper.SetDedupeIdentical(true)
 	result := mapper.MapSessionAt(&session, sampleAt)
 	var dropped int

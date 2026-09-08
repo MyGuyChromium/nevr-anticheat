@@ -17,22 +17,52 @@ func feTestCtx() *model.MatchContext {
 }
 
 func feFrame(pid string, idx int, ts float64, pos model.Vec3) model.PlayerTelemetryFrame {
+	leftObserved, rightObserved := true, true
 	return model.PlayerTelemetryFrame{
-		PlayerID:          pid,
-		FrameIndex:        idx,
-		Timestamp:         ts,
-		Position:          pos,
-		Rotation:          model.QuatIdentity(),
-		LeftHandPosition:  pos.Add(model.Vec3{-0.3, 0.3, 0.2}),
-		RightHandPosition: pos.Add(model.Vec3{0.3, 0.3, -0.2}),
-		LeftHandRotation:  model.QuatIdentity(),
-		RightHandRotation: model.QuatIdentity(),
-		GamePhase:         "playing",
-		Disc:              &model.DiscState{Position: model.Vec3{0, 2, 0}},
+		PlayerID:              pid,
+		FrameIndex:            idx,
+		Timestamp:             ts,
+		Position:              pos,
+		Rotation:              model.QuatIdentity(),
+		LeftHandPosition:      pos.Add(model.Vec3{-0.3, 0.3, 0.2}),
+		RightHandPosition:     pos.Add(model.Vec3{0.3, 0.3, -0.2}),
+		LeftHandRotation:      model.QuatIdentity(),
+		RightHandRotation:     model.QuatIdentity(),
+		LeftHandRotationValid: &leftObserved, RightHandRotationValid: &rightObserved,
+		IsBoostingKnown: &leftObserved,
+		GamePhase:       "playing",
+		Disc:            &model.DiscState{Position: model.Vec3{0, 2, 0}},
 	}
 }
 
 func approx(a, b, tol float64) bool { return math.Abs(a-b) <= tol }
+
+// Existing positive fixtures explicitly model observed attachment snapshots;
+// production never infers this information from a legacy possession boolean.
+func feObserve(fe *FeatureExtractor, ps *model.PlayerState, f *model.PlayerTelemetryFrame, mc *model.MatchContext) {
+	if f.Disc != nil {
+		f.Disc.Attachment = &model.DiscAttachment{State: "free"}
+		f.Disc.IsHeld, f.Disc.PossessorID = f.HasPossession, ""
+		if f.HasPossession {
+			f.Disc.PossessorID = f.PlayerID
+			f.Disc.Attachment = &model.DiscAttachment{State: "held", HolderID: f.PlayerID, HandCandidates: []string{"left", "right"}}
+		}
+	}
+	f.Observation = &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "fixture_time", SessionID: mc.MatchID,
+		SourcePlayerID: f.PlayerID, FrameIndex: f.FrameIndex, Timestamp: f.Timestamp, Freshness: "sampled_snapshot"}
+	if f.GameLastThrow != nil {
+		f.GameLastThrowProvenance = f.Observation.Clone()
+		f.GameLastThrowProvenance.Freshness = "value_change"
+	}
+	fe.UpdatePlayerState(ps, f, mc)
+}
+
+func feConfirm(fe *FeatureExtractor, ps *model.PlayerState, f model.PlayerTelemetryFrame, mc *model.MatchContext, dt float64) {
+	f.FrameIndex++
+	f.Timestamp += dt
+	f.GameLastThrow, f.GameLastThrowProvenance = nil, nil
+	feObserve(fe, ps, &f, mc)
+}
 
 func vecPtr(v model.Vec3) *model.Vec3 { return &v }
 
@@ -48,7 +78,7 @@ func TestExtractor_PlayspaceMotionSubtractsGameVelocity(t *testing.T) {
 		pos := model.Vec3{1 + 2*dt*float64(i), 1.6, 1}
 		f := feFrame("p1", i, dt*float64(i), pos)
 		f.ReportedVelocity = vecPtr(model.Vec3{2, 0, 0})
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	if !ps.PlayspaceValid || ps.PlayspaceSpeed > 1e-9 || ps.PlayspaceDistance > 1e-9 || ps.MovementOrigin != "game_velocity" {
 		t.Fatalf("pure game motion classified as playspace: %+v", ps)
@@ -67,7 +97,7 @@ func TestExtractor_PlayspaceWalkMovesWholeTrackedRig(t *testing.T) {
 		pos := model.Vec3{1 + (2*dt+0.10)*float64(i), 1.6, 1}
 		f := feFrame("p1", i, dt*float64(i), pos)
 		f.ReportedVelocity = vecPtr(model.Vec3{2, 0, 0})
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	if !ps.PlayspaceValid || ps.PlayspaceSpeed < 1.45 || ps.PlayspaceDistance < 0.35 ||
 		ps.PlayspaceRigCoherence < 0.99 || ps.PlayspaceTrackedHands != 2 || ps.MovementOrigin != "mixed" {
@@ -82,15 +112,15 @@ func TestExtractor_PlayspaceRequiresRawVelocityAndContinuousSamples(t *testing.T
 	ps := &model.PlayerState{PlayerID: "p1"}
 	f0 := feFrame("p1", 0, 0, model.Vec3{1, 1.6, 1})
 	f0.ReportedVelocity = vecPtr(model.Vec3{})
-	fe.UpdatePlayerState(ps, &f0, mc)
+	feObserve(fe, ps, &f0, mc)
 	f1 := feFrame("p1", 1, 0.067, model.Vec3{1.1, 1.6, 1})
-	fe.UpdatePlayerState(ps, &f1, mc)
+	feObserve(fe, ps, &f1, mc)
 	if ps.PlayspaceValid {
 		t.Fatal("missing raw player.velocity must disable playspace reconstruction")
 	}
 	f2 := feFrame("p1", 2, 0.2, model.Vec3{1.2, 1.6, 1})
 	f2.ReportedVelocity = vecPtr(model.Vec3{})
-	fe.UpdatePlayerState(ps, &f2, mc)
+	feObserve(fe, ps, &f2, mc)
 	if ps.PlayspaceValid || ps.PlayspaceDistance != 0 {
 		t.Fatal("sample gap at or above 100 ms must reset the playspace anchor")
 	}
@@ -111,7 +141,7 @@ func throwSequence(fe *FeatureExtractor, ps *model.PlayerState, mc *model.MatchC
 			PossessorID: ps.PlayerID,
 			IsHeld:      true,
 		}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	idx := startIdx + hold
 	f := feFrame(ps.PlayerID, idx, float64(idx)*dt, pos)
@@ -123,7 +153,8 @@ func throwSequence(fe *FeatureExtractor, ps *model.PlayerState, mc *model.MatchC
 		Velocity: releaseVel,
 		Speed:    releaseVel.Magnitude(),
 	}
-	fe.UpdatePlayerState(ps, &f, mc)
+	feObserve(fe, ps, &f, mc)
+	feConfirm(fe, ps, f, mc, dt)
 	return idx
 }
 
@@ -133,21 +164,21 @@ func TestExtractor_DtClampingAndUnknown(t *testing.T) {
 	ps := &model.PlayerState{PlayerID: "p1"}
 
 	f0 := feFrame("p1", 0, 0, model.Vec3{0, 1, 0})
-	fe.UpdatePlayerState(ps, &f0, mc)
+	feObserve(fe, ps, &f0, mc)
 	if ps.FrameDt != 0 {
 		t.Fatalf("first frame dt must be unknown (0), got %v", ps.FrameDt)
 	}
 
 	// Normal step: 0.1 s, 1 m in X -> 10 m/s.
 	f1 := feFrame("p1", 1, 0.1, model.Vec3{1, 1, 0})
-	fe.UpdatePlayerState(ps, &f1, mc)
+	feObserve(fe, ps, &f1, mc)
 	if !approx(ps.FrameDt, 0.1, 1e-9) || !approx(ps.Speed, 10, 1e-9) {
 		t.Fatalf("dt=%v speed=%v, want 0.1 / 10", ps.FrameDt, ps.Speed)
 	}
 
 	// Tiny step clamps to MinFrameDt.
 	f2 := feFrame("p1", 2, 0.101, model.Vec3{1.001, 1, 0})
-	fe.UpdatePlayerState(ps, &f2, mc)
+	feObserve(fe, ps, &f2, mc)
 	if !approx(ps.FrameDt, MinFrameDt, 1e-12) {
 		t.Fatalf("tiny dt should clamp to %v, got %v", MinFrameDt, ps.FrameDt)
 	}
@@ -157,7 +188,7 @@ func TestExtractor_DtClampingAndUnknown(t *testing.T) {
 
 	// Large gap (> MaxFrameDt): dt clamps to MaxFrameDt, kinematics cleared.
 	f3 := feFrame("p1", 3, 1.2, model.Vec3{5, 1, 0})
-	fe.UpdatePlayerState(ps, &f3, mc)
+	feObserve(fe, ps, &f3, mc)
 	if !approx(ps.FrameDt, MaxFrameDt, 1e-12) {
 		t.Fatalf("large gap dt should clamp to %v, got %v", MaxFrameDt, ps.FrameDt)
 	}
@@ -170,25 +201,25 @@ func TestExtractor_DtClampingAndUnknown(t *testing.T) {
 
 	// In-range step after the gap recovers.
 	f4 := feFrame("p1", 4, 1.4, model.Vec3{5.4, 1, 0})
-	fe.UpdatePlayerState(ps, &f4, mc)
+	feObserve(fe, ps, &f4, mc)
 	if !approx(ps.FrameDt, 0.2, 1e-9) || !approx(ps.Speed, 2, 1e-9) {
 		t.Fatalf("dt=%v speed=%v after gap, want 0.2 / 2", ps.FrameDt, ps.Speed)
 	}
 
-	// Duplicate timestamp: unknown dt, no kinematics.
+	// Duplicate/out-of-order timestamps do not replace the accepted state.
 	f5 := feFrame("p1", 5, 1.4, model.Vec3{6, 1, 0})
-	fe.UpdatePlayerState(ps, &f5, mc)
-	if ps.FrameDt != 0 || ps.Speed != 0 {
-		t.Fatalf("duplicate timestamp must be unknown: dt=%v speed=%v", ps.FrameDt, ps.Speed)
+	feObserve(fe, ps, &f5, mc)
+	if ps.LastFrameIdx != 4 || ps.Position != f4.Position || !approx(ps.Speed, 2, 1e-9) {
+		t.Fatalf("duplicate timestamp rewound accepted state")
 	}
 	// Out-of-order timestamp: unknown dt.
 	f6 := feFrame("p1", 6, 1.3, model.Vec3{6.5, 1, 0})
-	fe.UpdatePlayerState(ps, &f6, mc)
-	if ps.FrameDt != 0 || ps.Speed != 0 {
-		t.Fatalf("out-of-order timestamp must be unknown: dt=%v speed=%v", ps.FrameDt, ps.Speed)
+	feObserve(fe, ps, &f6, mc)
+	if ps.LastFrameIdx != 4 || ps.Position != f4.Position || !approx(ps.Speed, 2, 1e-9) {
+		t.Fatalf("out-of-order timestamp rewound accepted state")
 	}
 	// Histories stay aligned regardless.
-	if len(ps.PositionHistory) != 7 || len(ps.DiscVelocityHistory) != 7 || len(ps.TimestampHistory) != 7 {
+	if len(ps.PositionHistory) != 5 || len(ps.DiscVelocityHistory) != 5 || len(ps.TimestampHistory) != 5 {
 		t.Fatalf("history lengths diverged: pos=%d disc=%d ts=%d", len(ps.PositionHistory), len(ps.DiscVelocityHistory), len(ps.TimestampHistory))
 	}
 }
@@ -201,9 +232,9 @@ func TestExtractor_NoFixedTickRateAssumption(t *testing.T) {
 		fe := NewFeatureExtractor(30)
 		ps := &model.PlayerState{PlayerID: "p1"}
 		f0 := feFrame("p1", 0, 0, model.Vec3{0, 1, 0})
-		fe.UpdatePlayerState(ps, &f0, mc)
+		feObserve(fe, ps, &f0, mc)
 		f1 := feFrame("p1", 1, dt, model.Vec3{0.5, 1, 0})
-		fe.UpdatePlayerState(ps, &f1, mc)
+		feObserve(fe, ps, &f1, mc)
 		if !approx(ps.Speed, 0.5/dt, 1e-6) {
 			t.Errorf("dt=%v: speed=%v want %v", dt, ps.Speed, 0.5/dt)
 		}
@@ -216,16 +247,16 @@ func TestExtractor_SeparatesWorldAndPlayerRelativeHandSpeed(t *testing.T) {
 	ps := &model.PlayerState{PlayerID: "p1"}
 
 	f0 := feFrame("p1", 0, 0, model.Vec3{1, 1, 0})
-	fe.UpdatePlayerState(ps, &f0, mc)
+	feObserve(fe, ps, &f0, mc)
 	f1 := feFrame("p1", 1, 0.1, model.Vec3{2, 1, 0})
-	fe.UpdatePlayerState(ps, &f1, mc)
+	feObserve(fe, ps, &f1, mc)
 	if !approx(ps.LeftHandSpeed, 10, 1e-9) || !approx(ps.LeftHandRelativeSpeed, 0, 1e-9) {
 		t.Fatalf("hand following body: world=%v relative=%v, want 10/0", ps.LeftHandSpeed, ps.LeftHandRelativeSpeed)
 	}
 
 	f2 := feFrame("p1", 2, 0.2, model.Vec3{3, 1, 0})
 	f2.RightHandPosition[0] += 1 // another 10 m/s relative to the body
-	fe.UpdatePlayerState(ps, &f2, mc)
+	feObserve(fe, ps, &f2, mc)
 	if !approx(ps.RightHandSpeed, 20, 1e-9) || !approx(ps.RightHandRelativeSpeed, 10, 1e-9) {
 		t.Fatalf("independent hand motion: world=%v relative=%v, want 20/10", ps.RightHandSpeed, ps.RightHandRelativeSpeed)
 	}
@@ -237,12 +268,13 @@ func TestExtractor_HighPingThreshold(t *testing.T) {
 	ps := &model.PlayerState{PlayerID: "p1"}
 	f := feFrame("p1", 0, 0, model.Vec3{0, 1, 0})
 	f.EstimatedPingMs = 160
-	fe.UpdatePlayerState(ps, &f, mc)
+	feObserve(fe, ps, &f, mc)
 	if !ps.IsHighPing {
 		t.Fatal("160 ms should be high ping at the default 150 ms threshold")
 	}
 	fe.SetHighPingThreshold(200)
-	fe.UpdatePlayerState(ps, &f, mc)
+	f.FrameIndex, f.Timestamp = 1, 0.1
+	feObserve(fe, ps, &f, mc)
 	if ps.IsHighPing {
 		t.Fatal("160 ms should not be high ping at a 200 ms threshold")
 	}
@@ -321,13 +353,14 @@ func TestExtractor_ThrowingHandUsesPriorHeldDiscAnchor(t *testing.T) {
 		f.HasPossession = true
 		f.Disc = &model.DiscState{Position: f.RightHandPosition, IsHeld: true, PossessorID: "p1"}
 		previousLeft = f.LeftHandPosition
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	// The first free-disc sample is deliberately nearer the left hand. The
 	// last held-disc sample still proves that the right hand released it.
 	release := feFrame("p1", 3, 3*0.067, pos)
 	release.Disc = &model.DiscState{Position: previousLeft, Velocity: model.Vec3{0, 0, 12}, Speed: 12}
-	fe.UpdatePlayerState(ps, &release, mc)
+	feObserve(fe, ps, &release, mc)
+	feConfirm(fe, ps, release, mc, .067)
 	got := ps.LastThrow
 	if got == nil {
 		t.Fatal("release was not reconstructed")
@@ -352,7 +385,7 @@ func TestExtractor_MarksPossibleHeadContactAfterSampledRelease(t *testing.T) {
 		f := feFrame("p1", i, float64(i)*0.067, pos)
 		f.HasPossession = true
 		f.Disc = &model.DiscState{Position: f.RightHandPosition, IsHeld: true, PossessorID: "p1"}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 
 	// The recorder did not sample the instant of release. On its next tick the
@@ -365,7 +398,8 @@ func TestExtractor_MarksPossibleHeadContactAfterSampledRelease(t *testing.T) {
 		Position: pos.Add(model.Vec3{0, 0.08, 0.1}),
 		Velocity: model.Vec3{0, 0, -12}, Speed: 12,
 	}
-	fe.UpdatePlayerState(ps, &release, mc)
+	feObserve(fe, ps, &release, mc)
+	feConfirm(fe, ps, release, mc, .067)
 	got := ps.LastThrow
 	if got == nil {
 		t.Fatal("release was not reconstructed")
@@ -389,13 +423,14 @@ func TestExtractor_MissingHandsRemainUnknownOnThrow(t *testing.T) {
 		f.RightHandPosition = model.Vec3{}
 		f.HasPossession = true
 		f.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	release := feFrame("p1", 3, 3*0.067, pos)
 	release.LeftHandPosition = model.Vec3{}
 	release.RightHandPosition = model.Vec3{}
 	release.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0, 0, 0.2}), Velocity: model.Vec3{0, 0, 12}, Speed: 12}
-	fe.UpdatePlayerState(ps, &release, mc)
+	feObserve(fe, ps, &release, mc)
+	feConfirm(fe, ps, release, mc, .067)
 	got := ps.LastThrow
 	if got == nil || got.ThrowingHand != "unknown" || got.HandTracked || got.HandAttributionConfidence != 0 {
 		t.Fatalf("missing tracking fabricated a throwing hand: %+v", got)
@@ -430,7 +465,7 @@ func TestExtractor_DiscHistoryAlignedWhenDiscMissing(t *testing.T) {
 		} else {
 			f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{0.4, 0.2, 0}), Velocity: model.Vec3{0, 0, float64(i)}, Speed: float64(i), IsHeld: true, PossessorID: "p1"}
 		}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	if len(ps.DiscVelocityHistory) != len(ps.PositionHistory) {
 		t.Fatalf("disc velocity history (%d) not aligned with position history (%d)", len(ps.DiscVelocityHistory), len(ps.PositionHistory))
@@ -438,16 +473,10 @@ func TestExtractor_DiscHistoryAlignedWhenDiscMissing(t *testing.T) {
 	f := feFrame("p1", 10, 10*0.067, pos)
 	f.HasPossession = false
 	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0.2, 0}), Velocity: model.Vec3{0, 0, 15}, Speed: 15}
-	fe.UpdatePlayerState(ps, &f, mc)
-	th := ps.LastThrow
-	if th == nil || len(th.PreReleaseFrames) != 5 {
-		t.Fatalf("expected throw with 5 snapshots, got %v", th)
-	}
-	if !th.PreReleaseFrames[4].DiscMissing {
-		t.Fatal("snapshot for the disc-less frame must be flagged missing")
-	}
-	if th.PreReleaseFrames[3].DiscMissing || !approx(th.PreReleaseFrames[3].DiscVelocity.Z(), 8, 1e-9) {
-		t.Fatalf("snapshot for frame 8 should carry velocity z=8, got %v (missing=%v)", th.PreReleaseFrames[3].DiscVelocity, th.PreReleaseFrames[3].DiscMissing)
+	feObserve(fe, ps, &f, mc)
+	feConfirm(fe, ps, f, mc, .067)
+	if ps.LastThrow != nil {
+		t.Fatal("unknown attachment before first-free sample invented a release")
 	}
 }
 
@@ -474,14 +503,14 @@ func TestExtractor_PossessionFlickerIsNotAThrow(t *testing.T) {
 	ps := &model.PlayerState{PlayerID: "p1"}
 	pos := model.Vec3{0, 1, -10}
 	f0 := feFrame("p1", 0, 0, pos)
-	fe.UpdatePlayerState(ps, &f0, mc)
+	feObserve(fe, ps, &f0, mc)
 	f1 := feFrame("p1", 1, 0.067, pos)
 	f1.HasPossession = true
 	f1.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
-	fe.UpdatePlayerState(ps, &f1, mc)
+	feObserve(fe, ps, &f1, mc)
 	f2 := feFrame("p1", 2, 0.134, pos)
 	f2.Disc = &model.DiscState{Position: pos, Velocity: model.Vec3{0, 0, 15}, Speed: 15}
-	fe.UpdatePlayerState(ps, &f2, mc)
+	feObserve(fe, ps, &f2, mc)
 	if ps.ThrowCount != 0 {
 		t.Fatalf("1-frame possession flicker counted as a throw")
 	}
@@ -554,12 +583,12 @@ func TestExtractor_GoalSelection(t *testing.T) {
 		ps := &model.PlayerState{PlayerID: "p1", Team: "blue"}
 		pos := model.Vec3{0, 1, 0}
 		f0 := feFrame("p1", 0, 0, pos)
-		fe.UpdatePlayerState(ps, &f0, mc)
+		feObserve(fe, ps, &f0, mc)
 		// Score change with the disc reset to centre carries no information.
 		f1 := feFrame("p1", 1, 0.067, pos)
 		f1.BlueScore = 2
 		f1.Disc = &model.DiscState{Position: model.Vec3{0, 0, 0}}
-		fe.UpdatePlayerState(ps, &f1, mc)
+		feObserve(fe, ps, &f1, mc)
 		if _, known := fe.TeamGoalZ(mc, "blue"); known {
 			t.Fatal("must not learn a side from a disc at centre")
 		}
@@ -568,7 +597,7 @@ func TestExtractor_GoalSelection(t *testing.T) {
 		f2.BlueScore = 2
 		f2.OrangeScore = 3
 		f2.Disc = &model.DiscState{Position: model.Vec3{0, 0, -35}}
-		fe.UpdatePlayerState(ps, &f2, mc)
+		feObserve(fe, ps, &f2, mc)
 		z, known := fe.TeamGoalZ(mc, "blue")
 		if !known || !approx(z, goalZ, 1e-9) {
 			t.Fatalf("blue goal z=%v known=%v, want +GoalZ", z, known)
@@ -603,18 +632,19 @@ func TestExtractor_ReleaseSpeedFromGameVelocity(t *testing.T) {
 			f := feFrame("p1", i, float64(i)*dt, pos)
 			f.HasPossession = true
 			f.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
-			fe.UpdatePlayerState(ps, &f, mc)
+			feObserve(fe, ps, &f, mc)
 		}
 		f := feFrame("p1", 4, 4*dt, pos)
 		f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0, 0}), Velocity: model.Vec3{30, 0, 0}}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
+		feConfirm(fe, ps, f, mc, dt)
 		if ps.LastThrow == nil || !approx(ps.LastThrow.ReleaseSpeed, 30, 1e-9) {
 			t.Fatalf("dt=%v: release speed %v want 30", dt, ps.LastThrow)
 		}
 	}
 }
 
-func TestExtractor_GameLastThrowOverridesSampleAndStrengthensAttribution(t *testing.T) {
+func TestExtractor_GameLastThrowRemainsSeparateClientReportedEvidence(t *testing.T) {
 	fe := NewFeatureExtractor(30)
 	mc := feTestCtx()
 	ps := &model.PlayerState{PlayerID: "p1"}
@@ -624,7 +654,7 @@ func TestExtractor_GameLastThrowOverridesSampleAndStrengthensAttribution(t *test
 		f := feFrame("p1", i, float64(i)*dt, pos)
 		f.HasPossession = true
 		f.Disc = &model.DiscState{Position: pos, IsHeld: true, PossessorID: "p1"}
-		fe.UpdatePlayerState(ps, &f, mc)
+		feObserve(fe, ps, &f, mc)
 	}
 	f := feFrame("p1", 4, 4*dt, pos)
 	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0, 0}), Velocity: model.Vec3{18.7, 0, 0}, Speed: 18.7}
@@ -632,16 +662,17 @@ func TestExtractor_GameLastThrowOverridesSampleAndStrengthensAttribution(t *test
 		ArmSpeed: 12.4, TotalSpeed: 19.91, SpeedFromArm: 12,
 		SpeedFromMovement: 4.2, SpeedFromWrist: 3.71,
 	}
-	fe.UpdatePlayerState(ps, &f, mc)
+	feObserve(fe, ps, &f, mc)
+	feConfirm(fe, ps, f, mc, dt)
 
 	th := ps.LastThrow
-	if th == nil || !approx(th.ReleaseSpeed, 19.91, 1e-9) || !approx(th.SampledDiscSpeed, 18.7, 1e-9) {
+	if th == nil || !approx(th.ReleaseSpeed, 18.7, 1e-9) || !approx(th.SampledDiscSpeed, 18.7, 1e-9) {
 		t.Fatalf("engine/sample speeds not retained correctly: %+v", th)
 	}
 	if th.GameLastThrow == nil || th.GameLastThrow.SpeedFromMovement != 4.2 {
 		t.Fatalf("engine component breakdown missing: %+v", th)
 	}
-	if th.Attribution.Method != "game_last_throw" || th.Attribution.Confidence != 1 || th.Attribution.LookbackDepth != 0 {
+	if th.Attribution.Method != "client_last_throw" || th.Attribution.Confidence >= 1 || th.GameLastThrowProvenance.Authority != "client_reported" {
 		t.Fatalf("local engine attribution not applied: %+v", th.Attribution)
 	}
 }
@@ -652,7 +683,7 @@ func TestExtractor_TeamFromFrame(t *testing.T) {
 	ps := &model.PlayerState{PlayerID: "p9"}
 	f := feFrame("p9", 0, 0, model.Vec3{0, 1, 0})
 	f.Team = "orange"
-	fe.UpdatePlayerState(ps, &f, mc)
+	feObserve(fe, ps, &f, mc)
 	if ps.Team != "orange" {
 		t.Fatalf("team from frame not applied: %q", ps.Team)
 	}

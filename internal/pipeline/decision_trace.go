@@ -9,6 +9,18 @@ import (
 // of replay length. It is not an event cap and never affects detector output.
 const MaxDecisionReasons = 48
 
+func (c *coverageTracker) mechanicsRecord(detectorID, playerID string, record model.MechanicsAssessment) {
+	index, ok := c.index[detectorID]
+	if !ok || playerID == "" || !c.mechanicsLogs[detectorID] {
+		return
+	}
+	player := c.players[playerID]
+	if player == nil {
+		return
+	}
+	player.Detectors[index].MechanicsReview.Add(record)
+}
+
 func (c *coverageTracker) catchRecord(detectorID, playerID string, record model.CatchReviewRecord) {
 	index, ok := c.index[detectorID]
 	if !ok || playerID == "" || !c.catchLogs[detectorID] {
@@ -90,7 +102,16 @@ func (p *Pipeline) traceEvent(event model.DetectionEvent, reason string) {
 
 func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 	p.decisionCoverage = c
+	p.extractor.SetReleaseObserver(p.reviewCancelledRelease)
 	for _, d := range p.detectors {
+		if observed, ok := d.(detect.MechanicsObservable); ok {
+			detectorID := d.ID()
+			observed.SetMechanicsObserver(func(id, playerID string, record model.MechanicsAssessment) {
+				if id == detectorID {
+					c.mechanicsRecord(id, playerID, record)
+				}
+			})
+		}
 		if observed, ok := d.(detect.DecisionObservable); ok {
 			observed.SetDecisionObserver(c.trace)
 		}
@@ -107,6 +128,9 @@ func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 	p.rateLimiter.decisionObserver = func(e model.DetectionEvent) { p.traceEvent(e, "incident_rate_limited") }
 	return func() {
 		for _, d := range p.detectors {
+			if observed, ok := d.(detect.MechanicsObservable); ok {
+				observed.SetMechanicsObserver(nil)
+			}
 			if observed, ok := d.(detect.DecisionObservable); ok {
 				observed.SetDecisionObserver(nil)
 			}
@@ -116,5 +140,6 @@ func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 		}
 		p.dedup.decisionObserver, p.rateLimiter.decisionObserver = nil, nil
 		p.decisionCoverage = nil
+		p.extractor.SetReleaseObserver(nil)
 	}
 }

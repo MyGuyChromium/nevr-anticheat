@@ -131,47 +131,38 @@ func TestDetector_THROW_004_RepeatedReleaseSignatures(t *testing.T) {
 }
 
 func TestDetector_THROW_005_SuperhumanPrecision(t *testing.T) {
-	hr := runOnly(t, player1().PrecisionAimbot(10), "THROW_005")
-	hr.AssertDetectorFiredN("THROW_005", 1)
-	hr.AssertMinSeverity("THROW_005", 0.85)
-	hr.AssertMinConfidence("THROW_005", 0.4)
-	evd, ok := hr.Events[0].Evidence.(model.PrecisionEvidence)
-	if !ok || evd.GoalDirectedThrows != 8 || evd.MeanDeviation >= 2.0 || evd.StddevDeviation >= 1.5 {
-		t.Errorf("evidence %#v", hr.Events[0].Evidence)
+	// The legacy generator name is not ground truth: sub-degree repeated
+	// releases are supporting context, never a validated targeting violation.
+	hr := runOnly(t, mechanicsObservedFrames(player1().PrecisionAimbot(10)), "THROW_005")
+	log := assertMechanicsOnly(t, hr, "THROW_005")
+	if log.Total != 10 || log.Inconclusive != 10 {
+		t.Fatalf("release diagnostics: %+v", log)
 	}
-	// Human precision (3-12 degrees) over the same number of throws.
+	last := log.Records[len(log.Records)-1]
+	if last.Reason != "shot_targeting_supporting_context" || last.Metrics["observed_release_count"] != 10 || last.Metrics["direction_sample_count"] != 10 {
+		t.Fatalf("supporting statistics missing: %+v", last)
+	}
 	runOnly(t, player1().NormalThrowSequence(10), "THROW_005").AssertNoDetections()
 	runOnly(t, player1().EliteThrowSequence(10), "THROW_005").AssertNoDetections()
 }
 
 func TestDetector_THROW_006_TrajectoryCorrection(t *testing.T) {
-	// F169: production thresholds, no overrides. The attacked goal is
-	// configured as production learns it from the first scored goal.
+	// No guessed goal/pocket geometry can make this generator a verified
+	// steering violation; every record remains outside scored events.
 	hr := testutil.NewHarness(t).WithDetectors("THROW_006").WithBlueGoalSide(1).
-		WithMatchContext(matchContextForPlayer("player1")).Run(t, player1().MagnetismCheat(4))
-	hr.AssertAllFramesValid(128)
-	hr.AssertDetectorFiredN("THROW_006", 4)
-	hr.AssertMinSeverity("THROW_006", 0.9)
-	hr.AssertMinConfidence("THROW_006", 0.9)
-	for _, ev := range hr.Events {
-		evd, ok := ev.Evidence.(model.TrajectoryEvidence)
-		if !ok || evd.ViolationFrameCount < 5 || evd.AlignmentImprovement <= 0.7 || evd.MaxSingleFrameChange > 15 {
-			t.Errorf("evidence %+v", ev.Evidence)
+		WithMatchContext(matchContextForPlayer("player1")).Run(t, mechanicsObservedFrames(player1().MagnetismCheat(4)))
+	log := assertMechanicsOnly(t, hr, "THROW_006")
+	if log.Total != 4 {
+		t.Fatalf("flight diagnostics: %+v", log)
+	}
+	for _, record := range log.Records {
+		if record.Result == model.MechanicsValidatedViolation {
+			t.Fatalf("provisional path became verified: %+v", record)
+		}
+		if _, exists := record.Metrics["alignment_improvement"]; exists {
+			t.Fatal("unverified goal model returned")
 		}
 	}
-	// Side unknown (no SetBlueGoalSide, no score yet): the flight is judged
-	// against BOTH goals and the better alignment improvement is used, so a
-	// homing throw released away from its target still fires.
-	hr = runOnly(t, player1().MagnetismCheat(4), "THROW_006")
-	hr.AssertDetectorFiredN("THROW_006", 4)
-	hr.AssertMinSeverity("THROW_006", 0.9)
-	for _, ev := range hr.Events {
-		evd, ok := ev.Evidence.(model.TrajectoryEvidence)
-		if !ok || evd.AlignmentImprovement <= 0.7 {
-			t.Errorf("unknown-side evidence %+v", ev.Evidence)
-		}
-	}
-	// Negative: straight throws, with and without the goal side.
 	runOnly(t, player1().NormalThrowSequence(8), "THROW_006").AssertNoDetections()
 	testutil.NewHarness(t).WithDetectors("THROW_006").WithBlueGoalSide(1).
 		WithMatchContext(matchContextForPlayer("player1")).Run(t, player1().EliteThrowSequence(8)).AssertNoDetections()
@@ -333,10 +324,19 @@ func TestDetector_MOV_005_BoostSpam(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestDetector_STATE_001_GrabDistance(t *testing.T) {
-	hr := runOnly(t, player1().ImpossibleGrabs(4), "STATE_001")
-	hr.AssertDetectorFiredN("STATE_001", 3) // the first grab is inside the 5-frame warmup
-	hr.AssertMinConfidence("STATE_001", 0.75)
-	hr.AssertMinSeverity("STATE_001", 0.3)
+	// Large sampled offsets alone no longer imply a grab geometry violation.
+	// The first held sample is not a witnessed acquisition; later free→held
+	// intervals are recorded without applying latency credit or a 3 m limit.
+	hr := runOnly(t, mechanicsObservedFrames(player1().ImpossibleGrabs(4)), "STATE_001")
+	log := assertMechanicsOnly(t, hr, "STATE_001")
+	if log.Total != 3 || log.Inconclusive != 3 {
+		t.Fatalf("acquisition diagnostics: %+v", log)
+	}
+	for _, record := range log.Records {
+		if record.Reason != "grab_geometry_unverified" || record.Metrics["legal_limit_m"] != .25 || len(record.RawSamples) != 2 {
+			t.Fatalf("unverified rule evidence: %+v", record)
+		}
+	}
 	runOnly(t, player1().NormalThrowSequence(8), "STATE_001").AssertNoDetections()
 	runOnly(t, player1().EliteThrowSequence(8), "STATE_001").AssertNoDetections()
 }
@@ -459,14 +459,19 @@ func TestDetector_PAT_003_CrossMatchConsistency(t *testing.T) {
 }
 
 func TestDetector_PAT_004_CompositeMultiCheat(t *testing.T) {
-	hr := runOnly(t, player1().CompositeCheater(), "MOV_001", "STATE_001", "THROW_001", "PAT_004")
+	hr := runOnly(t, player1().CompositeCheater(), "MOV_001", "STATE_001", "BIO_002", "THROW_001", "PAT_004")
 	hr.AssertDetectorFiredN("PAT_004", 1)
 	hr.AssertMinSeverity("PAT_004", 0.5)
+	hr.AssertDetectorNotFired("STATE_001")
+	if len(hr.DetectorEvents("PAT_004")) != 1 {
+		t.Fatal("missing independent composite evidence")
+	}
 	evd, ok := hr.DetectorEvents("PAT_004")[0].Evidence.(model.PatternEvidence)
 	if !ok || evd.Metrics["category_count"] != 3 {
 		t.Errorf("evidence %+v", hr.DetectorEvents("PAT_004")[0].Evidence)
 	}
 	// Two categories are not enough, and a speed hack alone is one.
+	runOnly(t, player1().CompositeCheater(), "MOV_001", "STATE_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
 	runOnly(t, player1().CompositeCheater(), "MOV_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
 	runOnly(t, player1().SpeedHackFrames(150, 80), "MOV_001", "BIO_002", "PAT_004").AssertDetectorNotFired("PAT_004")
 }

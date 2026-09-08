@@ -55,6 +55,7 @@ type catchSample struct {
 	bounce             int
 	holder             string
 	poses              []catchPose
+	source             *model.ObservationContext
 }
 
 type catchBaseline struct {
@@ -76,8 +77,8 @@ type catchBaseline struct {
 
 func NewState008(params map[string]any) *State008 {
 	d := &State008{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_008", DetectorVersion: "0.2.0", DetectorName: "Autopocket Catch Review",
-		DetectorCategory: "state", Inputs: []string{"disc_state", "possession", "hand_tracking", "head_position"},
+		DetectorID: "STATE_008", DetectorVersion: "0.3.0", DetectorName: "Pre-catch Trajectory Review",
+		DetectorCategory: "state", Inputs: []string{"disc_state", "disc_attachment", "observation_context", "hand_tracking", "head_position"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false, TraceBranches: true,
 	}, baselineSamples: 4, minCorrectionSamples: 2, baselineDuration: .20, minCorrectionDuration: .12,
 		maxSampleGap: .12, maxWindow: 1.5, maxStepError: .20, minLateral: .30, minTurnRate: 60, maxTurnRate: 300,
@@ -131,6 +132,13 @@ func (d *State008) Reset() {
 	d.diagnosticPrevious = nil
 }
 
+// ResetSource closes an old-source pending diagnostic without manufacturing a
+// detection. Plain Reset remains silent when beginning a new match.
+func (d *State008) ResetSource() {
+	d.finishCatchReview(model.CatchReviewInsufficientData, "catch_source_changed", false)
+	d.Reset()
+}
+
 func (d *State008) resetTrajectory() {
 	d.previous = nil
 	d.clearFlight()
@@ -172,6 +180,13 @@ func (d *State008) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 	d.previous = &sample
 	if previous != nil {
 		dt := sample.timestamp - previous.timestamp
+		if !previous.source.SameSource(sample.source) {
+			d.observeCatchPossession(players, frame, "catch_source_changed")
+			d.resetTrajectory()
+			d.previous = &sample
+			d.trace(players, frame, "catch_source_changed")
+			return nil
+		}
 		if frame != previous.frame+1 || dt <= 0 || dt > d.maxSampleGap || !catchSameRoster(*previous, sample) {
 			d.observeCatchPossession(players, frame, "catch_sample_gap")
 			d.resetTrajectory()
@@ -377,9 +392,12 @@ func catchFinite(v model.Vec3) bool {
 }
 
 func catchReadSample(players map[string]*model.PlayerState, frame int) (catchSample, string) {
-	s := catchSample{frame: frame}
+	identity, reason := catchReadPossession(players, frame)
+	if reason != "" {
+		return identity, reason
+	}
+	s := catchSample{frame: frame, holder: identity.holder, source: identity.source}
 	var disc *model.DiscState
-	holders := 0
 	for _, ps := range detect.SortedPlayers(players) {
 		if ps.LastFrameIdx != frame {
 			continue
@@ -388,7 +406,7 @@ func catchReadSample(players map[string]*model.PlayerState, frame int) (catchSam
 			return s, "catch_input_unavailable"
 		}
 		dc := ps.CurrentDisc
-		if dc == nil || !dc.PossessionKnown || dc.PossessionConflict || dc.BounceCount == nil || *dc.BounceCount < 0 ||
+		if dc == nil || dc.BounceCount == nil || *dc.BounceCount < 0 ||
 			dc.SampledPlayerCount < 1 || dc.SampledPlayerCount > catchPlayerLimit ||
 			!catchFinite(dc.Position) || !catchFinite(dc.Velocity) || math.IsNaN(dc.Speed) || math.IsInf(dc.Speed, 0) || dc.Speed < 0 ||
 			math.IsNaN(ps.LastTimestamp) || math.IsInf(ps.LastTimestamp, 0) || ps.LastTimestamp < 0 {
@@ -410,17 +428,10 @@ func catchReadSample(players map[string]*model.PlayerState, frame int) (catchSam
 			*dc.BounceCount != s.bounce || dc.SampledPlayerCount != disc.SampledPlayerCount {
 			return s, "catch_inconsistent_snapshot"
 		}
-		if ps.HasDisc {
-			holders++
-			s.holder = ps.PlayerID
-		}
 		s.poses = append(s.poses, catchPose{ps.PlayerID, ps.Position, *ps.HeadPosition, ps.LeftHand, ps.RightHand})
 	}
 	if disc == nil || len(s.poses) != disc.SampledPlayerCount {
 		return s, "catch_roster_incomplete"
-	}
-	if holders > 1 || disc.IsHeld != (holders == 1) || disc.PossessorID != s.holder {
-		return s, "catch_possession_conflict"
 	}
 	return s, ""
 }

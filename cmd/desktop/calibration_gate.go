@@ -787,6 +787,9 @@ var promotionBlocked = map[string]string{
 	"STATE_006": "suspended because no impossible score invariant is known",
 	"STATE_007": "requires confirmed per-frame stun-count telemetry semantics",
 	"STATE_008": "observation-only catch review: causal catch/contact/input behavior and real-play accuracy are unvalidated; promotion is unavailable",
+	"STATE_001": "disc-grab geometry, acquisition timing and the owner rule are not engine-validated; diagnostics only",
+	"THROW_005": "accuracy alone cannot establish assistance; release model, permitted settings and target geometry are unvalidated",
+	"THROW_006": "sampled free-flight changes lack authoritative contact/impulse coverage and calibration; diagnostics only",
 	"PAT_001":   "known unsafe on legitimate regrab rhythm",
 	"PAT_002":   "known unsafe on consistent legitimate throwing form",
 	"PAT_003":   "cross-match detector requires a separate history calibration design",
@@ -1200,7 +1203,7 @@ func (s *server) handlePromoteDetector(w http.ResponseWriter, r *http.Request) {
 	// This detector is immutable observation-only, even if stored calibration
 	// labels would otherwise meet every statistical gate. Reject before any
 	// profile or promotion writes, matching config and emission safeguards.
-	if detectorID == "STATE_008" {
+	if detectorID == "STATE_008" || detectorID == "STATE_001" || detectorID == "THROW_005" || detectorID == "THROW_006" {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": "detector is observation-only and cannot be promoted", "promotion_block": promotionBlocked[detectorID],
 		})

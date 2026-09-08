@@ -189,10 +189,16 @@ func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *m
 	}
 	// Quaternions: normalize near-unit, zero NaN/Inf/near-zero, report the
 	// zero sentinel.
-	var rotFixed, rotZero bool
-	for _, q := range []*model.Quat{&frame.Rotation, &frame.LeftHandRotation, &frame.RightHandRotation} {
+	var leftRotationFixed, rightRotationFixed bool
+	frame.LeftHandRotation, frame.LeftHandRotationValid, leftRotationFixed =
+		sanitizeObservedHandRotation(frame.LeftHandRotation, frame.LeftHandRotationValid)
+	frame.RightHandRotation, frame.RightHandRotationValid, rightRotationFixed =
+		sanitizeObservedHandRotation(frame.RightHandRotation, frame.RightHandRotationValid)
+	rotFixed, rotZero := leftRotationFixed || rightRotationFixed, false
+	for i, q := range []*model.Quat{&frame.Rotation, &frame.LeftHandRotation, &frame.RightHandRotation} {
 		var fixed bool
 		*q, fixed = sanitizeQuat(*q)
+		fixed = fixed || (i == 1 && leftRotationFixed) || (i == 2 && rightRotationFixed)
 		rotFixed = rotFixed || fixed
 		rotZero = rotZero || (!fixed && quatIsZero(*q))
 	}
@@ -306,10 +312,10 @@ func sanitizeQuat(q model.Quat) (model.Quat, bool) {
 			return model.Quat{}, true
 		}
 	}
-	if q.IsUnit() {
-		return q, false
+	if normalized, ok := q.NormalizedRotation(); ok {
+		return normalized, false
 	}
-	if q.Magnitude() > 0.1 {
+	if magnitude := q.Magnitude(); magnitude > 0.1 && !math.IsInf(magnitude, 0) {
 		return q.Normalize(), false
 	}
 	if quatIsZero(q) {

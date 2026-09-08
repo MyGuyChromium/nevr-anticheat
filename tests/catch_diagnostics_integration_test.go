@@ -132,3 +132,32 @@ func TestCatchDiagnosticsProductionPipelineStorageAndLiveEOF(t *testing.T) {
 		}
 	}
 }
+
+func TestCatchDiagnosticsSourceSwitchPersistsInterruptedPendingCatch(t *testing.T) {
+	h := testutil.NewHarness(t).WithDetectors("STATE_008").WithShadowMode()
+	frames := autopocketIntegrationFrames()
+	for i := range frames {
+		if frames[i].FrameIndex == 12 {
+			frames[i].Observation.SourceID = "other-capture"
+		}
+	}
+	mc := &model.MatchContext{MatchID: "catch-source-switch", PlayerIDs: []string{"receiver", "other"}, TickRate: 15, Physics: h.Config().Physics.Constants()}
+	p, _ := h.NewPipeline()
+	result, err := p.ProcessMatch(context.Background(), mc, frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := integrationCatchLog(t, result.PlayerCoverage)
+	if len(result.DetectionEvents) != 0 || log.Total != 1 || log.InsufficientData != 1 || log.Records[0].Reason != "catch_source_changed" || log.Records[0].Confirmed {
+		t.Fatalf("pending catch survived/disappeared at source boundary: events=%d log=%+v", len(result.DetectionEvents), log)
+	}
+	store := newTestStore(t)
+	if _, err := replay.StoreMatchAnalysis(context.Background(), store, mc, result, "initial", replay.AnalysisOptions{Logger: quietLogger()}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetMatchAnalysisCoverage(context.Background(), mc.MatchID)
+	if err != nil || !reflect.DeepEqual(integrationCatchLog(t, stored), log) {
+		t.Fatalf("source boundary diagnostic lost: %v", err)
+	}
+	requireAutopocketNoStoredConsequences(t, store)
+}

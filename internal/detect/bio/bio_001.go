@@ -120,8 +120,8 @@ func (d *Bio001) Evaluate(matchCtx *model.MatchContext, players map[string]*mode
 			continue
 		}
 
-		d.checkHand(matchCtx, ps, pid, "left", ps.LeftWristAngularRate, getStreak(d.left, pid), frameIdx, &events)
-		d.checkHand(matchCtx, ps, pid, "right", ps.RightWristAngularRate, getStreak(d.right, pid), frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "left", ps.LeftWristAngularRate, ps.LeftWristAngularRateValid, getStreak(d.left, pid), frameIdx, &events)
+		d.checkHand(matchCtx, ps, pid, "right", ps.RightWristAngularRate, ps.RightWristAngularRateValid, getStreak(d.right, pid), frameIdx, &events)
 	}
 
 	return events
@@ -132,10 +132,16 @@ func (d *Bio001) checkHand(
 	ps *model.PlayerState,
 	pid, handName string,
 	rate float64,
+	valid bool,
 	s *streak,
 	frameIdx int,
 	events *[]model.DetectionEvent,
 ) {
+	if !valid || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 {
+		s.reset()
+		d.TraceDecision(pid, frameIdx, "wrist_rotation_unknown")
+		return
+	}
 	// Per-hand wrist-rate baseline in rad/s, kept by the detector itself so
 	// the evidence compares like with like (PlayerState only carries
 	// hand-SPEED accumulators in m/s).

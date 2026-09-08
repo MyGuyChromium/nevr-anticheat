@@ -52,6 +52,8 @@ type ReleaseAngleEvidence struct {
 	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
 	DiscSpeed                 float64 `json:"disc_speed"`
 	WristOrientation          Quat    `json:"wrist_orientation"`
+	WristOrientationValid     bool    `json:"wrist_orientation_valid"`
+	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
 	ThrowingHand              string  `json:"throwing_hand"`
 	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
 	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`

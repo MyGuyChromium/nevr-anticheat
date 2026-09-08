@@ -53,6 +53,7 @@ func catchReviewBriefTurn(rate int, jitter bool) []map[string]*model.PlayerState
 				LeftHand: left, RightHand: left.Add(model.Vec3{0, 0, .5}), HasDisc: held && id == "receiver",
 				CurrentDisc: &model.DiscState{Position: position, Velocity: velocity, Speed: velocity.Magnitude(), PossessorID: holder,
 					IsHeld: held, PossessionKnown: true, SampledPlayerCount: 2, BounceCount: &bounce}}
+			catchFixtureObservation(players[id])
 		}
 		ticks = append(ticks, players)
 	}
@@ -90,6 +91,7 @@ func TestState008TemporalReviewContiguousFrameLabelsDoNotHideTimeGap(t *testing.
 				// Keep the actual timestamps/path; only frame labels are renumbered.
 				for _, p := range players {
 					p.LastFrameIdx, p.FrameCount = len(retained)+1, len(retained)+1
+					p.Observation.FrameIndex = p.LastFrameIdx
 				}
 				retained = append(retained, players)
 			}

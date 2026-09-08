@@ -24,6 +24,7 @@ type DetectorCoverage struct {
 	Limitations     []string               `json:"limitations"`
 	DecisionTrace   *DetectorDecisionTrace `json:"decision_trace,omitempty"`
 	CatchReview     *CatchReviewLog        `json:"catch_review,omitempty"`
+	MechanicsReview *MechanicsReviewLog    `json:"mechanics_review,omitempty"`
 }
 
 // DetectorDecisionTrace is a bounded summary of branches actually visited,

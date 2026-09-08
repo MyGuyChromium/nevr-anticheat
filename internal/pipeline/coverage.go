@@ -10,16 +10,18 @@ import (
 )
 
 type coverageTracker struct {
-	players    map[string]*model.PlayerCoverage
-	detectors  []model.DetectorCoverage
-	index      map[string]int
-	branches   map[string]bool
-	catchLogs  map[string]bool
-	wristLimit float64
+	players       map[string]*model.PlayerCoverage
+	detectors     []model.DetectorCoverage
+	index         map[string]int
+	branches      map[string]bool
+	catchLogs     map[string]bool
+	mechanicsLogs map[string]bool
+	wristLimit    float64
 }
 
 func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster []string) *coverageTracker {
 	c := &coverageTracker{players: make(map[string]*model.PlayerCoverage), index: make(map[string]int), branches: make(map[string]bool), catchLogs: make(map[string]bool), wristLimit: 50}
+	c.mechanicsLogs = make(map[string]bool)
 	if dc, ok := cfg.Detectors["BIO_001"]; ok {
 		c.wristLimit = detect.GetFloat(dc.Params, "max_wrist_angular_velocity", 50)
 	}
@@ -30,6 +32,10 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 			c.branches[d.ID()] = observed.HasDecisionBranches()
 		}
 		_, c.catchLogs[d.ID()] = d.(detect.CatchObservable)
+		_, c.mechanicsLogs[d.ID()] = d.(detect.MechanicsObservable)
+		if d.ID() == "THROW_001" || d.ID() == "THROW_003" {
+			c.mechanicsLogs[d.ID()] = true
+		}
 	}
 	ids := make(map[string]bool)
 	for id := range cfg.Detectors {
@@ -52,6 +58,9 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 		case "THROW_001":
 			d.InputCheck = true
 			d.Limitations = append(d.Limitations, "Sampled disc speed is not an independently verified release speed; intervening contact and reference-frame assumptions require review.")
+		case "THROW_003":
+			d.InputCheck = true
+			d.Limitations = append(d.Limitations, "Physical hand-motion/disc disagreement is not WristAngleOffset. Settings integrity needs an observed setting and verified allowed range, neither currently available.")
 		case "BIO_001":
 			d.InputCheck = true
 			d.Limitations = append(d.Limitations, "Wrist rate saturates at pi / sample interval. Rates above that limit are indistinguishable; legal contact and tracking remain review-only.")
@@ -60,7 +69,7 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 			d.Limitations = append(d.Limitations, "No feet, guardian or authoritative contact telemetry: this cannot prove walking rather than a legal lean or lunge.")
 		case "STATE_008":
 			d.InputCheck = true
-			d.Limitations = append(d.Limitations, "Experimental autopocket catch review requires explicit possession, bounce-counter presence and a complete tracked player sample. Input availability is not a confirmed catch opportunity; inspect branch reasons. No remote grip input or authoritative collision impulses are available, so a trajectory observation cannot identify a cheater or prove input automation.")
+			d.Limitations = append(d.Limitations, "Experimental pre-catch trajectory review requires explicit attachment, source continuity, bounce-counter presence and a complete tracked player sample. Input availability is not a confirmed catch opportunity; inspect branch reasons. No remote grip input or authoritative collision impulses are available, so a trajectory observation cannot identify a cheater or prove input automation.")
 		default:
 			d.Limitations = append(d.Limitations, "Internal detector opportunity coverage is not measured; dispatch does not prove that all required inputs or situations occurred.")
 		}
@@ -83,6 +92,9 @@ func (c *coverageTracker) player(id string) *model.PlayerCoverage {
 			if c.catchLogs[d.DetectorID] {
 				d.CatchReview = model.NewCatchReviewLog()
 			}
+			if c.mechanicsLogs[d.DetectorID] {
+				d.MechanicsReview = model.NewMechanicsReviewLog()
+			}
 		}
 		c.players[id] = p
 	}
@@ -95,20 +107,18 @@ func (c *coverageTracker) candidate(id string, ps *model.PlayerState, frame int)
 	usable := false
 	switch id {
 	case "THROW_001":
-		usable = ps.LastThrow != nil && ps.LastThrow.FrameIndex == frame && ps.LastThrow.ReleaseSpeed > 0
+		usable = ps.LastThrow.ObservedAt(frame) && ps.LastThrow.ReleaseSpeed > 0
 	case "MOV_006":
 		usable = ps.PlayspaceValid && ps.HasReportedVelocity && ps.PlayspaceTrackedHands > 0
+	case "THROW_003":
+		usable = ps.LastThrow != nil && ps.LastThrow.ObservedAt(frame) && ps.LastThrow.HandKinematicsValid
 	case "BIO_001":
 		usable = !ps.IsStunned && !ps.IsImmune && ps.FrameDt >= .01 && math.Pi/ps.FrameDt > c.wristLimit &&
-			(validRotationPair(ps.LeftHandRotHistory) || validRotationPair(ps.RightHandRotHistory))
+			(ps.LeftWristAngularRateValid || ps.RightWristAngularRateValid)
 	}
 	if usable {
 		d.InputFrames++
 	}
-}
-
-func validRotationPair(q []model.Quat) bool {
-	return len(q) >= 2 && q[len(q)-1].IsUnit() && q[len(q)-2].IsUnit()
 }
 
 func (c *coverageTracker) finish(quality TelemetryQualityReport) map[string]*model.PlayerCoverage {
@@ -133,6 +143,9 @@ func (c *coverageTracker) finish(quality TelemetryQualityReport) map[string]*mod
 			case quality.Gated:
 				d.Status = "insufficient_data"
 				d.Limitations = append(d.Limitations, "Source quality gating prevents interpreting silence from this check.")
+			case (d.DetectorID == "STATE_001" || d.DetectorID == "THROW_005" || d.DetectorID == "THROW_006") && d.MechanicsReview != nil && d.MechanicsReview.Total == d.MechanicsReview.Inconclusive:
+				d.Status = "insufficient_data"
+				d.Limitations = append(d.Limitations, "No conclusive mechanics comparison: inspect missing rule/source/input prerequisites and any observed transition evidence.")
 			case d.CandidateFrames == 0:
 				d.Limitations = append(d.Limitations, "No frames passed this detector's phase and warmup gates.")
 			case d.InputCheck && d.InputFrames == 0:

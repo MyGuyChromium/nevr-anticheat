@@ -2,6 +2,7 @@ package state
 
 import (
 	"math"
+	"reflect"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -52,49 +53,70 @@ func catchFitReference(samples []catchSample, maxError float64) (model.Vec3, flo
 // catchReadPossession is intentionally smaller than the event input contract.
 // Missing motion/head tracking may still leave an explicit free-to-held
 // transition observable. No disc kinematics from this path reaches detection.
-func catchReadPossession(players map[string]*model.PlayerState, frame int) (catchSample, bool) {
+func catchReadPossession(players map[string]*model.PlayerState, frame int) (catchSample, string) {
 	s := catchSample{frame: frame}
 	var reference *model.DiscState
-	holders := 0
+	holderPresent := false
+	seen := make(map[string]bool)
 	for _, ps := range detect.SortedPlayers(players) {
 		if ps.LastFrameIdx != frame {
 			continue
 		}
 		dc := ps.CurrentDisc
-		if ps.PlayerID == "" || dc == nil || !dc.PossessionKnown || dc.PossessionConflict ||
+		if ps.PlayerID == "" || seen[ps.PlayerID] || dc == nil ||
 			dc.SampledPlayerCount < 1 || dc.SampledPlayerCount > catchPlayerLimit || len(s.poses) == catchPlayerLimit ||
 			math.IsNaN(ps.LastTimestamp) || math.IsInf(ps.LastTimestamp, 0) || ps.LastTimestamp < 0 {
-			return s, false
+			return s, "catch_input_unavailable"
+		}
+		seen[ps.PlayerID] = true
+		// The legacy possession booleans cannot upgrade unknown attachments.
+		// HasDisc is deliberately not used: it may retain sticky ownership.
+		if !dc.Attachment.Known() || !ps.DiscAttachment.Known() {
+			return s, "catch_attachment_unknown"
+		}
+		if dc.PossessionConflict || !reflect.DeepEqual(dc.Attachment, ps.DiscAttachment) ||
+			dc.Attachment.Free() != !dc.IsHeld || dc.Attachment.HolderID != dc.PossessorID {
+			return s, "catch_possession_conflict"
+		}
+		if !ps.Observation.Valid() || ps.Observation.FrameIndex != frame || ps.Observation.Timestamp != ps.LastTimestamp {
+			return s, "catch_source_unavailable"
 		}
 		if reference == nil {
 			reference, s.timestamp = dc, ps.LastTimestamp
+			s.holder, s.source = dc.Attachment.HolderID, ps.Observation.Clone()
 		} else if ps.LastTimestamp != s.timestamp || dc.IsHeld != reference.IsHeld ||
-			dc.PossessorID != reference.PossessorID || dc.SampledPlayerCount != reference.SampledPlayerCount {
-			return s, false
+			dc.PossessorID != reference.PossessorID || dc.SampledPlayerCount != reference.SampledPlayerCount ||
+			!reflect.DeepEqual(dc.Attachment, reference.Attachment) || !s.source.SameSource(ps.Observation) {
+			return s, "catch_inconsistent_snapshot"
 		}
-		if ps.HasDisc {
-			holders++
-			s.holder = ps.PlayerID
+		if ps.PlayerID == s.holder {
+			holderPresent = true
 		}
 		s.poses = append(s.poses, catchPose{id: ps.PlayerID})
 	}
-	return s, reference != nil && len(s.poses) == reference.SampledPlayerCount && holders <= 1 &&
-		reference.IsHeld == (holders == 1) && reference.PossessorID == s.holder
+	if reference == nil || len(s.poses) != reference.SampledPlayerCount || (s.holder != "" && !holderPresent) {
+		return s, "catch_roster_incomplete"
+	}
+	return s, ""
 }
 
 // observeCatchPossession finalizes exactly once, only after explicit sampled
 // identity continuity or a documented interruption. Its separate state lets
 // insufficient-data catches remain visible without weakening any event guard.
 func (d *State008) observeCatchPossession(players map[string]*model.PlayerState, frame int, unavailable string) {
-	now, known := catchReadPossession(players, frame)
-	if !known {
-		d.finishCatchReview(model.CatchReviewInsufficientData, "catch_possession_unavailable", false)
+	now, identityReason := catchReadPossession(players, frame)
+	if identityReason != "" {
+		d.finishCatchReview(model.CatchReviewInsufficientData, identityReason, false)
 		d.diagnosticPrevious = nil
 		return
 	}
 	previous := d.diagnosticPrevious
 	d.diagnosticPrevious = &now
 	if previous == nil {
+		return
+	}
+	if !previous.source.SameSource(now.source) {
+		d.finishCatchReview(model.CatchReviewInsufficientData, "catch_source_changed", false)
 		return
 	}
 	dt := now.timestamp - previous.timestamp

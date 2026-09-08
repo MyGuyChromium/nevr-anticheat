@@ -54,6 +54,7 @@ func catchAnalyticFlight(rate int, jitter bool, omegaDeg, turnEnd float64) []map
 				LeftHand: left, RightHand: left.Add(model.Vec3{0, 0, .5}), HasDisc: holder == id,
 				CurrentDisc: &model.DiscState{Position: p, Velocity: v, Speed: v.Magnitude(), PossessorID: holder, IsHeld: holder != "",
 					PossessionKnown: true, SampledPlayerCount: 2, BounceCount: &bounce}}
+			catchFixtureObservation(players[id])
 		}
 		ticks = append(ticks, players)
 	}
@@ -73,7 +74,7 @@ func TestState008SameContinuousTrajectoryAcrossRatesAndJitter(t *testing.T) {
 				if len(events) != 1 {
 					t.Fatalf("same analytic flight produced %d events; reasons=%v", len(events), reasons)
 				}
-				if !events[0].IsShadow || events[0].EnforcementWeight != 0 || events[0].AutoEnforce || events[0].DetectorVersion != "0.2.0" {
+				if !events[0].IsShadow || events[0].EnforcementWeight != 0 || events[0].AutoEnforce || events[0].DetectorVersion != "0.3.0" {
 					t.Fatalf("unsafe event metadata: %+v", events[0])
 				}
 				e := events[0].Evidence.(model.StateEvidence)
@@ -184,6 +185,7 @@ func TestState008FinalizedCatchDiagnosticsNeverManufactureEvents(t *testing.T) {
 		{"confirmation gap", func(s []map[string]*model.PlayerState) []map[string]*model.PlayerState {
 			for _, p := range s[len(s)-1] {
 				p.LastFrameIdx++
+				p.Observation.FrameIndex = p.LastFrameIdx
 			}
 			return s
 		}, model.CatchReviewInsufficientData, false, 0},
@@ -191,6 +193,7 @@ func TestState008FinalizedCatchDiagnosticsNeverManufactureEvents(t *testing.T) {
 			for _, p := range s[len(s)-1] {
 				p.HasDisc = p.PlayerID == "other"
 				p.CurrentDisc.PossessorID = "other"
+				catchFixtureObservation(p)
 			}
 			return s
 		}, model.CatchReviewUnconfirmed, false, 0},
@@ -200,6 +203,7 @@ func TestState008FinalizedCatchDiagnosticsNeverManufactureEvents(t *testing.T) {
 				for _, p := range s[i] {
 					p.HasDisc = p.PlayerID == "receiver"
 					p.CurrentDisc.IsHeld, p.CurrentDisc.PossessorID = true, "receiver"
+					catchFixtureObservation(p)
 				}
 			}
 			return s

@@ -6,7 +6,7 @@ Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR commu
 
 **Validation status: 0 of 31 detectors have completed representative, independently labelled real-telemetry validation.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
 
-Desktop 0.12.1 expands [autopocket catch review](docs/autopocket_review.md): time-based free-disc comparisons, conservative swept contact envelopes, three trajectory projections, and bounded catch-by-catch diagnostics with Spark/physics links. This is permanently observation-only in this implementation; it cannot prove automated grip input or attribute the cause to the receiver. Re-import original replays to populate the new presence-aware telemetry and diagnostics; older normalized caches may not contain enough inputs.
+Desktop 0.13.0 adds [grab, release and settings hardening](docs/mechanics_capability_audit.md): explicit hand attachments, confirmed sampled releases, rotation validity, correctly attributed local diagnostics, and bounded mechanics assessments with Spark/physics links. The owner's inclusive **0.25 m disc-grab rule** and **≥19 m/s requires ≥4.7 m/s movement** rule are preserved separately from the existing 18.9 m/s cap; their engine/build validity remains unverified. Accuracy alone is not a cheat finding. Re-import original replays to recover source fields that older normalized caches cannot provide.
 
 **Automatic findings:** the installed app analyzes replays itself; no assistant,
 cloud upload, admission list or player-name rules are needed. Each analyzed match
@@ -252,8 +252,8 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |
 | THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data; skips possible sampled headbutts |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
-| THROW_005 | Superhuman Target Precision | throw | 0.7 | Unverified — needs accuracy data |
-| THROW_006 | Trajectory Correction (Mags) | throw | 0.8 | Physics-grounded |
+| THROW_005 | Shot Targeting Review | throw | 0.0 | Diagnostic only — descriptive release statistics, no accuracy violation |
+| THROW_006 | Free-flight Trajectory Review | throw | 0.0 | Diagnostic only — sampled bend/contact model remains unvalidated |
 | THROW_007 | Penalty Field Tampering | throw | 0.6 | **STUB** — no penalty field telemetry |
 | THROW_008 | Speed-Distance Anomaly | throw | 0.5 | Unverified — needs arena physics data |
 | BIO_001 | Impossible Wrist Rotation | bio | 0.6 | Unverified — rotation convention unconfirmed; unreachable at 15 Hz |
@@ -266,14 +266,14 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 | MOV_004 | Boost Speed Cap Violation | movement | 0.5 | Disabled — needs is_boosting field |
 | MOV_005 | Boost Spam | movement | 0.6 | Disabled — needs is_boosting field |
 | MOV_006 | Physical Playspace Walking | movement | 0.75 | EchoTools-grounded translation candidate; shadow-only because legal leans cannot be excluded |
-| STATE_001 | Impossible Grab Distance | state | 0.5 | Unverified — needs grab range data |
+| STATE_001 | Disc Grab Geometry Review | state | 0.0 | Diagnostic only — mags requires verified acquisition geometry and rule |
 | STATE_002 | Stun Recovery Exploit | state | 0.7 | Physics-grounded |
 | STATE_003 | Shield Duration Abuse | state | 0.6 | Disabled — needs shield_active field |
 | STATE_004 | Damage Immunity Exploit | state | 0.8 | Disabled — needs is_immune validation |
 | STATE_005 | Cooldown Bypass | state | 0.6 | Disabled — needs shield_active field |
 | STATE_006 | Score Manipulation | state | 1.0 | **SUSPENDED** — no confirmed invariant |
 | STATE_007 | Impossible Punch Range | state | 0.5 | Disabled — needs per-frame stun data |
-| STATE_008 | Autopocket Catch Review | state | 0.0 | Experimental — immutable observation-only; cause and actor unverified |
+| STATE_008 | Pre-catch Trajectory Review | state | 0.0 | Experimental — immutable observation-only; cause and actor unverified |
 | PAT_001 | Frame-Perfect Timing | pattern | 0.6 | **UNSAFE** — FPs on skilled players |
 | PAT_002 | Identical Release Points | pattern | 0.6 | **UNSAFE** — FPs on consistent form |
 | PAT_003 | Cross-Match Consistency | pattern | 0.8 | Needs 3+ matches of DB history |

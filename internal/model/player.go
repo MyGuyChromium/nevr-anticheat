@@ -4,18 +4,24 @@ import "math"
 
 // PlayerState holds per-player accumulated state within a match.
 type PlayerState struct {
+	Observation     *ObservationContext `json:"observation,omitempty"`
+	DiscAttachment  *DiscAttachment     `json:"disc_attachment,omitempty"`
+	HeldItems       *HandAttachments    `json:"held_items,omitempty"`
+	IsBoostingKnown bool                `json:"is_boosting_known"`
 	// Identity
 	PlayerID string `json:"player_id"`
 	Team     string `json:"team"`
 
 	// Current frame state
-	Position     Vec3  `json:"position"`
-	HeadPosition *Vec3 `json:"head_position,omitempty"`
-	Rotation     Quat  `json:"rotation"`
-	LeftHand     Vec3  `json:"left_hand"`
-	RightHand    Vec3  `json:"right_hand"`
-	LeftHandRot  Quat  `json:"left_hand_rot"`
-	RightHandRot Quat  `json:"right_hand_rot"`
+	Position               Vec3  `json:"position"`
+	HeadPosition           *Vec3 `json:"head_position,omitempty"`
+	Rotation               Quat  `json:"rotation"`
+	LeftHand               Vec3  `json:"left_hand"`
+	RightHand              Vec3  `json:"right_hand"`
+	LeftHandRot            Quat  `json:"left_hand_rot"`
+	RightHandRot           Quat  `json:"right_hand_rot"`
+	LeftHandRotationValid  bool  `json:"left_hand_rotation_valid"`
+	RightHandRotationValid bool  `json:"right_hand_rotation_valid"`
 
 	// Derived kinematics
 	Velocity              Vec3    `json:"velocity"`
@@ -51,16 +57,18 @@ type PlayerState struct {
 	// relative variants subtract body translation and describe controller
 	// motion relative to the player; biomechanical limits must use those so
 	// fast legal body movement is not counted again as impossible arm motion.
-	LeftHandVelocity          Vec3    `json:"left_hand_velocity"`
-	RightHandVelocity         Vec3    `json:"right_hand_velocity"`
-	LeftHandSpeed             float64 `json:"left_hand_speed"`
-	RightHandSpeed            float64 `json:"right_hand_speed"`
-	LeftHandRelativeVelocity  Vec3    `json:"left_hand_relative_velocity"`
-	RightHandRelativeVelocity Vec3    `json:"right_hand_relative_velocity"`
-	LeftHandRelativeSpeed     float64 `json:"left_hand_relative_speed"`
-	RightHandRelativeSpeed    float64 `json:"right_hand_relative_speed"`
-	LeftWristAngularRate      float64 `json:"left_wrist_angular_rate"`
-	RightWristAngularRate     float64 `json:"right_wrist_angular_rate"`
+	LeftHandVelocity           Vec3    `json:"left_hand_velocity"`
+	RightHandVelocity          Vec3    `json:"right_hand_velocity"`
+	LeftHandSpeed              float64 `json:"left_hand_speed"`
+	RightHandSpeed             float64 `json:"right_hand_speed"`
+	LeftHandRelativeVelocity   Vec3    `json:"left_hand_relative_velocity"`
+	RightHandRelativeVelocity  Vec3    `json:"right_hand_relative_velocity"`
+	LeftHandRelativeSpeed      float64 `json:"left_hand_relative_speed"`
+	RightHandRelativeSpeed     float64 `json:"right_hand_relative_speed"`
+	LeftWristAngularRate       float64 `json:"left_wrist_angular_rate"`
+	RightWristAngularRate      float64 `json:"right_wrist_angular_rate"`
+	LeftWristAngularRateValid  bool    `json:"left_wrist_angular_rate_valid"`
+	RightWristAngularRateValid bool    `json:"right_wrist_angular_rate_valid"`
 
 	// Game state
 	IsStunned            bool    `json:"is_stunned"`
@@ -140,6 +148,7 @@ type LegalMotionContext struct {
 	PlayspaceStep            bool    `json:"playspace_step"`
 	GameLocomotion           bool    `json:"game_locomotion"`
 	Boosting                 bool    `json:"boosting"`
+	BoostingKnown            bool    `json:"boosting_known"`
 	PossibleSlapOrPush       bool    `json:"possible_slap_or_push"`
 	PossibleHeadContact      bool    `json:"possible_head_contact"`
 	TrackingLimited          bool    `json:"tracking_limited"`

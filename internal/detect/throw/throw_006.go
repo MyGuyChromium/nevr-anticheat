@@ -1,359 +1,323 @@
 package throw
 
 import (
-	"fmt"
 	"math"
+	"reflect"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
 const (
-	// minViolationFrames: sustained bending required before any magnetism
-	// detection. Headbutts, regrabs, wall bounces and replay interpolation
-	// produce bends that pass the per-frame bounce filter but do not sustain.
-	minViolationFrames = 5
-	// minTrackedFrames: short throws do not carry enough data.
-	minTrackedFrames = 5
-	// alignmentImprovementGate: a disc that was not heading toward the goal
-	// and ends up nearly aimed at it. Kept high (0.7): 0.5 fired on normal
-	// throws that happened to curve slightly toward the goal.
-	alignmentImprovementGate = 0.7
-	// fullConfidenceViolationFrames: violation frames for full confidence.
-	fullConfidenceViolationFrames = 8
-
-	// Collision filters (per frame).
-	inelasticSpeedRatio = 0.75 // speed loss > 25% with any angle change
+	minViolationFrames  = 5
+	minTrackedFrames    = 5
+	inelasticSpeedRatio = .75
 	inelasticMinAngle   = 2.0
-	elasticBounceAngle  = 15.0 // single-frame angle above this is a bounce
-	deflectionRatio     = 1.15 // speed gain > 15% with angle change > 8 deg
+	elasticBounceAngle  = 15.0
+	deflectionRatio     = 1.15
 	deflectionMinAngle  = 8.0
 )
 
-// goalCandidate is one goal a flight's alignment is measured against. The
-// goal is fixed at release and never flips mid-flight, so crossing mid-court
-// cannot fabricate an alignment improvement.
-type goalCandidate struct {
-	pos              model.Vec3
-	initialAlignment float64 // cosine similarity at first tracked frame
-	finalAlignment   float64 // cosine similarity at last tracked frame
-	set              bool    // whether initialAlignment has been set
-}
-
-func (g *goalCandidate) improvement() float64 {
-	if !g.set {
-		return 0
-	}
-	return g.finalAlignment - g.initialAlignment
-}
-
-// goalLabelUnknownSide is the CorrectionTarget label when the attacked goal
-// was not known at release and the flight was judged against both goals.
-const goalLabelUnknownSide = "side unknown, better of both goals"
-
 type trajectoryTrack struct {
-	throwerID         string
-	releaseFrame      int
-	releaseTimestamp  float64
-	releaseSpeed      float64
-	releasePos        model.Vec3
-	positions         []model.Vec3
-	velocities        []model.Vec3
-	cumulativeAngle   float64
-	maxFrameAngle     float64
-	violationAngleSum float64
-	violationFrames   int
-	frameCount        int
-	prevVelocity      model.Vec3
-	// goals are the candidate goals fixed at release: the attacked goal when
-	// the thrower's side is known (GoalSelectionTeam), otherwise BOTH goals,
-	// because magnetism toward either goal is suspicious and a homing throw
-	// released away from its target would otherwise be judged against the
-	// goal the release happened to point at.
-	goals     []goalCandidate
-	goalLabel string
+	throwerID                      string
+	releaseFrame                   int
+	releasePos                     model.Vec3
+	assessment                     model.MechanicsAssessment
+	previous                       flightReviewSample
+	cumulativeAngle, maxFrameAngle float64
+	violationFrames, frameCount    int
 }
 
-// goalCandidates picks the goals a track is measured against (see
-// trajectoryTrack.goals).
-func goalCandidates(matchCtx *model.MatchContext, t *model.ThrowEvent) ([]goalCandidate, string) {
-	if t.GoalSelection == model.GoalSelectionTeam && !t.GoalPosition.IsZero() {
-		return []goalCandidate{{pos: t.GoalPosition}}, model.GoalSelectionTeam
-	}
-	if matchCtx != nil && matchCtx.Physics.GoalZ > 0 {
-		gz := matchCtx.Physics.GoalZ
-		return []goalCandidate{{pos: model.Vec3{0, 0, gz}}, {pos: model.Vec3{0, 0, -gz}}}, goalLabelUnknownSide
-	}
-	if !t.GoalPosition.IsZero() {
-		// No goal geometry on the match context: the extractor's choice is
-		// the only goal available.
-		return []goalCandidate{{pos: t.GoalPosition}}, t.GoalSelection
-	}
-	return nil, ""
+type flightReviewSample struct {
+	frame              int
+	timestamp          float64
+	position, velocity model.Vec3
+	bounce             int
+	source             *model.ObservationContext
 }
 
-// bestGoal returns the candidate with the largest alignment improvement
-// (nil when no candidate has been measured).
-func (tr *trajectoryTrack) bestGoal() *goalCandidate {
-	var best *goalCandidate
-	for i := range tr.goals {
-		g := &tr.goals[i]
-		if !g.set {
-			continue
-		}
-		if best == nil || g.improvement() > best.improvement() {
-			best = g
-		}
-	}
-	return best
-}
-
-// Throw006 detects disc trajectory bending after release (magnetism cheat).
+// Throw006 is a sampled free-flight review, not a "mags" or targeting-cheat
+// identification. Its provisional bend filters never produce scored events.
+// Unknown ownership, missing contact counters, gaps, source changes, catches
+// and collision indications cancel the comparison with an inconclusive record.
 type Throw006 struct {
 	detect.BaseDetector
-	minTrajectoryChange float64 // degrees per frame
-	maxCumulativeChange float64 // total degrees
-	postReleaseFrames   int
-	minDistFromThrower  float64 // meters
-	activeThrows        map[string]*trajectoryTrack
+	minTrajectoryChange, maxCumulativeChange, minDistFromThrower float64
+	postReleaseFrames                                            int
+	activeThrows                                                 map[string]*trajectoryTrack
+	lastRelease                                                  map[string]int
+	observer                                                     detect.MechanicsObserver
 }
 
 func NewThrow006(params map[string]any) *Throw006 {
-	return &Throw006{
-		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_006", DetectorVersion: "1.3.0",
-			DetectorName: "Trajectory Correction (Mags)", DetectorCategory: "throw",
-			Inputs: []string{"disc_state"}, Warmup: 5, Weight: 0.8,
-		},
-		minTrajectoryChange: detect.GetFloat(params, "min_trajectory_change", 8.0),
-		maxCumulativeChange: detect.GetFloat(params, "max_cumulative_change", 130.0),
-		postReleaseFrames:   detect.GetInt(params, "post_release_frames", 15),
-		minDistFromThrower:  detect.GetFloat(params, "min_distance_from_thrower", 2.0),
-		activeThrows:        make(map[string]*trajectoryTrack),
-	}
+	d := &Throw006{BaseDetector: detect.BaseDetector{DetectorID: "THROW_006", DetectorVersion: "2.0.0",
+		DetectorName: "Free-flight Trajectory Review", DetectorCategory: "throw", Inputs: []string{"disc_state", "disc_attachment"}, Warmup: 0, Weight: 0},
+		minTrajectoryChange: 8, maxCumulativeChange: 130, postReleaseFrames: 15, minDistFromThrower: 2}
+	_ = d.Configure(params)
+	d.Reset()
+	return d
+}
+func (d *Throw006) Reset() {
+	d.activeThrows = make(map[string]*trajectoryTrack)
+	d.lastRelease = make(map[string]int)
 }
 
-func (d *Throw006) Reset() { d.activeThrows = make(map[string]*trajectoryTrack) }
+// ResetSource preserves a terminal diagnostic before dropping old-source
+// state. Plain Reset stays silent for a fresh match or detached collector.
+func (d *Throw006) ResetSource() {
+	d.cancelAll("trajectory_source_changed")
+	d.Reset()
+}
+func (d *Throw006) SetWeight(float64)                                      { d.Weight = 0 }
+func (d *Throw006) SetAutoEnforce(bool)                                    { d.IsAutoEnforce = false }
+func (d *Throw006) AutoEnforce() bool                                      { return false }
+func (d *Throw006) DefaultEnforcementWeight() float64                      { return 0 }
+func (d *Throw006) SetMechanicsObserver(observer detect.MechanicsObserver) { d.observer = observer }
 func (d *Throw006) Configure(params map[string]any) error {
-	d.minTrajectoryChange = detect.GetFloat(params, "min_trajectory_change", d.minTrajectoryChange)
-	d.maxCumulativeChange = detect.GetFloat(params, "max_cumulative_change", d.maxCumulativeChange)
+	d.minTrajectoryChange = flightBound(detect.GetFloat(params, "min_trajectory_change", d.minTrajectoryChange), .1, 180, 8)
+	d.maxCumulativeChange = flightBound(detect.GetFloat(params, "max_cumulative_change", d.maxCumulativeChange), 1, 3600, 130)
+	d.minDistFromThrower = flightBound(detect.GetFloat(params, "min_distance_from_thrower", d.minDistFromThrower), 0, 20, 2)
 	d.postReleaseFrames = detect.GetInt(params, "post_release_frames", d.postReleaseFrames)
-	d.minDistFromThrower = detect.GetFloat(params, "min_distance_from_thrower", d.minDistFromThrower)
+	if d.postReleaseFrames < 5 || d.postReleaseFrames > 120 {
+		d.postReleaseFrames = 15
+	}
+	return nil
+}
+func flightBound(value, low, high, fallback float64) float64 {
+	if !mechanicsFinite(value) || value < low || value > high {
+		return fallback
+	}
+	return value
+}
+
+func (d *Throw006) Evaluate(mc *model.MatchContext, players map[string]*model.PlayerState, frame int) []model.DetectionEvent {
+	active := detect.ActivePlayers(players, frame)
+	if len(active) > shotReviewPlayerLimit {
+		d.cancelAll("trajectory_roster_unavailable")
+		d.Reset()
+		return nil
+	}
+	sample, reason := readFlightReview(active, frame)
+	// First terminate preceding tracks. Releasing again cannot merge two
+	// independent flights or carry a pre-contact bend into the next flight.
+	for _, pid := range sortedKeys(d.activeThrows) {
+		tr := d.activeThrows[pid]
+		if reason != "" {
+			d.finishTrack(pid, reason, false)
+			continue
+		}
+		if t := throwAt(players[pid], frame); t != nil && t.FrameIndex != tr.releaseFrame {
+			d.finishTrack(pid, "trajectory_release_replaced", false)
+			continue
+		}
+		previous := tr.previous
+		if sample.frame == previous.frame && reflect.DeepEqual(sample, previous) {
+			continue
+		}
+		dt := sample.timestamp - previous.timestamp
+		if sample.frame != previous.frame+1 || !mechanicsFinite(dt) || dt <= 0 || dt > .2 {
+			d.finishTrack(pid, "trajectory_sample_gap", false)
+			continue
+		}
+		if !previous.source.SameSource(sample.source) {
+			d.finishTrack(pid, "trajectory_source_changed", false)
+			continue
+		}
+		if sample.bounce != previous.bounce {
+			d.finishTrack(pid, "trajectory_contact_observed", false)
+			continue
+		}
+		previousSpeed, speed := previous.velocity.Magnitude(), sample.velocity.Magnitude()
+		if !mechanicsFinite(previousSpeed) || !mechanicsFinite(speed) || previousSpeed <= .1 || speed <= .1 {
+			d.finishTrack(pid, "trajectory_motion_unavailable", false)
+			continue
+		}
+		angle := previous.velocity.AngleBetweenDeg(sample.velocity)
+		ratio := speed / previousSpeed
+		if !mechanicsFinite(angle) || (ratio < inelasticSpeedRatio && angle > inelasticMinAngle) || angle > elasticBounceAngle || (ratio > deflectionRatio && angle > deflectionMinAngle) {
+			d.finishTrack(pid, "trajectory_contact_possible", false)
+			continue
+		}
+		// Keep every accepted sample, including the near-release baselines
+		// used by the next measured angle. Omitting those would make the
+		// cumulative turn impossible to reproduce from retained evidence.
+		if !appendFlightRaw(&tr.assessment, sample) {
+			d.finishTrack(pid, "trajectory_evidence_capacity", false)
+			continue
+		}
+		tr.previous = sample
+		if sample.position.Distance(tr.releasePos) >= d.minDistFromThrower {
+			tr.frameCount++
+			tr.cumulativeAngle += angle
+			tr.maxFrameAngle = math.Max(tr.maxFrameAngle, angle)
+			if angle > d.minTrajectoryChange {
+				tr.violationFrames++
+			}
+		}
+		if frame-tr.releaseFrame >= d.postReleaseFrames {
+			d.finishTrack(pid, "trajectory_window_complete", true)
+		}
+	}
+	for _, ps := range active {
+		t := throwAt(ps, frame)
+		if t == nil || t.ReleaseWindow == nil {
+			continue
+		}
+		if last, exists := d.lastRelease[ps.PlayerID]; exists && t.FrameIndex <= last {
+			continue
+		}
+		d.lastRelease[ps.PlayerID] = t.FrameIndex
+		assessment := releaseMechanicsAssessment(mc, ps, t, model.MechanicsThrowPhysics)
+		assessment.Limitations = []string{
+			"Sampled direction changes are not proof of in-flight steering, targeting assistance, or an unauthorized grab.",
+			"Bend thresholds are provisional sampling filters, not verified engine bounds or independently calibrated accuracy.",
+			"Obstacle geometry and complete authoritative contact events are unavailable; a stable bounce counter cannot prove a contact-free path.",
+			"No goal-plane, pocket, bank-shot or best-of-two-goals targeting model is applied.",
+			"First-free velocity and later samples are observations, not verified instantaneous launch physics.",
+		}
+		// Reserve the configured continuous inspection window plus its initial
+		// baseline. Optional oversized release context cannot evict middle-of-
+		// flight inputs; retain its first entries and original release sample.
+		contextLimit := model.MaxMechanicsRawSamples - d.postReleaseFrames - 1
+		if len(assessment.RawSamples) > contextLimit {
+			assessment.Metrics["context_raw_samples_omitted"] += float64(len(assessment.RawSamples) - contextLimit)
+			last := assessment.RawSamples[len(assessment.RawSamples)-1]
+			assessment.RawSamples = assessment.RawSamples[:contextLimit]
+			assessment.RawSamples[len(assessment.RawSamples)-1] = last
+		}
+		track := &trajectoryTrack{throwerID: ps.PlayerID, releaseFrame: t.FrameIndex, releasePos: t.ReleasePosition, assessment: assessment, previous: sample}
+		d.activeThrows[ps.PlayerID] = track
+		switch {
+		case !mechanicsReleaseKnown(ps, t):
+			d.finishTrack(ps.PlayerID, "release_observation_unavailable", false)
+		case reason != "":
+			d.finishTrack(ps.PlayerID, reason, false)
+		case !t.ReleaseWindow.Source.SameSource(sample.source):
+			d.finishTrack(ps.PlayerID, "trajectory_source_changed", false)
+		case t.PossibleHeadContact:
+			d.finishTrack(ps.PlayerID, "trajectory_contact_possible", false)
+		default:
+			if !appendFlightRaw(&track.assessment, sample) {
+				d.finishTrack(ps.PlayerID, "trajectory_evidence_capacity", false)
+			}
+		}
+	}
+	// Bound per-player identity state to the active roster. An absent thrower
+	// cannot later receive a remote player's free-flight attribution.
+	present := make(map[string]bool, len(active))
+	for _, ps := range active {
+		present[ps.PlayerID] = true
+	}
+	for pid := range d.lastRelease {
+		if !present[pid] {
+			d.finishTrack(pid, "trajectory_thrower_unavailable", false)
+			delete(d.lastRelease, pid)
+		}
+	}
 	return nil
 }
 
-func (d *Throw006) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
-	var events []model.DetectionEvent
-
-	disc, held := currentDisc(players, frameIdx)
-
-	// Start tracking new throws. A re-throw while a track is still open
-	// (regrab within the tracking window) finalizes the earlier track first.
-	for _, pid := range sortedPlayerIDs(players) {
-		t := throwAt(players[pid], frameIdx)
-		if t == nil {
-			continue
-		}
-		if old, ok := d.activeThrows[pid]; ok {
-			if ev := d.finalizeTrack(matchCtx, old, frameIdx); ev != nil {
-				events = append(events, *ev)
-			}
-		}
-		track := &trajectoryTrack{
-			throwerID:        pid,
-			releaseFrame:     frameIdx,
-			releaseTimestamp: t.Timestamp,
-			releaseSpeed:     t.ReleaseSpeed,
-			releasePos:       t.ReleasePosition,
-			prevVelocity:     t.ReleaseVelocity,
-		}
-		track.goals, track.goalLabel = goalCandidates(matchCtx, t)
-		if disc != nil && !disc.Velocity.IsZero() {
-			track.prevVelocity = disc.Velocity
-		}
-		d.activeThrows[pid] = track
+func readFlightReview(players []*model.PlayerState, frame int) (flightReviewSample, string) {
+	var out flightReviewSample
+	var chosen *model.DiscState
+	if len(players) == 0 {
+		return out, "trajectory_roster_unavailable"
 	}
-
-	if disc == nil && !held {
-		return events
+	for _, ps := range players {
+		disc := ps.CurrentDisc
+		if disc == nil || !disc.Attachment.Known() {
+			return out, "trajectory_attachment_unknown"
+		}
+		if !disc.Attachment.Free() {
+			return out, "trajectory_disc_held"
+		}
+		if ps.DiscAttachment != nil && !reflect.DeepEqual(ps.DiscAttachment, disc.Attachment) {
+			return out, "trajectory_attachment_unknown"
+		}
+		if disc.BounceCount == nil || *disc.BounceCount < 0 {
+			return out, "trajectory_contact_unavailable"
+		}
+		if disc.Position.HasNaN() || disc.Position.HasInf() || disc.Velocity.HasNaN() || disc.Velocity.HasInf() || !mechanicsFinite(ps.LastTimestamp) || ps.LastTimestamp < 0 {
+			return out, "trajectory_motion_unavailable"
+		}
+		if !ps.Observation.Valid() || ps.Observation.FrameIndex != frame || ps.Observation.Timestamp != ps.LastTimestamp {
+			return out, "trajectory_source_unavailable"
+		}
+		if disc.SampledPlayerCount != len(players) {
+			return out, "trajectory_roster_unavailable"
+		}
+		if chosen == nil {
+			chosen = disc
+			out = flightReviewSample{frame: frame, timestamp: ps.LastTimestamp, position: disc.Position, velocity: disc.Velocity, bounce: *disc.BounceCount, source: ps.Observation.Clone()}
+		} else if disc.Position != out.position || disc.Velocity != out.velocity || *disc.BounceCount != out.bounce || ps.LastTimestamp != out.timestamp || !out.source.SameSource(ps.Observation) {
+			return out, "trajectory_snapshot_conflict"
+		}
 	}
-
-	// Update active tracks with current disc state
-	for _, throwerID := range sortedKeys(d.activeThrows) {
-		track := d.activeThrows[throwerID]
-		// Check if disc was caught (is_held or any fresh player's
-		// has_possession) or max frames reached.
-		if held || frameIdx-track.releaseFrame > d.postReleaseFrames {
-			ev := d.finalizeTrack(matchCtx, track, frameIdx)
-			if ev != nil {
-				events = append(events, *ev)
-			}
-			delete(d.activeThrows, throwerID)
-			continue
-		}
-
-		// Skip frames too close to release (interpolation wobble)
-		distFromRelease := disc.Position.Distance(track.releasePos)
-		if distFromRelease < d.minDistFromThrower {
-			track.prevVelocity = disc.Velocity
-			continue
-		}
-
-		track.frameCount++
-		track.positions = append(track.positions, disc.Position)
-		track.velocities = append(track.velocities, disc.Velocity)
-
-		// Compute angle change between consecutive velocity vectors
-		prevSpeed := track.prevVelocity.Magnitude()
-		currSpeed := disc.Velocity.Magnitude()
-		if prevSpeed > 0.1 && currSpeed > 0.1 {
-			angleChange := model.RadToDeg(track.prevVelocity.AngleBetween(disc.Velocity))
-
-			// Collision filter: bounces cause sudden large direction changes.
-			// Magnetism produces gradual, sustained bending (< 15 deg/frame).
-			speedRatio := currSpeed / prevSpeed
-			isInelasticBounce := speedRatio < inelasticSpeedRatio && angleChange > inelasticMinAngle
-			isElasticBounce := angleChange > elasticBounceAngle
-			isDeflection := speedRatio > deflectionRatio && angleChange > deflectionMinAngle
-			isLikelyCollision := isInelasticBounce || isElasticBounce || isDeflection
-
-			if !math.IsNaN(angleChange) && !isLikelyCollision {
-				track.cumulativeAngle += angleChange
-				if angleChange > track.maxFrameAngle {
-					track.maxFrameAngle = angleChange
-				}
-				if angleChange > d.minTrajectoryChange {
-					track.violationFrames++
-					track.violationAngleSum += angleChange
-				}
-			}
-		}
-
-		// Alignment with the goal(s) fixed at release (the attacked goal
-		// when the thrower's side is known, else both goals). The goals
-		// never change during the flight, so crossing mid-court cannot
-		// fabricate an alignment improvement.
-		if currSpeed > 0.1 {
-			dir := disc.Velocity.Normalized()
-			for gi := range track.goals {
-				g := &track.goals[gi]
-				toGoal := g.pos.Sub(disc.Position)
-				if toGoal.Magnitude() <= 0.1 {
-					continue
-				}
-				alignment := dir.Dot(toGoal.Normalized())
-				if math.IsNaN(alignment) {
-					continue
-				}
-				if !g.set {
-					g.initialAlignment = alignment
-					g.set = true
-				}
-				g.finalAlignment = alignment
-			}
-		}
-
-		track.prevVelocity = disc.Velocity
-	}
-
-	return events
+	return out, ""
 }
 
-// FlushTracks finalizes every open trajectory track as of frameIdx and
-// clears them. Call it at match end so a throw still in flight when the
-// match (or a live batch stream) ends is judged instead of dropped.
-func (d *Throw006) FlushTracks(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent {
-	var events []model.DetectionEvent
-	for _, throwerID := range sortedKeys(d.activeThrows) {
-		if ev := d.finalizeTrack(matchCtx, d.activeThrows[throwerID], frameIdx); ev != nil {
-			events = append(events, *ev)
-		}
+func appendFlightRaw(record *model.MechanicsAssessment, sample flightReviewSample) bool {
+	bounce := sample.bounce
+	raw := model.MechanicsRawSample{SampleRole: "flight_sample", FrameIndex: sample.frame, Timestamp: sample.timestamp, DiscPosition: mechanicsVector(sample.position), DiscVelocity: mechanicsVector(sample.velocity), BounceCount: &bounce, Attachment: "free"}
+	if len(record.RawSamples) < model.MaxMechanicsRawSamples {
+		record.RawSamples = append(record.RawSamples, raw)
+		return true
 	}
-	d.activeThrows = make(map[string]*trajectoryTrack)
-	return events
+	if record.Metrics == nil {
+		record.Metrics = make(map[string]float64)
+	}
+	record.Metrics["raw_samples_omitted"]++
+	return false
 }
 
-func (d *Throw006) finalizeTrack(matchCtx *model.MatchContext, track *trajectoryTrack, frameIdx int) *model.DetectionEvent {
-	// Net alignment improvement check: detect smooth magnetism. With the
-	// side unknown the better of both goals is used (magnetism toward
-	// either goal is suspicious).
-	alignmentImprovement := 0.0
-	goal := track.bestGoal()
-	if goal != nil {
-		alignmentImprovement = goal.improvement()
+func (d *Throw006) finishTrack(pid, reason string, complete bool) {
+	tr := d.activeThrows[pid]
+	if tr == nil {
+		return
 	}
+	delete(d.activeThrows, pid)
+	r := tr.assessment.Clone()
+	if r.Metrics == nil {
+		r.Metrics = make(map[string]float64)
+	}
+	r.Reason = reason
+	r.Metrics["tracked_free_samples"] = float64(tr.frameCount)
+	r.Metrics["sampled_cumulative_turn_deg"] = tr.cumulativeAngle
+	r.Metrics["sampled_max_turn_deg"] = tr.maxFrameAngle
+	r.Metrics["above_filter_sample_count"] = float64(tr.violationFrames)
+	r.Metrics["sample_turn_filter_deg"] = d.minTrajectoryChange
+	r.Metrics["cumulative_turn_filter_deg"] = d.maxCumulativeChange
+	r.Metrics["min_distance_from_release_m"] = d.minDistFromThrower
+	r.Metrics["configured_post_release_frames"] = float64(d.postReleaseFrames)
+	inspected := 0
+	for _, sample := range r.RawSamples {
+		if sample.SampleRole != "flight_sample" {
+			continue
+		}
+		if inspected == 0 {
+			r.Metrics["inspection_start_frame"], r.Metrics["inspection_start_time_s"] = float64(sample.FrameIndex), sample.Timestamp
+		}
+		r.Metrics["inspection_end_frame"], r.Metrics["inspection_end_time_s"] = float64(sample.FrameIndex), sample.Timestamp
+		inspected++
+	}
+	r.Metrics["inspection_sample_count"] = float64(inspected)
+	if tr.previous.timestamp >= r.Timestamp {
+		r.Metrics["observed_free_duration_s"] = tr.previous.timestamp - r.Timestamp
+	}
+	if complete && tr.violationFrames >= minViolationFrames && tr.frameCount >= minTrackedFrames && tr.cumulativeAngle > d.maxCumulativeChange {
+		r.Result, r.Reason = model.MechanicsAnomaly, "trajectory_sampled_bend_anomaly"
+	}
+	if d.observer != nil {
+		d.observer(d.ID(), pid, r)
+	}
+}
 
-	if track.violationFrames < minViolationFrames || track.frameCount < minTrackedFrames {
-		return nil
+func (d *Throw006) cancelAll(reason string) {
+	for _, pid := range sortedKeys(d.activeThrows) {
+		d.finishTrack(pid, reason, false)
 	}
-
-	// Fire if cumulative angle exceeds threshold, OR if the disc significantly
-	// improved its alignment with the goal during flight (strong magnetism
-	// signal).
-	if track.cumulativeAngle <= d.maxCumulativeChange && alignmentImprovement <= alignmentImprovementGate {
-		return nil
-	}
-
-	// Severity reflects sustained bending: the cumulative bend against the
-	// threshold and the mean per-frame bend over the violating frames. A
-	// single large (sub-15 degree) frame no longer dominates.
-	severity := 0.0
-	if track.cumulativeAngle > d.maxCumulativeChange {
-		severity = model.SigmoidConfidence(track.cumulativeAngle, d.maxCumulativeChange, 0.2)
-	}
-	meanViolationAngle := track.violationAngleSum / float64(track.violationFrames)
-	if meanViolationAngle > d.minTrajectoryChange {
-		sustainedSev := model.SigmoidConfidence(meanViolationAngle, d.minTrajectoryChange, 0.3)
-		// Only shapes severity once a gate has passed; weighted by how much
-		// of the tracked flight was bending.
-		sustainedSev *= math.Min(1.0, float64(track.violationFrames)/float64(track.frameCount))
-		severity = math.Max(severity, sustainedSev)
-	}
-	// Alignment improvement: disc got significantly more aligned with goal during flight
-	if alignmentImprovement > alignmentImprovementGate {
-		alignSev := model.SigmoidConfidence(alignmentImprovement, 0.4, 5.0)
-		severity = math.Max(severity, alignSev)
-	}
-
-	// Confidence scales with the number of violation frames.
-	frameFactor := math.Min(1.0, float64(track.violationFrames)/fullConfidenceViolationFrames)
-	confidence := severity * frameFactor
-
-	distanceTraveled := 0.0
-	finalSpeed := 0.0
-	if n := len(track.positions); n > 0 {
-		distanceTraveled = track.positions[n-1].Distance(track.releasePos)
-		finalSpeed = track.velocities[n-1].Magnitude()
-	}
-	correctionTarget := ""
-	initialAlignment, finalAlignment := 0.0, 0.0
-	if goal != nil {
-		correctionTarget = fmt.Sprintf("goal z=%+.1f (%s)", goal.pos.Z(), track.goalLabel)
-		initialAlignment, finalAlignment = goal.initialAlignment, goal.finalAlignment
-	}
-
-	ev := d.MakeEvent(matchCtx, track.throwerID, track.releaseFrame, track.releaseTimestamp, severity, confidence,
-		model.TrajectoryEvidence{
-			CumulativeAngleChange: track.cumulativeAngle,
-			MaxSingleFrameChange:  track.maxFrameAngle,
-			ViolationFrameCount:   track.violationFrames,
-			TotalTrackedFrames:    track.frameCount,
-			DistanceTraveled:      distanceTraveled,
-			ReleaseSpeed:          track.releaseSpeed,
-			FinalSpeed:            finalSpeed,
-			CorrectionTarget:      correctionTarget,
-			InitialAlignment:      initialAlignment,
-			FinalAlignment:        finalAlignment,
-			AlignmentImprovement:  alignmentImprovement,
-			CorrectionConfidence:  model.Clamp01(alignmentImprovement),
-			TrajectoryPoints:      track.positions,
-			VelocityPoints:        track.velocities,
-		},
-		fmt.Sprintf("trajectory_bend: %.1f deg cumulative (%d violation frames, mean %.1f deg/frame, max %.1f deg/frame)",
-			track.cumulativeAngle, track.violationFrames, meanViolationAngle, track.maxFrameAngle),
-		fmt.Sprintf("trajectory_bend: < %.1f deg cumulative, < %.1f deg/frame",
-			d.maxCumulativeChange, d.minTrajectoryChange),
-		model.CausalKey{PlayerID: track.throwerID, FrameStart: track.releaseFrame, FrameEnd: frameIdx, AnomalyType: "trajectory_bend"},
-	)
-	return &ev
+}
+func (d *Throw006) FlushTracks(_ *model.MatchContext, _ int) []model.DetectionEvent {
+	d.cancelAll("trajectory_end_of_stream")
+	return nil
 }

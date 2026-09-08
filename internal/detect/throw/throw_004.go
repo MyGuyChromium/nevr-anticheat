@@ -18,8 +18,8 @@ var signatureDimensionNames = []string{"speed", "angle", "hand_speed", "wrist_an
 
 const (
 	// degenerateVarianceFloor: a dimension whose variance is below this is
-	// constant for the player (e.g. wrist angular velocity when the source
-	// reports identity hand rotation) and carries no signature information.
+	// constant for the player (e.g. a genuinely stationary observed wrist)
+	// and carries no signature information. Unknown data never enters a signature.
 	// It is excluded from the product instead of collapsing it.
 	degenerateVarianceFloor = 1e-9
 	// minInformativeDimensions: fewer informative dimensions than this and
@@ -92,6 +92,11 @@ func (d *Throw004) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		// A release with no tracked throwing hand has no hand signature; do
 		// not replace those missing dimensions with zero-valued evidence.
 		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
+			continue
+		}
+		// An unavailable wrist rate is not a measured zero. Keep the six-
+		// dimensional signature unchanged and abstain on incomplete releases.
+		if !t.WristKinematicsValid || math.IsNaN(t.WristAngularVelocity) || math.IsInf(t.WristAngularVelocity, 0) || t.WristAngularVelocity < 0 {
 			continue
 		}
 		sig := d.buildSignature(t)

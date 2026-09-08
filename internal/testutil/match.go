@@ -43,6 +43,11 @@ func Concat(segments ...[]model.PlayerTelemetryFrame) []model.PlayerTelemetryFra
 			f = copyObservationFields(f)
 			f.FrameIndex = baseIdx + i
 			f.Timestamp = baseTS + (seg[i].Timestamp - seg[0].Timestamp)
+			for _, observation := range []*model.ObservationContext{f.Observation, f.GameLastThrowProvenance} {
+				if observation != nil {
+					observation.FrameIndex, observation.Timestamp = f.FrameIndex, f.Timestamp
+				}
+			}
 			if i == 0 {
 				f.DeltaTime = dt
 			}
@@ -91,14 +96,26 @@ func ShiftFrom(frames []model.PlayerTelemetryFrame, atFrame int, delta model.Vec
 // copyObservationFields gives a synthetic result its own optional head and
 // bounce observations without manufacturing values for older fixtures.
 func copyObservationFields(frame model.PlayerTelemetryFrame) model.PlayerTelemetryFrame {
+	for _, observed := range []**bool{&frame.LeftHandRotationValid, &frame.RightHandRotationValid, &frame.IsBoostingKnown} {
+		if *observed != nil {
+			valid := **observed
+			*observed = &valid
+		}
+	}
 	if frame.HeadPosition != nil {
 		head := *frame.HeadPosition
 		frame.HeadPosition = &head
 	}
-	if frame.Disc != nil && frame.Disc.BounceCount != nil {
+	frame.Observation = frame.Observation.Clone()
+	frame.GameLastThrowProvenance = frame.GameLastThrowProvenance.Clone()
+	frame.HeldItems = frame.HeldItems.Clone()
+	if frame.Disc != nil {
 		disc := *frame.Disc
-		bounce := *disc.BounceCount
-		disc.BounceCount = &bounce
+		disc.Attachment = disc.Attachment.Clone()
+		if disc.BounceCount != nil {
+			bounce := *disc.BounceCount
+			disc.BounceCount = &bounce
+		}
 		frame.Disc = &disc
 	}
 	return frame
@@ -184,6 +201,7 @@ func (mb *MatchBuilder) Build() (*model.MatchContext, []model.PlayerTelemetryFra
 			if discByIdx != nil {
 				if d, ok := discByIdx[f.FrameIndex]; ok && d != nil {
 					dc := *d
+					dc.Attachment = d.Attachment.Clone()
 					if d.BounceCount != nil {
 						bounce := *d.BounceCount
 						dc.BounceCount = &bounce

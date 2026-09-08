@@ -1,193 +1,196 @@
 package state
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"math"
+	"reflect"
+	"strings"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/mechanics"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
-// State001 detects impossible grab distance (STATE_001).
-//
-// Closing-velocity model: possession is reported one frame after the disc
-// was actually reached, so a player moving at v m/s is credited with the
-// distance covered in that one frame of latency, v * FrameDt (about 0.07 m
-// per m/s at 15 Hz). closing_velocity_scale, if set > 0, replaces FrameDt
-// with a fixed latency in seconds. The desync guard that rejects raw
-// hand-to-disc distances as timing artifacts scales with the same credit
-// (threshold + credit + desync_margin), so the detection window never
-// closes for fast-moving players.
+const grabReviewPlayerLimit = 16
+
+// State001 reviews explicitly observed disc acquisitions against the project
+// rule. Current feeds do not verify grab geometry, acquisition timing or error
+// bounds, so they produce inconclusive diagnostics and NEVER scored events.
+// Player/geometry grips, sticky possession, first-seen held discs and same-player
+// hand transfers are not treated as disc acquisitions.
 type State001 struct {
 	detect.BaseDetector
-	grabDistanceThreshold float64
-	closingVelocityScale  float64 // seconds of latency credited (shipped 0.25); <= 0 means one frame (FrameDt)
-	desyncMargin          float64
-	sigmoidSteepness      float64
-
-	prevHasDisc      map[string]bool
-	lastReleaseFrame map[string]int
+	previous map[string]grabReviewSample
+	observer detect.MechanicsObserver
 }
 
-// NewState001 creates a new STATE_001 Impossible Grab Distance detector.
-func NewState001(params map[string]any) *State001 {
-	d := &State001{
-		BaseDetector: detect.BaseDetector{
-			DetectorID:       "STATE_001",
-			DetectorVersion:  "2.1.0",
-			DetectorName:     "Impossible Grab Distance",
-			DetectorCategory: "state",
-			Inputs:           []string{"possession", "hand_tracking", "disc_state"},
-			Warmup:           5,
-			Weight:           0.8,
-			IsAutoEnforce:    false,
-		},
-		grabDistanceThreshold: detect.GetFloat(params, "grab_distance_threshold", 3.0),
-		closingVelocityScale:  detect.GetFloat(params, "closing_velocity_scale", 0.25),
-		desyncMargin:          detect.GetFloat(params, "desync_margin", 3.0),
-		sigmoidSteepness:      detect.GetFloat(params, "sigmoid_steepness", 2.0),
-		prevHasDisc:           make(map[string]bool),
-		lastReleaseFrame:      make(map[string]int),
-	}
+type grabReviewSample struct {
+	raw         model.MechanicsRawSample
+	attachment  *model.DiscAttachment
+	observation *model.ObservationContext
+}
+
+func NewState001(_ map[string]any) *State001 {
+	d := &State001{BaseDetector: detect.BaseDetector{
+		DetectorID: "STATE_001", DetectorVersion: "3.0.0", DetectorName: "Disc Grab Geometry Review",
+		DetectorCategory: "state", Inputs: []string{"disc_attachment", "hand_tracking", "disc_state"},
+		Warmup: 0, Weight: 0, IsAutoEnforce: false,
+	}}
+	d.Reset()
 	return d
 }
 
-func (d *State001) Reset() {
-	d.prevHasDisc = make(map[string]bool)
-	d.lastReleaseFrame = make(map[string]int)
-}
+func (d *State001) Reset()                                          { d.previous = make(map[string]grabReviewSample) }
+func (d *State001) Configure(map[string]any) error                  { return nil }
+func (d *State001) SetWeight(float64)                               { d.Weight = 0 }
+func (d *State001) SetAutoEnforce(bool)                             { d.IsAutoEnforce = false }
+func (d *State001) AutoEnforce() bool                               { return false }
+func (d *State001) DefaultEnforcementWeight() float64               { return 0 }
+func (d *State001) SetMechanicsObserver(o detect.MechanicsObserver) { d.observer = o }
 
-func (d *State001) Configure(params map[string]any) error {
-	d.grabDistanceThreshold = detect.GetFloat(params, "grab_distance_threshold", d.grabDistanceThreshold)
-	d.closingVelocityScale = detect.GetFloat(params, "closing_velocity_scale", d.closingVelocityScale)
-	d.desyncMargin = detect.GetFloat(params, "desync_margin", d.desyncMargin)
-	d.sigmoidSteepness = detect.GetFloat(params, "sigmoid_steepness", d.sigmoidSteepness)
+func (d *State001) Evaluate(mc *model.MatchContext, players map[string]*model.PlayerState, frame int) []model.DetectionEvent {
+	active := detect.ActivePlayers(players, frame)
+	if len(active) > grabReviewPlayerLimit {
+		d.Reset()
+		return nil
+	}
+	present := make(map[string]bool, len(active))
+	for _, ps := range active {
+		id := ps.PlayerID
+		present[id] = true
+		now := readGrabReview(ps, frame)
+		previous, exists := d.previous[id]
+		if exists && now.raw.FrameIndex == previous.raw.FrameIndex && now.raw.Timestamp == previous.raw.Timestamp && reflect.DeepEqual(now, previous) {
+			continue // exact duplicate snapshot, not another acquisition
+		}
+		if exists && now.raw.FrameIndex <= previous.raw.FrameIndex {
+			delete(d.previous, id) // conflicting duplicate/out-of-order state breaks continuity
+			continue
+		}
+		d.previous[id] = now
+		if !exists || !previous.attachment.Free() || !now.attachment.HeldBy(id) || !grabReviewContinuous(previous, now) {
+			continue
+		}
+		if d.observer != nil {
+			d.observer(d.ID(), id, grabAssessment(mc, id, previous, now))
+		}
+	}
+	for id := range d.previous {
+		if !present[id] {
+			delete(d.previous, id)
+		}
+	}
 	return nil
 }
 
-// latencySeconds is the possession-report latency credited to closing speed.
-func (d *State001) latencySeconds(ps *model.PlayerState) float64 {
-	if d.closingVelocityScale > 0 {
-		return d.closingVelocityScale
+func readGrabReview(ps *model.PlayerState, frame int) grabReviewSample {
+	s := grabReviewSample{raw: model.MechanicsRawSample{FrameIndex: frame, Timestamp: ps.LastTimestamp}, observation: ps.Observation.Clone()}
+	s.attachment = ps.DiscAttachment.Clone()
+	if ps.CurrentDisc != nil {
+		if s.attachment == nil {
+			s.attachment = ps.CurrentDisc.Attachment.Clone()
+		} else if ps.CurrentDisc.Attachment != nil && !reflect.DeepEqual(s.attachment, ps.CurrentDisc.Attachment) {
+			s.attachment = nil // conflicting explicit observations are unknown
+		}
+		s.raw.DiscPosition = grabVector(ps.CurrentDisc.Position, false)
+		s.raw.DiscVelocity = grabVector(ps.CurrentDisc.Velocity, false)
 	}
-	if ps.FrameDt > 0 {
-		return ps.FrameDt
+	s.raw.LeftHand, s.raw.RightHand = grabVector(ps.LeftHand, true), grabVector(ps.RightHand, true)
+	s.raw.PlayerPosition = grabVector(ps.Position, true)
+	s.raw.PlayerVelocity = grabVector(ps.Velocity, false)
+	if ps.HasReportedVelocity {
+		s.raw.ReportedVelocity = grabVector(ps.ReportedVelocity, false)
 	}
-	return 0
+	if s.attachment.Known() {
+		s.raw.Attachment = s.attachment.State
+	} else {
+		s.raw.Attachment = "unknown"
+	}
+	if ps.HeldItems != nil {
+		if ps.HeldItems.Left != nil {
+			s.raw.LeftHolding = *ps.HeldItems.Left
+		}
+		if ps.HeldItems.Right != nil {
+			s.raw.RightHolding = *ps.HeldItems.Right
+		}
+	}
+	return s
 }
 
-func (d *State001) Evaluate(matchCtx *model.MatchContext, players map[string]*model.PlayerState, frameIdx int) []model.DetectionEvent {
-	var events []model.DetectionEvent
-
-	// We check for possession changes (player gains disc)
-	for _, ps := range detect.ActivePlayers(players, frameIdx) {
-		pid := ps.PlayerID
-		wasHolding := d.prevHasDisc[pid]
-		d.prevHasDisc[pid] = ps.HasDisc
-
-		// Track release frames for regrab detection
-		if wasHolding && !ps.HasDisc {
-			d.lastReleaseFrame[pid] = frameIdx
-		}
-
-		// Only fire on possession gain
-		if !ps.HasDisc || wasHolding {
-			continue
-		}
-
-		// Regrab filter: if this player released the disc within 5 frames,
-		// the disc position data desyncs from the actual catch moment.
-		// Regrabs are a legitimate advanced technique.
-		if releaseFrame, ok := d.lastReleaseFrame[pid]; ok && frameIdx-releaseFrame <= 5 {
-			continue
-		}
-
-		// Measure nearest hand to disc position at the moment of possession gain
-		var discPos model.Vec3
-		if ps.CurrentDisc != nil {
-			discPos = ps.CurrentDisc.Position
-		} else {
-			// Fallback: use player position if disc state unavailable
-			discPos = ps.Position
-		}
-		// A zero hand vector is tracking loss, not a hand at the origin.
-		leftDist := math.Inf(1)
-		if !ps.LeftHand.IsZero() {
-			leftDist = ps.LeftHand.Distance(discPos)
-		}
-		rightDist := math.Inf(1)
-		if !ps.RightHand.IsZero() {
-			rightDist = ps.RightHand.Distance(discPos)
-		}
-		nearestHandDist := math.Min(leftDist, rightDist)
-		if math.IsInf(nearestHandDist, 1) {
-			continue
-		}
-
-		// Adjust for closing velocity: distance covered during the one
-		// frame of possession-report latency.
-		closingSpeed := ps.Speed
-		latency := d.latencySeconds(ps)
-		credit := closingSpeed * latency
-		adjustedDist := nearestHandDist - credit
-		if adjustedDist < 0 {
-			adjustedDist = 0
-		}
-
-		// Use the configured grab distance threshold which accounts for
-		// network latency, frame-rate interpolation, and regrab timing.
-		// The physics GrabRange (0.8m) is the server-side constant but
-		// doesn't reflect what replay data actually shows.
-		if adjustedDist <= d.grabDistanceThreshold {
-			continue
-		}
-
-		// Desync guard: a RAW hand-to-disc distance far beyond what the
-		// threshold, the closing credit and the desync margin allow is a
-		// data timing artifact (disc position lags behind the possession
-		// change), not a real extended-reach cheat.
-		desyncGuard := d.grabDistanceThreshold + credit + d.desyncMargin
-		if nearestHandDist > desyncGuard {
-			continue
-		}
-
-		excess := adjustedDist - d.grabDistanceThreshold
-		severity := model.SigmoidConfidence(adjustedDist, d.grabDistanceThreshold*1.5, d.sigmoidSteepness)
-		confidence := model.SigmoidConfidence(excess, 0, d.sigmoidSteepness)
-		confidence = model.Clamp01(confidence * 0.85)
-
-		if ps.IsHighPing {
-			confidence *= 0.6
-		}
-
-		metrics := map[string]float64{
-			"nearest_hand_distance": nearestHandDist,
-			"adjusted_distance":     adjustedDist,
-			"threshold":             d.grabDistanceThreshold,
-			"closing_speed":         closingSpeed,
-			"latency_credit_s":      latency,
-			"closing_credit_m":      credit,
-			"desync_guard":          desyncGuard,
-			"excess":                excess,
-		}
-
-		ev := d.MakeEvent(matchCtx, pid, frameIdx, ps.LastTimestamp,
-			severity, confidence,
-			model.StateEvidence{
-				DetectorSpecific: "impossible_grab_distance",
-				Metrics:          metrics,
-			},
-			fmt.Sprintf("grab_distance: %.2f m (adjusted: %.2f m)", nearestHandDist, adjustedDist),
-			fmt.Sprintf("grab_distance: 0-%.2f m", d.grabDistanceThreshold),
-			model.CausalKey{
-				PlayerID:    pid,
-				FrameStart:  frameIdx - 2,
-				FrameEnd:    frameIdx,
-				AnomalyType: "grab_distance",
-			},
-		)
-		events = append(events, ev)
+func grabVector(value model.Vec3, zeroUnavailable bool) *model.Vec3 {
+	if value.HasNaN() || value.HasInf() || (zeroUnavailable && value.IsZero()) {
+		return nil
 	}
+	copy := value
+	return &copy
+}
 
-	return events
+func grabReviewContinuous(previous, now grabReviewSample) bool {
+	dt := now.raw.Timestamp - previous.raw.Timestamp
+	// This is an engineering sampling continuity gate, NOT a legal grab bound.
+	if now.raw.FrameIndex != previous.raw.FrameIndex+1 || math.IsNaN(dt) || math.IsInf(dt, 0) || dt <= 0 || dt > .2 || previous.raw.Timestamp < 0 {
+		return false
+	}
+	if previous.observation == nil && now.observation == nil {
+		return true // source unavailable is retained as an explicit limitation
+	}
+	return previous.observation.SameSource(now.observation) &&
+		previous.observation.FrameIndex == previous.raw.FrameIndex && previous.observation.Timestamp == previous.raw.Timestamp &&
+		now.observation.FrameIndex == now.raw.FrameIndex && now.observation.Timestamp == now.raw.Timestamp
+}
+
+func grabAssessment(mc *model.MatchContext, player string, previous, now grabReviewSample) model.MechanicsAssessment {
+	rules := model.DefaultProjectRules()
+	matchID, source := "", "unknown"
+	if mc != nil {
+		matchID, source = mc.MatchID, mc.Source
+		if mc.ProjectRules.Version != "" {
+			rules = mc.ProjectRules
+		}
+	}
+	out := model.MechanicsAssessment{FrameIndex: now.raw.FrameIndex, Timestamp: now.raw.Timestamp,
+		PlayerID: player, SessionID: matchID, IntervalStart: previous.raw.Timestamp, IntervalEnd: now.raw.Timestamp,
+		Hand: strings.Join(now.attachment.HandCandidates, "|"), Source: source, Authority: "unverified", CoordinateSpace: "reported_world",
+		Metrics:    map[string]float64{"acquisition_interval_s": now.raw.Timestamp - previous.raw.Timestamp},
+		RawSamples: []model.MechanicsRawSample{previous.raw, now.raw},
+		Limitations: []string{
+			"The 0.25 m project rule has no verified engine-build geometry definition; tracked hand origins and disc centers are descriptive only.",
+			"The acquisition instant lies between sampled states; authoritative timing and measurement error bounds are unavailable.",
+			"The first held position may include attachment snap and is never interpolated with the free position.",
+			"Reported source metadata does not establish engine authority or prove the cause of an observed acquisition.",
+		},
+	}
+	if observation := now.observation; observation != nil {
+		out.Source, out.Authority, out.SessionID, out.TimeBasis = observation.Source, observation.Authority, observation.SessionID, observation.TimeBasis
+	}
+	// Source instance details affect identity but are hashed, not exposed as
+	// raw endpoint/path metadata in the public assessment.
+	sourceID, sourcePlayer := "", ""
+	if now.observation != nil {
+		sourceID, sourcePlayer = now.observation.SourceID, now.observation.SourcePlayerID
+	}
+	identity := fmt.Sprintf("%q|%q|%q|%q|%q|%q|%q|%q|%q|%d|%.17g", matchID, out.Source, sourceID, sourcePlayer, out.SessionID, out.Authority, out.TimeBasis, player, "disc_acquisition", now.raw.FrameIndex, now.raw.Timestamp)
+	out.EventID = fmt.Sprintf("grab:%x", sha256.Sum256([]byte(identity)))
+	for _, snapshot := range []struct {
+		name string
+		raw  model.MechanicsRawSample
+	}{{"last_free", previous.raw}, {"first_held", now.raw}} {
+		if snapshot.raw.DiscPosition == nil {
+			continue
+		}
+		for _, hand := range []struct {
+			name     string
+			position *model.Vec3
+		}{{"left", snapshot.raw.LeftHand}, {"right", snapshot.raw.RightHand}} {
+			if hand.position != nil {
+				distance := hand.position.Distance(*snapshot.raw.DiscPosition)
+				if !math.IsNaN(distance) && !math.IsInf(distance, 0) {
+					out.Metrics[snapshot.name+"_"+hand.name+"_origin_to_disc_center_m"] = distance
+				}
+			}
+		}
+	}
+	// No runtime metadata/config value can construct verified GrabKnowledge.
+	return mechanics.EvaluateGrab(mechanics.GrabInput{Rules: rules, Assessment: out})
 }

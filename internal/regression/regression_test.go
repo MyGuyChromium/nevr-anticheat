@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
-	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/testutil"
 )
 
@@ -36,29 +36,39 @@ func writeFixture(t *testing.T, path string, data []byte) {
 // shadow routing and SQLite persistence, rather than mocking detector output.
 func throwReplay(t *testing.T, dir string, speed float64) string {
 	t.Helper()
-	frames := testutil.NewFrameBuilder("synthetic-player").WithTickRate(15).WithStartPos(model.Vec3{2, 1.7, 0}).ThrowSequence([]testutil.ThrowSpec{
+	frames := testutil.NewFrameBuilder("echovr:1").WithTickRate(15).WithStartPos(model.Vec3{2, 1.7, 0}).ThrowSequence([]testutil.ThrowSpec{
 		{HoldFrames: 35, FlightFrames: 12, GapFrames: 8, ReleaseSpeed: speed, HandSpeed: 8, DeviationDeg: 8},
 	})
-	doc := struct {
-		Header replay.ReplayHeader `json:"header"`
-		Frames []replay.RawFrame   `json:"frames"`
-	}{
-		Header: replay.ReplayHeader{MatchID: "synthetic-match", Map: "mpl_arena_a", GameMode: "arena", PlayerIDs: []string{"synthetic-player"}, Teams: map[string]string{"synthetic-player": "blue"}},
+	// Reprocess explicit hand-attachment reports through the real raw mapper.
+	// The older JSON replay format has only a possession boolean and cannot
+	// truthfully supply the known attachment prerequisite for a throw.
+	hand := func(pos model.Vec3, q model.Quat) adapter.EchoVRHand {
+		return adapter.EchoVRHand{Position: pos, Forward: q.Rotate(model.Vec3{0, 0, 1}), Left: q.Rotate(model.Vec3{1, 0, 0}), Up: q.Rotate(model.Vec3{0, 1, 0})}
 	}
+	var doc strings.Builder
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, f := range frames {
-		raw := replay.RawFrame{Index: f.FrameIndex, Timestamp: f.Timestamp, GamePhase: "playing", Players: []replay.RawPlayerFrame{{
-			PlayerID: f.PlayerID, Position: f.Position, Rotation: f.Rotation, LeftHand: f.LeftHandPosition, RightHand: f.RightHandPosition,
-			LeftHandRot: f.LeftHandRotation, RightHandRot: f.RightHandRotation, HasPossession: f.HasPossession, PingMs: f.EstimatedPingMs,
-		}}}
-		if f.Disc != nil {
-			raw.Disc = &replay.RawDiscFrame{Position: f.Disc.Position, Velocity: f.Disc.Velocity, HolderID: f.Disc.PossessorID}
+		body := adapter.EchoVRBodyHead{Position: f.Position, Forward: f.Rotation.Rotate(model.Vec3{0, 0, 1}), Left: f.Rotation.Rotate(model.Vec3{1, 0, 0}), Up: f.Rotation.Rotate(model.Vec3{0, 1, 0})}
+		player := adapter.EchoVRPlayer{UserID: 1, Name: "synthetic-player", Body: body, Head: body, LHand: hand(f.LeftHandPosition, f.LeftHandRotation), RHand: hand(f.RightHandPosition, f.RightHandRotation), HoldingLeft: "none", HoldingRight: "none", Possession: f.HasPossession, Ping: int(f.EstimatedPingMs)}
+		if f.HasPossession {
+			player.HoldingRight = "disc"
 		}
-		doc.Frames = append(doc.Frames, raw)
+		raw := adapter.EchoVRSessionResponse{SessionID: "synthetic-match", MatchType: "Echo_Arena", GameStatus: "playing", GameClock: 600 - f.Timestamp, ClientName: "synthetic-player", Teams: []adapter.EchoVRTeam{{TeamName: "BLUE TEAM", Players: []adapter.EchoVRPlayer{player}}}}
+		if f.Disc != nil {
+			bounce := 0
+			raw.Disc = &adapter.EchoVRDisc{Position: f.Disc.Position, Velocity: f.Disc.Velocity, BounceCount: &bounce}
+		}
+		payload, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc.WriteString(start.Add(time.Duration(f.Timestamp * float64(time.Second))).Format("2006/01/02 15:04:05.000"))
+		doc.WriteByte('\t')
+		doc.Write(payload)
+		doc.WriteByte('\n')
 	}
-	path := filepath.Join(dir, "generated.json")
-	if err := WriteJSON(path, doc); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(dir, "generated.echoreplay")
+	writeFixture(t, path, []byte(doc.String()))
 	return path
 }
 
@@ -91,7 +101,7 @@ func TestProductionPipelineCaptureCheckSyntheticThrows(t *testing.T) {
 				t.Fatalf("THROW_001 incidents=%d want=%d; %+v", got, tc.want, manifest.Cases[0].Expected)
 			}
 			m := manifest.Cases[0].Expected[0]
-			manifest.Cases[0].Windows = []Window{{ID: "generated-release", MatchID: m.MatchID, PlayerID: "synthetic-player", DetectorID: "THROW_001", Start: 30, End: 45,
+			manifest.Cases[0].Windows = []Window{{ID: "generated-release", MatchID: m.MatchID, PlayerID: "echovr:1", DetectorID: "THROW_001", Start: 30, End: 45,
 				Expectation: map[bool]string{true: "signal", false: "quiet"}[tc.want > 0], Provenance: Provenance{Kind: "synthetic", Truth: "unknown"}}}
 			report, err = Check(context.Background(), cfg, manifest, dir, filepath.Join(dir, "check"))
 			if err != nil || !report.Passed {
@@ -296,7 +306,7 @@ func TestPreflightRejectsConfigReplayAndEvidenceChangesWithoutOutputs(t *testing
 				copy.Cases[0].SHA256 = strings.Repeat("f", 64)
 			case "evidence":
 				match := copy.Cases[0].Expected[0]
-				copy.Cases[0].Windows = []Window{{ID: "w", MatchID: match.MatchID, PlayerID: "synthetic-player", DetectorID: "THROW_001", Start: 30, End: 45, Expectation: "observe", Provenance: Provenance{Kind: "confirmed", Truth: "negative", Reviewers: []string{"review-a", "review-b"}, Note: "Independent synthetic evidence test", Artifacts: []Artifact{{Path: source, SHA256: strings.Repeat("f", 64)}}}}}
+				copy.Cases[0].Windows = []Window{{ID: "w", MatchID: match.MatchID, PlayerID: "echovr:1", DetectorID: "THROW_001", Start: 30, End: 45, Expectation: "observe", Provenance: Provenance{Kind: "confirmed", Truth: "negative", Reviewers: []string{"review-a", "review-b"}, Note: "Independent synthetic evidence test", Artifacts: []Artifact{{Path: source, SHA256: strings.Repeat("f", 64)}}}}}
 			case "cancelled":
 				c, cancel := context.WithCancel(ctx)
 				cancel()

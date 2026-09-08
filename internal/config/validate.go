@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,25 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 	}
 	if strings.TrimSpace(g.DBPath) == "" {
 		add("general.db_path must not be empty")
+	}
+
+	// --- physics ---
+	rules := cfg.ProjectRules
+	if strings.TrimSpace(rules.Version) == "" || len(rules.Version) > 128 {
+		add("project_rules.version must contain 1–128 characters")
+	}
+	for _, rule := range []struct {
+		name  string
+		value float64
+	}{
+		{"disc_grab_limit_m", rules.DiscGrabLimitM}, {"fast_throw_speed_mps", rules.FastThrowSpeedMPS}, {"required_movement_mps", rules.RequiredMovementMPS},
+	} {
+		if !(rule.value > 0) || math.IsInf(rule.value, 0) {
+			add("project_rules.%s must be finite and > 0", rule.name)
+		}
+	}
+	if rules != model.DefaultProjectRules() {
+		warn("[project_rules] differs from the owner-2026-09-08-v1 reference; configuration is not engine verification")
 	}
 
 	// --- physics ---
@@ -201,6 +221,9 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 		}
 		if id == "STATE_008" && (dc.Mode != "shadow" || dc.EnforcementWeight != 0 || dc.AutoEnforce) {
 			add("detector.STATE_008 is observation-only pending independent catch calibration: mode must be shadow, enforcement_weight must be 0, and auto_enforce must be false")
+		}
+		if (id == "STATE_001" || id == "THROW_005" || id == "THROW_006") && (dc.Mode != "shadow" || dc.EnforcementWeight != 0 || dc.AutoEnforce) {
+			warn("detector.%s scoring/promotion settings are ignored: this implementation produces diagnostics only pending verified mechanics and calibration", id)
 		}
 		switch dc.Mode {
 		case "shadow":

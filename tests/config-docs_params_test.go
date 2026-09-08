@@ -153,6 +153,19 @@ func TestConfigDocs_EveryAcceptedKeyIsConsumed(t *testing.T) {
 		base := fingerprint(build(t, spec.ID, nil))
 		for _, p := range spec.Params {
 			sentinel := sentinelFor(p)
+			// THROW_006 now bounds provisional sampling controls to prevent
+			// unbounded histories. Probe consumption with distinct valid
+			// values, not the generic out-of-range fallback sentinels.
+			if spec.ID == "THROW_006" {
+				switch p.Key {
+				case "min_trajectory_change":
+					sentinel = 9.0
+				case "post_release_frames":
+					sentinel = 20
+				case "min_distance_from_thrower":
+					sentinel = 3.0
+				}
+			}
 			with := fingerprint(build(t, spec.ID, map[string]any{p.Key: sentinel}))
 			if with == base {
 				t.Errorf("%s: params key %q is documented but the constructor ignores it (fingerprint unchanged)", spec.ID, p.Key)

@@ -24,8 +24,9 @@ type MatchContext struct {
 	// ServerID is the provenance of live telemetry: the producer's
 	// server_id stamp (the bridge sends "<broadcaster_ip>:<api_port>").
 	// Provenance lives here, on the match context, not on every event row.
-	ServerID string           `json:"server_id,omitempty"`
-	Physics  PhysicsConstants `json:"physics"`
+	ServerID     string           `json:"server_id,omitempty"`
+	Physics      PhysicsConstants `json:"physics"`
+	ProjectRules ProjectRules     `json:"project_rules"`
 }
 
 // IsActivePhase returns true if the game phase is active gameplay.

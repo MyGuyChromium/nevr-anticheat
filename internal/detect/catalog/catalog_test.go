@@ -134,7 +134,7 @@ func TestCatalogAutopocketRemainsObservationOnlyWithoutValidation(t *testing.T) 
 		if d.ID() != "STATE_008" {
 			continue
 		}
-		if d.Name() != "Autopocket Catch Review" || d.DefaultEnforcementWeight() != 0 || d.AutoEnforce() {
+		if d.Name() != "Pre-catch Trajectory Review" || d.DefaultEnforcementWeight() != 0 || d.AutoEnforce() {
 			t.Fatalf("catalog promoted STATE_008: name=%q weight=%v auto=%v", d.Name(), d.DefaultEnforcementWeight(), d.AutoEnforce())
 		}
 		return
