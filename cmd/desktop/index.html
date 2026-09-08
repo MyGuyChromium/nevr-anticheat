@@ -1365,7 +1365,7 @@
       body = `<p class="muted">This direct API request did not enable replacement. Upload through the desktop page to re-analyze automatically, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
     }
     return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
-      <p class="err">${esc(res.error)}</p>${body}</section>`;
+      ${res.already_stored ? `<p>${esc(res.error)}</p>${body}` : `<p>Analysis could not finish. Your original recording was not modified.</p><p class="help">Check the details below, then <a href="#h-upload">choose another recording</a> or retry after resolving the problem.</p><details class="sub"><summary>Analysis error &amp; file diagnostics</summary><p class="err">${esc(res.error)}</p>${body}</details>`}</section>`;
   }
 
   function prepend(html) {

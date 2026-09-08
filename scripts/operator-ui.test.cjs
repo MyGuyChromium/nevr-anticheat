@@ -13,6 +13,17 @@ const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
+test('analysis failures offer a next action and keep raw diagnostics collapsed and escaped', () => {
+  const ui = run(section('  const diagTexts =', '  function prepend('), {fmtBytes: String, fmtInt: String});
+  const html = ui.failCard({file:'<invalid>.json',error:'<parse failure>',diagnostic:{container:'text',size_bytes:12,lines:0,findings:[],head_text:'<private sample>',head_hex:'12 ab',hint:'Export an original recording.'}});
+  assert.match(html,/Your original recording was not modified/);
+  assert.match(html,/choose another recording/);
+  assert.match(html,/<details class="sub"><summary>Analysis error &amp; file diagnostics/);
+  assert.doesNotMatch(html,/<details[^>]*\bopen\b/);
+  assert.match(html,/&lt;private sample&gt;/);
+  assert.doesNotMatch(html,/<private sample>|<parse failure>|<invalid>/);
+});
+
 function section(from, to) {
   const begin = script.indexOf(from);
   const finish = script.indexOf(to, begin + from.length);
