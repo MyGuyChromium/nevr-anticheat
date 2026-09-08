@@ -53,6 +53,24 @@ function fixture() {
   return { match_id: 'synthetic-match', players, events };
 }
 
+test('health and capability reports expose abstentions without leaking markup or blinded evidence', () => {
+  const render = ui();
+  const match = fixture();
+  const p = match.players[0];
+  p.coverage.data_health = {version:1, state:'blind', healthy_samples:4, degraded_samples:2, blind_samples:8, reasons:['<script>fault</script>'], affected_detectors:['THROW_001'], recovery_samples_remaining:8};
+  p.coverage.detectors[0].capability = {version:'test-v1', required_inputs:['<img>'], source_trust:'client reported', timing:'fresh observations', validity:'known fields', applicable_build:'unverified', enforcement_requires:['trusted inputs'], missing_behavior:'inconclusive'};
+  const html = render.decisionTraceDetails(match,p,'THROW_001');
+  assert.match(html,/Data health: blind/);
+  assert.match(html,/Automatic enforcement disabled/);
+  assert.match(html,/&lt;script&gt;fault/);
+  assert.doesNotMatch(html,/<script>|<img>/);
+  assert.match(render.coverageDetails(match),/1 blind/);
+  render.blindReview = true;
+  const blind = render.decisionTraceDetails(match,p,'THROW_001');
+  assert.match(blind,/concealed/);
+  assert.doesNotMatch(blind,/fault|test-v1|Data health/);
+});
+
 test('zero-score shadow findings produce review-needed and a useful reason for any player', () => {
   const render = ui();
   const match = fixture();

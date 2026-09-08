@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -97,13 +98,16 @@ type Window struct {
 }
 
 type WindowResult struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Signals     int    `json:"signals"`
-	Samples     int    `json:"samples"`
-	Passed      bool   `json:"passed"`
-	Outcome     string `json:"outcome"`
-	Expectation string `json:"expectation"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Signals int    `json:"signals"`
+	Samples int    `json:"samples"`
+	// Samples counts stored player rows, not usable detector opportunities.
+	OpportunityCoverage string `json:"opportunity_coverage"`
+	Assertion           string `json:"assertion"`
+	Passed              bool   `json:"passed"`
+	Outcome             string `json:"outcome"`
+	Expectation         string `json:"expectation"`
 }
 
 type CaseResult struct {
@@ -157,12 +161,13 @@ func ConfigFingerprint(cfg *config.Config) (string, error) {
 		return "", errors.New("configuration is required")
 	}
 	doc, err := json.Marshal(struct {
-		Physics   config.PhysicsConfig
-		Pipeline  config.PipelineConfig
-		Scoring   config.ScoringConfig
-		Detectors map[string]config.DetectorConfig
-		Shadow    config.ShadowConfig
-	}{cfg.Physics, cfg.Pipeline, cfg.Scoring, cfg.Detectors, cfg.Shadow})
+		Physics      config.PhysicsConfig
+		ProjectRules model.ProjectRules
+		Pipeline     config.PipelineConfig
+		Scoring      config.ScoringConfig
+		Detectors    map[string]config.DetectorConfig
+		Shadow       config.ShadowConfig
+	}{cfg.Physics, cfg.ProjectRules, cfg.Pipeline, cfg.Scoring, cfg.Detectors, cfg.Shadow})
 	if err != nil {
 		return "", err
 	}
@@ -363,7 +368,7 @@ func newReport(cfg *config.Config) (Report, error) {
 	rev, dirty := revision()
 	return Report{Schema: Schema, GeneratedUTC: time.Now().UTC(), Revision: rev, Dirty: dirty,
 		GoVersion: runtime.Version(), ConfigSHA256: hash, Cases: []CaseResult{},
-		Notice: "Private behavior regression through the production replay engine. Baseline agreement, synthetic fixtures and user reports do not validate detectors. Only explicitly confirmed windows have ground-truth outcomes; no labels affect detection or authorize enforcement. Correlated windows are not independent accuracy samples."}, nil
+		Notice: "Private behavior regression through the production replay engine. Stored player samples are not valid detector opportunities; opportunity coverage remains unresolved even for reviewer-confirmed labels. Passed reports assert configured signal/quiet behavior, never true/false positive/negative accuracy. No labels affect detection or authorize enforcement. Correlated windows are not independent accuracy samples."}, nil
 }
 
 // Capture freezes current behavior for every source without inventing labels.
@@ -664,6 +669,7 @@ func compareCase(result *CaseResult, expected ReplayCase) {
 		check.Samples = result.WindowSamples[window.ID]
 		if check.Samples == 0 {
 			check.Passed, check.Outcome = false, "unobservable_no_player_samples"
+			check.Assertion = "unobservable_no_player_samples"
 		}
 		result.Windows = append(result.Windows, check)
 		result.Passed = result.Passed && check.Passed
@@ -672,26 +678,28 @@ func compareCase(result *CaseResult, expected ReplayCase) {
 
 func evaluateWindow(window Window, count int) WindowResult {
 	out := WindowResult{ID: window.ID, Kind: window.Provenance.Kind, Signals: count,
-		Expectation: window.Expectation, Passed: true, Outcome: "observation_only"}
+		Expectation: window.Expectation, Passed: true, Outcome: "observation_only",
+		OpportunityCoverage: "unresolved_opportunity_coverage", Assertion: "observation_only"}
+	if window.Expectation == "signal" {
+		out.Assertion = "expected_signal_present"
+	}
+	if window.Expectation == "quiet" {
+		out.Assertion = "expected_quiet"
+	}
 	if window.Expectation == "signal" && count == 0 {
 		out.Passed, out.Outcome = false, "missing_expected_signal"
+		out.Assertion = out.Outcome
 	}
 	if window.Expectation == "quiet" && count > 0 {
 		out.Passed, out.Outcome = false, "unexpected_signal"
+		out.Assertion = out.Outcome
 	}
 	p := window.Provenance
 	if p.Kind == "confirmed" {
-		if p.Truth == "positive" {
-			out.Outcome = "true_positive"
-			if count == 0 {
-				out.Outcome, out.Passed = "false_negative", false
-			}
-		} else {
-			out.Outcome = "true_negative"
-			if count > 0 {
-				out.Outcome, out.Passed = "false_positive", false
-			}
-		}
+		// A reviewed label is not evidence that the selected detector was
+		// enabled, had its required inputs, or assessed a valid opportunity.
+		// Keep the behavioral assertion independent of that unresolved gate.
+		out.Outcome = "unresolved_opportunity_coverage"
 	} else if p.Kind == "user_reported" && ((p.Truth == "positive" && count == 0) || (p.Truth == "negative" && count > 0)) {
 		out.Outcome = "user_reported_contradiction"
 	} else if p.Kind == "synthetic" {

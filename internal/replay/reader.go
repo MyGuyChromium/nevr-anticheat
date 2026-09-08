@@ -2,6 +2,7 @@
 package replay
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,7 +86,8 @@ type RawPlayerFrame struct {
 type rawPlayerFrameJSON RawPlayerFrame
 
 // UnmarshalJSON decodes the canonical keys and then applies the contract
-// aliases for any field the canonical key left at its zero value.
+// aliases only when the canonical key is absent. Explicit zero/null canonical
+// measurements never become fresh nonzero values from a conflicting alias.
 func (rp *RawPlayerFrame) UnmarshalJSON(data []byte) error {
 	var base rawPlayerFrameJSON
 	if err := json.Unmarshal(data, &base); err != nil {
@@ -101,28 +103,28 @@ func (rp *RawPlayerFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &alias); err != nil {
 		return err
 	}
-	if base.LeftHand == ([3]float64{}) && alias.LeftHand != nil {
-		base.LeftHand = *alias.LeftHand
-	}
-	if base.RightHand == ([3]float64{}) && alias.RightHand != nil {
-		base.RightHand = *alias.RightHand
-	}
-	if base.LeftHandRot == ([4]float64{}) && alias.LeftHandRot != nil {
-		base.LeftHandRot = *alias.LeftHandRot
-	}
-	if base.RightHandRot == ([4]float64{}) && alias.RightHandRot != nil {
-		base.RightHandRot = *alias.RightHandRot
-	}
-	if base.PingMs == 0 && alias.PingMs != nil {
-		base.PingMs = *alias.PingMs
-	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	_, bluePresent := fields["blue_score"]
-	_, orangePresent := fields["orange_score"]
-	base.HasScore = bluePresent || orangePresent
+	if _, present := fields["left_hand"]; !present && alias.LeftHand != nil {
+		base.LeftHand = *alias.LeftHand
+	}
+	if _, present := fields["right_hand"]; !present && alias.RightHand != nil {
+		base.RightHand = *alias.RightHand
+	}
+	if _, present := fields["left_hand_rot"]; !present && alias.LeftHandRot != nil {
+		base.LeftHandRot = *alias.LeftHandRot
+	}
+	if _, present := fields["right_hand_rot"]; !present && alias.RightHandRot != nil {
+		base.RightHandRot = *alias.RightHandRot
+	}
+	if _, present := fields["ping_ms"]; !present && alias.PingMs != nil {
+		base.PingMs = *alias.PingMs
+	}
+	blue, bluePresent := fields["blue_score"]
+	orange, orangePresent := fields["orange_score"]
+	base.HasScore = bluePresent && orangePresent && !bytes.Equal(bytes.TrimSpace(blue), []byte("null")) && !bytes.Equal(bytes.TrimSpace(orange), []byte("null"))
 	*rp = RawPlayerFrame(base)
 	return nil
 }
@@ -148,7 +150,11 @@ func (rd *RawDiscFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &alias); err != nil {
 		return err
 	}
-	if base.HolderID == "" {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, present := fields["holder_id"]; !present {
 		base.HolderID = alias.PossessorID
 	}
 	*rd = RawDiscFrame(base)

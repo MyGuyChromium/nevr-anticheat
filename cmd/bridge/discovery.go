@@ -40,7 +40,7 @@ func newDiscoverer(cfg *BridgeConfig, stats *bridgeStats, logger *slog.Logger) *
 		logger: logger,
 		stats:  stats,
 		auth:   newNakamaAuth(cfg, logger),
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: scopedHTTPClient(10 * time.Second),
 	}
 }
 

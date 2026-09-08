@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
 
@@ -66,8 +65,7 @@ func (p *Policy) SetClock(now func() time.Time) {
 }
 
 func (p *Policy) action(playerID, actionType, reason string, score model.SuspicionScore, events []model.DetectionEvent) *model.EnforcementAction {
-	return &model.EnforcementAction{
-		ActionID:    uuid.New().String(),
+	action := &model.EnforcementAction{
 		PlayerID:    playerID,
 		ActionType:  actionType,
 		Reason:      reason,
@@ -77,6 +75,8 @@ func (p *Policy) action(playerID, actionType, reason string, score model.Suspici
 		MatchIDs:    matchIDsFor("", score),
 		ScoreAtTime: score.TotalScore,
 	}
+	action.ActionID = recommendationID(*action)
+	return action
 }
 
 // Mode returns the effective (validated) mode of the policy.

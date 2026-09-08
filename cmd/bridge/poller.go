@@ -120,7 +120,7 @@ func newMatchPoller(m DiscoveredMatch, cfg *BridgeConfig, sender *wsSender, stat
 		cancel: cancel,
 		stats:  stats,
 		epoch:  epoch,
-		client: &http.Client{Timeout: 2 * time.Second},
+		client: scopedHTTPClient(2 * time.Second),
 		mapper: mapper,
 	}
 }

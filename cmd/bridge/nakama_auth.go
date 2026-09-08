@@ -74,7 +74,7 @@ func newNakamaAuth(cfg *BridgeConfig, logger *slog.Logger) *nakamaAuth {
 	a := &nakamaAuth{
 		cfg:    cfg,
 		logger: logger,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: scopedHTTPClient(10 * time.Second),
 		now:    time.Now,
 	}
 	if cfg.NakamaBearerToken != "" {

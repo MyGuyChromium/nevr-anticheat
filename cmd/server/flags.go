@@ -33,7 +33,7 @@ func registerServerFlags(fs *flag.FlagSet, def config.ServerConfig) *serverFlags
 		listen:  fs.String("listen", def.Listen, "Telemetry listen address ([server] listen)"),
 		metrics: fs.String("metrics", def.Metrics, "Metrics listen address ([server] metrics)"),
 		allowUnauth: fs.Bool("allow-unauthenticated", def.AllowUnauthenticated,
-			"Run without NEVR_AC_AUTH_TOKEN (INSECURE; also enabled by NEVR_AC_ALLOW_UNAUTH=1 or [server] allow_unauthenticated)"),
+			"Literal-loopback development only: run without NEVR_AC_AUTH_TOKEN (INSECURE; also NEVR_AC_ALLOW_UNAUTH=1 or [server] allow_unauthenticated)"),
 		maxMatches:      fs.Int("max-matches", def.MaxMatches, "Maximum concurrently tracked live matches ([server] max_matches)"),
 		maxPlayers:      fs.Int("max-players", def.MaxPlayersPerMatch, "Maximum players per live match ([server] max_players_per_match)"),
 		maxConns:        fs.Int("max-connections", def.MaxConnections, "Maximum concurrent telemetry connections ([server] max_connections)"),

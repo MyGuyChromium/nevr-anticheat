@@ -128,6 +128,9 @@ func liveRun(t *testing.T, cfg *config.Config, matchID string, batches [][]model
 	for i, batch := range batches {
 		res := mm.HandleFrames(matchID, "", batch)
 		if res.Accepted != len(batch) || res.Rejected != 0 || res.Ignored != 0 {
+			for _, frame := range batch {
+				t.Logf("batch frame player=%s index=%d timestamp=%.17g", frame.PlayerID, frame.FrameIndex, frame.Timestamp)
+			}
 			t.Fatalf("batch %d: %+v", i, res)
 		}
 	}

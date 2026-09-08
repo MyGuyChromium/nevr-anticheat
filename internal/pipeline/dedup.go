@@ -125,6 +125,7 @@ func (d *Deduplicator) belongs(inc, ev *model.DetectionEvent) bool {
 // highest is the best description of the incident. An exact tie keeps the
 // earlier emission.
 func mergeInto(inc, ev *model.DetectionEvent) {
+	shadow := inc.IsShadow || ev.IsShadow
 	if ev.Severity*ev.Confidence > inc.Severity*inc.Confidence {
 		inc.Severity = ev.Severity
 		inc.Confidence = ev.Confidence
@@ -147,6 +148,11 @@ func mergeInto(inc, ev *model.DetectionEvent) {
 	inc.CausalKey.FrameStart = inc.FrameRangeStart
 	inc.CausalKey.FrameEnd = inc.FrameRangeEnd
 	inc.MergedCount += ev.MergedCount
+	// A safety abstention is monotone across the whole merged incident; a
+	// stronger earlier/later emission must not erase a quarantined interval.
+	if shadow {
+		inc.IsShadow, inc.AutoEnforce, inc.EnforcementWeight = true, false, 0
+	}
 }
 
 // sortIncidents orders emitted incidents deterministically.

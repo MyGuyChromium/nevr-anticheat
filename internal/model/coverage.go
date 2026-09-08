@@ -5,6 +5,7 @@ package model
 // internal guards may still skip them. InputFrames is only a necessary-input
 // check for the named detector, never an independent ground-truth opportunity.
 type PlayerCoverage struct {
+	DataHealth     *DataHealth        `json:"data_health,omitempty"`
 	Version        int                `json:"version"`
 	Status         string             `json:"status"`
 	ValidFrames    int                `json:"valid_frames"`
@@ -15,6 +16,7 @@ type PlayerCoverage struct {
 }
 
 type DetectorCoverage struct {
+	Capability      *DetectorCapability    `json:"capability,omitempty"`
 	DetectorID      string                 `json:"detector_id"`
 	Enabled         bool                   `json:"enabled"`
 	Status          string                 `json:"status"`

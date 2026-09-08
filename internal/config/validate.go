@@ -175,6 +175,9 @@ func ValidateWithWarnings(cfg *Config) ([]string, error) {
 
 	// --- server ---
 	sv := cfg.Server
+	if err := ValidateSourceGrants(sv.SourceGrants); err != nil {
+		add("%v", err)
+	}
 	if strings.TrimSpace(sv.Listen) == "" {
 		add("server.listen must not be empty")
 	}

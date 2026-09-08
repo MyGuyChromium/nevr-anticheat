@@ -63,6 +63,7 @@ func DefaultConfig() *Config {
 			ShadowDetectors: []string{},
 		},
 		Server: ServerConfig{
+			SourceGrants:          []SourceGrantConfig{},
 			Listen:                ":8080",
 			Metrics:               ":9090",
 			AllowUnauthenticated:  false,

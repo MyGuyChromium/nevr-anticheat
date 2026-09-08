@@ -38,27 +38,24 @@ type LiveMatch struct {
 	// Players is the pipeline's persistent per-player state (valid after the
 	// first batch). It is what makes kinematics, throw detection and warmup
 	// continue across batches.
-	Players       map[string]*model.PlayerState
-	FrameCount    int // frame ticks stored for the match (all segments)
-	RowsStored    int // telemetry rows stored for the match (all segments)
-	InvalidFrames int
-	StartTime     time.Time
-	LastActivity  time.Time
+	Players                  map[string]*model.PlayerState
+	FrameCount               int // frame ticks stored for the match (all segments)
+	RowsStored               int // telemetry rows stored for the match (all segments)
+	InvalidFrames            int
+	AnalysisIncomplete       bool
+	PersistenceError         string
+	AnalysisSuspensionReason string
+	StartTime                time.Time
+	LastActivity             time.Time
 
-	// Frame identity (contract F). Indices are match-relative and monotonic
-	// per player. A batch in which a player's index is <= that player's last
-	// index is a producer restart: one shared offset per match is added to
-	// every later frame's index and timestamp so the stored stream stays
-	// contiguous. A batch that merely repeats the match's last index for a
-	// different player (per-player batches of one tick) is not a restart.
+	// Frame identities are immutable. Retries never receive new indices or
+	// timestamps. A counter restart without a separately authorized stream
+	// identity is not evidence of a new observation and is not rebased.
 	lastFrameIndex  int            // highest frame index stored for the match
 	lastPlayerIndex map[string]int // highest frame index stored per player
-	indexOffset     int            // sticky re-base offset applied to raw indices
-	timestampOffset float64        // sticky re-base offset applied to raw timestamps
 	firstTimestamp  float64        // first frame timestamp stored (relative game time)
 	lastTimestamp   float64        // highest frame timestamp stored
 	haveTimestamp   bool
-	rebasedBatches  int
 
 	// pending holds stored frames of the newest tick until a higher index
 	// closes it: the pipeline evaluates every tick exactly once, with all
@@ -185,6 +182,21 @@ func (mm *MatchManager) getOrCreate(matchID, serverID string) (*LiveMatch, bool)
 			mm.matches[matchID] = match
 			mm.updateActiveGauge()
 			mm.matchesMu.Unlock()
+			// Check durable ownership before initialization can overwrite context.
+			// Failed lookups other than a genuinely absent match fail closed.
+			prior, err := mm.store.GetMatchContext(context.Background(), matchID)
+			if err != nil && !errors.Is(err, sqlite.ErrNotFound) || prior != nil && prior.ServerID != serverID {
+				mm.warnThrottled("sourcebinding:"+matchID, "stored match source does not authorize this submission; rejected", "match", matchID)
+				match.ended = true
+				mm.matchesMu.Lock()
+				if mm.matches[matchID] == match {
+					delete(mm.matches, matchID)
+					mm.updateActiveGauge()
+				}
+				mm.matchesMu.Unlock()
+				match.mu.Unlock()
+				return nil, false
+			}
 			mm.initMatch(match, matchID, serverID)
 			return match, true
 		}
@@ -196,35 +208,23 @@ func (mm *MatchManager) getOrCreate(matchID, serverID string) (*LiveMatch, bool)
 			match.mu.Unlock()
 			continue
 		}
-		mm.noteServerID(match, serverID)
+		if !mm.noteServerID(match, serverID) {
+			match.mu.Unlock()
+			return nil, false
+		}
 		return match, true
 	}
 }
 
-// noteServerID records the producer's provenance on the match context the
-// first time it is seen (caller holds match.mu). Telemetry for one match
-// from a second server_id is logged and keeps the first.
-func (mm *MatchManager) noteServerID(match *LiveMatch, serverID string) {
-	if serverID == "" {
-		return
-	}
+// noteServerID enforces a match's source association (caller holds match.mu).
+// Empty IDs are only the legacy development source, not a bypass for a bound ID.
+func (mm *MatchManager) noteServerID(match *LiveMatch, serverID string) bool {
 	mc := match.MatchCtx
-	switch {
-	case mc.ServerID == "":
-		mc.ServerID = serverID
-		mm.persistContext(context.Background(), match)
-	case mc.ServerID != serverID:
-		mm.warnThrottled("serverid:"+mc.MatchID, "telemetry for match arrived from a different server_id; keeping the first",
-			"match", mc.MatchID, "server_id", mc.ServerID, "other", serverID)
+	if mc.ServerID != serverID {
+		mm.warnThrottled("serverid:"+mc.MatchID, "telemetry for match arrived from a different server_id; rejected", "match", mc.MatchID)
+		return false
 	}
-}
-
-// nominalDt is the producer's nominal frame spacing in seconds.
-func (match *LiveMatch) nominalDt() float64 {
-	if match.MatchCtx != nil && match.MatchCtx.TickRate > 0 {
-		return 1 / match.MatchCtx.TickRate
-	}
-	return 1 / defaultTickRate
+	return true
 }
 
 // HandleFrames processes a batch of frames for a match. serverID is the
@@ -249,55 +249,15 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 	match.LastActivity = time.Now()
 
 	ctx := context.Background()
-	res := FrameResult{}
-
-	// Frame identity (contract F): apply the match's sticky re-base offset,
-	// then detect a producer restart per player.
-	if match.indexOffset != 0 || match.timestampOffset != 0 {
-		for i := range frames {
-			frames[i].FrameIndex += match.indexOffset
-			frames[i].Timestamp += match.timestampOffset
-		}
-	}
-	minIdx, minTS := frames[0].FrameIndex, frames[0].Timestamp
-	restart := false
-	for _, f := range frames {
-		if f.FrameIndex < minIdx {
-			minIdx = f.FrameIndex
-		}
-		if f.Timestamp < minTS {
-			minTS = f.Timestamp
-		}
-		if last, seen := match.lastPlayerIndex[f.PlayerID]; seen && f.FrameIndex <= last {
-			restart = true
-		}
-	}
-	if restart {
-		offset := match.lastFrameIndex + 1 - minIdx
-		tsOffset := 0.0
-		if match.haveTimestamp {
-			tsOffset = match.lastTimestamp + match.nominalDt() - minTS
-		}
-		for i := range frames {
-			frames[i].FrameIndex += offset
-			frames[i].Timestamp += tsOffset
-		}
-		match.indexOffset += offset
-		match.timestampOffset += tsOffset
-		match.rebasedBatches++
-		if mm.metrics != nil {
-			mm.metrics.FramesRebased.Add(int64(len(frames)))
-		}
-		if match.rebasedBatches == 1 || match.rebasedBatches%1000 == 0 {
-			mm.logger.Warn("re-based frame batch after producer restart",
-				"match", matchID, "frames", len(frames), "batch_min", minIdx,
-				"last_index", match.lastFrameIndex, "offset", offset,
-				"timestamp_offset", tsOffset, "rebased_batches", match.rebasedBatches)
-		}
+	rawFrameIndex := frames[0].FrameIndex
+	frames, res := mm.freshLiveFrames(ctx, match, frames)
+	if len(frames) == 0 {
+		return res
 	}
 
 	// Player roster: cap, then register new players and team assignments.
 	kept := make([]model.PlayerTelemetryFrame, 0, len(frames))
+	rosterChanged := false
 	for _, f := range frames {
 		if !containsString(match.MatchCtx.PlayerIDs, f.PlayerID) {
 			if len(match.MatchCtx.PlayerIDs) >= mm.maxPlayersPerMatch {
@@ -307,6 +267,7 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 				continue
 			}
 			match.MatchCtx.PlayerIDs = append(match.MatchCtx.PlayerIDs, f.PlayerID)
+			rosterChanged = true
 			sort.Strings(match.MatchCtx.PlayerIDs)
 		}
 		if team := normalizeTeam(f.Team); team != "" {
@@ -318,6 +279,14 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 	if len(frames) == 0 {
 		return res
 	}
+	// A conflicting identity in the first batch is discovered before its
+	// bounded roster exists. Persist that already-latched suspension once
+	// real accepted player IDs are available (also covers later raw joiners).
+	if rosterChanged && match.AnalysisIncomplete {
+		if err := mm.store.MarkLiveAnalysisIncompleteForReason(ctx, matchID, match.MatchCtx.PlayerIDs, match.AnalysisSuspensionReason); err != nil {
+			mm.logger.Error("could not persist incomplete-analysis marker after roster registration", "match", matchID, "error", err)
+		}
+	}
 
 	// Persist raw telemetry first: it is the source of truth for reprocessing.
 	// Ack accounting (contract 3): every frame of the batch is counted
@@ -328,7 +297,14 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 	// stays where it was so the producer can re-send the batch unchanged.
 	var rawByFrame map[int]string
 	if rawJSON != "" {
-		rawByFrame = map[int]string{frames[0].FrameIndex: rawJSON}
+		// Filtering/sorting a mixed retry batch must not bind its old raw
+		// payload to a different newly accepted tick.
+		for _, f := range frames {
+			if f.FrameIndex == rawFrameIndex {
+				rawByFrame = map[int]string{rawFrameIndex: rawJSON}
+				break
+			}
+		}
 	}
 	storeResult, storeErr := mm.store.StoreTelemetryFramesWithRaw(ctx, matchID, frames, rawByFrame)
 	if storeErr != nil {
@@ -395,6 +371,9 @@ func splitClosedTicks(frames []model.PlayerTelemetryFrame) (ready, held []model.
 // creation (SetSkipReset), so the first call only creates the roster and
 // every later call continues detector, scorer, dedup and per-player state.
 func (mm *MatchManager) processLocked(ctx context.Context, match *LiveMatch, frames []model.PlayerTelemetryFrame) {
+	if match.AnalysisIncomplete {
+		return // raw telemetry was already persisted; offline re-analysis can recover it
+	}
 	matchID := match.MatchCtx.MatchID
 	result, err := match.Pipeline.ProcessMatch(ctx, match.MatchCtx, frames)
 	match.initialized = true
@@ -406,14 +385,15 @@ func (mm *MatchManager) processLocked(ctx context.Context, match *LiveMatch, fra
 
 	match.FrameCount += result.FramesProcessed
 	match.InvalidFrames += result.InvalidFrames
+	if !mm.persistDerived(ctx, match, result, false) {
+		return
+	}
 	mm.recordResult(match, result)
 	if mm.metrics != nil {
 		if n := len(frames) - result.InvalidFrames; n > 0 {
 			mm.metrics.FramesProcessed.Add(int64(n))
 		}
 	}
-	mm.persistEvents(ctx, match, result)
-	mm.persistScores(ctx, match, result.PlayerScores, false)
 }
 
 // noteStored advances the frame bookkeeping over frames the store now holds.
@@ -455,12 +435,23 @@ func (mm *MatchManager) HandleControl(msg model.ControlMessage) {
 			mc.Map = msg.Map
 		}
 		mc.IsPrivate = msg.IsPrivate
-		for pid, team := range msg.Teams {
+		// Keep both roster structures bounded, even across repeated starts.
+		// Stable ordering makes a direct oversized control deterministic too.
+		teamPlayers := make([]string, 0, len(msg.Teams))
+		for pid := range msg.Teams {
+			teamPlayers = append(teamPlayers, pid)
+		}
+		sort.Strings(teamPlayers)
+		for _, pid := range teamPlayers {
+			team := msg.Teams[pid]
 			if t := normalizeTeam(team); t != "" {
-				mc.TeamAssignments[pid] = t
-				if !containsString(mc.PlayerIDs, pid) && len(mc.PlayerIDs) < mm.maxPlayersPerMatch {
+				if !containsString(mc.PlayerIDs, pid) {
+					if len(mc.PlayerIDs) >= mm.maxPlayersPerMatch {
+						continue
+					}
 					mc.PlayerIDs = append(mc.PlayerIDs, pid)
 				}
+				mc.TeamAssignments[pid] = t
 			}
 		}
 		sort.Strings(mc.PlayerIDs)
@@ -471,7 +462,7 @@ func (mm *MatchManager) HandleControl(msg model.ControlMessage) {
 		match.mu.Unlock()
 	case model.ControlMatchEnd:
 		mm.logger.Info("match_end received", "match", msg.MatchID, "reason", msg.Reason)
-		mm.EndMatch(msg.MatchID)
+		mm.endMatch(msg.MatchID, &msg.ServerID)
 	}
 }
 
@@ -531,6 +522,14 @@ func (mm *MatchManager) initMatch(match *LiveMatch, matchID, serverID string) {
 
 	ctx := context.Background()
 	mm.resumeFromStore(ctx, match)
+	if reason, err := mm.store.LiveAnalysisSuspensionReason(ctx, matchID); reason != "" || err != nil {
+		match.AnalysisIncomplete = true
+		match.AnalysisSuspensionReason = reason
+		if err != nil || reason == sqlite.LivePersistenceFailureReason {
+			match.PersistenceError = sqlite.LivePersistenceFailureReason
+			match.AnalysisSuspensionReason = sqlite.LivePersistenceFailureReason
+		}
+	}
 
 	// Event times are match start + event timestamp (the pipeline repeats
 	// this on its first slice; a resumed match keeps the stored start).
@@ -684,9 +683,7 @@ func (mm *MatchManager) priorSummary(ctx context.Context, matchID string) (prior
 func (mm *MatchManager) recordResult(match *LiveMatch, result *pipeline.MatchResult) {
 	if err := mm.store.MergeMatchCatchReviews(context.Background(), match.MatchCtx.MatchID, result.PlayerCoverage); err != nil {
 		mm.logger.Error("failed to store live catch diagnostics", "match", match.MatchCtx.MatchID, "error", err)
-		if mm.metrics != nil {
-			mm.metrics.StoreErrors.Inc()
-		}
+		mm.markAnalysisIncomplete(context.Background(), match, err)
 	}
 	for _, ev := range result.DetectionEvents {
 		match.eventsByDetector[ev.DetectorID]++
@@ -710,67 +707,6 @@ func (mm *MatchManager) recordResult(match *LiveMatch, result *pipeline.MatchRes
 	m.EventsDeduplicated.Add(int64(result.EventsMerged))
 	m.EventsRateLimited.Add(int64(result.EventsRateLimited))
 	m.EventsInvalid.Add(int64(result.EventsInvalid))
-}
-
-// persistEvents stores the batch's detection events and keeps the stored
-// ones for this segment's review cases.
-func (mm *MatchManager) persistEvents(ctx context.Context, match *LiveMatch, result *pipeline.MatchResult) {
-	for _, ev := range result.DetectionEvents {
-		if err := mm.store.StoreDetectionEventWithSource(ctx, ev, AnalysisSourceInitial); err != nil {
-			mm.logger.Error("failed to store event", "match", match.MatchCtx.MatchID, "detector", ev.DetectorID, "error", err)
-			if mm.metrics != nil {
-				mm.metrics.StoreErrors.Inc()
-			}
-			continue
-		}
-		match.segmentEvents = append(match.segmentEvents, ev)
-	}
-}
-
-// persistScores writes suspicion score snapshots. A snapshot is stored when a
-// player's tier changes (or, with final=true, whenever the score moved since
-// the last snapshot). Zero scores are never written, so shadow-only players
-// leave no rows and GetPlayerScore cannot regress a real score to 0.
-func (mm *MatchManager) persistScores(ctx context.Context, match *LiveMatch, scores map[string]model.SuspicionScore, final bool) {
-	ids := make([]string, 0, len(scores))
-	for pid := range scores {
-		ids = append(ids, pid)
-	}
-	sort.Strings(ids)
-	for _, pid := range ids {
-		score := scores[pid]
-		if score.TotalScore <= 0 || score.EventCount == 0 {
-			continue
-		}
-		level := score.Level()
-		prevLevel, seen := match.lastLevel[pid]
-		changed := !seen || level != prevLevel
-		if final && score.TotalScore != match.lastScore[pid] {
-			changed = true
-		}
-		if !changed {
-			continue
-		}
-		if score.SnapshotTime.IsZero() {
-			score.SnapshotTime = time.Now()
-		}
-		if err := mm.store.StoreSuspicionScore(ctx, score); err != nil {
-			mm.logger.Error("failed to store score snapshot", "match", match.MatchCtx.MatchID, "player", pid, "error", err)
-			if mm.metrics != nil {
-				mm.metrics.StoreErrors.Inc()
-			}
-			continue
-		}
-		match.lastLevel[pid] = level
-		match.lastScore[pid] = score.TotalScore
-		if mm.metrics != nil {
-			mm.metrics.ScoreSnapshotsStored.Inc()
-		}
-		if !seen || level != prevLevel {
-			mm.logger.Info("player suspicion tier changed", "match", match.MatchCtx.MatchID, "player", pid,
-				"level", string(level), "score", score.TotalScore, "events", score.EventCount)
-		}
-	}
 }
 
 // matchDuration returns the elapsed game time covered by the match: last
@@ -798,12 +734,12 @@ func (mm *MatchManager) persistContext(ctx context.Context, match *LiveMatch) {
 // EndMatch finalizes a match: closes open dedup incidents, persists the
 // remaining events and scores, the match context and a summary.
 func (mm *MatchManager) EndMatch(matchID string) {
+	mm.endMatch(matchID, nil) // trusted local shutdown/maintenance
+}
+
+func (mm *MatchManager) endMatch(matchID string, sourceID *string) {
 	mm.matchesMu.Lock()
 	match, ok := mm.matches[matchID]
-	if ok {
-		delete(mm.matches, matchID)
-		mm.updateActiveGauge()
-	}
 	mm.matchesMu.Unlock()
 
 	if !ok {
@@ -812,7 +748,16 @@ func (mm *MatchManager) EndMatch(matchID string) {
 
 	match.mu.Lock()
 	defer match.mu.Unlock()
+	if sourceID != nil && !mm.noteServerID(match, *sourceID) {
+		return
+	}
 	mm.finalizeLocked(match)
+	mm.matchesMu.Lock()
+	if mm.matches[matchID] == match {
+		delete(mm.matches, matchID)
+		mm.updateActiveGauge()
+	}
+	mm.matchesMu.Unlock()
 }
 
 // finalizeLocked persists everything for a match; caller holds match.mu.
@@ -831,11 +776,11 @@ func (mm *MatchManager) finalizeLocked(match *LiveMatch) {
 		mm.processLocked(ctx, match, match.pending)
 		match.pending = nil
 	}
-	if match.initialized {
+	if match.initialized && !match.AnalysisIncomplete {
 		final := match.Pipeline.Finalize(match.MatchCtx)
-		mm.recordResult(match, final)
-		mm.persistEvents(ctx, match, final)
-		mm.persistScores(ctx, match, final.PlayerScores, true)
+		if mm.persistDerived(ctx, match, final, true) {
+			mm.recordResult(match, final)
+		}
 	}
 
 	mm.logger.Info("live match ended", "match", matchID, "frames", match.FrameCount,
@@ -886,6 +831,9 @@ func (mm *MatchManager) finalizeLocked(match *LiveMatch) {
 // that got a case (the summary's flagged list) and invokes OnReviewCase for
 // each. Caller holds match.mu.
 func (mm *MatchManager) createReviewCases(ctx context.Context, match *LiveMatch) []string {
+	if match.AnalysisIncomplete {
+		return nil
+	}
 	matchID := match.MatchCtx.MatchID
 	scores := match.Scorer.GetAllScores()
 	if len(scores) == 0 {
@@ -977,6 +925,9 @@ func (mm *MatchManager) GetMatchScores(matchID string) map[string]model.Suspicio
 	}
 	match.mu.Lock()
 	defer match.mu.Unlock()
+	if match.AnalysisIncomplete {
+		return nil
+	}
 	return match.Scorer.GetAllScores()
 }
 

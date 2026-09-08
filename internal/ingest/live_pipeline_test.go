@@ -54,7 +54,13 @@ func newTestManager(t *testing.T) (*MatchManager, *sqlite.Store, *metrics.Metric
 // speedHack oscillates on Z at ~75 m/s.
 func speedHack(pid string, i int) model.PlayerTelemetryFrame {
 	f := goodFrame(pid, i)
+	f.Observation = &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "fixture", SessionID: "fixturematch", FrameIndex: f.FrameIndex, Timestamp: f.Timestamp, Freshness: "fresh"}
 	f.Position[2] = 5.0 + float64(i%6)*5.0
+	// The speed fixture moves the tracked body and controllers together;
+	// accidentally leaving hands behind is a separate telemetry health fault.
+	f.LeftHandPosition[2], f.RightHandPosition[2] = f.Position[2], f.Position[2]
+	validRotation := true
+	f.LeftHandRotationValid, f.RightHandRotationValid = &validRotation, &validRotation
 	f.Team = "blue"
 	return f
 }
@@ -146,8 +152,8 @@ func TestMatchManager_LiveDetectionAcrossOneFrameBatches(t *testing.T) {
 	}
 }
 
-// TestMatchManager_RebasesNonMonotonicBatches covers contract 2 / F22/F53.
-func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
+// Retries and unrecognized counter resets never become new observations.
+func TestMatchManager_RetriesRemainIdempotentAcrossManagerRestart(t *testing.T) {
 	mm, store, m := newTestManager(t)
 	ctx := context.Background()
 	batch := func(lo, hi int) []model.PlayerTelemetryFrame {
@@ -158,38 +164,41 @@ func TestMatchManager_RebasesNonMonotonicBatches(t *testing.T) {
 		return out
 	}
 	mm.HandleFrames("M1", "", batch(0, 10))
-	res := mm.HandleFrames("M1", "", batch(0, 10)) // producer restarted its counter
-	if res.Accepted != 10 || res.Ignored != 0 {
-		t.Fatalf("rebased batch result %+v", res)
+	res := mm.HandleFrames("M1", "", batch(0, 10)) // identical retry, not proof of restart
+	if res.Accepted != 0 || res.Ignored != 10 || res.Rejected != 0 {
+		t.Fatalf("retry batch result %+v", res)
 	}
 	maxIdx, err := store.GetMaxFrameIndex(ctx, "M1")
-	if err != nil || maxIdx != 19 {
-		t.Errorf("max frame index=%d err=%v, want 19", maxIdx, err)
+	if err != nil || maxIdx != 9 {
+		t.Errorf("max frame index=%d err=%v, want 9", maxIdx, err)
 	}
-	if n := countRows(t, store, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?`, "M1"); n != 20 {
-		t.Errorf("rows=%d want 20", n)
+	if n := countRows(t, store, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?`, "M1"); n != 10 {
+		t.Errorf("rows=%d want 10", n)
 	}
-	if m.FramesRebased.Get() != 10 {
+	if m.FramesRebased.Get() != 0 {
 		t.Errorf("FramesRebased=%d", m.FramesRebased.Get())
 	}
 
 	// A new manager (server restart) seeds its counter from the store.
 	mm2 := NewMatchManager(mm.cfg, store, mm.detectorFn, quietLogger())
-	mm2.HandleFrames("M1", "", batch(0, 5))
-	if maxIdx, _ := store.GetMaxFrameIndex(ctx, "M1"); maxIdx != 24 {
-		t.Errorf("after restart max index=%d want 24", maxIdx)
+	res = mm2.HandleFrames("M1", "", batch(0, 5))
+	if res.Accepted != 0 || res.Ignored != 5 {
+		t.Fatalf("resumed retry: %+v", res)
 	}
-	if n := countRows(t, store, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?`, "M1"); n != 25 {
-		t.Errorf("rows=%d want 25", n)
+	if maxIdx, _ := store.GetMaxFrameIndex(ctx, "M1"); maxIdx != 9 {
+		t.Errorf("after restart max index=%d want 9", maxIdx)
+	}
+	if n := countRows(t, store, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?`, "M1"); n != 10 {
+		t.Errorf("rows=%d want 10", n)
 	}
 	// Frames with a genuinely repeated (match_id, player_id, frame_index) are
 	// reported as ignored by the store, never as accepted.
-	if n, _ := store.GetMatchFrameCount(ctx, "M1"); n != 25 {
+	if n, _ := store.GetMatchFrameCount(ctx, "M1"); n != 10 {
 		t.Errorf("GetMatchFrameCount=%d", n)
 	}
 }
 
-func TestMatchManager_PreservesLiveRawTicksAcrossRebase(t *testing.T) {
+func TestMatchManager_PreservesLiveRawTicksAcrossRetry(t *testing.T) {
 	mm, store, _ := newTestManager(t)
 	ctx := context.Background()
 
@@ -209,18 +218,18 @@ func TestMatchManager_PreservesLiveRawTicksAcrossRebase(t *testing.T) {
 	res = mm.HandleFramesWithRaw("M1", "srv", []model.PlayerTelemetryFrame{
 		goodFrame("P1", 0), goodFrame("P2", 0),
 	}, secondRaw)
-	if res.Accepted != 2 || res.Rejected != 0 {
-		t.Fatalf("rebased batch: %+v", res)
+	if res.Accepted != 0 || res.Rejected != 0 || res.Ignored != 2 {
+		t.Fatalf("retry batch: %+v", res)
 	}
 	ticks, err = store.GetMatchRawTicks(ctx, "M1", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ticks[0] != firstRaw || ticks[1] != secondRaw {
-		t.Fatalf("raw ticks after rebase=%v", ticks)
+	if ticks[0] != firstRaw || len(ticks) != 1 {
+		t.Fatalf("retry altered retained raw tick=%v", ticks)
 	}
-	if n := countRows(t, store, `SELECT COUNT(*) FROM match_ticks WHERE match_id = ?`, "M1"); n != 2 {
-		t.Fatalf("match_ticks rows=%d want 2", n)
+	if n := countRows(t, store, `SELECT COUNT(*) FROM match_ticks WHERE match_id = ?`, "M1"); n != 1 {
+		t.Fatalf("match_ticks rows=%d want 1", n)
 	}
 }
 
@@ -261,8 +270,8 @@ func TestMatchManager_ControlMessages(t *testing.T) {
 	if _, ok := mc.TeamAssignments["S1"]; ok {
 		t.Error("spectator must not get a team assignment")
 	}
-	mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P2", 0)})
-	mm.HandleControl(model.ControlMessage{Type: model.ControlMatchEnd, MatchID: "M1", Reason: "poller_stopped"})
+	mm.HandleFrames("M1", "eu-2", []model.PlayerTelemetryFrame{goodFrame("P1", 0), goodFrame("P2", 0)})
+	mm.HandleControl(model.ControlMessage{Type: model.ControlMatchEnd, MatchID: "M1", ServerID: "eu-2", Reason: "poller_stopped"})
 	if mm.ActiveMatchCount() != 0 {
 		t.Error("match_end should finalize the match")
 	}
@@ -270,7 +279,7 @@ func TestMatchManager_ControlMessages(t *testing.T) {
 		t.Errorf("summary rows=%d", n)
 	}
 	// Frames after match_end start a fresh match rather than being dropped.
-	if res := mm.HandleFrames("M1", "", []model.PlayerTelemetryFrame{goodFrame("P1", 1)}); res.Accepted != 1 {
+	if res := mm.HandleFrames("M1", "eu-2", []model.PlayerTelemetryFrame{goodFrame("P1", 1)}); res.Accepted != 1 {
 		t.Errorf("post-end frames: %+v", res)
 	}
 }

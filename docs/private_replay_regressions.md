@@ -87,6 +87,10 @@ the inclusive window count. A player with no stored samples in that window is
 reported as unobservable, never as a true negative or false negative. Sample
 presence does not prove usable release-time measurements: reviewers must still
 inspect phase, loss, sampling gaps, quality gates, contact and attribution.
+Every new window result therefore reports
+`opportunity_coverage: "unresolved_opportunity_coverage"`. Its `assertion`
+reports the requested signal/quiet behavior separately. `samples` is a count of
+stored player frames, never a detector-opportunity denominator.
 
 Provenance categories are deliberately separate:
 
@@ -97,8 +101,9 @@ Provenance categories are deliberately separate:
 - `confirmed` requires positive/negative truth, two distinct reviewer identifiers
   (case-insensitive; `local-owner` placeholders do not count),
   a review note and at least one local evidence artifact with its SHA-256. Only
-  this category produces true/false positive/negative window outcomes. These are
-  operator assertions; the runner cannot authenticate reviewer independence or
+  the label is retained; its outcome remains `unresolved_opportunity_coverage`,
+  not a true/false positive/negative. These labels are operator assertions;
+  the runner cannot authenticate reviewer independence or
   prove that their conclusion is correct. Review identity and evidence through
   the application's calibration process before treating a label as promotion data.
 
@@ -115,6 +120,18 @@ user reports or synthetic examples into accuracy percentages. It does not feed
 detector promotion automatically. Passing these contracts provides change
 protection; independently reviewed held-out data and promotion gates are still
 required for calibration and enforcement decisions.
+
+### Report migration
+
+The v1 manifest format remains readable. Newly generated reports no longer emit
+confusion-matrix outcomes for confirmed windows: old `true_positive`,
+`true_negative`, `false_positive`, and `false_negative` outcomes lacked a valid
+opportunity gate. Do not aggregate those historical outcomes as accuracy data.
+`passed` now reflects the explicit `signal`/`quiet` assertion (or `observe`),
+plus source/sample/structure checks; a review label alone does not change it.
+Retain old reports and generate a new run rather than overwriting them.
+Configuration pins now also include `project_rules`, so old pins require an
+explicit new baseline capture; they are not silently accepted or rewritten.
 
 ## Privacy and tests
 

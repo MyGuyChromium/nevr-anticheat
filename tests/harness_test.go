@@ -329,7 +329,14 @@ func TestScoring_MultipleCheatTypes_HighScore(t *testing.T) {
 		t.Fatalf("grab context lost or upgraded: %+v", grabs)
 	}
 	levels := testutil.NewHarness(t).Config().Scoring.LevelTable()
-	hr.AssertScoreAbove("player1", levels.HighRisk)
+	// Three independent capped contributions (45) plus the category bonus
+	// (10) are 55. PAT_004 describes them, but must not lift them above the
+	// default high-risk threshold by scoring the same evidence again.
+	score := hr.PlayerScores["player1"]
+	if score.TotalScore != 55 || score.ScoreByDetector["PAT_004"] != 0 || score.EventCount != 3 {
+		t.Fatalf("derived composite inflated independent evidence: %+v", score)
+	}
+	hr.AssertScoreBelow("player1", levels.HighRisk)
 }
 
 func TestScoring_SingleSoftSignal_LowScore(t *testing.T) {

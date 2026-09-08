@@ -133,6 +133,10 @@ func keysOf(evs []model.DetectionEvent) []eventKey {
 func TestLiveContinuity_OneFramePerBatch(t *testing.T) {
 	cfg := testConfig("enforce")
 	frames := speedHackFrames("P1", 90)
+	for i := range frames {
+		f := &frames[i]
+		f.Observation = &model.ObservationContext{Source: "synthetic", Authority: "client_reported", TimeBasis: "fixture", SessionID: "live-continuity", FrameIndex: f.FrameIndex, Timestamp: f.Timestamp}
+	}
 
 	pBatch, _ := newPipeline(cfg, []detect.Detector{movement.NewMov001(cfg.GetDetectorConfig("MOV_001").Params)})
 	batchRes, err := pBatch.ProcessMatch(context.Background(), matchCtx("P1"), frames)

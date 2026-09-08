@@ -161,7 +161,7 @@ func (s *wsSender) connect(ctx context.Context) error {
 	backoff := 500 * time.Millisecond
 	var lastErr error
 	for attempt := 1; attempt <= s.connectAttempts; attempt++ {
-		conn, err := s.dial()
+		conn, err := s.dial(ctx)
 		if err == nil {
 			s.adopt(conn)
 			return nil
@@ -185,11 +185,17 @@ func (s *wsSender) connect(ctx context.Context) error {
 }
 
 // dial opens the socket and completes the hello handshake.
-func (s *wsSender) dial() (*websocket.Conn, error) {
-	conn, err := websocket.DialConfig(s.config)
+func (s *wsSender) dial(ctx context.Context) (*websocket.Conn, error) {
+	// The net.Dialer timeout alone does not bound the HTTP Upgrade. Keep
+	// cancellation/deadline active until the complete WebSocket handshake ends.
+	dialCtx, cancel := context.WithTimeout(ctx, s.dialTimeout)
+	conn, err := s.config.DialContext(dialCtx)
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("anticheat WebSocket dial: %w", err)
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 	if err := conn.SetReadDeadline(time.Now().Add(s.helloTimeout)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("set hello deadline: %w", err)
@@ -197,6 +203,9 @@ func (s *wsSender) dial() (*websocket.Conn, error) {
 	var raw json.RawMessage
 	if err := websocket.JSON.Receive(conn, &raw); err != nil {
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if errors.Is(err, io.EOF) {
 			s.stats.AuthFailures.Add(1)
 			return nil, fmt.Errorf("%w: connection closed before hello (wrong --anticheat-token, or the server rejected the connection)", errAuthRejected)
@@ -505,7 +514,7 @@ func (s *wsSender) deliver(ctx context.Context, msg outboundMsg) {
 	defer s.pending.Add(-1)
 	conn, gen := s.current()
 	if conn == nil {
-		c, err := s.dial()
+		c, err := s.dial(ctx)
 		if err != nil {
 			s.onDialFailure(ctx, msg, err)
 			return

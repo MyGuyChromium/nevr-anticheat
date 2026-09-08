@@ -179,19 +179,21 @@ func TestStoreModeratorDecision_RefusesDecidedOrClosedCase(t *testing.T) {
 		t.Errorf("verdict on closed case: %v", err)
 	}
 
-	// Cross-match cases get the same guard.
-	xm := CrossMatchReviewCase{CaseID: "XM-P1", PlayerID: "P1", MatchIDs: []string{"M1", "M2"}, MatchCount: 2,
+	// Cross-match cases get the same guard. Use an independent player/scope:
+	// the negative review above deliberately prevents reopening P1/M1 through
+	// a new aggregate recommendation (covered by review_invalidation_test).
+	xm := CrossMatchReviewCase{CaseID: "XM-P2", PlayerID: "P2", MatchIDs: []string{"M3", "M4"}, MatchCount: 2,
 		Severity: "high", DecayedScore: 61, Status: "pending", CreatedAt: time.Now()}
 	if err := s.StoreCrossMatchReviewCase(ctx, xm); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StoreModeratorDecision(ctx, model.ModeratorDecision{CaseID: "XM-P1", ModeratorID: "m", Verdict: VerdictConfirmedCheat}); err != nil {
+	if err := s.StoreModeratorDecision(ctx, model.ModeratorDecision{CaseID: "XM-P2", ModeratorID: "m", Verdict: VerdictConfirmedCheat}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StoreModeratorDecision(ctx, model.ModeratorDecision{CaseID: "XM-P1", ModeratorID: "m", Verdict: VerdictConfirmedCheat}); !errors.Is(err, ErrCaseNotDecidable) {
+	if err := s.StoreModeratorDecision(ctx, model.ModeratorDecision{CaseID: "XM-P2", ModeratorID: "m", Verdict: VerdictConfirmedCheat}); !errors.Is(err, ErrCaseNotDecidable) {
 		t.Errorf("repeat cross-match verdict: %v", err)
 	}
-	if n := countRows(t, s, "moderator_decisions", "case_id='XM-P1'"); n != 1 {
+	if n := countRows(t, s, "moderator_decisions", "case_id='XM-P2'"); n != 1 {
 		t.Errorf("cross-match repeat inserted: %d rows", n)
 	}
 }

@@ -212,18 +212,20 @@ type ShadowConfig struct {
 	ShadowDetectors []string `toml:"shadow_detectors"`
 }
 
-// ServerConfig holds the live ingestion server (cmd/server) settings. Each
-// key mirrors a cmd/server flag; the flag, when given, wins. Defaults equal
-// ingest.DefaultServerConfig() and the flag defaults.
+// ServerConfig holds live ingestion settings. Listener/limit flags override
+// these defaults; source grants are operator policy loaded only from config.
 type ServerConfig struct {
-	Listen                string `toml:"listen"`
-	Metrics               string `toml:"metrics"`
-	AllowUnauthenticated  bool   `toml:"allow_unauthenticated"`
-	MaxMatches            int    `toml:"max_matches"`
-	MaxPlayersPerMatch    int    `toml:"max_players_per_match"`
-	MaxConnections        int    `toml:"max_connections"`
-	MaxMessageBytes       int    `toml:"max_message_bytes"`
-	MaxFrameRatePerPlayer int    `toml:"max_frame_rate_per_player"`
+	// SourceGrants authorize submitter assertions, not verified game mechanics.
+	// Token values are resolved only by cmd/server from the named environment.
+	SourceGrants          []SourceGrantConfig `toml:"source_grants"`
+	Listen                string              `toml:"listen"`
+	Metrics               string              `toml:"metrics"`
+	AllowUnauthenticated  bool                `toml:"allow_unauthenticated"`
+	MaxMatches            int                 `toml:"max_matches"`
+	MaxPlayersPerMatch    int                 `toml:"max_players_per_match"`
+	MaxConnections        int                 `toml:"max_connections"`
+	MaxMessageBytes       int                 `toml:"max_message_bytes"`
+	MaxFrameRatePerPlayer int                 `toml:"max_frame_rate_per_player"`
 	// Durations must be TOML strings such as "5m" or "30s". A bare integer
 	// would decode as nanoseconds, so the loader rejects it (see
 	// checkDurationTypes) and Validate refuses anything below one second.

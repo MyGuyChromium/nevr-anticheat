@@ -6,11 +6,9 @@ import (
 	"time"
 )
 
-// L1 (fix pass 2): Timestamp never decreases. A backward clock step (NTP
-// adjust, DST fall-back inside a recording) is re-based so Timestamp
-// continues from the previous snapshot plus the observed cadence; a small
-// backward sample is clamped to the previous snapshot.
-func TestMapper_ClockStepRebased(t *testing.T) {
+// A clock correction keeps only a sortable coordinate, never an invented
+// elapsed interval. Its new source epoch isolates all derivative histories.
+func TestMapper_ClockStepIsolatesSourceEpoch(t *testing.T) {
 	m := NewMapper()
 	a := testPlayer("A", 1, [3]float64{1, 1.6, -10})
 	t0 := time.Date(2025, 10, 26, 2, 59, 59, 900_000_000, time.UTC)
@@ -24,13 +22,17 @@ func TestMapper_ClockStepRebased(t *testing.T) {
 	if math.Abs(r.Frames[0].Timestamp-0.134) > 1e-9 {
 		t.Fatalf("ts before step = %v", r.Frames[0].Timestamp)
 	}
+	before := r.Frames[0].Observation.Clone()
 
 	// DST fall-back: the recorder's local clock jumps back one hour.
 	step := t0.Add(201 * time.Millisecond).Add(-time.Hour)
 	r = s(step)
 	f := r.Frames[0]
-	if math.Abs(f.Timestamp-0.201) > 1e-9 || math.Abs(f.DeltaTime-0.067) > 1e-9 {
-		t.Errorf("clock step: ts=%v dt=%v, want 0.201/0.067 (previous + cadence)", f.Timestamp, f.DeltaTime)
+	if f.Timestamp != math.Nextafter(0.134, math.Inf(1)) || f.DeltaTime != 0 {
+		t.Errorf("clock step manufactured elapsed time: ts=%v dt=%v", f.Timestamp, f.DeltaTime)
+	}
+	if before.SameSource(f.Observation) || f.Observation.SourceEpoch != 1 || f.Observation.TimeBasis != "supplied_sample_time:clock_rebased" {
+		t.Fatalf("clock boundary source not isolated: %+v", f.Observation)
 	}
 	if m.Stats().ClockSteps != 1 || m.Stats().NonMonotonicSamples != 0 {
 		t.Errorf("stats = %+v", m.Stats())
@@ -48,8 +50,8 @@ func TestMapper_ClockStepRebased(t *testing.T) {
 	// Subsequent samples continue on the shifted clock without further steps.
 	r = s(step.Add(67 * time.Millisecond))
 	f = r.Frames[0]
-	if math.Abs(f.Timestamp-0.268) > 1e-9 || math.Abs(f.DeltaTime-0.067) > 1e-9 {
-		t.Errorf("after step: ts=%v dt=%v, want 0.268/0.067", f.Timestamp, f.DeltaTime)
+	if math.Abs(f.Timestamp-0.201) > 1e-9 || math.Abs(f.DeltaTime-0.067) > 1e-9 {
+		t.Errorf("after step: ts=%v dt=%v, want 0.201/0.067", f.Timestamp, f.DeltaTime)
 	}
 	if m.Stats().ClockSteps != 1 {
 		t.Errorf("ClockSteps = %d, want 1", m.Stats().ClockSteps)
@@ -58,8 +60,8 @@ func TestMapper_ClockStepRebased(t *testing.T) {
 	// Small backward sample: clamped to the previous snapshot, counted.
 	r = s(step.Add(60 * time.Millisecond))
 	f = r.Frames[0]
-	if math.Abs(f.Timestamp-0.268) > 1e-9 || f.DeltaTime != 0 {
-		t.Errorf("small backward sample: ts=%v dt=%v, want 0.268/0", f.Timestamp, f.DeltaTime)
+	if math.Abs(f.Timestamp-0.201) > 1e-9 || f.DeltaTime != 0 {
+		t.Errorf("small backward sample: ts=%v dt=%v, want 0.201/0", f.Timestamp, f.DeltaTime)
 	}
 	if m.Stats().NonMonotonicSamples != 1 {
 		t.Errorf("NonMonotonicSamples = %d, want 1", m.Stats().NonMonotonicSamples)
@@ -79,11 +81,11 @@ func TestMapper_TimestampNeverNegative(t *testing.T) {
 	if r.Frames[0].Timestamp != 0 || r.Frames[0].DeltaTime != 0 {
 		t.Errorf("ts=%v dt=%v, want 0/0", r.Frames[0].Timestamp, r.Frames[0].DeltaTime)
 	}
-	// A clock step before any cadence is known uses the default cadence.
+	// A clock step before any cadence is known still invents no cadence.
 	m2 := NewMapper()
 	m2.MapSessionAt(twoTeamSession("m", []EchoVRPlayer{a}, nil), t0)
 	r = m2.MapSessionAt(twoTeamSession("m", []EchoVRPlayer{a}, nil), t0.Add(-time.Hour))
-	if math.Abs(r.Frames[0].Timestamp-defaultNominalDt) > 1e-9 || m2.Stats().ClockSteps != 1 {
+	if r.Frames[0].Timestamp != math.SmallestNonzeroFloat64 || r.Frames[0].DeltaTime != 0 || m2.Stats().ClockSteps != 1 {
 		t.Errorf("ts=%v steps=%d", r.Frames[0].Timestamp, m2.Stats().ClockSteps)
 	}
 }

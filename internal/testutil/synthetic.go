@@ -130,6 +130,9 @@ func (fb *FrameBuilder) baseFrame(index int, pos model.Vec3, rot model.Quat) mod
 		deltaTime = 0
 	}
 	f := model.PlayerTelemetryFrame{
+		// This generator deliberately models one described observational feed,
+		// not an attested engine. Missing-source tests explicitly clear this.
+		Observation:     &model.ObservationContext{Source: "synthetic", SourceID: "frame-builder", Authority: "client_reported", TimeBasis: "fixture", SessionID: "synthetic-session", FrameIndex: index, Timestamp: float64(index) * dt},
 		PlayerID:        fb.playerID,
 		IsBoostingKnown: &boostObserved,
 		Team:            fb.team,
@@ -479,6 +482,7 @@ func (fb *FrameBuilder) LargeFrameGap(nFrames int, gapAtFrame int, gapSeconds fl
 		f := fb.baseFrame(i, pos, rotationFromVelocity(model.Vec3{0, 0, vz}))
 		f.FrameIndex = i + indexOffset
 		f.Timestamp = accumulatedTime
+		f.Observation.FrameIndex, f.Observation.Timestamp = f.FrameIndex, f.Timestamp
 		if i > 0 {
 			f.DeltaTime = frameDt
 		}
@@ -549,6 +553,7 @@ func (fb *FrameBuilder) HighPingPlayer(nFrames int, avgPingMs float64) []model.P
 			frames[i].DeltaTime = frames[i].Timestamp - prevTS
 		}
 		prevTS = frames[i].Timestamp
+		frames[i].Observation.Timestamp = frames[i].Timestamp
 	}
 	return frames
 }
