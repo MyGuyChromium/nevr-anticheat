@@ -190,8 +190,35 @@ Go-specific checks follow the documented [JSON reuse/null behavior](https://pkg.
 
 ## Verification log
 
-Initial full Go 1.27 normal suite and all 36 Node tests pass. Clean-checkout
-head-specific build/race/fuzz/security/Windows checks follow before handoff.
+Verified implementation commit `b92d6fc8263fa03b3d0f018e08aef8d0bbb74fd1`
+on September 8, 2026 (later report-only commits do not change these results):
+
+- Clean-checkout Go 1.26.6 `go build ./...`, `go test -count=1 ./...`,
+  `go test -race -count=1 ./...` and the separately discovered
+  `go test -race -count=1 ./scripts/testdata` all passed. Statement coverage
+  was **75.3%**, not a measure of detection accuracy. The initial Go 1.27
+  normal suite also passed.
+- All **36** desktop/review/release-policy Node tests passed.
+- `go vet ./...`, Staticcheck 0.8.1 and Actionlint 1.7.12 passed.
+  Govulncheck 1.1.4 found no reachable vulnerabilities. Gosec 2.28.0 with
+  the existing CI options reported **0 issues**, scanning 204 files / 51,873
+  lines with 13 existing justified suppressions; this pass added no suppressions.
+- [Hosted parser/security run](https://github.com/MyGuyChromium/nevr-anticheat/actions/runs/34252216735)
+  passed all five native 20-second fuzz targets: Echo NDJSON, ZIP, session
+  mapping, legacy JSON and regression manifests. This is bounded fuzzing,
+  not exhaustive input coverage.
+- [Windows packaging job](https://github.com/MyGuyChromium/nevr-anticheat/actions/runs/34252216993/job/102149859643)
+  passed native desktop tests, portable ZIP/installer construction, hashes,
+  Microsoft Defender scanning and fresh installed startup/upgrade/uninstall
+  smoke tests. Signing and provenance attestation were skipped for this PR;
+  an unsigned artifact does not establish trusted-publisher reputation.
+
+[PR #33](https://github.com/MyGuyChromium/nevr-anticheat/pull/33) records the
+latest-head hosted check results. CodeQL and dependency review are intentionally
+skipped by the existing private-repository workflow conditions, not reported as
+passes. No release was published, installed user database modified or interactive
+Spark review exercised in this pass. Passing the hosted Windows smoke test is
+not a substitute for testing every user's Windows/browser/viewer configuration.
 
 Two original recordings completed all 31 catalog checks enabled in zero-weight
 shadow mode (the default enabling policy was deliberately overridden for this
