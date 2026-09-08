@@ -51,6 +51,8 @@ func (p *Pipeline) observeHealth(f *model.PlayerTelemetryFrame, previous *model.
 	}
 	if !f.Observation.Valid() {
 		faults["missing_source_context"] = true
+	} else if f.Observation.FrameIndex != f.FrameIndex || f.Observation.Timestamp != f.Timestamp {
+		faults["source_binding_invalid"] = true
 	}
 	if previous != nil && previous.FrameCount > 0 {
 		if f.Timestamp <= previous.LastTimestamp || f.FrameIndex <= previous.LastFrameIdx {
@@ -79,8 +81,19 @@ func (p *Pipeline) observeHealth(f *model.PlayerTelemetryFrame, previous *model.
 	if f.LeftHandRotationValid == nil || !*f.LeftHandRotationValid || !f.LeftHandRotation.IsUnit() || f.RightHandRotationValid == nil || !*f.RightHandRotationValid || !f.RightHandRotation.IsUnit() {
 		faults["invalid_hand_rotation"] = true
 	}
-	if len(sanitized) > 0 {
-		faults["sanitized_observation"] = true
+	for _, reason := range sanitized {
+		switch reason {
+		case SanitizedDisc, SanitizedDiscOutOfRange, SanitizedDiscObservation:
+			faults["missing_disc"] = true
+		case SanitizedReportedVelocity:
+			faults["missing_reported_velocity"] = true
+		case SanitizedHandPosition, SanitizedFarHand, SanitizedHeadPosition:
+			faults["missing_hand_tracking"] = true
+		case SanitizedRotation, SanitizedZeroRotation:
+			faults["invalid_hand_rotation"] = true
+		default:
+			faults["sanitized_observation"] = true
+		}
 	}
 	if sharedJump {
 		faults["shared_orientation_jump"] = true
@@ -107,7 +120,7 @@ func (p *Pipeline) observeHealth(f *model.PlayerTelemetryFrame, previous *model.
 		if remaining > h.summary.RecoverySamplesRemaining {
 			h.summary.RecoverySamplesRemaining = remaining
 		}
-		if reason == "missing_source_context" || reason == "rejected_observation" || reason == "non_advancing_observation" {
+		if reason == "missing_source_context" || reason == "source_binding_invalid" || reason == "rejected_observation" || reason == "non_advancing_observation" {
 			h.summary.State = model.HealthBlind
 		}
 	}
@@ -182,6 +195,14 @@ func (p *Pipeline) applyEvidenceSafety(ev *model.DetectionEvent) {
 		return
 	} // explicitly injected non-catalog test/plugin detectors
 	ev.AutoEnforce = false // no current build/source has passed enforcement validation
+	switch ev.DetectorID {
+	case "STATE_002", "STATE_003", "STATE_004", "STATE_005", "STATE_006", "STATE_007", "PAT_001":
+		// These feeds lack presence-valid event edges/attribution. Preserve
+		// descriptive stateful diagnostics but do not score a default-false
+		// transition or sampled regularity as a verified input-timing fact.
+		ev.IsShadow, ev.EnforcementWeight = true, 0
+		p.traceEvent(*ev, "unsupported_input_abstention")
+	}
 	if h := p.health[ev.PlayerID]; h != nil {
 		// Delayed/rolling findings must not escape quarantine merely because
 		// the feed recovered before emission. A fixed per-detector watermark

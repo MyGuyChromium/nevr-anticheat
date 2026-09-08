@@ -300,8 +300,7 @@ func (s *Store) GetPlayerHistoryEvents(ctx context.Context, playerID string, mat
 		`SELECT de.match_id
 		 FROM detection_events de
 		 LEFT JOIN match_contexts mc ON mc.match_id = de.match_id
-		 WHERE de.player_id = ? AND de.is_shadow = 0 AND de.match_id != ''
-		   AND de.detector_id NOT IN ('PAT_003', 'PAT_004')
+		 WHERE de.player_id = ? AND de.match_id != '' AND `+eligibleScoringEventSQL+`
 		 GROUP BY de.match_id
 		 ORDER BY COALESCE(mc.match_start_time, MAX(de.created_at)) DESC, de.match_id
 		 LIMIT ?`, playerID, matchLimit)
@@ -332,10 +331,9 @@ func (s *Store) GetPlayerHistoryEvents(ctx context.Context, playerID string, mat
 		args = append(args, mid)
 	}
 	return s.queryEvents(ctx,
-		`SELECT `+eventColumns+` FROM detection_events
-		 WHERE player_id = ? AND is_shadow = 0
-		   AND detector_id NOT IN ('PAT_003', 'PAT_004')
-		   AND match_id IN (`+placeholders+`)
+		`SELECT `+eventColumns+` FROM detection_events de
+		 WHERE de.player_id = ? AND `+eligibleScoringEventSQL+`
+		   AND de.match_id IN (`+placeholders+`)
 		 ORDER BY match_id, frame_index, detector_id`, args...)
 }
 
@@ -848,6 +846,11 @@ func (s *Store) StoreModeratorDecision(ctx context.Context, d model.ModeratorDec
 		fmtDBTime(d.DecidedAt), string(feedbackJSON), d.ConfidenceOverride, d.ReviewDurationSec,
 	); err != nil {
 		return fmt.Errorf("insert decision: %w", err)
+	}
+	if negativeModeratorDecision(d) {
+		if err := invalidateCaseCrossMatchRecommendationsTx(ctx, tx, d.CaseID, d.DecidedAt); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

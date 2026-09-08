@@ -24,6 +24,11 @@ func TestObservationProvenanceAndClone(t *testing.T) {
 	if !o.SameSource(c.Source) {
 		t.Fatal("sample identity confused with source identity")
 	}
+	c.Source.SourceEpoch++
+	if o.SameSource(c.Source) {
+		t.Fatal("clock epoch did not isolate source history")
+	}
+	c.Source.SourceEpoch = 0
 	c.Source.Timestamp = math.NaN()
 	if o.SameSource(c.Source) {
 		t.Fatal("invalid source time accepted")

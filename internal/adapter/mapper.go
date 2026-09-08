@@ -72,9 +72,8 @@ type MapperStats struct {
 	NonMonotonicSamples int `json:"non_monotonic_samples"`
 	// ClockSteps counts snapshots whose sample time went backwards by at
 	// least clockStepThreshold (recorder clock adjusted: NTP step, DST
-	// fall-back). The time base is re-based so Timestamp continues from the
-	// previous snapshot plus the last observed cadence instead of going
-	// negative or backwards.
+	// fall-back). A new local source epoch is created with unknown boundary
+	// duration; no nominal cadence is presented as measured elapsed time.
 	ClockSteps int `json:"clock_steps"`
 	// PossessionConflicts counts ticks where more than one player reported possession.
 	PossessionConflicts int `json:"possession_conflicts"`
@@ -98,26 +97,25 @@ type MapperStats struct {
 // cadence. Timestamp never decreases: a sample time that goes backwards by
 // less than clockStepThreshold is clamped to the previous snapshot's
 // Timestamp (MapperStats.NonMonotonicSamples); a larger backward jump is a
-// recorder clock step and the time base is re-based so Timestamp continues
-// from the previous snapshot plus the last observed cadence
-// (MapperStats.ClockSteps).
+// recorder clock step. Its local source epoch changes, DeltaTime is unknown
+// (zero), and the ordering timestamp advances by only one floating-point ULP.
+// Subsequent samples use measured spacing within that new epoch. Rebased
+// timestamps are explicitly marked in Observation.TimeBasis.
 //
 // Frame identity: FrameIndex is a 0-based counter per Mapper (per match after
-// NewMatch). The ingest server re-bases indices per match, so a new Mapper
-// for an existing match is safe as long as it feeds the same ingest.
+// NewMatch). Producers must preserve their match-relative index/time across
+// reconnects: the ingest server never converts retries into fresh frames.
 type Mapper struct {
 	frameIndex int
 
 	haveFirstSample bool
 	firstSampleTime time.Time
 	// clockOffset (seconds) is added to every sample time after a backward
-	// clock step so Timestamp stays continuous.
+	// clock step solely to keep an ordered storage coordinate.
 	clockOffset float64
-	// lastTickTimestamp is the Timestamp of the previous mapped snapshot and
-	// lastTickDt the last positive gap between consecutive snapshots.
+	// lastTickTimestamp is the Timestamp of the previous sampled snapshot.
 	haveLastTick      bool
 	lastTickTimestamp float64
-	lastTickDt        float64
 	// prevTimestamp is the last Timestamp emitted for each player.
 	prevTimestamp map[string]float64
 
@@ -132,6 +130,7 @@ type Mapper struct {
 	throwClientID                                                string
 	throwSessionID                                               string
 	observationSource, observationTimeBasis, observationSourceID string
+	observationEpoch                                             uint64
 
 	stats MapperStats
 
@@ -154,10 +153,6 @@ const (
 	// from which a snapshot is treated as a recorder clock step and re-based
 	// rather than clamped.
 	clockStepThreshold = 1.0
-	// defaultNominalDt is the cadence assumed for re-basing after a clock
-	// step when the mapper has not yet observed two snapshots (30 Hz, the
-	// ingest default max_frame_rate_per_player).
-	defaultNominalDt = 1.0 / 30
 )
 
 // NewMatch resets the per-match state: the time base (Timestamp restarts at
@@ -172,7 +167,7 @@ func (m *Mapper) NewMatch() {
 	m.clockOffset = 0
 	m.haveLastTick = false
 	m.lastTickTimestamp = 0
-	m.lastTickDt = 0
+	m.observationEpoch = 0
 	m.prevTimestamp = make(map[string]float64)
 	m.haveFingerprint = false
 	m.lastFingerprint = 0
@@ -240,6 +235,9 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 		m.haveLastThrow, m.haveFingerprint = false, false
 		m.throwClientID, m.throwSessionID = clientID, raw.SessionID
 	}
+	// Detect a clock discontinuity even when the payload is unchanged.
+	// It invalidates deduplication and local throw baselines before mapping.
+	timestamp, backwards := m.tickTimestamp(sampleTime, result)
 	if m.dedupe {
 		fp := sessionFingerprint(raw)
 		if m.haveFingerprint && fp == m.lastFingerprint {
@@ -251,7 +249,6 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 		m.haveFingerprint = true
 	}
 
-	timestamp, backwards := m.tickTimestamp(sampleTime, result)
 	reportedThrow := m.changedLastThrow(raw.LastThrow)
 	if clientID == "" {
 		reportedThrow = nil
@@ -398,24 +395,22 @@ func (m *Mapper) tickTimestamp(sampleTime time.Time, result *MappingResult) (tim
 	timestamp = sampleTime.Sub(m.firstSampleTime).Seconds() + m.clockOffset
 	if m.haveLastTick {
 		switch {
-		case timestamp < m.lastTickTimestamp-clockStepThreshold:
-			nominal := m.lastTickDt
-			if nominal <= 0 {
-				nominal = defaultNominalDt
-			}
-			want := m.lastTickTimestamp + nominal
+		case timestamp <= m.lastTickTimestamp-clockStepThreshold:
+			// Only maintain storage ordering. The ULP is not a measurement
+			// of elapsed time; every player gets dt=0 and a new source epoch.
+			want := math.Nextafter(m.lastTickTimestamp, math.Inf(1))
 			m.clockOffset += want - timestamp
+			m.observationEpoch++
+			m.prevTimestamp = make(map[string]float64)
+			m.haveLastThrow, m.haveFingerprint = false, false
 			m.stats.ClockSteps++
 			m.warnOnce(result, "sample_time", "clock_step",
-				fmt.Sprintf("sample time stepped back %.3f s (recorder clock adjusted); time base re-based so Timestamp stays continuous, counted in MapperStats.ClockSteps",
+				fmt.Sprintf("sample time stepped back %.3f s; local source epoch changed, boundary duration unknown, timestamps use a rebased ordering coordinate (not continuous capture time)",
 					m.lastTickTimestamp-timestamp))
 			timestamp = want
 		case timestamp < m.lastTickTimestamp:
 			timestamp = m.lastTickTimestamp
 			backwards = true
-		}
-		if timestamp > m.lastTickTimestamp {
-			m.lastTickDt = timestamp - m.lastTickTimestamp
 		}
 	}
 	m.haveLastTick = true
@@ -460,12 +455,13 @@ func mappedTeamName(name string, idx int) (string, bool) {
 // broadcaster served the same state twice.
 func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 	h := fnv.New64a()
-	writeF := func(v float64) {
-		b := math.Float64bits(v)
+	writeI := func(v uint64) {
 		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], b)
+		binary.LittleEndian.PutUint64(buf[:], v)
 		h.Write(buf[:])
 	}
+	writeF := func(v float64) { writeI(math.Float64bits(v)) }
+	writeS := func(v string) { writeI(uint64(len(v))); h.Write([]byte(v)) }
 	writeV := func(v [3]float64) { writeF(v[0]); writeF(v[1]); writeF(v[2]) }
 	writeB := func(v bool) {
 		if v {
@@ -474,11 +470,12 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			h.Write([]byte{0})
 		}
 	}
-	h.Write([]byte(raw.GameStatus))
-	writeF(float64(len(raw.ClientName)))
-	h.Write([]byte(raw.ClientName))
-	writeF(float64(len(raw.SessionID)))
-	h.Write([]byte(raw.SessionID))
+	writeS(raw.GameStatus)
+	writeS(raw.ClientName)
+	writeS(raw.SessionID)
+	writeS(raw.MatchType)
+	writeS(raw.MapName)
+	writeB(raw.PrivateMatch)
 	writeF(raw.GameClock)
 	writeB(raw.Disc != nil)
 	if raw.Disc != nil {
@@ -495,8 +492,9 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			h.Write(buf[:n])
 		}
 	}
-	writeF(float64(raw.BluePoints))
-	writeF(float64(raw.OrangePoints))
+	writeI(uint64(raw.BluePoints))
+	writeI(uint64(raw.OrangePoints))
+	writeB(raw.LastThrow != nil)
 	if raw.LastThrow != nil {
 		writeF(raw.LastThrow.ArmSpeed)
 		writeF(raw.LastThrow.TotalSpeed)
@@ -512,13 +510,16 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 		writeF(raw.LastThrow.OffAxisPenalty)
 		writeF(raw.LastThrow.ThrowMovePenalty)
 	}
+	writeI(uint64(len(raw.Teams)))
 	for _, team := range raw.Teams {
-		h.Write([]byte(team.TeamName))
-		writeF(float64(len(team.Players)))
+		writeS(team.TeamName)
+		writeI(uint64(len(team.Players)))
 		for i := range team.Players {
 			p := &team.Players[i]
-			writeF(float64(p.UserID))
-			h.Write([]byte(p.Name))
+			// User IDs are exact int64 values. Conversion through float64
+			// aliases adjacent IDs above 2^53 and can drop a roster change.
+			writeI(uint64(p.UserID))
+			writeS(p.Name)
 			writeB(p.hasVelocity())
 			writeV(p.Velocity)
 			writeV(p.Body.Position)
@@ -535,12 +536,14 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			writeV(p.RHand.Left)
 			writeV(p.RHand.Up)
 			writeB(p.Possession)
-			writeF(float64(len(p.HoldingLeft)))
-			h.Write([]byte(p.HoldingLeft))
-			writeF(float64(len(p.HoldingRight)))
-			h.Write([]byte(p.HoldingRight))
+			writeS(p.HoldingLeft)
+			writeS(p.HoldingRight)
 			writeB(p.Stunned)
 			writeB(p.Blocking)
+			writeB(p.Invulnerable)
+			writeI(uint64(p.Ping))
+			writeI(uint64(p.Stats.Goals))
+			writeI(uint64(p.Stats.Stuns))
 		}
 	}
 	return h.Sum64()

@@ -51,6 +51,18 @@ func runWithContext(parent context.Context, args []string, getenv func(string) s
 	}
 	// [server] from the file, then the flags the user explicitly set.
 	sv := resolveServerConfig(cfg.Server, fs, sf)
+	// Flags are applied after LoadConfig validated the file. Validate the
+	// resolved settings too, before opening the database or any listener.
+	cfg.Server = sv
+	if err := config.Validate(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "config error after command-line overrides: %v\n", err)
+		return 1
+	}
+	serverCfg, err := resolveIngestConfig(sv, getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest authorization config error: %v\n", err)
+		return 1
+	}
 
 	logger := logging.NewLogger(cfg.General.LogLevel, cfg.General.LogFormat)
 	config.LogStartup(logger, cfg, os.Stderr)
@@ -88,9 +100,6 @@ func runWithContext(parent context.Context, args []string, getenv func(string) s
 	matchMgr.SetMetrics(m)
 	matchMgr.SetLimits(sv.MaxMatches, sv.MaxPlayersPerMatch)
 	matchMgr.SetPersistInterval(sv.PersistInterval)
-
-	// Telemetry server. The bearer token is environment-only.
-	serverCfg := ingestServerConfig(sv, getenv("NEVR_AC_AUTH_TOKEN"), getenv("NEVR_AC_ALLOW_UNAUTH") == "1")
 
 	telemetryServer := ingest.NewServer(serverCfg, matchMgr, logger)
 	telemetryServer.SetMetrics(m)
@@ -159,7 +168,8 @@ func runWithContext(parent context.Context, args []string, getenv func(string) s
 	logger.Info("NEVR telemetry ingestion server running",
 		"telemetry", telemetryServer.Addr().String(),
 		"metrics", sv.Metrics,
-		"authenticated", serverCfg.AuthToken != "",
+		"authenticated", serverCfg.AuthToken != "" || len(serverCfg.SourceGrants) > 0,
+		"source_grants", len(serverCfg.SourceGrants),
 		"max_matches", sv.MaxMatches,
 	)
 

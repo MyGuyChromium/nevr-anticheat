@@ -34,7 +34,6 @@ package ingest
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +56,11 @@ import (
 // and unauthenticated ingestion has not been explicitly allowed.
 var ErrAuthTokenRequired = errors.New("ingest: refusing to start without an auth token (set NEVR_AC_AUTH_TOKEN or allow unauthenticated ingestion explicitly)")
 
+// Fixed engineering memory bounds, independent of sender-controlled identity
+// cardinality. Existing rate keys retain their budget when the cap is reached.
+const maxRateLimiterKeys = 10000
+const maxWarningKeys = 10000
+
 // ServerConfig configures the ingestion server.
 type ServerConfig struct {
 	ListenAddr              string        // e.g., ":8080"
@@ -71,6 +75,7 @@ type ServerConfig struct {
 	AckInterval             time.Duration // how often pending ack counters are flushed to the peer
 	AuthToken               string        // shared secret for server auth
 	AllowUnauthenticated    bool          // explicit opt-in to run with an empty AuthToken
+	SourceGrants            []SourceGrant // trusted operator policy; required off loopback
 }
 
 // DefaultServerConfig returns the default ingest limits.
@@ -134,7 +139,7 @@ type Server struct {
 	serverMu   sync.RWMutex
 
 	// Rate limiting per player
-	playerRates   map[string]*rateLimiter // key: matchID:playerID
+	playerRates   map[[2]string]*rateLimiter // exact match/player pair, no delimiter ambiguity
 	playerRatesMu sync.RWMutex
 
 	// Connection tracking
@@ -149,13 +154,15 @@ type Server struct {
 	warnCounts map[string]int
 
 	// Counters (also exported on /health)
-	FramesReceived    atomic.Int64 // frames accepted by ingest validation and rate limiting
-	FramesRejected    atomic.Int64 // frames rejected by validation or handler limits
-	FramesRateLimited atomic.Int64
-	FramesProcessed   atomic.Int64 // frames the handler accepted
-	FramesIgnored     atomic.Int64 // duplicate rows the store discarded
-	BytesReceived     atomic.Int64
-	ActiveMatchCount  atomic.Int64
+	FramesReceived              atomic.Int64 // frames accepted by ingest validation and rate limiting
+	FramesRejected              atomic.Int64 // frames rejected by validation or handler limits
+	FramesRateLimited           atomic.Int64
+	FramesProcessed             atomic.Int64 // frames the handler accepted
+	FramesIgnored               atomic.Int64 // duplicate rows the store discarded
+	BytesReceived               atomic.Int64
+	ActiveMatchCount            atomic.Int64
+	RateLimiterCapacityRejected atomic.Int64
+	WarningKeysCoalesced        atomic.Int64
 }
 
 type rateLimiter struct {
@@ -166,6 +173,7 @@ type rateLimiter struct {
 
 // NewServer creates a telemetry ingestion server.
 func NewServer(cfg ServerConfig, handler Handler, logger *slog.Logger) *Server {
+	cfg.SourceGrants = cloneSourceGrants(cfg.SourceGrants)
 	if cfg.MaxFramesPerBatch <= 0 {
 		cfg.MaxFramesPerBatch = 100
 	}
@@ -182,7 +190,7 @@ func NewServer(cfg ServerConfig, handler Handler, logger *slog.Logger) *Server {
 		cfg:         cfg,
 		handler:     handler,
 		logger:      logger,
-		playerRates: make(map[string]*rateLimiter),
+		playerRates: make(map[[2]string]*rateLimiter),
 		conns:       make(map[*websocket.Conn]struct{}),
 		warnCounts:  make(map[string]int),
 	}
@@ -202,10 +210,13 @@ func (s *Server) Addr() net.Addr {
 // Listen binds the listen address without serving. Start calls it when the
 // server has not been bound yet; tests use it to learn an ephemeral port.
 func (s *Server) Listen() error {
-	if s.cfg.AuthToken == "" {
-		if !s.cfg.AllowUnauthenticated {
-			return ErrAuthTokenRequired
-		}
+	if err := ValidateServerAuth(s.cfg); err != nil {
+		return err
+	}
+	if len(s.cfg.SourceGrants) == 0 {
+		s.logger.Warn("loopback development ingestion: legacy credentials have no match/player source grants", "addr", s.cfg.ListenAddr)
+	}
+	if s.cfg.AuthToken == "" && len(s.cfg.SourceGrants) == 0 {
 		s.logger.Warn("SECURITY: telemetry ingestion is running WITHOUT authentication; any host that can reach the port can inject telemetry and detection events",
 			"addr", s.cfg.ListenAddr)
 	}
@@ -230,9 +241,18 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/telemetry", websocket.Handler(s.handleConnection))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","connections":%d,"frames_received":%d,"frames_rejected":%d,"frames_rate_limited":%d,"frames_ignored":%d,"active_matches":%d}`,
+		incomplete, status := 0, "ok"
+		if h, ok := s.handler.(interface{ IncompleteAnalysisCount() int }); ok {
+			incomplete = h.IncompleteAnalysisCount()
+			if incomplete > 0 {
+				status = "degraded"
+			}
+		}
+		fmt.Fprintf(w, `{"status":%q,"connections":%d,"frames_received":%d,"frames_rejected":%d,"frames_rate_limited":%d,"frames_ignored":%d,"active_matches":%d,"analysis_incomplete_matches":%d,"rate_key_capacity_rejected":%d,"warning_keys_coalesced":%d}`,
+			status,
 			s.activeConns.Load(), s.FramesReceived.Load(), s.FramesRejected.Load(),
-			s.FramesRateLimited.Load(), s.FramesIgnored.Load(), s.activeMatches())
+			s.FramesRateLimited.Load(), s.FramesIgnored.Load(), s.activeMatches(), incomplete,
+			s.RateLimiterCapacityRejected.Load(), s.WarningKeysCoalesced.Load())
 	})
 
 	// Note: http.Server deadlines do not apply to hijacked WebSocket
@@ -306,17 +326,14 @@ func (s *Server) handleConnection(ws *websocket.Conn) {
 		ws.Close()
 		return
 	}
-	if int(s.activeConns.Load()) >= s.cfg.MaxConnectionsPerServer {
+	if !s.reserveConnection(ws) {
 		s.logger.Warn("connection rejected: max connections reached")
 		_ = s.writeControl(ws, model.ControlMessage{Type: model.ControlError, Reason: "too_many_connections"})
 		ws.Close()
 		return
 	}
-	s.connWG.Add(1)
 	defer s.connWG.Done()
-	s.trackConn(ws, true)
 	defer s.trackConn(ws, false)
-	s.activeConns.Add(1)
 	defer s.activeConns.Add(-1)
 	if s.metrics != nil {
 		s.metrics.ActiveConnections.Inc()
@@ -328,17 +345,14 @@ func (s *Server) handleConnection(ws *websocket.Conn) {
 
 	// Auth check (constant time). An empty token is only reachable when
 	// AllowUnauthenticated was set at Listen time.
-	if s.cfg.AuthToken != "" {
-		header := ws.Request().Header.Get("Authorization")
-		expected := "Bearer " + s.cfg.AuthToken
-		if subtle.ConstantTimeCompare([]byte(header), []byte(expected)) != 1 {
-			s.logger.Warn("connection rejected: invalid auth", "remote", remoteAddr)
-			if s.metrics != nil {
-				s.metrics.AuthFailures.Inc()
-			}
-			_ = s.writeControl(ws, model.ControlMessage{Type: model.ControlError, Reason: "unauthorized"})
-			return
+	grant, authenticated := s.authenticate(ws.Request().Header.Get("Authorization"))
+	if !authenticated {
+		s.logger.Warn("connection rejected: invalid auth", "remote", remoteAddr)
+		if s.metrics != nil {
+			s.metrics.AuthFailures.Inc()
 		}
+		_ = s.writeControl(ws, model.ControlMessage{Type: model.ControlError, Reason: "unauthorized"})
+		return
 	}
 
 	if err := s.writeControl(ws, model.ControlMessage{Type: model.ControlHello, Auth: "ok"}); err != nil {
@@ -421,11 +435,11 @@ func (s *Server) handleConnection(ws *websocket.Conn) {
 			continue
 		}
 		if probe.Type != "" {
-			s.handleControlMessage(raw, probe.Type, remoteAddr)
+			s.handleControlMessage(raw, probe.Type, remoteAddr, grant)
 			continue
 		}
 
-		res := s.handleBatch(raw, remoteAddr)
+		res := s.handleBatch(raw, remoteAddr, grant)
 		pendAccepted.Add(int64(res.Accepted))
 		pendRejected.Add(int64(res.Rejected))
 		pendIgnored.Add(int64(res.Ignored))
@@ -433,9 +447,15 @@ func (s *Server) handleConnection(ws *websocket.Conn) {
 }
 
 // handleControlMessage decodes and dispatches a producer control message.
-func (s *Server) handleControlMessage(raw json.RawMessage, typ, remoteAddr string) {
+func (s *Server) handleControlMessage(raw json.RawMessage, typ, remoteAddr string, grant *SourceGrant) {
 	if s.metrics != nil {
-		s.metrics.ControlMessages.Inc(typ)
+		// Never create a persistent metric series from an arbitrary wire value.
+		label := "unknown"
+		switch typ {
+		case model.ControlMatchStart, model.ControlMatchEnd, "ping":
+			label = typ
+		}
+		s.metrics.ControlMessages.Inc(label)
 	}
 	var msg model.ControlMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -444,12 +464,25 @@ func (s *Server) handleControlMessage(raw json.RawMessage, typ, remoteAddr strin
 	}
 	switch msg.Type {
 	case model.ControlMatchStart, model.ControlMatchEnd:
+		if !grant.allowsMatch(msg.MatchID, msg.ServerID) {
+			s.warnThrottled("unauthorized-control:"+remoteAddr, "control message outside authenticated source grant; ignored", "remote", remoteAddr)
+			return
+		}
 		if !validID(msg.MatchID, s.cfg.MaxIDLength) {
 			s.warnThrottled("badctl:"+remoteAddr, "control message with invalid match_id ignored",
 				"remote", remoteAddr, "type", msg.Type, "len", len(msg.MatchID))
 			return
 		}
+		if len(msg.Teams) > s.cfg.MaxPlayersPerMatch {
+			s.warnThrottled("ctlroster:"+remoteAddr, "control message exceeds player cap; ignored",
+				"remote", remoteAddr, "type", msg.Type, "players", len(msg.Teams), "cap", s.cfg.MaxPlayersPerMatch)
+			return
+		}
 		for pid := range msg.Teams {
+			if !grant.allowsPlayer(pid) {
+				s.warnThrottled("unauthorized-player:"+remoteAddr, "control roster outside authenticated player grant; ignored", "remote", remoteAddr)
+				return
+			}
 			if !validID(pid, s.cfg.MaxIDLength) {
 				delete(msg.Teams, pid)
 			}
@@ -461,7 +494,7 @@ func (s *Server) handleControlMessage(raw json.RawMessage, typ, remoteAddr strin
 }
 
 // handleBatch validates a FrameBatch and forwards the accepted frames.
-func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult {
+func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string, grant *SourceGrant) FrameResult {
 	if s.metrics != nil {
 		s.metrics.BatchesReceived.Inc()
 	}
@@ -476,6 +509,18 @@ func (s *Server) handleBatch(raw json.RawMessage, remoteAddr string) FrameResult
 	}
 	if s.metrics != nil {
 		s.metrics.FramesReceived.Add(int64(len(batch.Frames)))
+	}
+	// Authorize the whole batch before creating rate-limit, match, player or
+	// storage state. Producer-supplied provenance cannot expand this grant.
+	if !grant.allowsMatch(batch.MatchID, batch.ServerID) {
+		s.FramesRejected.Add(int64(len(batch.Frames)))
+		return FrameResult{Rejected: len(batch.Frames)}
+	}
+	for _, f := range batch.Frames {
+		if !grant.allowsPlayer(f.PlayerID) {
+			s.FramesRejected.Add(int64(len(batch.Frames)))
+			return FrameResult{Rejected: len(batch.Frames)}
+		}
 	}
 
 	// Validate batch
@@ -615,9 +660,29 @@ func (s *Server) trackConn(ws *websocket.Conn, add bool) {
 	}
 }
 
+func (s *Server) reserveConnection(ws *websocket.Conn) bool {
+	// Capacity, shutdown admission, WaitGroup admission and socket ownership
+	// change together. Shutdown cannot miss a socket or race Wait against Add.
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if s.closing.Load() || s.activeConns.Load() >= int64(s.cfg.MaxConnectionsPerServer) {
+		return false
+	}
+	s.activeConns.Add(1)
+	s.connWG.Add(1)
+	s.conns[ws] = struct{}{}
+	return true
+}
+
 // warnThrottled logs the first occurrence of key at Warn, then every 1000th.
 func (s *Server) warnThrottled(key, msg string, args ...any) {
 	s.warnMu.Lock()
+	if _, exists := s.warnCounts[key]; !exists && len(s.warnCounts) >= maxWarningKeys-1 {
+		key = "warning_key_capacity"
+		msg = "additional warning identities coalesced at bookkeeping capacity"
+		args = nil
+		s.WarningKeysCoalesced.Add(1)
+	}
 	n := s.warnCounts[key] + 1
 	s.warnCounts[key] = n
 	s.warnMu.Unlock()
@@ -632,7 +697,7 @@ func (s *Server) checkRateLimit(matchID, playerID string) bool {
 	if s.cfg.MaxFrameRatePerPlayer <= 0 {
 		return true
 	}
-	key := matchID + ":" + playerID
+	key := [2]string{matchID, playerID}
 	now := time.Now()
 	window := now.Truncate(time.Second)
 
@@ -641,6 +706,10 @@ func (s *Server) checkRateLimit(matchID, playerID string) bool {
 
 	rl, ok := s.playerRates[key]
 	if !ok {
+		if len(s.playerRates) >= maxRateLimiterKeys {
+			s.RateLimiterCapacityRejected.Add(1)
+			return false
+		}
 		rl = &rateLimiter{window: window}
 		s.playerRates[key] = rl
 	}
@@ -669,9 +738,7 @@ func (s *Server) CleanupStaleRateLimiters() {
 		}
 	}
 	s.warnMu.Lock()
-	if len(s.warnCounts) > 10000 {
-		s.warnCounts = make(map[string]int)
-	}
+	s.warnCounts = make(map[string]int)
 	s.warnMu.Unlock()
 }
 

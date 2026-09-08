@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"reflect"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func TestResolveServerConfig_Precedence(t *testing.T) {
 
 	// No flags: the file section is used verbatim.
 	fs, f := parseServerFlags(t)
-	if got := resolveServerConfig(file, fs, f); got != file {
+	if got := resolveServerConfig(file, fs, f); !reflect.DeepEqual(got, file) {
 		t.Fatalf("no flags: got %+v, want the file section %+v", got, file)
 	}
 
@@ -55,7 +56,7 @@ func TestResolveServerConfig_Precedence(t *testing.T) {
 	want.IdleTimeout = 20 * time.Second
 	want.AllowUnauthenticated = false
 	want.Listen = ":9000"
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("flags over file:\n got %+v\nwant %+v", got, want)
 	}
 
@@ -77,7 +78,7 @@ func TestResolveServerConfig_Precedence(t *testing.T) {
 func TestResolveServerConfig_DefaultsAreTheCompiledDefaults(t *testing.T) {
 	fs, f := parseServerFlags(t)
 	def := config.DefaultConfig().Server
-	if got := resolveServerConfig(def, fs, f); got != def {
+	if got := resolveServerConfig(def, fs, f); !reflect.DeepEqual(got, def) {
 		t.Fatalf("got %+v, want %+v", got, def)
 	}
 	for _, name := range []string{"listen", "metrics", "allow-unauthenticated", "max-matches", "max-players",

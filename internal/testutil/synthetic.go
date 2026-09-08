@@ -482,6 +482,7 @@ func (fb *FrameBuilder) LargeFrameGap(nFrames int, gapAtFrame int, gapSeconds fl
 		f := fb.baseFrame(i, pos, rotationFromVelocity(model.Vec3{0, 0, vz}))
 		f.FrameIndex = i + indexOffset
 		f.Timestamp = accumulatedTime
+		f.Observation.FrameIndex, f.Observation.Timestamp = f.FrameIndex, f.Timestamp
 		if i > 0 {
 			f.DeltaTime = frameDt
 		}
@@ -552,6 +553,7 @@ func (fb *FrameBuilder) HighPingPlayer(nFrames int, avgPingMs float64) []model.P
 			frames[i].DeltaTime = frames[i].Timestamp - prevTS
 		}
 		prevTS = frames[i].Timestamp
+		frames[i].Observation.Timestamp = frames[i].Timestamp
 	}
 	return frames
 }

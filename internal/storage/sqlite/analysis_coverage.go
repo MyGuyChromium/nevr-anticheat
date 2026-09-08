@@ -40,6 +40,9 @@ func validateMechanicsCoverage(coverage map[string]*model.PlayerCoverage) error 
 		if player == nil {
 			continue
 		}
+		if err := validateDataHealth(player.DataHealth); err != nil {
+			return err
+		}
 		for _, detector := range player.Detectors {
 			log := detector.MechanicsReview
 			if log == nil {
@@ -90,7 +93,13 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 		if player == nil {
 			continue
 		}
+		if player.DataHealth != nil {
+			hasCatch = true
+		}
 		for _, detector := range player.Detectors {
+			if detector.Capability != nil {
+				hasCatch = true
+			}
 			if detector.MechanicsReview != nil {
 				hasCatch = true
 				if err := detector.MechanicsReview.Validate(); err != nil {
@@ -140,8 +149,18 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 		if id == "" || player == nil {
 			continue
 		}
+		target := coverage[id]
+		freshSnapshot := target == nil || newerHealthSnapshot(target.DataHealth, player.DataHealth)
+		if target == nil && player.DataHealth != nil {
+			target = &model.PlayerCoverage{Version: 1, Status: model.ReviewStatusInsufficientData,
+				Limitations: []string{"Live health snapshot only; complete analysis input/event denominators are not retained here."}}
+			coverage[id], changed = target, true
+		}
+		if target != nil && mergeLiveDataHealth(target, player.DataHealth) {
+			changed = true
+		}
 		for _, detector := range player.Detectors {
-			if detector.CatchReview == nil && detector.MechanicsReview == nil {
+			if detector.CatchReview == nil && detector.MechanicsReview == nil && detector.Capability == nil {
 				continue
 			}
 			target := coverage[id]
@@ -164,6 +183,19 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 					Status:      model.ReviewStatusInsufficientData,
 					Limitations: []string{"Partial live transition/mechanics diagnostics only; no complete input or event denominator is available."}})
 				index = len(target.Detectors) - 1
+			}
+			if detector.Capability != nil && (target.Detectors[index].Capability == nil || freshSnapshot) {
+				contract := *detector.Capability
+				contract.RequiredInputs = append([]string(nil), detector.Capability.RequiredInputs...)
+				contract.EnforcementRequires = append([]string(nil), detector.Capability.EnforcementRequires...)
+				if detector.Capability.Rule != nil {
+					rule := *detector.Capability.Rule
+					rule.Tests = append([]string(nil), detector.Capability.Rule.Tests...)
+					rule.ConfiguredParameters = append(json.RawMessage(nil), detector.Capability.Rule.ConfiguredParameters...)
+					contract.Rule = &rule
+				}
+				target.Detectors[index].Capability = &contract
+				changed = true
 			}
 			if detector.MechanicsReview != nil {
 				log := target.Detectors[index].MechanicsReview

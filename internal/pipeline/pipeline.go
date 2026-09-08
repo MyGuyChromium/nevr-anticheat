@@ -598,6 +598,9 @@ func (p *Pipeline) emit(events []model.DetectionEvent, result *MatchResult) {
 		result.EventsRateLimitedByKey[key] += n
 	}
 	for _, ev := range kept {
+		// Merging can expand an incident over a later source fault. Recheck
+		// the final causal range, not only its strongest raw emission.
+		p.applyEvidenceSafety(&ev)
 		_, scored := p.scorer.IngestEventWithResult(ev)
 		result.DetectionEvents = append(result.DetectionEvents, ev)
 		if ev.IsShadow {

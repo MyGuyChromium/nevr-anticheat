@@ -25,6 +25,40 @@ func defaults(t *testing.T) *config.Config {
 	return cfg
 }
 
+func TestConfigFingerprintPinsProjectRules(t *testing.T) {
+	cfg := defaults(t)
+	baseline, err := ConfigFingerprint(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise every current project-rule field so later additions cannot
+	// silently sit outside the regression configuration pin.
+	rules := reflect.ValueOf(&cfg.ProjectRules).Elem()
+	for i := 0; i < rules.NumField(); i++ {
+		field := rules.Field(i)
+		old := reflect.New(field.Type()).Elem()
+		old.Set(field)
+		switch field.Kind() {
+		case reflect.Float64:
+			field.SetFloat(field.Float() + 1)
+		case reflect.String:
+			field.SetString(field.String() + "-changed")
+		default:
+			t.Fatalf("add mutation for project rule %s", rules.Type().Field(i).Name)
+		}
+		changed, err := ConfigFingerprint(cfg)
+		if err != nil || changed == baseline {
+			t.Fatalf("un-pinned project rule %s: %v", rules.Type().Field(i).Name, err)
+		}
+		field.Set(old)
+	}
+	cfg.General.DBPath = "different-output.db"
+	cfg.General.LogLevel = "debug"
+	if got, err := ConfigFingerprint(cfg); err != nil || got != baseline {
+		t.Fatal("output location changed behavior fingerprint")
+	}
+}
+
 func writeFixture(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -204,10 +238,12 @@ func TestWindowOutcomesRespectEvidenceStrength(t *testing.T) {
 		outcome             string
 		pass                bool
 	}{
-		{"confirmed", "positive", "observe", 0, "false_negative", false},
-		{"confirmed", "positive", "observe", 1, "true_positive", true},
-		{"confirmed", "negative", "observe", 1, "false_positive", false},
-		{"confirmed", "negative", "observe", 0, "true_negative", true},
+		{"confirmed", "positive", "observe", 0, "unresolved_opportunity_coverage", true},
+		{"confirmed", "positive", "observe", 1, "unresolved_opportunity_coverage", true},
+		{"confirmed", "negative", "observe", 1, "unresolved_opportunity_coverage", true},
+		{"confirmed", "negative", "observe", 0, "unresolved_opportunity_coverage", true},
+		{"confirmed", "positive", "signal", 0, "unresolved_opportunity_coverage", false},
+		{"confirmed", "negative", "quiet", 1, "unresolved_opportunity_coverage", false},
 		{"user_reported", "negative", "observe", 1, "user_reported_contradiction", true},
 		{"user_reported", "positive", "observe", 0, "user_reported_contradiction", true},
 		{"uncertain", "unknown", "observe", 4, "observation_only", true},
@@ -219,6 +255,65 @@ func TestWindowOutcomesRespectEvidenceStrength(t *testing.T) {
 			got := evaluateWindow(Window{ID: "w", Expectation: tc.expect, Provenance: Provenance{Kind: tc.kind, Truth: tc.truth}}, tc.count)
 			if got.Outcome != tc.outcome || got.Passed != tc.pass {
 				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
+
+func TestProductionWindowsCannotTreatStoredFramesAsOpportunities(t *testing.T) {
+	for _, tc := range []struct {
+		name, detector string
+		enabled        bool
+	}{
+		{"disabled_detector", "THROW_001", false},
+		// Raw /session exposes no boosting observation. Enabling this
+		// detector cannot manufacture its required boost-timing input.
+		{"unavailable_boost_input", "MOV_004", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := throwReplay(t, dir, 18)
+			cfg := defaults(t)
+			dc := cfg.Detectors[tc.detector]
+			dc.Enabled = tc.enabled
+			cfg.Detectors[tc.detector] = dc
+			manifest, _, err := Capture(context.Background(), cfg, []string{source}, filepath.Join(dir, "capture"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := manifest.Cases[0].Expected[0]
+			evidencePath := filepath.Join(dir, "synthetic-review.txt")
+			writeFixture(t, evidencePath, []byte("Fictional report-contract fixture; not a real accuracy label."))
+			evidenceHash, err := FileSHA256(evidencePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, expectation := range []string{"quiet", "signal"} {
+				truth := "negative"
+				if expectation == "signal" {
+					truth = "positive"
+				}
+				manifest.Cases[0].Windows = append(manifest.Cases[0].Windows, Window{ID: expectation, MatchID: snapshot.MatchID, PlayerID: "echovr:1", DetectorID: tc.detector,
+					Start: 0, End: snapshot.MaxFrame, Expectation: expectation, Provenance: Provenance{Kind: "confirmed", Truth: truth, Reviewers: []string{"fixture-reviewer-a", "fixture-reviewer-b"},
+						Artifacts: []Artifact{{Path: evidencePath, SHA256: evidenceHash}}, Note: "Synthetic report semantics test; input availability is not established by this label."}})
+			}
+			report, err := Check(context.Background(), cfg, manifest, dir, filepath.Join(dir, "check"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Cases[0].Windows) != 2 {
+				t.Fatal("missing window outputs")
+			}
+			for _, window := range report.Cases[0].Windows {
+				if window.Samples < 20 || window.Signals != 0 || window.Outcome != "unresolved_opportunity_coverage" || window.OpportunityCoverage != "unresolved_opportunity_coverage" {
+					t.Fatalf("raw frame count became accuracy evidence: %+v", window)
+				}
+				if window.Expectation == "quiet" && (!window.Passed || window.Assertion != "expected_quiet") {
+					t.Fatalf("quiet assertion lost: %+v", window)
+				}
+				if window.Expectation == "signal" && (window.Passed || window.Assertion != "missing_expected_signal") {
+					t.Fatalf("signal assertion lost: %+v", window)
+				}
 			}
 		})
 	}

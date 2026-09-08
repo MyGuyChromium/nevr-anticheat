@@ -100,7 +100,11 @@ func (m *Mapper) SetObservationSource(source, timeBasis, sourceID string) {
 }
 
 func (m *Mapper) observation(raw *EchoVRSessionResponse, frame int, timestamp float64) *model.ObservationContext {
-	return &model.ObservationContext{Source: m.observationSource, SourceID: m.observationSourceID,
-		Authority: "client_reported", TimeBasis: m.observationTimeBasis, SessionID: raw.SessionID,
+	timeBasis := m.observationTimeBasis
+	if m.observationEpoch > 0 {
+		timeBasis += ":clock_rebased"
+	}
+	return &model.ObservationContext{Source: m.observationSource, SourceID: m.observationSourceID, SourceEpoch: m.observationEpoch,
+		Authority: "client_reported", TimeBasis: timeBasis, SessionID: raw.SessionID,
 		SourcePlayerID: m.throwClientID, FrameIndex: frame, Timestamp: timestamp, Freshness: "sampled_snapshot"}
 }

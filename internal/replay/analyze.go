@@ -104,6 +104,9 @@ func (e *Engine) CrossMatchConfig() sqlite.CrossMatchConfig {
 		DecayHalfLifeHours:            e.cfg.Scoring.DecayHalfLifeHours,
 		MaxSingleContribution:         e.cfg.Scoring.MaxSingleContribution,
 		MaxContribPerDetectorPerMatch: e.cfg.Scoring.MaxContribPerDetectorPerMatch,
+		SameCategoryDiminishing:       e.cfg.Scoring.SameCategoryDiminishing,
+		CooldownFrames:                e.cfg.Pipeline.CooldownFrames,
+		CorrelationBonusCap:           e.cfg.Scoring.CorrelationBonusCap,
 		Levels:                        e.Levels(),
 	}
 }

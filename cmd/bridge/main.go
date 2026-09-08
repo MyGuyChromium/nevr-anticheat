@@ -31,7 +31,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -368,7 +367,7 @@ func fetchAndMap(m DiscoveredMatch, cfg *BridgeConfig, logger *slog.Logger) (*ad
 	sessionURL := fmt.Sprintf("http://%s:%d/session", m.BroadcasterIP, cfg.APIPort)
 	logger.Info("fetching broadcaster session", "url", sessionURL)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := scopedHTTPClient(5 * time.Second)
 	resp, err := client.Get(sessionURL)
 	if err != nil {
 		return nil, sessionRoster{}, nil, nil, fmt.Errorf("/session not reachable at %s: %w", sessionURL, err)

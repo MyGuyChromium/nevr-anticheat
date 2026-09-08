@@ -193,3 +193,58 @@ func TestHealthRecoveredFeedDoesNotPromoteDelayedFaultEvidence(t *testing.T) {
 		t.Fatal("genuinely post-recovery evidence suppressed")
 	}
 }
+
+func TestMergedIncidentCannotLoseHealthQuarantine(t *testing.T) {
+	p, _ := newPipeline(testConfig("enforce"), []detect.Detector{movement.NewMov001(nil)})
+	p.health = map[string]*healthEntry{"a": {lastAffected: map[string]int{"MOV_001": 12}}}
+	strong := model.DetectionEvent{PlayerID: "a", DetectorID: "MOV_001", FrameIndex: 10, FrameRangeStart: 10, FrameRangeEnd: 10, Severity: 1, Confidence: 1, EnforcementWeight: 1}
+	weak := strong
+	weak.FrameIndex, weak.FrameRangeStart, weak.FrameRangeEnd = 12, 12, 12
+	weak.Severity = .1
+	p.applyEvidenceSafety(&weak)
+	mergeInto(&strong, &weak)
+	if !strong.IsShadow || strong.EnforcementWeight != 0 {
+		t.Fatal("strong emission erased weaker quarantine")
+	}
+	// Defense in depth: even an incident constructed before the health
+	// transition must pass the final score-boundary check.
+	strong.IsShadow, strong.EnforcementWeight = false, 1
+	res := newMatchResult("health")
+	p.emit([]model.DetectionEvent{strong}, res)
+	if len(res.DetectionEvents) != 1 || !res.DetectionEvents[0].IsShadow || p.scorer.GetScore("a").TotalScore != 0 {
+		t.Fatal("final incident boundary bypassed source health")
+	}
+}
+
+func TestUnsupportedStateInputsCannotProduceScoredRecovery(t *testing.T) {
+	p, _ := newPipeline(testConfig("enforce"), nil)
+	p.capabilities = map[string]*model.DetectorCapability{"STATE_002": {}}
+	ev := model.DetectionEvent{PlayerID: "a", DetectorID: "STATE_002", AutoEnforce: true, EnforcementWeight: 1}
+	p.applyEvidenceSafety(&ev)
+	if !ev.IsShadow || ev.AutoEnforce || ev.EnforcementWeight != 0 {
+		t.Fatal("unobservable state edges became scored evidence")
+	}
+}
+
+func TestSanitizedDiscDoesNotQuarantineOtherFamilies(t *testing.T) {
+	p, _ := newPipeline(testConfig("enforce"), []detect.Detector{movement.NewMov001(nil), bio.NewBio001(nil)})
+	f := healthFrame("a", 0)
+	f.Disc = nil
+	p.observeHealth(&f, nil, false, []string{SanitizedDiscOutOfRange}, false)
+	if len(p.health["a"].summary.AffectedDetectors) != 0 {
+		t.Fatalf("bad disc affected movement/rotation: %+v", p.health["a"].summary)
+	}
+}
+
+func TestStaleNestedSourceCannotBecomeFreshOuterObservation(t *testing.T) {
+	p, _ := newPipeline(testConfig("enforce"), []detect.Detector{movement.NewMov001(nil)})
+	frames := []model.PlayerTelemetryFrame{healthFrame("a", 0), healthFrame("a", 1)}
+	frames[1].Observation = frames[0].Observation.Clone()
+	res, err := p.ProcessMatch(context.Background(), matchCtx("a"), frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := res.PlayerCoverage["a"].DataHealth; h.State != model.HealthBlind {
+		t.Fatalf("stale nested observation became healthy: %+v", h)
+	}
+}

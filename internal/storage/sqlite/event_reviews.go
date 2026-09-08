@@ -66,9 +66,14 @@ func (s *Store) StoreEventReviewWithBlind(ctx context.Context, eventID, verdict,
 		return EventReview{}, fmt.Errorf("comment exceeds 2000 characters")
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return EventReview{}, fmt.Errorf("begin event review: %w", err)
+	}
+	defer tx.Rollback()
 	var review EventReview
 	var reviewedAt string
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT event_id, match_id, player_id, detector_id, detector_version, frame_index,
 		 timestamp, severity, confidence, COALESCE(observed_value,''), COALESCE(expected_range,''),
 		 COALESCE(evidence_type,''), COALESCE(evidence_json,'')
@@ -90,7 +95,7 @@ func (s *Store) StoreEventReviewWithBlind(ctx context.Context, eventID, verdict,
 	if blindReview {
 		blind = 1
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO event_reviews
 		 (event_id, match_id, player_id, detector_id, detector_version, frame_index,
 		  timestamp, severity, confidence, observed_value, expected_range, evidence_type,
@@ -106,6 +111,14 @@ func (s *Store) StoreEventReviewWithBlind(ctx context.Context, eventID, verdict,
 		review.EvidenceJSON, review.Verdict, review.Comment, review.ReviewerID, reviewedAt, blind)
 	if err != nil {
 		return EventReview{}, fmt.Errorf("storing event review: %w", err)
+	}
+	if verdict == "no" {
+		if err := invalidatePendingCrossMatchTx(ctx, tx, review.PlayerID, []string{review.MatchID}, review.ReviewedAt); err != nil {
+			return EventReview{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return EventReview{}, fmt.Errorf("commit event review: %w", err)
 	}
 	return review, nil
 }

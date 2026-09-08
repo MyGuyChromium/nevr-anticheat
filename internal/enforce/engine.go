@@ -38,7 +38,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 )
@@ -58,6 +57,13 @@ const (
 // returned to the caller.
 type ActionStore interface {
 	StoreEnforcementAction(ctx context.Context, action model.EnforcementAction) error
+}
+
+// DurableActionStore claims an immutable recommendation once and verifies its
+// evidence exists. A duplicate returns false. Callbacks require this interface;
+// they remain review notifications, never authorization for a live ban.
+type DurableActionStore interface {
+	StoreEnforcementActionOnce(ctx context.Context, action model.EnforcementAction) (bool, error)
 }
 
 // Engine makes enforcement decisions based on suspicion scores and detection events.
@@ -187,10 +193,23 @@ func (e *Engine) Evaluate(
 		return nil
 	}
 
-	if e.store != nil {
-		if err := e.store.StoreEnforcementAction(ctx, *action); err != nil {
-			e.logger.Error("failed to store enforcement action", "error", err)
-		}
+	if e.store == nil {
+		return action // pure recommendation only; no durable evidence means no callback
+	}
+	store, ok := e.store.(DurableActionStore)
+	if !ok {
+		e.releaseFailedReservation(playerID, action.IssuedAt)
+		e.logger.Error("recommendation store does not support durable idempotent claims")
+		return nil
+	}
+	created, err := store.StoreEnforcementActionOnce(ctx, *action)
+	if err != nil {
+		e.releaseFailedReservation(playerID, action.IssuedAt)
+		e.logger.Error("failed to store recommendation; callback withheld", "error", err)
+		return nil
+	}
+	if !created {
+		return nil // already recorded by an earlier attempt/process
 	}
 	e.logger.Info("enforcement_action",
 		"player", playerID, "action", action.ActionType,
@@ -212,6 +231,14 @@ func (e *Engine) Evaluate(
 		}
 	}
 	return action
+}
+
+func (e *Engine) releaseFailedReservation(playerID string, at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.enforcementCooldowns[playerID] == at {
+		delete(e.enforcementCooldowns, playerID)
+	}
 }
 
 // decide computes the action under the lock without side effects beyond the
@@ -268,7 +295,6 @@ func (e *Engine) decide(
 	level := e.levels.LevelFor(score.TotalScore)
 	newAction := func(actionType, reason string) *model.EnforcementAction {
 		return &model.EnforcementAction{
-			ActionID:    uuid.New().String(),
 			PlayerID:    playerID,
 			ActionType:  actionType,
 			Reason:      reason,
@@ -328,6 +354,7 @@ func (e *Engine) decide(
 	}
 
 	if action != nil {
+		action.ActionID = recommendationID(*action)
 		e.enforcementCooldowns[playerID] = now
 	}
 	return action, playerEvents

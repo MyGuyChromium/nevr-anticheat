@@ -23,6 +23,9 @@ type MatchAnalysisWrite struct {
 	KeepPlayers []string
 	CloseReason string
 	Coverage    map[string]*model.PlayerCoverage
+	// LiveAppend atomically appends live events and score snapshots without
+	// replacing coverage, refreshing cases, or closing existing pending cases.
+	LiveAppend bool
 }
 
 // MatchAnalysisWriteResult reports committed row counts.
@@ -47,6 +50,14 @@ func (s *Store) WriteMatchAnalysis(ctx context.Context, in MatchAnalysisWrite) (
 	if strings.TrimSpace(in.MatchID) == "" {
 		return out, fmt.Errorf("writing match analysis: match id required")
 	}
+	if in.LiveAppend {
+		if in.Replace || len(in.Cases) != 0 || in.Coverage != nil {
+			return out, fmt.Errorf("live append cannot replace analysis, cases, or coverage")
+		}
+		if err := validateLiveDerivedBatch(in); err != nil {
+			return out, err
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return out, fmt.Errorf("begin analysis transaction: %w", err)
@@ -55,7 +66,10 @@ func (s *Store) WriteMatchAnalysis(ctx context.Context, in MatchAnalysisWrite) (
 	// Coverage belongs to this exact analysis, so it changes atomically with
 	// events and scores. Legacy callers clear it rather than retaining a stale
 	// claim about a previous build's detector coverage.
-	if in.Coverage == nil {
+	if in.LiveAppend {
+		// Live diagnostic coverage is merged separately. Never erase it merely
+		// because this transaction contains only events and score snapshots.
+	} else if in.Coverage == nil {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM match_analysis_coverage WHERE match_id = ?`, in.MatchID); err != nil {
 			return out, fmt.Errorf("clear analysis coverage: %w", err)
 		}
@@ -196,6 +210,13 @@ func (s *Store) WriteMatchAnalysis(ctx context.Context, in MatchAnalysisWrite) (
 			}
 			out.CasesStored++
 		}
+	}
+
+	if in.LiveAppend {
+		if err := tx.Commit(); err != nil {
+			return MatchAnalysisWriteResult{}, fmt.Errorf("commit live analysis transaction: %w", err)
+		}
+		return out, nil
 	}
 
 	reason := in.CloseReason

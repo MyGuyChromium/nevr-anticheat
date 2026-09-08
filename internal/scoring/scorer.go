@@ -104,6 +104,7 @@ type SuspicionScorer struct {
 	// CorrelationBonus was last set from. ApplyCorrelationBonus only touches
 	// the (possibly decayed) bonus when the nominal value changes.
 	bonusBasis map[string]float64
+	seenEvents map[string]map[string]bool // accepted immutable IDs; caps bound this only when configured nonzero
 	mu         sync.RWMutex
 	now        func() time.Time
 	matchStart time.Time
@@ -116,6 +117,7 @@ func NewSuspicionScorer(cfg ScorerConfig) *SuspicionScorer {
 		levels:     cfg.EffectiveLevels(),
 		players:    make(map[string]*model.SuspicionScore),
 		bonusBasis: make(map[string]float64),
+		seenEvents: make(map[string]map[string]bool),
 		now:        time.Now,
 	}
 }
@@ -202,7 +204,12 @@ func (s *SuspicionScorer) IngestEventWithResult(event model.DetectionEvent) (mod
 	defer s.mu.Unlock()
 
 	sc := s.getOrCreate(event.PlayerID)
-	if event.IsShadow {
+	if event.IsShadow || IsMetaDetector(event.DetectorID) {
+		// Meta findings describe already-counted underlying evidence. They
+		// remain review observations but cannot add points a second time.
+		return sc.Clone(), false
+	}
+	if event.EventID != "" && s.seenEvents[event.PlayerID][event.EventID] {
 		return sc.Clone(), false
 	}
 
@@ -257,6 +264,12 @@ func (s *SuspicionScorer) IngestEventWithResult(event model.DetectionEvent) (mod
 	sc.DetectorCounts[event.DetectorID]++
 	sc.CategoryCounts[category]++
 	sc.EventCount++
+	if event.EventID != "" {
+		if s.seenEvents[event.PlayerID] == nil {
+			s.seenEvents[event.PlayerID] = make(map[string]bool)
+		}
+		s.seenEvents[event.PlayerID][event.EventID] = true
+	}
 
 	if event.MatchID != "" {
 		if !sc.MatchIDs[event.MatchID] {
@@ -420,6 +433,7 @@ func (s *SuspicionScorer) Reset() {
 	defer s.mu.Unlock()
 	s.players = make(map[string]*model.SuspicionScore)
 	s.bonusBasis = make(map[string]float64)
+	s.seenEvents = make(map[string]map[string]bool)
 }
 
 func hashString(s string) uint64 {

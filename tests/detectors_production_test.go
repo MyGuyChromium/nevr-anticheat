@@ -459,20 +459,24 @@ func TestDetector_PAT_003_CrossMatchConsistency(t *testing.T) {
 }
 
 func TestDetector_PAT_004_CompositeMultiCheat(t *testing.T) {
-	hr := runOnly(t, player1().CompositeCheater(), "MOV_001", "STATE_001", "BIO_002", "THROW_001", "PAT_004")
+	frames := mechanicsObservedFrames(player1().CompositeCheater())
+	hr := runOnly(t, frames, "MOV_001", "STATE_001", "BIO_002", "THROW_001", "PAT_004")
 	hr.AssertDetectorFiredN("PAT_004", 1)
 	hr.AssertMinSeverity("PAT_004", 0.5)
 	hr.AssertDetectorNotFired("STATE_001")
 	if len(hr.DetectorEvents("PAT_004")) != 1 {
-		t.Fatal("missing independent composite evidence")
+		t.Fatal("missing descriptive composite observation")
 	}
 	evd, ok := hr.DetectorEvents("PAT_004")[0].Evidence.(model.PatternEvidence)
 	if !ok || evd.Metrics["category_count"] != 3 {
 		t.Errorf("evidence %+v", hr.DetectorEvents("PAT_004")[0].Evidence)
 	}
+	if hr.PlayerScores["player1"].ScoreByDetector["PAT_004"] != 0 {
+		t.Fatal("composite observation double-counted underlying evidence")
+	}
 	// Two categories are not enough, and a speed hack alone is one.
-	runOnly(t, player1().CompositeCheater(), "MOV_001", "STATE_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
-	runOnly(t, player1().CompositeCheater(), "MOV_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
+	runOnly(t, frames, "MOV_001", "STATE_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
+	runOnly(t, frames, "MOV_001", "THROW_001", "PAT_004").AssertDetectorNotFired("PAT_004")
 	runOnly(t, player1().SpeedHackFrames(150, 80), "MOV_001", "BIO_002", "PAT_004").AssertDetectorNotFired("PAT_004")
 }
 

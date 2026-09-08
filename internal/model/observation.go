@@ -5,8 +5,11 @@ import "math"
 // ObservationContext describes the measurement path, not its truth. Client
 // reports are never promoted to engine authority by a valid numeric payload.
 type ObservationContext struct {
-	Source         string  `json:"source"`
-	SourceID       string  `json:"source_id,omitempty"`
+	Source   string `json:"source"`
+	SourceID string `json:"source_id,omitempty"`
+	// SourceEpoch isolates locally detected clock discontinuities. It is
+	// not an authenticated producer epoch or proof of a new capture.
+	SourceEpoch    uint64  `json:"source_epoch,omitempty"`
 	Authority      string  `json:"authority"`
 	TimeBasis      string  `json:"time_basis"`
 	SessionID      string  `json:"session_id"`
@@ -30,7 +33,7 @@ func (o *ObservationContext) Valid() bool {
 }
 
 func (o *ObservationContext) SameSource(other *ObservationContext) bool {
-	return o.Valid() && other.Valid() && o.Source == other.Source && o.SourceID == other.SourceID &&
+	return o.Valid() && other.Valid() && o.Source == other.Source && o.SourceID == other.SourceID && o.SourceEpoch == other.SourceEpoch &&
 		o.Authority == other.Authority && o.TimeBasis == other.TimeBasis && o.SessionID == other.SessionID && o.SourcePlayerID == other.SourcePlayerID
 }
 

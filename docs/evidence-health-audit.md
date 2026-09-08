@@ -57,6 +57,11 @@ adequately validated enforcement model. Existing descriptive findings remain
 available; source-affected findings are shadow/zero-weight. Stateful detectors
 still receive observations so they can close tracks and record abstentions;
 dispatch is not a successfully evaluated event opportunity.
+`STATE_002`–`STATE_007` and `PAT_001` are additionally forced to zero-weight shadow
+at the score boundary: presence-valid state/score edges or trusted input timing
+are not available. A missing boolean cannot become scored recovery/cooldown
+evidence. Source safety is reapplied after incident merging, and a weaker shadow
+emission cannot lose its abstention when merged with a stronger scored candidate.
 
 | IDs | Available review behavior | Missing enforcement prerequisites / legal alternatives |
 | --- | --- | --- |
@@ -129,6 +134,8 @@ entirely before a later fault; it does not claim exact interval overlap. Correct
 causal ranges must cover all supporting samples for any history-based detector.
 
 Missing source context or rejected/non-advancing observations are blind. Missing
+or mismatched nested source frame/time binding is also blind; advancing only the
+outer timestamp does not make a stale source observation fresh. Missing
 disc data affects disc checks, not unrelated movement; missing reported velocity
 affects physical playspace separation; missing/invalid hand data affects relevant
 hand checks. Source/timing discontinuities break continuity. Simultaneous large
@@ -183,7 +190,26 @@ Go-specific checks follow the documented [JSON reuse/null behavior](https://pkg.
 
 ## Verification log
 
-Pending head-specific full verification; update before handoff. Local focused
-pipeline and catalog tests pass after the initial capability/health changes.
+Initial full Go 1.27 normal suite and all 36 Node tests pass. Clean-checkout
+head-specific build/race/fuzz/security/Windows checks follow before handoff.
+
+Two original recordings completed all 31 catalog checks enabled in zero-weight
+shadow mode (the default enabling policy was deliberately overridden for this
+compatibility audit). No originals or installed databases were changed:
+
+| Reference | Ticks / player samples | Healthy / degraded / blind samples | Retained review-only findings |
+| --- | ---: | ---: | --- |
+| September 2024 | 4,945 / 38,369 | 38,345 / 24 / 0 | 4 legacy THROW_001 cap observations |
+| September 2026 | 11,259 / 90,072 | 89,392 / 680 / 0 | MOV_006: 1; STATE_005: 3; THROW_001: 1; THROW_004: 5 |
+
+No player frames or emitted events were rejected. The 2026 replay had 88
+per-player disc-out-of-range sanitizations. The owner-identified fair-play player
+had 11 confirmed sampled releases and zero retained findings. These recordings
+do not adjudicate other players: the listed observations are not confirmed
+cheating or measured false positives. Both recordings ended with no active
+health faults; history counts remain. Mechanics comparisons remain inconclusive
+because required build/rule/geometry knowledge is unavailable. These are not
+held-out accuracy cohorts, and the supplied fair-play label is self-report.
+
 No accuracy percentage, signing guarantee or production source attestation is
 inferred from compilation, synthetic regressions or vulnerability scanning.

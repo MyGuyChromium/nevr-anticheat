@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,16 +13,34 @@ import (
 )
 
 type memStore struct {
+	mu      sync.Mutex
 	actions []model.EnforcementAction
 	err     error
 }
 
 func (m *memStore) StoreEnforcementAction(_ context.Context, a model.EnforcementAction) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
 	}
 	m.actions = append(m.actions, a)
 	return nil
+}
+
+func (m *memStore) StoreEnforcementActionOnce(_ context.Context, a model.EnforcementAction) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	for _, existing := range m.actions {
+		if existing.ActionID == a.ActionID {
+			return false, nil
+		}
+	}
+	m.actions = append(m.actions, a)
+	return true, nil
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -129,6 +148,7 @@ func TestCooldownAndPrune(t *testing.T) {
 		t.Fatal("cooldown should suppress")
 	}
 	now = t0.Add(11 * time.Minute)
+	events[0].EventID += "-new-independent-evidence"
 	if e.Evaluate(context.Background(), "p", "m1", score(70, 1), events) == nil {
 		t.Fatal("after cooldown should act again")
 	}
@@ -156,13 +176,13 @@ func TestNilStoreAndStoreError(t *testing.T) {
 		t.Fatal("typed nil store should be normalised to nil")
 	}
 	e3 := newEngine(ModeReview, &memStore{err: errors.New("disk full")})
-	if e3.Evaluate(context.Background(), "p", "m1", score(70, 1), []model.DetectionEvent{mkEvent("THROW_001", "p", 0.9, false)}) == nil {
-		t.Fatal("store error should be logged, not fatal")
+	if e3.Evaluate(context.Background(), "p", "m1", score(70, 1), []model.DetectionEvent{mkEvent("THROW_001", "p", 0.9, false)}) != nil {
+		t.Fatal("store error must withhold recommendation delivery")
 	}
 }
 
 func TestCallbacksRunOutsideLock(t *testing.T) {
-	e := newEngine(ModeEnforce, nil)
+	e := newEngine(ModeEnforce, &memStore{})
 	events := []model.DetectionEvent{mkEvent("THROW_001", "p", 0.99, true), mkEvent("MOV_001", "p", 0.97, false)}
 	reentered := make(chan *model.EnforcementAction, 1)
 	e.OnKick = func(playerID, matchID, reason string) {

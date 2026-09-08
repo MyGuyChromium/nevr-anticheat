@@ -130,14 +130,15 @@ shadow_detectors = []
 
 # =============================================================================
 # Live ingestion server (nevr-server)
-# Each key mirrors a nevr-server flag; a flag given on the command line wins.
-# The bearer token is NOT a config key: set NEVR_AC_AUTH_TOKEN in the
-# environment (the same value goes to nevr-bridge --anticheat-token).
+# Limit/listener flags override this section. Source grants are operator policy.
+# Remote ingestion requires source_grants; secrets live in each token_env named
+# environment variable, never in TOML. See docs/telemetry-source-grants.md.
 # =============================================================================
 [server]
+source_grants            = []        # remote listeners fail closed without grants; see docs/telemetry-source-grants.md
 listen                    = ":8080"   # telemetry WebSocket (/telemetry) and /health
 metrics                   = ":9090"   # Prometheus text exposition at /metrics
-allow_unauthenticated     = false     # true (or NEVR_AC_ALLOW_UNAUTH=1) runs an OPEN endpoint; logs a SECURITY warning
+allow_unauthenticated     = false     # literal-loopback development only; never expose through a proxy/port forward
 max_matches               = 64        # concurrently tracked live matches
 max_players_per_match     = 16
 max_connections           = 100       # concurrent producer connections

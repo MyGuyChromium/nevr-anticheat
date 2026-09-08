@@ -17,8 +17,8 @@ import (
 // non-shadow detection events stored at or after the given time (zero = all).
 func (s *Store) GetDistinctPlayersWithEvents(ctx context.Context, since time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT player_id FROM detection_events
-		 WHERE created_at >= ? AND is_shadow = 0
+		`SELECT DISTINCT de.player_id FROM detection_events de
+		 WHERE de.created_at >= ? AND `+eligibleScoringEventSQL+`
 		 ORDER BY player_id`,
 		fmtDBTimeSince(since),
 	)
@@ -38,15 +38,14 @@ func (s *Store) GetDistinctPlayersWithEvents(ctx context.Context, since time.Tim
 	return players, rows.Err()
 }
 
-// GetAllPlayerEvents returns all non-shadow detection events for a player,
+// GetAllPlayerEvents returns independently score-eligible events for a player,
 // ordered by match then frame. StoredAt carries created_at. This is the
-// cross-match aggregator's input: unlike GetPlayerHistoryEvents (the PAT_003
-// history feed) it does NOT exclude the meta-detectors PAT_003/PAT_004, so
-// their events contribute to the cross-match score like any other detector.
+// cross-match aggregator's input excludes zero-weight/meta observations and
+// evidence invalidated by the latest human review. Raw event readers do not.
 func (s *Store) GetAllPlayerEvents(ctx context.Context, playerID string) ([]model.DetectionEvent, error) {
 	return s.queryEvents(ctx,
-		`SELECT `+eventColumns+` FROM detection_events
-		 WHERE player_id = ? AND is_shadow = 0
+		`SELECT `+eventColumns+` FROM detection_events de
+		 WHERE de.player_id = ? AND `+eligibleScoringEventSQL+`
 		 ORDER BY match_id, frame_index, detector_id`, playerID)
 }
 
@@ -61,6 +60,13 @@ type CrossMatchConfig struct {
 	// MaxContribPerDetectorPerMatch caps how many events per detector per match
 	// score (scorer: max_contrib_per_detector_per_match). <= 0 means unlimited.
 	MaxContribPerDetectorPerMatch int
+	SameCategoryDiminishing       float64
+	CooldownFrames                int
+	CorrelationBonusCap           float64
+	// ScoringByMatch optionally supplies the recorded historical scoring
+	// configuration. Missing entries are explicitly current-config re-evaluation,
+	// not reconstruction of the original persisted score.
+	ScoringByMatch map[string]scoring.ScorerConfig
 	// Now is the reference time for decay; zero means time.Now().
 	Now time.Time
 	// Levels is the tier table the summary's Level is classified with. Pass
@@ -89,7 +95,8 @@ type PlayerCrossMatchSummary struct {
 	Level             model.ScoringLevel `json:"level"`
 	// AnchorFallbacks counts events whose match had no recorded start time, so
 	// decay was anchored on the event's storage time instead.
-	AnchorFallbacks int `json:"anchor_fallbacks"`
+	AnchorFallbacks int    `json:"anchor_fallbacks"`
+	ScoringBasis    string `json:"scoring_basis"`
 }
 
 // eventAnchorTime returns the wall-clock time a detection event is decayed
@@ -114,7 +121,8 @@ func eventAnchorTime(ev model.DetectionEvent, matchStarts map[string]time.Time) 
 //   - total:       capped at 100 so Level() and thresholds mean the same thing
 //     as for a single-match score
 //
-// Shadow events must be filtered before calling (GetAllPlayerEvents does).
+// Store callers filter human-invalidated events first. This pure function
+// independently rejects shadow, zero-weight, malformed and meta observations.
 func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts map[string]time.Time, cfg CrossMatchConfig) PlayerCrossMatchSummary {
 	s := PlayerCrossMatchSummary{
 		ByDetector:       make(map[string]int),
@@ -123,6 +131,7 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 		PointsByCategory: make(map[string]float64),
 		MatchIDs:         []string{},
 		Level:            model.LevelClean,
+		ScoringBasis:     "current_config_reevaluation",
 	}
 	if len(events) == 0 {
 		return s
@@ -150,29 +159,57 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 	})
 
 	s.PlayerID = sorted[0].PlayerID
-	s.TotalEvents = len(sorted)
-
-	type detKey struct{ match, detector string }
-	perDetectorPerMatch := make(map[detKey]int)
+	scorers := make(map[string]*scoring.SuspicionScorer)
+	seenIDs := make(map[string]bool)
+	providedConfig, currentConfig := false, false
 
 	var totalSev, totalConf, decayedSum float64
 	for _, ev := range sorted {
+		if ev.PlayerID != s.PlayerID || ev.IsShadow || scoring.IsMetaDetector(ev.DetectorID) ||
+			!positiveFiniteUnit(ev.Severity) || !positiveFiniteUnit(ev.Confidence) || !positiveFiniteUnit(ev.EnforcementWeight) {
+			continue
+		}
+		if ev.EventID != "" {
+			if seenIDs[ev.EventID] {
+				continue
+			}
+			seenIDs[ev.EventID] = true
+		}
+		s.TotalEvents++
 		s.ByDetector[ev.DetectorID]++
 		s.ByMatch[ev.MatchID]++
 		totalSev += ev.Severity
 		totalConf += ev.Confidence
 
-		k := detKey{ev.MatchID, ev.DetectorID}
-		if cfg.MaxContribPerDetectorPerMatch > 0 && perDetectorPerMatch[k] >= cfg.MaxContribPerDetectorPerMatch {
+		scorer := scorers[ev.MatchID]
+		if scorer == nil {
+			scoringConfig, historical := cfg.ScoringByMatch[ev.MatchID]
+			if historical {
+				providedConfig = true
+			} else {
+				currentConfig = true
+				scoringConfig = scoring.ScorerConfig{
+					MaxSingleContribution: cfg.MaxSingleContribution, MaxContribPerDetectorPerMatch: cfg.MaxContribPerDetectorPerMatch,
+					SameCategoryDiminishing: cfg.SameCategoryDiminishing, CooldownFrames: cfg.CooldownFrames,
+					CorrelationBonusCap: cfg.CorrelationBonusCap, Levels: cfg.Levels,
+				}
+			}
+			scorer = scoring.NewSuspicionScorer(scoringConfig)
+			scorer.SetClock(func() time.Time { return now })
+			scorers[ev.MatchID] = scorer
+		}
+		before := scorer.GetScore(ev.PlayerID)
+		_, accepted := scorer.IngestEventWithResult(ev)
+		if !accepted {
 			continue
 		}
-		perDetectorPerMatch[k]++
+		scorer.ApplyCorrelationBonus()
+		after := scorer.GetScore(ev.PlayerID)
 		s.ScoredEvents++
-
-		points := ev.Severity * ev.Confidence * ev.EnforcementWeight * 100.0
-		if cfg.MaxSingleContribution > 0 && points > cfg.MaxSingleContribution {
-			points = cfg.MaxSingleContribution
-		}
+		// Decay only the contribution accepted by the same scorer used live.
+		// The incremental category bonus is anchored to the event that first
+		// makes it available, never re-awarded for each batch or re-analysis.
+		points := after.BaseScore - before.BaseScore + after.CorrelationBonus - before.CorrelationBonus
 		s.CumulativeScore += points
 
 		anchor, anchored := eventAnchorTime(ev, matchStarts)
@@ -190,8 +227,10 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 
 	s.DistinctMatches = len(s.ByMatch)
 	s.DistinctDetectors = len(s.ByDetector)
-	s.AvgSeverity = totalSev / float64(len(sorted))
-	s.AvgConfidence = totalConf / float64(len(sorted))
+	if s.TotalEvents > 0 {
+		s.AvgSeverity = totalSev / float64(s.TotalEvents)
+		s.AvgConfidence = totalConf / float64(s.TotalEvents)
+	}
 	s.DecayedScore = math.Min(decayedSum, 100)
 
 	for mid := range s.ByMatch {
@@ -200,7 +239,16 @@ func ComputePlayerCrossMatchSummary(events []model.DetectionEvent, matchStarts m
 	sort.Strings(s.MatchIDs)
 
 	s.Level = cfg.Levels.LevelFor(s.DecayedScore)
+	if providedConfig && !currentConfig {
+		s.ScoringBasis = "provided_match_configuration"
+	} else if providedConfig {
+		s.ScoringBasis = "mixed_config_reevaluation"
+	}
 	return s
+}
+
+func positiveFiniteUnit(value float64) bool {
+	return value > 0 && value <= 1 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 // detectorCategory mirrors scoring.detectorCategory (unexported there).
@@ -262,7 +310,10 @@ type CrossMatchReviewCase struct {
 // StoreCrossMatchReviewCase inserts or refreshes the aggregate case for a
 // player. On conflict the scores, matches, detectors and explanation are
 // updated, but a status a moderator has set (anything other than 'pending')
-// is preserved and created_at keeps its original value.
+// is preserved and created_at keeps its original value. Superseded negative-
+// review cases keep their entire audit snapshot. A relevant current negative
+// review also closes a first insert: without an exact evidence-snapshot
+// fingerprint we cannot establish that a concurrent aggregate was recomputed.
 func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchReviewCase) error {
 	matchIDsJSON, err := json.Marshal(rc.MatchIDs)
 	if err != nil {
@@ -276,7 +327,22 @@ func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchRevi
 	if status == "" {
 		status = CaseStatusPending
 	}
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if status == CaseStatusPending {
+		negative, err := currentNegativeReviewTx(ctx, tx, rc.PlayerID, string(matchIDsJSON))
+		if err != nil {
+			return err
+		}
+		if negative {
+			status = CaseStatusClosed
+			rc.Explanation = crossMatchReviewRevoked + " " + rc.Explanation
+		}
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO cross_match_review_cases
 		 (case_id, player_id, match_ids, match_count, severity, cumulative_score, decayed_score,
 		  detectors_json, explanation, status, created_at, updated_at)
@@ -292,13 +358,18 @@ func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchRevi
 			explanation = excluded.explanation,
 			status = CASE WHEN cross_match_review_cases.status = 'pending'
 			              THEN excluded.status ELSE cross_match_review_cases.status END,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at
+		 WHERE NOT (cross_match_review_cases.status = 'closed'
+		   AND instr(COALESCE(cross_match_review_cases.explanation,''), ?) > 0)`,
 		rc.CaseID, rc.PlayerID, string(matchIDsJSON), rc.MatchCount,
 		rc.Severity, rc.CumulativeScore, rc.DecayedScore,
 		string(detectorsJSON), rc.Explanation, status,
-		fmtDBTime(rc.CreatedAt), fmtDBTime(time.Now()),
+		fmtDBTime(rc.CreatedAt), fmtDBTime(time.Now()), crossMatchReviewRevoked,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 const crossMatchCaseColumns = `case_id, player_id, match_ids, match_count, severity,
