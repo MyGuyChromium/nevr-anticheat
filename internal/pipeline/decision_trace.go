@@ -9,6 +9,19 @@ import (
 // of replay length. It is not an event cap and never affects detector output.
 const MaxDecisionReasons = 48
 
+func (c *coverageTracker) catchRecord(detectorID, playerID string, record model.CatchReviewRecord) {
+	index, ok := c.index[detectorID]
+	if !ok || playerID == "" || !c.catchLogs[detectorID] {
+		return
+	}
+	player := c.players[playerID]
+	if player == nil {
+		return // diagnostics cannot manufacture an unobserved roster entry
+	}
+	record.ReasonDescription = detect.DecisionReasonDescription(record.Reason)
+	player.Detectors[index].CatchReview.Add(record)
+}
+
 func (c *coverageTracker) trace(detectorID, playerID string, frame int, reason string) {
 	index, ok := c.index[detectorID]
 	if !ok || playerID == "" {
@@ -81,6 +94,14 @@ func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 		if observed, ok := d.(detect.DecisionObservable); ok {
 			observed.SetDecisionObserver(c.trace)
 		}
+		if observed, ok := d.(detect.CatchObservable); ok {
+			detectorID := d.ID()
+			observed.SetCatchObserver(func(id, playerID string, record model.CatchReviewRecord) {
+				if id == detectorID {
+					c.catchRecord(id, playerID, record)
+				}
+			})
+		}
 	}
 	p.dedup.decisionObserver = func(e model.DetectionEvent) { p.traceEvent(e, "emission_merged") }
 	p.rateLimiter.decisionObserver = func(e model.DetectionEvent) { p.traceEvent(e, "incident_rate_limited") }
@@ -88,6 +109,9 @@ func (p *Pipeline) attachDecisionCoverage(c *coverageTracker) func() {
 		for _, d := range p.detectors {
 			if observed, ok := d.(detect.DecisionObservable); ok {
 				observed.SetDecisionObserver(nil)
+			}
+			if observed, ok := d.(detect.CatchObservable); ok {
+				observed.SetCatchObserver(nil)
 			}
 		}
 		p.dedup.decisionObserver, p.rateLimiter.decisionObserver = nil, nil

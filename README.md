@@ -6,7 +6,7 @@ Asynchronous, server-side cheat detection for Echo VR / Echo Arena on NEVR commu
 
 **Validation status: 0 of 31 detectors have completed representative, independently labelled real-telemetry validation.** Every threshold still requires calibration, so the normal defaults and `configs/shadow_deploy.toml` keep every detector in shadow mode. Read `docs/production_readiness.md` before deploying anything.
 
-Desktop 0.12.0 adds [autopocket catch review](docs/autopocket_review.md): sustained free-disc path changes before a confirmed catch, with moving-hand comparisons, contact exclusions and three trajectory projections in the physics inspector. This is permanently observation-only in this implementation; it cannot prove automated grip input or attribute the cause to the receiver. Re-import original replays to populate the new presence-aware telemetry; older normalized caches may not contain enough inputs.
+Desktop 0.12.1 expands [autopocket catch review](docs/autopocket_review.md): time-based free-disc comparisons, conservative swept contact envelopes, three trajectory projections, and bounded catch-by-catch diagnostics with Spark/physics links. This is permanently observation-only in this implementation; it cannot prove automated grip input or attribute the cause to the receiver. Re-import original replays to populate the new presence-aware telemetry and diagnostics; older normalized caches may not contain enough inputs.
 
 **Automatic findings:** the installed app analyzes replays itself; no assistant,
 cloud upload, admission list or player-name rules are needed. Each analyzed match

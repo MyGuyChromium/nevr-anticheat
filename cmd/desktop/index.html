@@ -161,6 +161,8 @@
   .inspector-grid b { display: block; margin-top: 6px; }
   .physics-table { overflow: auto; max-height: 48vh; border: 1px solid var(--line); }
   .physics-table table { min-width: 1120px; }
+  .catch-log .physics-table table { min-width: 800px; }
+  .catch-log .action-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .physics-table tr.focus td { background: var(--accent-bg); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
   .catch-projections { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 12px; margin: 16px 0; }
   .catch-projections figure { margin: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); }
@@ -845,18 +847,36 @@
     }).join(' · ');
   }
 
+  function catchReviewDetails(m, p, detector) {
+    if (blindReview || detector?.detector_id !== 'STATE_008') return '';
+    const log = detector.catch_review;
+    if (!log || log.version !== 1) return '<p class="notice">Catch-by-catch diagnostics are unavailable for this analysis. Re-import the original replay with the current version; missing diagnostics are not clearance.</p>';
+    const count = (n) => Number.isSafeInteger(n) && n >= 0 ? n : 0;
+    const outcomes = { observation: 'Trajectory observation', excluded: 'Excluded from comparison', insufficient_data: 'Insufficient data', unconfirmed: 'Possession unconfirmed' };
+    const records = Array.isArray(log.records) ? log.records.slice(0, 128) : [];
+    const rows = records.map((r) => {
+      if (!r || !Object.hasOwn(outcomes, r.outcome)) return '';
+      const frameOK = Number.isSafeInteger(r.frame_index) && r.frame_index >= 0;
+      const time = typeof r.timestamp === 'number' && Number.isFinite(r.timestamp) && r.timestamp >= 0 ? `${r.timestamp.toFixed(3)} s` : '—';
+      const metrics = r.metrics && typeof r.metrics === 'object' && !Array.isArray(r.metrics) ? Object.entries(r.metrics).slice(0, 24).filter(([,v]) => typeof v === 'number' && Number.isFinite(v)) : [];
+      const detail = metrics.length ? `<details><summary>Measured context</summary><dl class="kv">${metrics.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${v.toFixed(4)}</dd>`).join('')}</dl></details>` : '';
+      return `<tr><td class="num mono">${frameOK ? r.frame_index : '—'}<span class="explain">${time}</span></td><td>${esc(outcomes[r.outcome])}<span class="explain">${r.confirmed === true ? 'Holder persisted for a second sample' : 'Catch not confirmed'}</span></td><td>${esc(r.reason_description || 'Recorded detector branch')}<span class="explain mono">${esc(r.reason || '')}</span>${detail}</td><td>${frameOK ? `<span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(m.match_id)}" data-replay-frame="${r.frame_index}">Open catch in Spark</button><button class="btn btn-sm" data-physics-match="${esc(m.match_id)}" data-physics-frame="${r.frame_index}" data-physics-player="${esc(p.player_id)}">Inspect catch</button></span>` : '—'}</td></tr>`;
+    }).join('');
+    return `<section class="catch-log"><h3>Observed catch transitions</h3><p class="notice">These are explicit possession transitions visible to this detector—not every catch in the match, independent test labels, or cheating verdicts. “Excluded” does not mean proven fair play. Missing telemetry can prevent recording a transition at all.</p><p class="summary-note">${count(log.total)} finalized transitions · ${count(log.observation)} trajectory observations · ${count(log.excluded)} excluded · ${count(log.insufficient_data)} insufficient data · ${count(log.unconfirmed)} unconfirmed. Counts describe detector decisions, not retained/scored incidents.</p>${count(log.dropped) ? `<p class="notice">${count(log.dropped)} additional transition records omitted by the 128-record limit; summary counts include them.</p>` : ''}${count(log.invalid) ? `<p class="notice">${count(log.invalid)} malformed diagnostic payloads were rejected; they are not catch counts.</p>` : ''}<div class="physics-table" tabindex="0" aria-label="Scrollable observed catch transitions"><table><thead><tr><th>First held frame / time</th><th>Comparison outcome</th><th>Reason and measurements</th><th>Replay / physics</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No explicit catch transition was finalized in the available analysis. This is not proof of fair play.</td></tr>'}</tbody></table></div></section>`;
+  }
+
   function decisionTraceDetails(m, p, detectorID = '') {
     if (blindReview) return '<p class="notice">Decision traces are concealed during blinded review. Record independent observations before revealing detector behavior.</p>';
     if (!p?.coverage || p.coverage.version !== 1) return '<p class="notice">Decision traces were not recorded for this analysis. Re-analyze the replay with the current version; missing traces are not a clean result.</p>';
     const detectors = (p.coverage.detectors || []).filter((d) => !detectorID || d.detector_id === detectorID);
     const panels = detectors.map((d) => {
       const trace = d.decision_trace;
-      if (!trace || trace.version !== 1) return `<details class="sub"><summary>${esc(d.detector_id)}</summary><p class="empty">No compatible trace recorded. Re-analyze to collect decision reasons.</p></details>`;
+      if (!trace || trace.version !== 1) return `<details class="sub"><summary>${esc(d.detector_id)}</summary><p class="empty">No compatible trace recorded. Re-analyze to collect decision reasons.</p>${catchReviewDetails(m,p,d)}</details>`;
       const rows = [...(trace.reasons || [])].sort((a,b) => b.count - a.count || a.code.localeCompare(b.code)).map((reason) => {
         const frameOK = Number.isSafeInteger(reason.first_frame) && reason.first_frame >= 0;
         return `<tr><td><span class="mono">${esc(reason.code)}</span><span class="explain">${esc(reason.description || '')}</span></td><td class="num">${fmtInt(reason.count)}</td><td class="num">${fmtInt(reason.first_frame)}–${fmtInt(reason.last_frame)}</td><td>${frameOK ? `<button class="btn btn-sm" data-physics-match="${esc(m.match_id)}" data-physics-frame="${reason.first_frame}" data-physics-player="${esc(p.player_id)}">Inspect first frame</button>` : '—'}</td></tr>`;
       }).join('');
-      return `<details class="sub" ${detectorID ? 'open' : ''}><summary><span class="mono">${esc(d.detector_id)}</span> · ${esc(d.status)} · ${trace.internal_branches ? 'internal decisions + pipeline' : 'pipeline only'}</summary><p class="summary-note">${trace.internal_branches ? 'Reasons were recorded from actual detector branches.' : 'Internal detector decisions are not instrumented for this check; pipeline dispatch is not proof every internal condition passed.'}</p><div class="physics-table"><table><thead><tr><th>Recorded reason</th><th>Count</th><th>First–last frame</th><th>Inspect</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No recorded decisions for this player and detector.</td></tr>'}</tbody></table></div>${trace.overflow_count ? `<p class="warning">${fmtInt(trace.overflow_count)} observations exceeded the bounded reason inventory.</p>` : ''}</details>`;
+      return `<details class="sub" ${detectorID ? 'open' : ''}><summary><span class="mono">${esc(d.detector_id)}</span> · ${esc(d.status)} · ${trace.internal_branches ? 'internal decisions + pipeline' : 'pipeline only'}</summary>${catchReviewDetails(m,p,d)}<p class="summary-note">${trace.internal_branches ? 'Reasons were recorded from actual detector branches.' : 'Internal detector decisions are not instrumented for this check; pipeline dispatch is not proof every internal condition passed.'}</p><div class="physics-table"><table><thead><tr><th>Recorded reason</th><th>Count</th><th>First–last frame</th><th>Inspect</th></tr></thead><tbody>${rows || '<tr><td colspan="4">No recorded decisions for this player and detector.</td></tr>'}</tbody></table></div>${trace.overflow_count ? `<p class="warning">${fmtInt(trace.overflow_count)} observations exceeded the bounded reason inventory.</p>` : ''}</details>`;
     }).join('');
     return `<p>${who(p.name, p.player_id)}</p><p class="notice">These counters explain what the analysis did, not whether somebody cheated. First–last frame is a range, not continuous activity. Reasons can overlap; counts are not independent incidents. Raw emissions, merged/rate-limited findings and retained shadow/review incidents are different stages.</p>${panels || '<p class="empty">No matching detector coverage.</p>'}`;
   }
@@ -1672,7 +1692,7 @@
     const samples = evidence && evidence.catch_trajectory;
     const fields = ['disc_position', 'expected_position', 'left_hand', 'right_hand'];
     const vector = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1000000);
-    if (!Array.isArray(samples) || samples.length < 2 || samples.length > 32 || !samples.every((s, i) => s && Number.isSafeInteger(s.frame_index) && s.frame_index >= 0 && Number.isFinite(s.timestamp) && fields.every((f) => vector(s[f])) && (i === 0 || (s.frame_index > samples[i - 1].frame_index && s.timestamp > samples[i - 1].timestamp)))) return '';
+    if (!Array.isArray(samples) || samples.length < 2 || samples.length > 256 || !samples.every((s, i) => s && Number.isSafeInteger(s.frame_index) && s.frame_index >= 0 && Number.isFinite(s.timestamp) && fields.every((f) => vector(s[f])) && (i === 0 || (s.frame_index > samples[i - 1].frame_index && s.timestamp > samples[i - 1].timestamp)))) return '';
     const tracks = [
       { field: 'expected_position', color: '#a5acba', dash: '6 5', label: 'Steady-motion reference' },
       { field: 'left_hand', color: '#c4a0ff', dash: '2 5', label: 'Left hand' },

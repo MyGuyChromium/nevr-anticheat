@@ -429,10 +429,17 @@ func (p *Pipeline) ProcessMatch(
 // caller can persist them.
 func (p *Pipeline) Finalize(matchCtx *model.MatchContext) *MatchResult {
 	result := newMatchResult(matchCtx.MatchID)
+	coverage := newCoverageTracker(p.detectors, p.cfg, matchCtx.PlayerIDs)
+	for playerID := range p.players {
+		coverage.player(playerID) // include players discovered after match start
+	}
+	detach := p.attachDecisionCoverage(coverage)
+	defer detach()
 	p.flushTracks(matchCtx, result)
 	p.emit(p.dedup.Flush(), result)
 	p.scorer.ApplyCorrelationBonus()
 	result.PlayerScores = p.scorer.GetAllScores()
+	result.PlayerCoverage = coverage.finish(p.quality)
 	return result
 }
 

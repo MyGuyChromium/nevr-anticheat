@@ -193,8 +193,10 @@ func defaultDetectors() map[string]DetectorConfig {
 		// OBSERVATION_ONLY: pre-catch trajectory review has no validated cheat signature.
 		"STATE_008": {Enabled: true, EnforcementWeight: 0.0, AutoEnforce: false, Mode: "shadow", Params: map[string]any{
 			"baseline_samples": 4, "min_correction_samples": 2, "max_sample_gap_s": 0.12,
+			"baseline_duration_s": 0.20, "min_correction_duration_s": 0.12,
+			"min_turn_rate_deg_s": 60.0, "max_turn_rate_deg_s": 300.0,
 			"max_window_s": 1.5, "max_step_error_m": 0.20, "min_lateral_deviation_m": 0.30,
-			"min_correction_angle_deg": 4.0, "max_turn_angle_deg": 20.0, "contact_margin_m": 0.65,
+			"contact_margin_m": 0.65, "contact_accel_allowance_mps2": 30.0,
 			"min_miss_improvement_m": 0.50, "max_catch_approach_m": 1.5, "regrab_grace_s": 0.35,
 		}},
 		// UNSAFE: regrab rhythm produces low CoV naturally.

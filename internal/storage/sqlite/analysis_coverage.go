@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 )
@@ -27,4 +28,112 @@ func (s *Store) GetMatchAnalysisCoverage(ctx context.Context, matchID string) (m
 		return nil, fmt.Errorf("decode analysis coverage: %w", err)
 	}
 	return coverage, nil
+}
+
+// MergeMatchCatchReviews persists only additive live catch diagnostics in the
+// existing coverage JSON. It never changes events, scores, review cases, or
+// unrelated detector coverage. Live callers supply disjoint chronological
+// chunks. Without full analysis coverage, the surrounding record explicitly
+// remains insufficient/partial rather than claiming all catches were seen.
+func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, incoming map[string]*model.PlayerCoverage) error {
+	if matchID == "" {
+		return fmt.Errorf("merging catch diagnostics: match id required")
+	}
+	hasCatch := false
+	for _, player := range incoming {
+		if player == nil {
+			continue
+		}
+		for _, detector := range player.Detectors {
+			if detector.CatchReview != nil {
+				hasCatch = true
+				if err := detector.CatchReview.Validate(); err != nil {
+					return fmt.Errorf("invalid incoming catch diagnostics: %w", err)
+				}
+			}
+		}
+	}
+	if !hasCatch {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var doc string
+	err = tx.QueryRowContext(ctx, `SELECT coverage_json FROM match_analysis_coverage WHERE match_id = ?`, matchID).Scan(&doc)
+	coverage := make(map[string]*model.PlayerCoverage)
+	if err == nil {
+		if err := json.Unmarshal([]byte(doc), &coverage); err != nil {
+			return fmt.Errorf("decode existing catch coverage: %w", err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if coverage == nil {
+		coverage = make(map[string]*model.PlayerCoverage)
+	}
+	changed := false
+	ids := make([]string, 0, len(incoming))
+	for id := range incoming {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		player := incoming[id]
+		if id == "" || player == nil {
+			continue
+		}
+		for _, detector := range player.Detectors {
+			if detector.CatchReview == nil {
+				continue
+			}
+			target := coverage[id]
+			if target == nil {
+				changed = true
+				target = &model.PlayerCoverage{Version: 1, Status: model.ReviewStatusInsufficientData,
+					Limitations: []string{"Only partial live catch-transition diagnostics are retained here. These are not all catches, independent calibration opportunities, or validated detector accuracy."}}
+				coverage[id] = target
+			}
+			index := -1
+			for i := range target.Detectors {
+				if target.Detectors[i].DetectorID == detector.DetectorID {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				changed = true
+				target.Detectors = append(target.Detectors, model.DetectorCoverage{DetectorID: detector.DetectorID, Enabled: detector.Enabled,
+					Status: model.ReviewStatusInsufficientData, CatchReview: model.NewCatchReviewLog(),
+					Limitations: []string{"Partial live catch-transition diagnostics only; no complete input or catch denominator is available."}})
+				index = len(target.Detectors) - 1
+			}
+			log := target.Detectors[index].CatchReview
+			if log == nil {
+				changed = true
+				log = model.NewCatchReviewLog()
+				target.Detectors[index].CatchReview = log
+			}
+			if err := log.Validate(); err != nil {
+				return fmt.Errorf("invalid existing catch diagnostics: %w", err)
+			}
+			total, invalid := log.Total, log.Invalid
+			log.Merge(detector.CatchReview)
+			changed = changed || log.Total != total || log.Invalid != invalid
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.Marshal(coverage)
+	if err != nil {
+		return fmt.Errorf("encode merged catch diagnostics: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO match_analysis_coverage (match_id, coverage_json) VALUES (?, ?)
+		ON CONFLICT(match_id) DO UPDATE SET coverage_json=excluded.coverage_json`, matchID, string(encoded)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

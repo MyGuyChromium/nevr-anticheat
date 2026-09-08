@@ -483,12 +483,15 @@ mode               = "shadow"
 [detector.STATE_008.params]
 baseline_samples           = 4      # free-flight baseline samples
 min_correction_samples     = 2      # consecutive approach corrections
+baseline_duration_s        = 0.20   # s; minimum reference span as well as sample floor
+min_correction_duration_s  = 0.12   # s; sustained turning as well as sample floor
+min_turn_rate_deg_s        = 60.0   # deg/s; provisional correction rate
+max_turn_rate_deg_s        = 300.0  # deg/s; larger turns are ambiguous
 max_sample_gap_s           = 0.12   # s; reject larger adjacent sample gaps
 max_window_s               = 1.5    # s; maximum pre-catch window
 max_step_error_m           = 0.20   # m; displacement/velocity consistency
 min_lateral_deviation_m    = 0.30   # m; deviation from baseline trajectory
-min_correction_angle_deg   = 4.0    # deg; minimum sustained correction
-max_turn_angle_deg         = 20.0   # deg; larger turns are ambiguous
+contact_accel_allowance_mps2 = 30.0 # m/s^2; provisional envelope, not a measured legal bound
 contact_margin_m           = 0.65   # m; possible-contact exclusion, not a game radius
 min_miss_improvement_m     = 0.50   # m; projected miss-distance improvement
 max_catch_approach_m       = 1.5    # m; last-free-sample hand distance
@@ -554,6 +557,7 @@ sigmoid_steepness      = 2.0
 
 # =============================================================================
 # Renamed and removed keys (accepted with a warning, then ignored)
+# STATE_008 min_correction_angle_deg / max_turn_angle_deg -> removed; replaced by explicit time-based rate/duration controls, not numerically reinterpreted
 # =============================================================================
 # general.mode                                     -> ignored (binary decides)
 # scoring.auto_enforce_min_confidence              -> removed (THROW_001 gates auto-enforce per event on severity > 0.95, attribution >= 0.9 and a 5 m/s over-cap margin; every other detector stamps the flag whenever auto_enforce is true)

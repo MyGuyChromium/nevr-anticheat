@@ -14,11 +14,12 @@ type coverageTracker struct {
 	detectors  []model.DetectorCoverage
 	index      map[string]int
 	branches   map[string]bool
+	catchLogs  map[string]bool
 	wristLimit float64
 }
 
 func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster []string) *coverageTracker {
-	c := &coverageTracker{players: make(map[string]*model.PlayerCoverage), index: make(map[string]int), branches: make(map[string]bool), wristLimit: 50}
+	c := &coverageTracker{players: make(map[string]*model.PlayerCoverage), index: make(map[string]int), branches: make(map[string]bool), catchLogs: make(map[string]bool), wristLimit: 50}
 	if dc, ok := cfg.Detectors["BIO_001"]; ok {
 		c.wristLimit = detect.GetFloat(dc.Params, "max_wrist_angular_velocity", 50)
 	}
@@ -28,6 +29,7 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 		if observed, ok := d.(detect.DecisionObservable); ok {
 			c.branches[d.ID()] = observed.HasDecisionBranches()
 		}
+		_, c.catchLogs[d.ID()] = d.(detect.CatchObservable)
 	}
 	ids := make(map[string]bool)
 	for id := range cfg.Detectors {
@@ -78,6 +80,9 @@ func (c *coverageTracker) player(id string) *model.PlayerCoverage {
 		for i := range p.Detectors {
 			d := &p.Detectors[i]
 			d.DecisionTrace = &model.DetectorDecisionTrace{Version: 1, InternalBranches: c.branches[d.DetectorID], Reasons: []model.DetectorDecisionReason{}}
+			if c.catchLogs[d.DetectorID] {
+				d.CatchReview = model.NewCatchReviewLog()
+			}
 		}
 		c.players[id] = p
 	}
