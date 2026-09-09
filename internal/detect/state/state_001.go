@@ -19,6 +19,8 @@ const grabReviewPlayerLimit = 16
 // bounds, so they produce inconclusive diagnostics and NEVER scored events.
 // Player/geometry grips, sticky possession, first-seen held discs and same-player
 // hand transfers are not treated as disc acquisitions.
+// Direct changes between different known holders are retained separately as
+// inconclusive transfers: no unobserved free-flight sample is invented.
 type State001 struct {
 	detect.BaseDetector
 	previous map[string]grabReviewSample
@@ -33,7 +35,7 @@ type grabReviewSample struct {
 
 func NewState001(_ map[string]any) *State001 {
 	d := &State001{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_001", DetectorVersion: "3.0.0", DetectorName: "Disc Grab Geometry Review",
+		DetectorID: "STATE_001", DetectorVersion: "3.0.1", DetectorName: "Disc Grab Geometry Review",
 		DetectorCategory: "state", Inputs: []string{"disc_attachment", "hand_tracking", "disc_state"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false,
 	}}
@@ -69,7 +71,11 @@ func (d *State001) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			continue
 		}
 		d.previous[id] = now
-		if !exists || !previous.attachment.Free() || !now.attachment.HeldBy(id) || !grabReviewContinuous(previous, now) {
+		if !exists || !now.attachment.HeldBy(id) || !grabReviewContinuous(previous, now) {
+			continue
+		}
+		previousOtherHolder := previous.attachment.Known() && previous.attachment.State == "held" && previous.attachment.HolderID != id
+		if !previous.attachment.Free() && !previousOtherHolder {
 			continue
 		}
 		if d.observer != nil {
@@ -172,10 +178,16 @@ func grabAssessment(mc *model.MatchContext, player string, previous, now grabRev
 	}
 	identity := fmt.Sprintf("%q|%q|%q|%q|%q|%q|%q|%q|%q|%d|%.17g", matchID, out.Source, sourceID, sourcePlayer, out.SessionID, out.Authority, out.TimeBasis, player, "disc_acquisition", now.raw.FrameIndex, now.raw.Timestamp)
 	out.EventID = fmt.Sprintf("grab:%x", sha256.Sum256([]byte(identity)))
+	previousName := "last_free"
+	transfer := previous.attachment.Known() && previous.attachment.State == "held" && previous.attachment.HolderID != player
+	if transfer {
+		previousName = "previous_held"
+		out.Limitations = append(out.Limitations, "The disc changed recorded holders without a free-flight sample; a legal handoff, steal or unsampled release cannot be distinguished and grab range cannot be reconstructed.")
+	}
 	for _, snapshot := range []struct {
 		name string
 		raw  model.MechanicsRawSample
-	}{{"last_free", previous.raw}, {"first_held", now.raw}} {
+	}{{previousName, previous.raw}, {"first_held", now.raw}} {
 		if snapshot.raw.DiscPosition == nil {
 			continue
 		}
@@ -192,5 +204,10 @@ func grabAssessment(mc *model.MatchContext, player string, previous, now grabRev
 		}
 	}
 	// No runtime metadata/config value can construct verified GrabKnowledge.
-	return mechanics.EvaluateGrab(mechanics.GrabInput{Rules: rules, Assessment: out})
+	out = mechanics.EvaluateGrab(mechanics.GrabInput{Rules: rules, Assessment: out})
+	if transfer {
+		out.Result, out.Reason = model.MechanicsInconclusive, "grab_transfer_without_free_sample"
+		out.ReasonDescription = "Disc changed recorded holders without a free-flight sample. This may be a legal handoff or steal; grab range cannot be reconstructed."
+	}
+	return out
 }
