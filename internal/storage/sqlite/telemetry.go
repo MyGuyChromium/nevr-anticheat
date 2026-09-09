@@ -21,7 +21,9 @@ import (
 //	    PlayerTelemetryFrame as JSON, one row per (match, player, frame_index).
 //	    This is what the detection pipeline consumes during reprocessing.
 //
-//	match_ticks.raw_json: The original, unmodified profiler/API session payload,
+//	match_ticks.raw_json: The original profiler/API session payload, or for
+//	    native tape a derived session projection plus the original protobuf
+//	    header/frame bytes in its reserved _nevr_tape wrapper,
 //	    stored ONCE per (match_id, frame_index) — never once per player row.
 //	    Populated when the source provides richer data than the normalized frame
 //	    (.echoreplay ingestion and current bridge live ingestion:
@@ -33,7 +35,7 @@ import (
 // same tick may all carry it (it is de-duplicated on write) or only one may.
 type TelemetryFrameRow struct {
 	Frame   model.PlayerTelemetryFrame
-	RawJSON string // original profiler/API JSON for this tick, empty if unavailable
+	RawJSON string // source JSON or native protobuf wrapper for this tick, empty if unavailable
 }
 
 // TelemetryStoreResult reports what a telemetry write actually did.

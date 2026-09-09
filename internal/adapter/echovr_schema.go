@@ -38,9 +38,11 @@ type EchoVRSessionResponse struct {
 	// Teams
 	// LIKELY: community documentation (Spark, IgniteBot) describes three
 	// entries — "BLUE TEAM", "ORANGE TEAM" and "SPECTATORS" — and replays are
-	// typically recorded by a client that appears in the third entry. The
-	// mapper selects teams by TeamName and never by index alone; spectators
-	// and any other team are dropped from telemetry (see mappedTeamName).
+	// typically recorded by a client that appears in the third entry.
+	// Canonical labels establish team roles regardless of order. Custom
+	// display names require the complete standard three-slot layout ending
+	// in SPECTATORS; unrecognized layouts remain excluded (see
+	// MappedSessionTeamName). Display names are not searched for colour words.
 	Teams []EchoVRTeam `json:"teams"`
 
 	// CONFIRMED from real replay: top-level "possession" is [team_idx, player_idx] array.
@@ -93,7 +95,7 @@ type EchoVRDisc struct {
 
 // EchoVRTeam represents a team in the Echo VR API.
 type EchoVRTeam struct {
-	TeamName string           `json:"team"`    // LIKELY: "BLUE TEAM" or "ORANGE TEAM"
+	TeamName string           `json:"team"`    // Canonical role label or custom display name; not independently a role.
 	Players  []EchoVRPlayer   `json:"players"` // CONFIRMED: array of player objects
 	Stats    *EchoVRTeamStats `json:"stats"`   // LIKELY
 }

@@ -292,10 +292,16 @@ func (r *AnalyzeResult) PersistError() error {
 	return errors.Join(errs...)
 }
 
-// IsEchoReplay reports whether the path has the .echoreplay extension
-// (case-insensitive); anything else is read as a legacy JSON replay.
+// IsEchoReplay reports whether the path has the .echoreplay extension.
 func IsEchoReplay(path string) bool {
 	return strings.ToLower(filepath.Ext(path)) == ".echoreplay"
+}
+
+// IsSessionRecording selects the streaming session parser. Native .tape files
+// are decoded directly, never passed through the lossy Echo JSON converter.
+// The parser still validates the actual bytes; an extension is not validation.
+func IsSessionRecording(path string) bool {
+	return IsEchoReplay(path) || strings.EqualFold(filepath.Ext(path), ".tape")
 }
 
 // AnalyzeFile is AnalyzeFileAll for callers that expect one match per
@@ -363,7 +369,7 @@ func AnalyzeFileAll(ctx context.Context, store *sqlite.Store, path string, opts 
 	}
 	a := &fileAnalysis{ctx: ctx, store: store, path: path, opts: opts}
 
-	if !IsEchoReplay(path) {
+	if !IsSessionRecording(path) {
 		reader := NewReplayReader(path, NewJSONFrameParser())
 		reader.SetPhysics(opts.Physics)
 		mc, frames, err := reader.ReadMatch()
@@ -480,7 +486,11 @@ func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
 		if r.start.IsZero() {
 			r.start = tick.SampleTime
 		}
-		r.summary.Add(tick.Session, tick.FrameIndex, tick.SampleTime.Sub(r.start).Seconds())
+		base := r.start
+		if tick.MatchCtx.Source == "tape" {
+			base = tick.MatchCtx.StartTime
+		}
+		r.summary.Add(tick.Session, tick.FrameIndex, tick.SampleTime.Sub(base).Seconds())
 	}
 	if len(r.pending) >= rawTickFlushEvery {
 		return r.flush(a)
@@ -552,6 +562,23 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		return nil
 	}
 	res := run.res
+	if err := run.flush(a); err != nil {
+		run.abortRaw()
+		return fmt.Errorf("stage original replay evidence: %w", err)
+	}
+	var next rawTickNext
+	if run.rawSpool != nil {
+		var err error
+		next, err = run.rawSpool.iterator()
+		if err != nil {
+			run.abortRaw()
+			return err
+		}
+	}
+	if err := validateNativeSource(a.ctx, a.store, res.MatchCtx, next); err != nil {
+		run.abortRaw()
+		return err
+	}
 	if err := run.finishRaw(a); err != nil {
 		res.RawTickErr = err
 	}
@@ -564,6 +591,18 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 	}
 	res.Result = result
 	a.results = append(a.results, res)
+	if res.RawTickErr != nil {
+		// Keep the existing result/error reporting contract, but do not publish
+		// the computed result or replace any context/normalized/derived data.
+		// A partial raw prefix is retriable only with matching source records.
+		res.TelemetryErr = fmt.Errorf("normalized telemetry not stored: original replay evidence failed: %w", res.RawTickErr)
+		if run.replace {
+			res.AnalysisErr = errors.New("previous analysis kept: original replay evidence could not be stored")
+		} else {
+			res.AnalysisErr = errors.New("derived outputs not stored: original replay evidence could not be stored")
+		}
+		return nil
+	}
 
 	ctx, store := a.ctx, a.store
 	if run.replace {
@@ -676,6 +715,9 @@ func parseReplayMatches(parser *adapter.EchoReplayParser, path string,
 		return diag, cbErr
 	}
 	if err != nil {
+		if strings.EqualFold(filepath.Ext(path), ".tape") {
+			return diag, fmt.Errorf("reading native tape: %w", err)
+		}
 		return diag, fmt.Errorf("reading echoreplay: %w", err)
 	}
 	return diag, finish()

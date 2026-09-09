@@ -345,6 +345,7 @@ func (p *Pipeline) ProcessMatch(
 			p.observeHealth(pf, p.players[pf.PlayerID], false, sanitized, sharedJumps[pf.PlayerID])
 			for _, s := range sanitized {
 				result.SanitizedFrames[s]++
+				coverage.traceSanitizedDisc(pf.PlayerID, fi, s)
 			}
 			ps, ok := p.players[pf.PlayerID]
 			if !ok {

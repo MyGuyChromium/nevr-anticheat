@@ -17,6 +17,9 @@ cmd/desktop/resource_windows_amd64.syso
 *.db-shm
 *.db-journal
 *.jsonl
+# Original captures remain private; native integration fixtures are generated.
+*.tape
+*.nevrcap
 tests/replays/
 .nevr-pending/
 support-bundles/

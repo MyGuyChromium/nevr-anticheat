@@ -101,7 +101,7 @@ go build -o nevr-compat  ./cmd/compat      # /session payload compatibility chec
 
 ## Quick start: offline (replays)
 
-**Drag and drop:** drop one or more `.echoreplay` files (or a folder of them) onto `nevr-ac.exe` in Explorer. It runs `analyze` (or `batch`) on each, prints the flagged summary, and waits for Enter. Without `--config` the database `nevr-anticheat.db` is created next to the executable.
+**Drag and drop:** drop one or more `.echoreplay` or native `.tape` files (or a folder of them) onto `nevr-ac.exe` in Explorer. It runs `analyze` (or `batch`) on each, prints the flagged summary, and waits for Enter. Without `--config` the database `nevr-anticheat.db` is created next to the executable. See [native capture support and limitations](docs/native-tape-import.md) before importing NEVR Stream captures.
 
 ```bash
 # Ingest one replay: stores telemetry + raw ticks, runs detection, stores events/scores/cases.
@@ -146,7 +146,7 @@ All CLI commands take `--config <file>` before the command; `--verbose` / `-v` (
 
 ## Desktop app
 
-`nevr-desktop` is the point-and-click front end of the offline path: start it, drop `.echoreplay` files onto the page, read the result.
+`nevr-desktop` is the point-and-click front end of the offline path: start it, drop `.echoreplay` or native `.tape` files onto the page, read the result.
 
 ```bash
 go build -o nevr-desktop.exe ./cmd/desktop     # CGO_ENABLED=1, like every binary here
@@ -157,7 +157,7 @@ On start it opens the database (`nevr-anticheat.db` next to the executable, or `
 
 The desktop's **Regression & threshold lab** turns each event marked Correct or False positive into a local replay expectation, compares current output with the pre-reprocess snapshot, and previews numeric detector parameters against stored normalized telemetry. Both single-match previews and sweeps exclude reserved holdout and quarantined recordings. Reserved holdout is not an independently sealed prospective test: viewing findings freezes a clean candidate identity, and changing that candidate invalidates the exposed cohort. A selected value can be saved only as a shadow candidate. Match reports link to aggregate player history, and every event explains what crossed the boundary and whether it contributed score.
 
-The **Automation, recovery & updates** panel can watch a local replay folder for new stable `.echoreplay` files, recover uploads durably spooled before an interruption, compare the release's embedded Git commit with the last successfully packaged `windows-latest` release, install a verified update with one click, and create a privacy-redacted support ZIP. Support bundles exclude raw ticks, normalized frames, the database, player identities and the watch-folder path. NEVR never silently installs an update: automatic checks only announce availability and the owner clicks **Install update**.
+The **Automation, recovery & updates** panel can watch a local replay folder for new stable `.echoreplay` and `.tape` files, recover uploads durably spooled before an interruption, compare the release's embedded Git commit with the last successfully packaged `windows-latest` release, install a verified update with one click, and create a privacy-redacted support ZIP. Support bundles exclude raw ticks, normalized frames, the database, player identities and the watch-folder path. NEVR never silently installs an update: automatic checks only announce availability and the owner clicks **Install update**.
 
 The health panel reports the complete SQLite footprint—the main database plus active `-wal` and `-shm` sidecars. **Check & checkpoint** first runs SQLite's quick integrity check and then folds committed WAL pages into the main file; it does not prune telemetry, labels, or evidence and does not require the extra database-sized workspace of a `VACUUM`.
 

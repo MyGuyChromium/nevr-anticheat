@@ -13,6 +13,53 @@ const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
+test('native tape is accepted consistently by pickers, drop and folder intake', () => {
+  assert.match(page, /id="files"[^>]*accept="\.echoreplay,\.tape,\.json"/);
+  assert.match(page, /id="folder"[^>]*accept="\.echoreplay,\.tape,\.json"/);
+  const started = [], messages = [], get = nodes();
+  const context = run(section('  function analyze(', "  ['dragenter'"), {
+    busy: false, MAX_UPLOAD_FILE_BYTES: 1000, queue: [], queuePanel: null,
+    document: { createElement: () => ({ innerHTML: '' }) },
+    drop: { appendChild() {}, classList: { add() {} } }, $: get,
+    uploadList: () => '', setStatus: text => messages.push(text),
+    runQueue: indices => started.push(Array.from(indices)),
+  });
+  context.analyze(['capture.TAPE', 'original.echoreplay', 'legacy.json', 'old.nevrcap', 'setup.exe'].map(name => ({name,size:100})));
+  assert.deepEqual(Array.from(context.queue, entry => entry.file.name), ['capture.TAPE','original.echoreplay','legacy.json']);
+  assert.deepEqual(started, [[0,1,2]]);
+  assert.match(messages.at(-1), /Ignored 2 unsupported/);
+});
+
+test('native source notice distinguishes compatibility views from original evidence', () => {
+  const source = section('    const notices =', '    const tel =');
+  for (const native of [true, false]) {
+    const context = run(source + '\nresult = notices;', {
+      m: {source: native ? 'tape' : 'replay',replaced:false,warnings:[]}, fmtInt:String,
+    });
+    if (native) {
+      assert.match(context.result, /Session JSON and Spark clips are derived/);
+      assert.match(context.result, /keep the original \.tape/);
+      assert.match(context.result, /do not establish authoritative gameplay or confirmed cheating/);
+    } else assert.equal(context.result, '');
+  }
+});
+
+test('native capture provenance is available for stored review and escapes recorder metadata', () => {
+  const context = run(section('  function nativeCaptureBlock(', '  function matchSection('));
+  assert.equal(context.nativeCaptureBlock({source:'replay'}), '');
+  assert.match(context.nativeCaptureBlock({source:'tape'}), /metadata is unavailable/);
+  const html = context.nativeCaptureBlock({source:'tape',native_capture:{capture_id:'synthetic-id',producer:'<script>recorder</script>',game_type:'echo_arena',format_version:2,format_minor:0,format_patch:0,frame_encoding:'FRAME_ENCODING_SPARSE',schema_revision:'synthetic-schema',limitations:['<unknown contact>']}});
+  assert.match(html,/synthetic-id/);
+  assert.match(html,/Decoder schema/);
+  assert.match(html,/not authenticated gameplay/);
+  assert.match(html,/Original container integrity not verified/);
+  assert.match(html,/&lt;script&gt;recorder&lt;\/script&gt;/);
+  assert.match(html,/&lt;unknown contact&gt;/);
+  assert.doesNotMatch(html,/<script>|<unknown contact>/);
+  const verified = context.nativeCaptureBlock({source:'tape',native_capture:{container_integrity:'verified_footer_and_checksum'}});
+  assert.match(verified,/Original container footer and checksum verified at import; not gameplay authentication/);
+});
+
 test('analysis failures offer a next action and keep raw diagnostics collapsed and escaped', () => {
   const ui = run(section('  const diagTexts =', '  function prepend('), {fmtBytes: String, fmtInt: String});
   const html = ui.failCard({file:'<invalid>.json',error:'<parse failure>',diagnostic:{container:'text',size_bytes:12,lines:0,findings:[],head_text:'<private sample>',head_hex:'12 ab',hint:'Export an original recording.'}});

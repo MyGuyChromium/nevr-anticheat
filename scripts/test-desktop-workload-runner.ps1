@@ -2,8 +2,9 @@
 [CmdletBinding()]
 param()
 
-# Test the workload harness without starting an app, reading a replay, creating
-# a database or making any network connection. Actual packaged-app acceptance
+# Test the workload harness without starting an app, reading a user replay,
+# creating a database or making any network connection. Multipart tests use
+# disposable synthetic bytes. Actual packaged-app acceptance
 # remains a separate explicitly selected workload run.
 $ErrorActionPreference = 'Stop'
 $sourcePath = Join-Path $PSScriptRoot 'test-desktop-release-workload.ps1'
@@ -43,7 +44,7 @@ public sealed class NEVRWorkloadTestHandler : HttpMessageHandler {
 }
 '@
 }
-foreach ($name in @('Assert-Workload', 'Get-WorkloadFailureKind', 'Start-WorkloadRequest', 'Finish-WorkloadRequest', 'Read-FinalWorkloadSnapshot', 'Assert-ConnectionStatusResponse', 'Pump-Workload')) {
+foreach ($name in @('Assert-Workload', 'Get-WorkloadFailureKind', 'Get-WorkloadReplayExtension', 'Start-WorkloadRequest', 'Finish-WorkloadRequest', 'Read-FinalWorkloadSnapshot', 'Assert-ConnectionStatusResponse', 'Pump-Workload')) {
     $functionAst = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Assert-Runner ($null -ne $functionAst) "Required actual runner helper missing: $name"
     Invoke-Expression $functionAst.Extent.Text
@@ -67,6 +68,31 @@ try {
     $response = Finish-WorkloadRequest $request
     Assert-Runner ($handler.LastMethod -eq 'POST' -and $handler.LastOrigin -eq 'https://untrusted.invalid' -and ($handler.LastBody | ConvertFrom-Json).body -ceq 'Synthetic "literal" <text>') 'Request helper changed note body or omitted Origin.'
     Pass-Runner 'Actual JSON/origin request helper'
+
+    $multipartRoot = Join-Path ([IO.Path]::GetTempPath()) ('nevr-workload-multipart-' + [Guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($multipartRoot) | Out-Null
+    try {
+        foreach ($extension in @('.echoreplay', '.tape', '.TAPE')) {
+            $path = Join-Path $multipartRoot ("private O'Brien name" + $extension)
+            $content = 'synthetic multipart bytes; not a gameplay recording'
+            [IO.File]::WriteAllText($path, $content)
+            $response = Finish-WorkloadRequest (Start-WorkloadRequest 'POST' 'api/analyze' -Upload $path)
+            $expectedName = 'workload-input' + $extension.ToLowerInvariant()
+            Assert-Runner ($response.status -eq 200 -and $handler.LastBody.Contains($expectedName) -and $handler.LastBody.Contains($content)) 'Native/legacy multipart filename extension or fixture payload was lost.'
+            Assert-Runner (-not $handler.LastBody.Contains("private O'Brien") -and -not $handler.LastBody.Contains($multipartRoot)) 'Multipart exposed an original private filename or directory.'
+            Assert-Runner ([IO.File]::ReadAllText($path) -ceq $content) 'Upload changed the selected source.'
+        }
+        foreach ($unsupported in @('fixture.json', 'fixture.nevrcap', 'fixture.tape.exe', 'fixture')) {
+            $failed = $false
+            try { $null = Get-WorkloadReplayExtension $unsupported } catch { $failed = $true }
+            Assert-Runner $failed 'Unsupported workload input extension was accepted.'
+        }
+        Assert-Runner ($source.Contains('$null = Get-WorkloadReplayExtension $item.FullName')) 'Initial explicit-input validation does not use the tested format allowlist.'
+        Pass-Runner 'Native and legacy multipart preserve selected format without private filenames'
+    } finally {
+        foreach ($item in @(Get-ChildItem -LiteralPath $multipartRoot -File)) { Remove-Item -LiteralPath $item.FullName }
+        Remove-Item -LiteralPath $multipartRoot
+    }
 
     $handler.Status = 404
     $response = Finish-WorkloadRequest (Start-WorkloadRequest 'GET' '../00000000000000000000000000000000/api/match/SYN-FIXTURE-001/investigation')

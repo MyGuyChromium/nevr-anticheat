@@ -315,6 +315,7 @@ type matchView struct {
 	Map                   string               `json:"map"`
 	IsPrivate             bool                 `json:"is_private"`
 	Source                string               `json:"source"`
+	NativeCapture         *model.NativeCapture `json:"native_capture,omitempty"`
 	HasScore              bool                 `json:"has_score"`
 	BlueScore             int                  `json:"blue_score"`
 	OrangeScore           int                  `json:"orange_score"`
@@ -398,6 +399,7 @@ func (s *server) buildMatchView(d matchData) matchView {
 		Map:             mc.Map,
 		IsPrivate:       mc.IsPrivate,
 		Source:          mc.Source,
+		NativeCapture:   mc.NativeCapture,
 		HasScore:        d.hasScore,
 		BlueScore:       d.blue,
 		OrangeScore:     d.orange,
@@ -782,7 +784,7 @@ func (s *server) matchEntry(ctx context.Context, res *replay.AnalyzeResult, sour
 // detail to paste to a developer: the container, the size, how many lines
 // the file holds, what its first bytes look like and what was expected.
 type fileDiagnostic struct {
-	// Container is "zip" (PK signature), "text" or "empty".
+	// Container describes the observed bytes, not a claim of successful parsing.
 	Container string `json:"container"`
 	SizeBytes int64  `json:"size_bytes"`
 	// Lines is the number of lines read: the file's own for text, the replay
@@ -811,12 +813,19 @@ const (
 	expectedLayoutHint = "Expected layout: one snapshot per line, `YYYY/MM/DD HH:MM:SS.mmm<TAB>{json}` " +
 		"(a UTF-8 text file with one Echo VR session JSON per line, each prefixed by the recorder's " +
 		"timestamp and a tab); or a ZIP archive containing that file."
+	expectedTapeHint = "Expected a complete native .tape capture with a supported header, ordered frames and a valid footer. " +
+		"Keep the original capture; do not rename a ZIP or legacy .nevrcap file to .tape. " +
+		"If the capture is still recording, wait until it closes and retry. Unsupported encodings or required dictionaries need a compatible source export."
 )
 
 // diagnoseUpload inspects a file the parser refused. It never fails: what it
 // cannot read is reported as a finding.
 func diagnoseUpload(path string) *fileDiagnostic {
 	d := &fileDiagnostic{Findings: []string{}, Hint: expectedLayoutHint}
+	native := strings.EqualFold(filepath.Ext(path), ".tape")
+	if native {
+		d.Hint = expectedTapeHint
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		d.Container = "unreadable"
@@ -831,6 +840,19 @@ func diagnoseUpload(path string) *fileDiagnostic {
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
 	d.HeadText, d.HeadHex = printableBytes(head), hexBytes(head)
+	if native && n > 0 {
+		// Do not scan binary captures as text or advise adding timestamp tabs.
+		// The parser supplies the actual validation failure in analyzeEntry.Error.
+		d.Container = "native tape candidate"
+		if bytes.HasPrefix(head, []byte{0x28, 0xb5, 0x2f, 0xfd}) {
+			d.Container = "zstd (native tape candidate)"
+		} else if bytes.HasPrefix(head, []byte("PK\x03\x04")) {
+			d.Container = "zip"
+			d.Findings = append(d.Findings, "The bytes have a ZIP signature, not a native tape container. Use the file's original supported format.")
+		}
+		d.Findings = append(d.Findings, "Native capture validation did not complete; see the analysis error for the rejected header, integrity, continuity or compatibility requirement.")
+		return d
+	}
 
 	switch {
 	case n == 0:
@@ -1188,7 +1210,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		entry := analyzeEntry{File: uploadName(part.FileName())}
 		switch strings.ToLower(filepath.Ext(entry.File)) {
-		case ".echoreplay", ".json":
+		case ".echoreplay", ".tape", ".json":
 			path, saveErr := saveUploadPart(tmp, len(uploads), part)
 			if saveErr != nil {
 				if errors.Is(saveErr, errUploadTooLarge) {
@@ -1206,7 +1228,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			uploads = append(uploads, pendingUpload{entry: entry, path: path})
 		default:
 			_, _ = io.Copy(io.Discard, part)
-			entry.Error = "unsupported file type (expected .echoreplay or a legacy .json replay)"
+			entry.Error = "unsupported file type (expected .echoreplay, a native .tape capture, or a legacy .json replay)"
 			uploads = append(uploads, pendingUpload{entry: entry})
 		}
 		_ = part.Close()
@@ -1839,14 +1861,19 @@ func (s *server) openReplayClip(w http.ResponseWriter, r *http.Request, event mo
 		writeError(w, http.StatusServiceUnavailable, "%v (the incident clip was still saved to %s)", err, clip.Path)
 		return
 	}
+	message := fmt.Sprintf("Opened frames %d–%d in Spark Replay Viewer", clip.FrameStart, clip.FrameEnd)
+	if clip.DerivedFromNative {
+		message += ". This is a derived viewing clip from native tape, not the original capture or complete event history."
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"message":     fmt.Sprintf("Opened frames %d–%d in Spark Replay Viewer", clip.FrameStart, clip.FrameEnd),
-		"clip_file":   clip.Path,
-		"viewer":      viewer,
-		"frame_start": clip.FrameStart,
-		"frame_end":   clip.FrameEnd,
-		"frames":      clip.Frames,
+		"ok":                  true,
+		"message":             message,
+		"derived_from_native": clip.DerivedFromNative,
+		"clip_file":           clip.Path,
+		"viewer":              viewer,
+		"frame_start":         clip.FrameStart,
+		"frame_end":           clip.FrameEnd,
+		"frames":              clip.Frames,
 	})
 }
 

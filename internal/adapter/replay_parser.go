@@ -83,13 +83,16 @@ type ParsedTick struct {
 	// FrameIndex is the mapper's index for this tick (shared by all Frames);
 	// it restarts at 0 for each match in the file.
 	FrameIndex int
-	// SampleTime is the wall-clock time parsed from the line prefix.
+	// SampleTime is the line-prefix time, or the native capture's exact
+	// created_at plus timestamp_offset_ms (never an assumed frame rate).
 	SampleTime time.Time
-	// Frames are the mapped player frames of this tick (never empty).
+	// Frames are the mapped player frames of this tick. Native tape ticks may
+	// be empty: their sparse roster/grab events must still be saved/replayed.
 	Frames []model.PlayerTelemetryFrame
-	// RawJSON is the original session payload of the line.
+	// RawJSON is the original session payload of the line, or a tape-compatible
+	// projection with the original native protobuf records in _nevr_tape.
 	RawJSON string
-	// Session is the decoded payload (the same document RawJSON holds), so
+	// Session is the decoded payload (or native compatibility projection), so
 	// consumers that need the per-player stats, the last goal or the disc
 	// need not decode it again. It is not shared between ticks.
 	Session *EchoVRSessionResponse
@@ -211,6 +214,9 @@ func (p *EchoReplayParser) ParseFileStream(path string, fn func(tick *ParsedTick
 	// file does not look like an in-file session change, so reset the mapper
 	// explicitly here instead of carrying frame/time/player history forward.
 	p.mapper.NewFile()
+	if strings.EqualFold(filepath.Ext(path), ".tape") {
+		return p.parseTapeFile(path, fn)
+	}
 	// Detect ZIP by reading first 4 bytes (PK\x03\x04 magic)
 	isZip, err := isZipFile(path)
 	if err != nil {
@@ -335,6 +341,13 @@ func (p *EchoReplayParser) parseNDJSON(path string, fn func(*ParsedTick) error) 
 func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*ParsedTick) error) (*model.MatchContext, *DiagnosticReport, error) {
 	diag := NewDiagnosticReport()
 	var matchCtx *model.MatchContext
+	var native *TapeRawDecoder
+	defer func() {
+		if native != nil {
+			p.mapper.stats = native.mapper.stats
+		}
+	}()
+	legacySeen := false
 	// pendingNewMatch carries NewMatch over snapshots of a new match that
 	// produced no frames (duplicates, every player rejected).
 	pendingNewMatch := false
@@ -370,6 +383,9 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		// Parse format: "TIMESTAMP\tJSON"
 		tabIdx := replaySeparatorIndex(line)
 		if tabIdx < 0 {
+			if native != nil {
+				return matchCtx, diag, fmt.Errorf("native tape clip contains an invalid record separator at line %d", lineNum)
+			}
 			diag.FramesRejected++
 			noteReject("line %d: no separator between timestamp and JSON", lineNum)
 			continue
@@ -377,6 +393,9 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 
 		sampleTime, err := ParseReplayLineTime(strings.TrimSpace(string(line[:tabIdx])))
 		if err != nil {
+			if native != nil {
+				return matchCtx, diag, fmt.Errorf("native tape clip has an invalid timestamp at line %d: %w", lineNum, err)
+			}
 			diag.FramesRejected++
 			diag.recordBadTimestamp()
 			noteReject("line %d: bad timestamp prefix %q: %v", lineNum, strings.TrimSpace(string(line[:tabIdx])), err)
@@ -386,15 +405,57 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		jsonBytes := line[tabIdx+1:]
 		// Spark appends a second tab-separated JSON document (skeleton "bones")
 		// after the session snapshot; the session decoder must only see the first.
+		hasTrailingDocument := false
 		if j := strings.IndexByte(string(jsonBytes), '\t'); j >= 0 {
+			hasTrailingDocument = true
 			jsonBytes = jsonBytes[:j]
 			diag.LinesWithBones++
 		}
 		if len(jsonBytes) < 2 {
+			if native != nil {
+				return matchCtx, diag, fmt.Errorf("native tape clip has an empty record at line %d", lineNum)
+			}
 			diag.FramesRejected++
 			noteReject("line %d: empty JSON payload", lineNum)
 			continue
 		}
+		// Native clips retain their protobuf records inside the compatible raw
+		// session document. Never feed that projection to the legacy mapper:
+		// sparse events, source provenance and original quaternions would vanish.
+		if IsTapeRawJSON(string(jsonBytes)) {
+			if hasTrailingDocument || diag.FramesRejected > 0 {
+				return matchCtx, diag, fmt.Errorf("native tape clip contains rejected or extra records; sparse state cannot be reconstructed safely")
+			}
+			if legacySeen {
+				return matchCtx, diag, fmt.Errorf("mixed native tape and Echo replay records are not supported")
+			}
+			if native == nil {
+				native = NewTapeRawDecoder()
+				native.SetPhysics(p.mapper.physics)
+				native.maxRecordBytes = p.maxLineBytes
+			}
+			tick, err := native.Decode(string(jsonBytes))
+			if err != nil {
+				return matchCtx, diag, fmt.Errorf("native tape record at line %d: %w", lineNum, err)
+			}
+			if !tick.SampleTime.Equal(sampleTime) {
+				return matchCtx, diag, fmt.Errorf("native tape record timestamp disagrees with replay prefix at line %d", lineNum)
+			}
+			matchCtx = tick.MatchCtx
+			matchCtx.ReplayFile = filename
+			if len(p.matches) == 0 {
+				p.matches = append(p.matches, matchCtx)
+			}
+			diag = native.diag
+			if err := fn(tick); err != nil {
+				return matchCtx, diag, err
+			}
+			continue
+		}
+		if native != nil {
+			return matchCtx, diag, fmt.Errorf("mixed native tape and Echo replay records are not supported")
+		}
+		legacySeen = true
 
 		var session EchoVRSessionResponse
 		if err := json.Unmarshal(jsonBytes, &session); err != nil {
@@ -458,7 +519,11 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		}
 	}
 
-	diag.RecordMapperStats(p.mapper.Stats())
+	if native != nil {
+		diag.RecordMapperStats(native.mapper.Stats())
+	} else {
+		diag.RecordMapperStats(p.mapper.Stats())
+	}
 
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {

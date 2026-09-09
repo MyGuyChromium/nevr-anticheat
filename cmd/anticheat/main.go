@@ -215,6 +215,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  analyze <file> [--force]   Analyze a replay file (stores telemetry + results; skips stored matches)")
+	fmt.Fprintln(os.Stderr, "                             Supports .echoreplay, completed native .tape, and legacy .json")
 	fmt.Fprintln(os.Stderr, "  batch <dir> [--force]      Batch analyze replays (stores telemetry + results; skips stored matches)")
 	fmt.Fprintln(os.Stderr, "  flagged                    List pending review cases")
 	fmt.Fprintln(os.Stderr, "  report <case-id>           Human-readable single-match case report with evidence")

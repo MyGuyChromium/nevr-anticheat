@@ -69,6 +69,9 @@ type DiagnosticReport struct {
 	// PresenceTracked is true when at least one snapshot was recorded from raw
 	// JSON (RecordSessionJSON), so FieldDiagnostic.Missing reflects absent keys.
 	PresenceTracked bool `json:"presence_tracked"`
+	// NativeProjectionSnapshots counts validated native record envelopes whose
+	// compatibility JSON is derived, not an original /session presence sample.
+	NativeProjectionSnapshots int `json:"native_projection_snapshots,omitempty"`
 
 	// Quaternion quality
 	NonUnitQuaternions int `json:"non_unit_quaternions"`
@@ -211,10 +214,11 @@ func (dr *DiagnosticReport) recordVec3(name string, v [3]float64, present bool) 
 
 // sessionPresence records which JSON keys existed in a raw payload.
 type sessionPresence struct {
-	top       map[string]bool
-	disc      map[string]bool
-	lastThrow map[string]bool
-	players   [][]map[string]bool // [team][player] -> dotted key set
+	top              map[string]bool
+	disc             map[string]bool
+	lastThrow        map[string]bool
+	players          [][]map[string]bool // [team][player] -> dotted key set
+	nativeProjection bool
 }
 
 // probeSessionPresence decodes the raw payload into key sets. It is a second
@@ -231,6 +235,13 @@ func probeSessionPresence(data []byte) (*sessionPresence, error) {
 	}
 	for k := range top {
 		sp.top[k] = true
+	}
+	if sp.top["_nevr_tape"] {
+		// Recognize the supported bounded record envelope, not arbitrary markers.
+		// This checks header/frame schema and time, not stream continuity or source
+		// authenticity. Those remain the native decoder's responsibility.
+		_, err := NativeTapeSampleTime(string(data))
+		sp.nativeProjection = err == nil
 	}
 	if raw, ok := top["disc"]; ok && !isJSONNull(raw) {
 		var disc map[string]json.RawMessage
@@ -316,8 +327,13 @@ func (dr *DiagnosticReport) RecordSessionJSON(data []byte) (*EchoVRSessionRespon
 		return nil, err
 	}
 	dr.mu.Lock()
-	dr.PresenceTracked = true
 	dr.recordUnknownFields(presence)
+	if presence.nativeProjection {
+		dr.NativeProjectionSnapshots++
+		presence = nil // Derived default JSON fields cannot establish presence.
+	} else {
+		dr.PresenceTracked = true
+	}
 	dr.recordSession(&session, presence)
 	dr.mu.Unlock()
 	return &session, nil
@@ -330,8 +346,13 @@ func (dr *DiagnosticReport) RecordSessionWithJSON(session *EchoVRSessionResponse
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	if err == nil {
-		dr.PresenceTracked = true
 		dr.recordUnknownFields(presence)
+		if presence.nativeProjection {
+			dr.NativeProjectionSnapshots++
+			presence = nil
+		} else {
+			dr.PresenceTracked = true
+		}
 	} else {
 		presence = nil
 	}
@@ -448,7 +469,7 @@ func (dr *DiagnosticReport) recordSession(raw *EchoVRSessionResponse, presence *
 	possessionHolders := 0
 
 	for teamIdx, team := range raw.Teams {
-		if _, ok := mappedTeamName(team.TeamName, teamIdx); !ok {
+		if _, ok := MappedSessionTeamName(raw, teamIdx); !ok {
 			dr.SpectatorEntriesDropped += len(team.Players)
 			continue
 		}

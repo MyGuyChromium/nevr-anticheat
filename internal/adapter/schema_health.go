@@ -48,6 +48,9 @@ func (dr *DiagnosticReport) recordUnknownFields(sp *sessionPresence) {
 		return
 	}
 	for key := range sp.top {
+		if key == "_nevr_tape" && sp.nativeProjection {
+			continue
+		}
 		if !expectedTopKeys[key] {
 			dr.UnknownFields["top."+key]++
 		}
@@ -84,6 +87,9 @@ func (dr *DiagnosticReport) HealthWarnings() []TelemetryWarning {
 	}
 	if !dr.PresenceTracked {
 		out = append(out, TelemetryWarning{Level: "warning", Code: "presence_untracked", Message: "Field presence was not tracked, so absent and inactive values cannot be distinguished."})
+	}
+	if dr.NativeProjectionSnapshots > 0 {
+		out = append(out, TelemetryWarning{Level: "info", Code: "native_projection", Count: dr.NativeProjectionSnapshots, Message: "Native tape schema counters describe a derived compatibility projection, not original HTTP field presence. Zero scalar values do not prove an observation; original native records are retained. This is not an authenticity or complete-stream validation."})
 	}
 	required := []string{"sessionid", "game_status", "position", "velocity", "lhand.pos", "rhand.pos", "disc.position", "disc.velocity"}
 	for _, field := range required {

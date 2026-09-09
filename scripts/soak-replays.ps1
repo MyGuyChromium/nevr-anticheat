@@ -28,9 +28,9 @@ $outputRoot = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) ([DateTime]::
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
 
-$files = @(Get-ChildItem -LiteralPath $replayRoot -Recurse -File -Filter "*.echoreplay" | Sort-Object FullName)
+$files = @(Get-ChildItem -LiteralPath $replayRoot -Recurse -File | Where-Object { $_.Extension -iin @('.echoreplay', '.tape') } | Sort-Object FullName)
 if ($MaxFiles -gt 0) { $files = @($files | Select-Object -First $MaxFiles) }
-if ($files.Count -eq 0) { throw "No .echoreplay files were found under $replayRoot" }
+if ($files.Count -eq 0) { throw "No .echoreplay or .tape files were found under $replayRoot" }
 
 $database = Join-Path $outputRoot "soak.db"
 $config = Join-Path $outputRoot "soak.toml"
@@ -141,3 +141,4 @@ $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encodi
 Write-Host "Soak report: $reportPath"
 Write-Host "Runs: $($runs.Count); failures: $failures; peak working set: $([Math]::Round($report.peak_working_set_bytes / 1MB, 1)) MiB"
 if ($failures -gt 0 -or -not $report.executable_unchanged) { exit 1 }
+exit 0

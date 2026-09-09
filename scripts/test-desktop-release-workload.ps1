@@ -103,17 +103,24 @@ function Get-WorkloadFailureKind([Exception]$Exception, [bool]$DeadlineCancelled
     }
     return 'request_failure'
 }
+function Get-WorkloadReplayExtension([string]$Path) {
+    $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
+    Assert-Workload ($extension -in @('.echoreplay', '.tape')) 'each input must be an explicitly selected .echoreplay or .tape file'
+    return $extension
+}
 function Start-WorkloadRequest([string]$Method, [string]$Path, [object]$Body = $null, [string]$Upload = '', [string]$Origin = '', [int]$TimeoutSeconds = 5) {
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $script:appURL + $Path)
     $cts = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
     try {
         if ($Origin) { $request.Headers.Add('Origin', $Origin) }
         if ($Upload) {
+            $extension = Get-WorkloadReplayExtension $Upload
             $request.Content = [Net.Http.MultipartFormDataContent]::new()
             # Send an ordinal-neutral filename; original names/paths do not
-            # enter the disposable app's history or the exported report.
+            # enter the disposable app's history or the exported report. Keep
+            # the selected format so native tapes reach the native decoder.
             $part = [Net.Http.StreamContent]::new([IO.File]::OpenRead($Upload))
-            $request.Content.Add($part, 'files', 'workload-input.echoreplay')
+            $request.Content.Add($part, 'files', ('workload-input' + $extension))
         } elseif ($null -ne $Body) {
             $request.Content = [Net.Http.StringContent]::new(($Body | ConvertTo-Json -Depth 8 -Compress), [Text.Encoding]::UTF8, 'application/json')
         }
@@ -317,7 +324,8 @@ try {
     $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     foreach ($path in $ReplayFiles) {
         $item = Get-Item -LiteralPath $path
-        Assert-Workload (-not $item.PSIsContainer -and $item.Extension -ieq '.echoreplay') 'each input must be an explicitly selected echoreplay file'
+        Assert-Workload (-not $item.PSIsContainer) 'each input must be an explicitly selected replay file, not a directory'
+        $null = Get-WorkloadReplayExtension $item.FullName
         $inputs.Add([pscustomobject]@{ ordinal = $inputs.Count + 1; private_path = $item.FullName; bytes = $item.Length; sha256_before = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); sha256_after = ''; unchanged = $false })
     }
     [IO.File]::WriteAllText($config, "[general]`ndb_path = " + ($db | ConvertTo-Json -Compress) + "`nlog_level = 'error'`n")
