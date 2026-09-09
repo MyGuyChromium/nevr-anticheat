@@ -44,6 +44,8 @@ func RemapStoredTelemetry(ctx context.Context, store *sqlite.Store, stored *mode
 	remap.Context.Physics = physics
 	mapper := adapter.NewMapper()
 	mapper.SetPhysics(physics)
+	var native *adapter.TapeRawDecoder
+	var nativeMode, modeKnown bool
 
 	base := stored.StartTime
 	if base.IsZero() {
@@ -61,6 +63,54 @@ func RemapStoredTelemetry(ctx context.Context, store *sqlite.Store, stored *mode
 			return fmt.Errorf("raw tick sequence is not contiguous: got frame %d, want %d", frameIndex, expectedFrame)
 		}
 		expectedFrame++
+		var marker struct {
+			Native json.RawMessage `json:"_nevr_tape"`
+		}
+		if err := json.Unmarshal([]byte(raw), &marker); err != nil {
+			return fmt.Errorf("decode raw tick %d: %w", frameIndex, err)
+		}
+		isNative := len(marker.Native) != 0
+		if !modeKnown {
+			nativeMode, modeKnown = isNative, true
+			if (stored.NativeCapture != nil || stored.Source == "tape") && !isNative {
+				return errors.New("native capture is missing its original protobuf evidence; refusing legacy fallback")
+			}
+		} else if isNative != nativeMode {
+			return errors.New("raw ticks mix native capture and legacy session sources")
+		}
+		if isNative {
+			if native == nil {
+				native = adapter.NewTapeRawDecoder()
+				native.SetPhysics(physics)
+			}
+			tick, err := native.Decode(raw)
+			if err != nil {
+				return fmt.Errorf("decode native tick %d: %w", frameIndex, err)
+			}
+			if tick.MatchID != stored.MatchID || tick.FrameIndex != frameIndex {
+				return fmt.Errorf("native tick identity mismatch at stored frame %d", frameIndex)
+			}
+			if stored.NativeCapture != nil && stored.NativeCapture.CaptureID != tick.MatchCtx.NativeCapture.CaptureID {
+				return fmt.Errorf("native capture identity disagrees with stored context at frame %d", frameIndex)
+			}
+			remap.Frames = append(remap.Frames, tick.Frames...)
+			adapter.MergeMatchContext(remap.Context, tick.MatchCtx)
+			remap.Context.Source = "tape"
+			remap.Context.StartTime = tick.MatchCtx.StartTime
+			remap.Context.Duration = tick.MatchCtx.Duration
+			remap.Context.TickRate = tick.MatchCtx.TickRate
+			// Refresh the decoder schema and limitations from the decoder used
+			// now, not the previous analysis. Only the historical container check
+			// survives: records-only reanalysis cannot re-verify its footer.
+			remap.Context.NativeCapture = tick.MatchCtx.NativeCapture.Clone()
+			if stored.NativeCapture != nil {
+				switch stored.NativeCapture.ContainerIntegrity {
+				case "verified_footer_and_checksum", "verified_footer_only_uncompressed":
+					remap.Context.NativeCapture.ContainerIntegrity = stored.NativeCapture.ContainerIntegrity
+				}
+			}
+			return nil
+		}
 		var session adapter.EchoVRSessionResponse
 		if err := json.Unmarshal([]byte(raw), &session); err != nil {
 			return fmt.Errorf("decode raw tick %d: %w", frameIndex, err)
@@ -94,6 +144,9 @@ func RemapStoredTelemetry(ctx context.Context, store *sqlite.Store, stored *mode
 		return nil, fmt.Errorf("remapping match %s: %w", stored.MatchID, err)
 	}
 	if n == 0 {
+		if stored.NativeCapture != nil || stored.Source == "tape" {
+			return nil, fmt.Errorf("native capture %s has no original protobuf records; re-import its .tape file", stored.MatchID)
+		}
 		return nil, fmt.Errorf("match %s: %w", stored.MatchID, ErrNoRawTicks)
 	}
 	if len(remap.Frames) == 0 {
@@ -105,6 +158,7 @@ func RemapStoredTelemetry(ctx context.Context, store *sqlite.Store, stored *mode
 
 func cloneMatchContext(src *model.MatchContext) *model.MatchContext {
 	dst := *src
+	dst.NativeCapture = src.NativeCapture.Clone()
 	dst.PlayerIDs = append([]string(nil), src.PlayerIDs...)
 	dst.TeamAssignments = make(map[string]string, len(src.TeamAssignments))
 	for id, team := range src.TeamAssignments {

@@ -4,6 +4,7 @@ import "time"
 
 // MatchContext holds match-level metadata passed to all detectors.
 type MatchContext struct {
+	NativeCapture   *NativeCapture    `json:"native_capture,omitempty"`
 	MatchID         string            `json:"match_id"`
 	Map             string            `json:"map"`
 	GameMode        string            `json:"game_mode"`

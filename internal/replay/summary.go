@@ -311,7 +311,7 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 	curPoss := make(map[string]bool, len(b.possession))
 	haveHands, anyHolds, anyPoss := false, false, false
 	for teamIdx, team := range session.Teams {
-		teamName, ok := adapter.MappedTeamName(team.TeamName, teamIdx)
+		teamName, ok := adapter.MappedSessionTeamName(session, teamIdx)
 		if !ok {
 			continue
 		}
@@ -708,8 +708,9 @@ var ErrNoRawTicks = errors.New("no raw ticks stored for the match")
 
 // RebuildSummary builds the summary of a stored match from its raw ticks
 // (match_ticks), for matches analyzed before summaries existed. The ticks'
-// match-relative times come from the telemetry frames; a tick without one
-// is placed a nominal tick after the previous. Suspicion is not applied.
+// legacy match-relative times come from telemetry frames, with a nominal
+// fallback when absent. Native ticks are reconstructed from their original
+// protobufs and capture clock, including event-only ticks. Suspicion is not applied.
 func RebuildSummary(ctx context.Context, store *sqlite.Store, mc *model.MatchContext) (*MatchSummary, error) {
 	if mc == nil || mc.MatchID == "" {
 		return nil, errors.New("rebuild summary: no match context")
@@ -724,7 +725,37 @@ func RebuildSummary(ctx context.Context, store *sqlite.Store, mc *model.MatchCon
 	}
 	b := NewSummaryBuilder(mc)
 	last, haveLast := 0.0, false
+	var native *adapter.TapeRawDecoder
+	var legacySeen bool
 	n, err := store.ForEachMatchTick(ctx, mc.MatchID, func(idx int, raw string) error {
+		if adapter.IsTapeRawJSON(raw) {
+			if legacySeen {
+				return errors.New("cannot rebuild a summary from mixed native and legacy sources")
+			}
+			if native == nil {
+				native = adapter.NewTapeRawDecoder()
+				native.SetPhysics(mc.Physics)
+			}
+			tick, err := native.Decode(raw)
+			if err != nil {
+				return fmt.Errorf("native summary tick %d: %w", idx, err)
+			}
+			if tick.MatchID != mc.MatchID || tick.FrameIndex != idx {
+				return fmt.Errorf("native summary tick identity mismatch at %d", idx)
+			}
+			if mc.NativeCapture != nil && mc.NativeCapture.CaptureID != tick.MatchCtx.NativeCapture.CaptureID {
+				return errors.New("native summary capture disagrees with stored context")
+			}
+			// Native time comes from the replayed protobufs, not a possibly stale
+			// normalized cache or stored summary duration. Do not mutate mc.
+			b.mc = tick.MatchCtx
+			b.Add(tick.Session, idx, tick.SampleTime.Sub(tick.MatchCtx.StartTime).Seconds())
+			return nil
+		}
+		if native != nil || mc.NativeCapture != nil || mc.Source == "tape" {
+			return errors.New("native summary is missing original protobuf evidence; refusing legacy fallback")
+		}
+		legacySeen = true
 		var session adapter.EchoVRSessionResponse
 		if err := json.Unmarshal([]byte(raw), &session); err != nil {
 			return nil // a payload that cannot be decoded is skipped, as the parser would have

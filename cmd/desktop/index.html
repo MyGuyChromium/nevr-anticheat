@@ -663,12 +663,12 @@
       </div>
       <div class="upload-console">
         <div class="console-top"><span>Replay import</span><b id="import-readiness">Checking engine…</b></div>
-        <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose .echoreplay files to analyze" aria-describedby="drop-sub">
-          <input id="files" type="file" multiple accept=".echoreplay,.json">
-          <input id="folder" type="file" multiple webkitdirectory directory accept=".echoreplay,.json">
+        <div id="drop" class="drop" role="button" tabindex="0" aria-label="Choose replay or native tape files to analyze" aria-describedby="drop-sub">
+          <input id="files" type="file" multiple accept=".echoreplay,.tape,.json">
+          <input id="folder" type="file" multiple webkitdirectory directory accept=".echoreplay,.tape,.json">
           <div id="drop-idle">
             <span class="drop-mark" aria-hidden="true">↗</span>
-            <div class="lead">Drop <code>.echoreplay</code> files</div>
+            <div class="lead">Drop <code>.echoreplay</code> or <code>.tape</code> files</div>
             <div class="sub" id="drop-sub">or <a href="#" id="pick">browse recordings</a> · <a href="#" id="pick-folder">scan a folder</a> · streamed safely up to 4 GB per file</div>
           </div>
         </div>
@@ -683,7 +683,7 @@
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
         </div>
         <div id="queue-actions" class="queue-actions"></div>
-        <p id="status" class="status" role="status" aria-live="polite">Choose .echoreplay or .json recordings to begin. Engine readiness is shown above.</p>
+        <p id="status" class="status" role="status" aria-live="polite">Choose .echoreplay, native .tape, or legacy .json recordings to begin. Engine readiness is shown above.</p>
       </div>
     </div>
   </section>
@@ -1304,6 +1304,15 @@
       <details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector compatibility</h3></summary><pre>${esc(h.compatibility || '')}</pre></details>`;
   }
 
+  function nativeCaptureBlock(m) {
+    if (m.source !== 'tape') return '';
+    const n = m.native_capture;
+    if (!n) return '<p class="notice">Native source metadata is unavailable for this stored analysis. Re-import the original .tape to recover source attribution; the absence is not a verified source.</p>';
+    const integrity = n.container_integrity === 'verified_footer_and_checksum' ? 'Original container footer and checksum verified at import; not gameplay authentication' : 'Original container integrity not verified from these stored records';
+    const fields = [['Capture ID', n.capture_id], ['Recorder (self-reported)', n.producer || 'Not recorded'], ['Game type (self-reported)', n.game_type], ['Capture format', `${n.format_version}.${n.format_minor}.${n.format_patch}`], ['Frame encoding', n.frame_encoding], ['Decoder schema', n.schema_revision], ['Container integrity', integrity]];
+    return `<details class="sub"><summary>Native capture provenance and limitations</summary><p class="help">This describes the recorded source, not authenticated gameplay. Original protobuf records are retained alongside derived session views.</p><dl class="kv">${fields.map(([key, value]) => `<dt>${esc(key)}</dt><dd class="mono">${esc(value || 'Unknown')}</dd>`).join('')}</dl>${Array.isArray(n.limitations) && n.limitations.length ? `<ul class="health-list">${n.limitations.map(value => `<li>${esc(value)}</li>`).join('')}</ul>` : ''}</details>`;
+  }
+
   function matchSection(m, source) {
     const idx = views.push(m) - 1;
     viewState[idx] = { detector: '', all: false };
@@ -1317,7 +1326,8 @@
     const score = m.has_score
       ? `<div class="score"><div class="pts"><span style="color:var(--blue)">${fmtInt(m.blue_score)}</span><span class="dash">–</span><span style="color:var(--orange)">${fmtInt(m.orange_score)}</span></div><div class="lbl"><span>Blue</span><span>Orange</span></div></div>`
       : '<div class="score none">No final score in this replay</div>';
-    const notices = (m.replaced ? [`<p class="notice">Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).</p>`] : [])
+    const notices = (m.source === 'tape' ? ['<p class="notice">Native tape capture. Session JSON and Spark clips are derived viewing representations; keep the original .tape as source evidence. Captured events and a valid file do not establish authoritative gameplay or confirmed cheating.</p>'] : [])
+      .concat(m.replaced ? [`<p class="notice">Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).</p>`] : [])
       .concat(m.warnings.map((w) => `<p class="notice bad">${esc(w)}</p>`)).join('');
     const tel = m.telemetry ? `${sep}Stored ${fmtInt(m.telemetry.frames_inserted)} frames${m.telemetry.frames_ignored ? ` (${fmtInt(m.telemetry.frames_ignored)} already present)` : ''}${m.telemetry.ticks_inserted || m.telemetry.ticks_ignored ? `, ${fmtInt(m.telemetry.ticks_inserted)} raw ticks${m.telemetry.ticks_ignored ? ` (${fmtInt(m.telemetry.ticks_ignored)} present)` : ''}` : ''}` : '';
     return `<details class="match" id="${secId(m.match_id)}" open>
@@ -1327,6 +1337,7 @@
         ${score}
       </summary>
       ${notices}
+      ${nativeCaptureBlock(m)}
       <div data-review-overview="${idx}">${reviewOverview(m)}</div>
       ${calibrationControls(m)}
       ${matchReport(m)}
@@ -1483,12 +1494,12 @@
   function analyze(fileList) {
     if (busy) return;
     const all = Array.from(fileList || []);
-    const supported = all.filter((f) => /\.(echoreplay|json)$/i.test(f.name));
+    const supported = all.filter((f) => /\.(echoreplay|tape|json)$/i.test(f.name));
     const tooLarge = supported.filter((f) => f.size > MAX_UPLOAD_FILE_BYTES);
     const files = supported.filter((f) => f.size <= MAX_UPLOAD_FILE_BYTES);
     if (!files.length) {
       if (tooLarge.length) setStatus(`${tooLarge.length} replay${tooLarge.length === 1 ? '' : 's'} exceeded the 4 GB safety limit. Use the watched-folder workflow to analyze it directly without a browser upload.`, 'err');
-      else if (all.length) setStatus('No supported .echoreplay or .json files were found.', 'err');
+      else if (all.length) setStatus('No supported .echoreplay, native .tape, or legacy .json files were found.', 'err');
       return;
     }
     queue = files.map((file) => ({ file, state: 'waiting' }));
@@ -1932,7 +1943,7 @@
       const canInstall = !!(update.available && update.install_supported && !update.error);
       const installNote = update.install_reason || (update.available ? 'The verified installer can still be downloaded and run manually.' : '');
       el.className = ''; el.removeAttribute('aria-busy');
-      el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay files are detected recursively and reanalyzed once. The folder and file fingerprints stay on this PC.</p>
+      el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay and native .tape files are detected recursively and reanalyzed once. Native captures must be complete. The folder and file fingerprints stay on this PC.</p>
         <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
         <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
         <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>

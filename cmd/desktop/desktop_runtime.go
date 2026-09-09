@@ -284,7 +284,7 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 			}
 			return nil
 		}
-		if strings.EqualFold(filepath.Ext(path), ".echoreplay") {
+		if ext := strings.ToLower(filepath.Ext(path)); ext == ".echoreplay" || ext == ".tape" {
 			files = append(files, path)
 		}
 		return nil
@@ -312,7 +312,7 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 		if err != nil {
 			continue
 		}
-		// Avoid reading a file while Spark is still writing it.
+		// Avoid reading a file while Spark or the capture producer is writing it.
 		if time.Since(info.ModTime()) < 3*time.Second {
 			continue
 		}
@@ -377,7 +377,7 @@ func (rt *desktopRuntime) pendingFiles() []string {
 	_ = filepath.WalkDir(rt.pendingDir, func(path string, entry fs.DirEntry, err error) error {
 		if err == nil && !entry.IsDir() {
 			ext := strings.ToLower(filepath.Ext(path))
-			if ext == ".echoreplay" || ext == ".json" {
+			if ext == ".echoreplay" || ext == ".tape" || ext == ".json" {
 				out = append(out, path)
 			}
 		}

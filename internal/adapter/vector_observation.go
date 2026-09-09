@@ -34,9 +34,15 @@ type playerVectorJSON EchoVRPlayer
 
 func (p *EchoVRPlayer) UnmarshalJSON(data []byte) error {
 	var decoded playerVectorJSON
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	integers := struct {
+		*playerVectorJSON
+		Level integralInt `json:"level"`
+		Ping  integralInt `json:"ping"`
+	}{playerVectorJSON: &decoded}
+	if err := json.Unmarshal(data, &integers); err != nil {
 		return err
 	}
+	decoded.Level, decoded.Ping = int(integers.Level), int(integers.Ping)
 	var fields struct {
 		Velocity json.RawMessage `json:"velocity"`
 	}
@@ -62,8 +68,16 @@ type discVectorJSON EchoVRDisc
 
 func (d *EchoVRDisc) UnmarshalJSON(data []byte) error {
 	var decoded discVectorJSON
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	integers := struct {
+		*discVectorJSON
+		BounceCount *integralInt `json:"bounce_count"`
+	}{discVectorJSON: &decoded}
+	if err := json.Unmarshal(data, &integers); err != nil {
 		return err
+	}
+	if integers.BounceCount != nil {
+		count := int(*integers.BounceCount)
+		decoded.BounceCount = &count
 	}
 	var fields struct {
 		Position json.RawMessage `json:"position"`

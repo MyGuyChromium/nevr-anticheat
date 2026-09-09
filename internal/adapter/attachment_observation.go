@@ -32,7 +32,7 @@ func observedDiscAttachment(raw *EchoVRSessionResponse) *model.DiscAttachment {
 	a := &model.DiscAttachment{State: "unknown", Reason: "attachment_missing"}
 	count, holders := 0, 0
 	for teamIndex, team := range raw.Teams {
-		if _, ok := mappedTeamName(team.TeamName, teamIndex); !ok {
+		if _, ok := MappedSessionTeamName(raw, teamIndex); !ok {
 			continue
 		}
 		for _, p := range team.Players {

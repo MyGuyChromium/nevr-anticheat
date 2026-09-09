@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
@@ -28,10 +29,11 @@ var errRawReplayUnavailable = errors.New("raw replay ticks unavailable")
 type replayLaunchFunc func(string) (string, error)
 
 type replayClip struct {
-	Path       string
-	FrameStart int
-	FrameEnd   int
-	Frames     int
+	Path              string
+	FrameStart        int
+	FrameEnd          int
+	Frames            int
+	DerivedFromNative bool
 }
 
 func defaultReplayClipDir() string {
@@ -42,8 +44,10 @@ func defaultReplayClipDir() string {
 	return filepath.Join(root, "NEVR-Anticheat", "replay-clips")
 }
 
-// buildSparkReplayClip reconstructs the exact raw incident window as an
-// uncompressed .echoreplay. Spark Replay Viewer accepts this native
+// buildSparkReplayClip reconstructs the selected stored incident window as an
+// uncompressed .echoreplay. For a native tape source, its session JSON is a
+// derived compatibility view, not the original capture or complete event history.
+// Spark Replay Viewer accepts this
 // timestamp-tab-JSON format directly and starts at the first frame, so the
 // reviewer lands immediately before the detection instead of opening an HTML
 // page in a browser.
@@ -125,17 +129,29 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 		if err := json.Compact(&compact, raw); err != nil {
 			return nil, fmt.Errorf("raw replay tick %d is invalid JSON: %w", idx, err)
 		}
-		rel, found := timestamps[idx]
-		if !found {
-			// This is only a compatibility fallback for an old raw tick without
-			// a corresponding normalized frame. Keep ordering and normal 15 Hz
-			// playback; current ingestion always takes the exact branch above.
-			rel = event.Timestamp + float64(idx-event.FrameIndex)/15.0
-			if rel < 0 {
-				rel = 0
+		var stamp string
+		if mc.Source == "tape" {
+			// Native event-only ticks have no normalized player timestamp. The
+			// original header time and offset are authoritative for recording
+			// timing, including sub-millisecond header precision. Never invent
+			// a playback cadence or use a stale match-cache start time here.
+			sample, err := adapter.NativeTapeSampleTime(rawTicks[idx])
+			if err != nil {
+				return nil, fmt.Errorf("native replay tick %d timestamp unavailable: %w", idx, err)
 			}
+			stamp = sample.Format(time.RFC3339Nano)
+		} else {
+			rel, found := timestamps[idx]
+			if !found {
+				// Compatibility fallback for legacy raw ticks without a
+				// corresponding normalized frame. Native captures never use it.
+				rel = event.Timestamp + float64(idx-event.FrameIndex)/15.0
+				if rel < 0 {
+					rel = 0
+				}
+			}
+			stamp = base.Add(time.Duration(rel * float64(time.Second))).Format("2006/01/02 15:04:05.000")
 		}
-		stamp := base.Add(time.Duration(rel * float64(time.Second))).Format("2006/01/02 15:04:05.000")
 		if _, err := fmt.Fprintf(f, "%s\t%s\n", stamp, compact.Bytes()); err != nil {
 			return nil, fmt.Errorf("write replay clip: %w", err)
 		}
@@ -152,7 +168,7 @@ func buildSparkReplayClip(ctx context.Context, store *sqlite.Store, clipDir stri
 		return nil, fmt.Errorf("close replay clip: %w", err)
 	}
 	ok = true
-	return &replayClip{Path: path, FrameStart: actualStart, FrameEnd: actualEnd, Frames: written}, nil
+	return &replayClip{Path: path, FrameStart: actualStart, FrameEnd: actualEnd, Frames: written, DerivedFromNative: mc.Source == "tape"}, nil
 }
 
 func safeClipName(value string) string {

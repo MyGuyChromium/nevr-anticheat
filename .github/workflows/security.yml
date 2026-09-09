@@ -39,6 +39,12 @@ jobs:
       - name: Fuzz Echo session mapping
         run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoSessionMapping$' -fuzztime 20s
 
+      - name: Fuzz retained native protobuf records
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeRaw$' -fuzztime 20s
+
+      - name: Fuzz native capture container boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeContainer$' -fuzztime 20s
+
       - name: Fuzz legacy JSON replay boundary
         run: go test ./internal/replay -run '^$' -fuzz '^FuzzLegacyJSONReplay$' -fuzztime 20s
 

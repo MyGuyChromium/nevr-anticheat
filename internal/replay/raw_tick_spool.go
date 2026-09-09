@@ -72,13 +72,10 @@ func (s *rawTickSpool) write(rawByFrame map[int]string) error {
 
 func (s *rawTickSpool) store(ctx context.Context, store *sqlite.Store, matchID string) (sqlite.TelemetryStoreResult, error) {
 	var total sqlite.TelemetryStoreResult
-	if err := s.writer.Flush(); err != nil {
-		return total, fmt.Errorf("flush raw tick spool: %w", err)
+	next, err := s.iterator()
+	if err != nil {
+		return total, err
 	}
-	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
-		return total, fmt.Errorf("rewind raw tick spool: %w", err)
-	}
-	r := bufio.NewReaderSize(s.file, 256*1024)
 	chunk := make(map[int]string, rawTickFlushEvery)
 	flush := func() error {
 		if len(chunk) == 0 {
@@ -93,30 +90,18 @@ func (s *rawTickSpool) store(ctx context.Context, store *sqlite.Store, matchID s
 		chunk = make(map[int]string, rawTickFlushEvery)
 		return nil
 	}
-	var header [16]byte
 	for {
-		_, err := io.ReadFull(r, header[:])
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		idx, raw, err := next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return total, fmt.Errorf("read raw tick spool header: %w", err)
+			return total, err
 		}
-		encodedIndex := binary.LittleEndian.Uint64(header[:8])
-		maxInt := uint64(^uint(0) >> 1)
-		if encodedIndex > maxInt {
-			return total, fmt.Errorf("raw tick spool frame index exceeds platform limit: %d", encodedIndex)
-		}
-		idx := int(encodedIndex)
-		size := binary.LittleEndian.Uint64(header[8:])
-		if size > uint64(adapter.DefaultMaxLineBytes) {
-			return total, fmt.Errorf("raw tick spool record exceeds limit: %d bytes", size)
-		}
-		payload := make([]byte, int(size))
-		if _, err := io.ReadFull(r, payload); err != nil {
-			return total, fmt.Errorf("read raw tick spool payload: %w", err)
-		}
-		chunk[idx] = string(payload)
+		chunk[idx] = raw
 		if len(chunk) >= rawTickFlushEvery {
 			if err := flush(); err != nil {
 				return total, err
@@ -127,6 +112,43 @@ func (s *rawTickSpool) store(ctx context.Context, store *sqlite.Store, matchID s
 		return total, err
 	}
 	return total, nil
+}
+
+// iterator rewinds the spool for a bounded-memory preflight or persistence pass.
+// Do not use two iterators from the same spool concurrently.
+func (s *rawTickSpool) iterator() (rawTickNext, error) {
+	if err := s.writer.Flush(); err != nil {
+		return nil, fmt.Errorf("flush raw tick spool: %w", err)
+	}
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind raw tick spool: %w", err)
+	}
+	r := bufio.NewReaderSize(s.file, 256*1024)
+	var header [16]byte
+	return func() (int, string, error) {
+		_, err := io.ReadFull(r, header[:])
+		if errors.Is(err, io.EOF) {
+			return 0, "", io.EOF
+		}
+		if err != nil {
+			return 0, "", fmt.Errorf("read raw tick spool header: %w", err)
+		}
+		encodedIndex := binary.LittleEndian.Uint64(header[:8])
+		maxInt := uint64(^uint(0) >> 1)
+		if encodedIndex > maxInt {
+			return 0, "", fmt.Errorf("raw tick spool frame index exceeds platform limit: %d", encodedIndex)
+		}
+		idx := int(encodedIndex)
+		size := binary.LittleEndian.Uint64(header[8:])
+		if size > uint64(adapter.DefaultMaxLineBytes) {
+			return 0, "", fmt.Errorf("raw tick spool record exceeds limit: %d bytes", size)
+		}
+		payload := make([]byte, int(size))
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 0, "", fmt.Errorf("read raw tick spool payload: %w", err)
+		}
+		return idx, string(payload), nil
+	}, nil
 }
 
 func (s *rawTickSpool) discard() {

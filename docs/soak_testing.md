@@ -1,6 +1,6 @@
 # Replay soak and storage testing
 
-`scripts/soak-replays.ps1` repeatedly analyzes a replay directory against a new, isolated SQLite database. It never points at the normal evidence database and never modifies the source replays. Every replay is forced through a full replacement analysis on each iteration, exercising parsing, detection, transactional replacement, and database growth.
+`scripts/soak-replays.ps1` repeatedly analyzes `.echoreplay` and native `.tape` files in a replay directory (including subdirectories and mixed-case extensions) against a new, isolated SQLite database. It never points at the normal evidence database and never modifies the source replays. Every selected replay is forced through a full replacement analysis on each iteration, exercising parsing, detection, transactional replacement, and database growth. Other extensions are not selected; `-MaxFiles` applies after both supported formats are sorted together.
 
 Build `nevr-ac.exe`, then run:
 
@@ -23,5 +23,21 @@ per-run `pass`/`fail`, and explicit timeout/memory/analysis failure reasons.
 `scripts/test-soak-runner.ps1` checks isolation, apostrophe-containing paths,
 repeat invocation, failure reporting, timeout and memory limits using a tiny
 synthetic helper only. It does not establish real replay performance.
+
+For the long-lived packaged desktop workload, use
+`scripts/test-desktop-release-workload.ps1` with explicitly selected
+`-ReplayFiles` or `-ReplayManifest` entries. Both `.echoreplay` and `.tape` are
+accepted. Multipart uploads retain the selected format but use neutral
+filenames, so a native capture is not accidentally sent through the legacy
+parser or exposed under its private original filename. The existing
+`scripts/test-desktop-workload-runner.ps1` covers this request construction
+with synthetic bytes and an in-memory HTTP handler, not a running desktop
+or real producer integration.
+
+Do not include different native captures, native/legacy copies, or shorter
+clips of the same session in one workload database: source-conflict rejection
+protects retained evidence. Test distinct captures of the same session in
+separate runs. Synthetic `.tape` fixtures verify workflow plumbing, not native
+producer compatibility or independently established detector accuracy.
 
 A release candidate passes only when all runs exit successfully, repeated forced analysis does not grow the database unexpectedly, peak memory remains bounded for the largest real replay, and a backup/restore of `soak.db` succeeds. Investigate any throughput collapse by replay rather than averaging it away.

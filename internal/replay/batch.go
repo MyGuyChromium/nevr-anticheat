@@ -219,7 +219,7 @@ func (ba *BatchAnalyzer) findReplayFiles(dir string) ([]string, int, error) {
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".echoreplay":
+		case ".echoreplay", ".tape":
 			files = append(files, path)
 		case ".json":
 			if looksLikeLegacyReplay(path) {
@@ -256,8 +256,7 @@ func looksLikeLegacyReplay(path string) bool {
 // are still returned. The store is only read here; writes happen in persist.
 func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, path string, seenMatches map[string]string, mu *sync.Mutex) (ready []*parsedMatch, skipped int, err error) {
 	var matches []*parsedMatch
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".echoreplay" {
+	if IsSessionRecording(path) {
 		// Stream the replay: frames are accumulated once per match
 		// (ProcessMatch needs the whole match) and the raw payload is kept
 		// once per tick, keyed by frame index, so no second copy of the raw
@@ -269,6 +268,9 @@ func (ba *BatchAnalyzer) analyzeFile(ctx context.Context, p *pipeline.Pipeline, 
 		var cur *parsedMatch
 		_, err := parseReplayMatches(parser, path,
 			func(tick *adapter.ParsedTick, first bool) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if first {
 					cur = &parsedMatch{path: path, matchCtx: tick.MatchCtx, rawByFrame: make(map[int]string)}
 					matches = append(matches, cur)
@@ -365,14 +367,33 @@ func (ba *BatchAnalyzer) prepareMatch(ctx context.Context, p *pipeline.Pipeline,
 // analyze again; the partial match is still reported as failed.
 func (ba *BatchAnalyzer) persist(ctx context.Context, pm parsedMatch, result *BatchResult, mu *sync.Mutex) error {
 	matchID := pm.matchCtx.MatchID
+	if err := validateNativeSource(ctx, ba.store, pm.matchCtx, rawMapIterator(pm.rawByFrame)); err != nil {
+		return err
+	}
 	source := "initial"
 	if pm.replaced {
 		source = "reprocess"
 	}
 
-	tel, err := ba.store.StoreTelemetryFramesWithRaw(ctx, matchID, pm.frames, pm.rawByFrame)
-	if err != nil {
-		return fmt.Errorf("storing telemetry: %w", err)
+	var tel sqlite.TelemetryStoreResult
+	var err error
+	if pm.replaced && pm.matchCtx.Source == "tape" {
+		// Native force analysis refreshes the mapper cache, just like the
+		// single-file path. Persist original records first, without inserting
+		// any new normalized rows; a raw failure leaves the old cache intact.
+		tel, err = ba.store.StoreTelemetryFramesWithRaw(ctx, matchID, nil, pm.rawByFrame)
+		if err != nil {
+			return fmt.Errorf("storing original native evidence: %w", err)
+		}
+		tel.Inserted, err = ba.store.ReplaceMatchTelemetryFrames(ctx, matchID, pm.frames)
+		if err != nil {
+			return fmt.Errorf("replacing native telemetry: %w", err)
+		}
+	} else {
+		tel, err = ba.store.StoreTelemetryFramesWithRaw(ctx, matchID, pm.frames, pm.rawByFrame)
+		if err != nil {
+			return fmt.Errorf("storing telemetry: %w", err)
+		}
 	}
 	if err := ba.store.StoreMatchContext(ctx, pm.matchCtx, len(pm.frames)); err != nil {
 		return fmt.Errorf("storing match context: %w", err)

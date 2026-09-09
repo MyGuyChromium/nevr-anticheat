@@ -41,6 +41,30 @@ try {
         $checks.Add([pscustomobject]@{ mode = $mode; status = 'pass'; child_failure = $report.runs[0].failure })
         Write-Host "PASS soak runner $mode"
     }
+    $nested = Join-Path $replays "nested O'Brien"
+    [IO.Directory]::CreateDirectory($nested) | Out-Null
+    $nativeInputs = @((Join-Path $nested 'native.tape'), (Join-Path $nested 'native-upper.TAPE'))
+    foreach ($path in $nativeInputs) { [IO.File]::WriteAllText($path, 'synthetic native-extension runner input; not a tape recording') }
+    foreach ($name in @('ignored.json', 'ignored.nevrcap', 'ignored.tape.exe')) { [IO.File]::WriteAllText((Join-Path $nested $name), 'unselected synthetic input') }
+    $env:NEVR_SOAK_TEST_MODE = 'success'
+    foreach ($maxFiles in @(0, 2)) {
+        $before = @(Get-ChildItem -LiteralPath $output -Directory).FullName
+        & (Join-Path $PSScriptRoot 'soak-replays.ps1') -ReplayDirectory $replays -Executable $helper -OutputDirectory $output -Iterations 1 -MaxFiles $maxFiles -HashInputs
+        $exitCode = $LASTEXITCODE
+        $after = @(Get-ChildItem -LiteralPath $output -Directory | Where-Object { $_.FullName -notin $before })
+        Assert-SoakTest ($after.Count -eq 1) 'Mixed-format soak did not create exactly one isolated run directory.'
+        $report = Get-Content -Raw -LiteralPath (Join-Path $after[0].FullName 'soak-report.json') | ConvertFrom-Json
+        $expectedInputs = @((Join-Path $replays 'fixture.echoreplay')) + $nativeInputs | Sort-Object
+        if ($maxFiles -gt 0) { $expectedInputs = @($expectedInputs | Select-Object -First $maxFiles) }
+        Assert-SoakTest ($exitCode -eq 0 -and $report.failed_runs -eq 0 -and $report.process_runs -eq $expectedInputs.Count -and $report.files -eq $expectedInputs.Count) 'Mixed-format selection skipped native files, included unsupported files, or ignored MaxFiles.'
+        for ($i = 0; $i -lt $expectedInputs.Count; $i++) {
+            Assert-SoakTest ($report.inventory[$i].path -ceq $expectedInputs[$i] -and $report.runs[$i].replay -ceq $expectedInputs[$i]) 'Selected source path/extension or sorted order changed before launch.'
+            Assert-SoakTest ($report.inventory[$i].sha256 -ceq (Get-FileHash -LiteralPath $expectedInputs[$i] -Algorithm SHA256).Hash.ToLowerInvariant()) 'Selected input hash was missing or the source changed.'
+        }
+        Assert-SoakTest ([IO.File]::ReadAllText($sentinel) -eq 'existing file must not be opened') 'Mixed-format soak overwrote existing data.'
+        $checks.Add([pscustomobject]@{ mode = "mixed_formats_max_$maxFiles"; status = 'pass'; child_failure = $null })
+        Write-Host "PASS soak runner mixed formats, MaxFiles=$maxFiles"
+    }
     $restrictedRoot = Join-Path $testRoot 'restricted-root'
     [IO.Directory]::CreateDirectory($restrictedRoot) | Out-Null
     $escapedConfig = Join-Path $testRoot 'escaped-config.toml'

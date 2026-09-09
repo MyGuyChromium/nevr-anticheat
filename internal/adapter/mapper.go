@@ -280,7 +280,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 	sampledPlayers := 0
 	allHoldingKnown := true
 	for teamIdx, team := range raw.Teams {
-		if _, ok := mappedTeamName(team.TeamName, teamIdx); !ok {
+		if _, ok := MappedSessionTeamName(raw, teamIdx); !ok {
 			continue
 		}
 		for i := range team.Players {
@@ -311,7 +311,7 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 
 	// Map each player
 	for teamIdx, team := range raw.Teams {
-		teamName, ok := mappedTeamName(team.TeamName, teamIdx)
+		teamName, ok := MappedSessionTeamName(raw, teamIdx)
 		if !ok {
 			result.SpectatorsDropped += len(team.Players)
 			m.stats.SpectatorsDropped += len(team.Players)
@@ -324,6 +324,9 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 		if team.TeamName == "" {
 			m.warnOnce(result, "teams", "unnamed_team",
 				"team entry has no name; team assigned by array index (0=blue, 1=orange)")
+		} else if _, named := mappedTeamName(team.TeamName, teamIdx); !named {
+			m.warnOnce(result, "teams", "custom_team_names",
+				"custom team display names use the standard three-entry Echo layout (0=blue, 1=orange, 2=SPECTATORS); names do not establish team colour")
 		}
 
 		for i := range team.Players {
@@ -428,18 +431,18 @@ func (m *Mapper) warnOnce(result *MappingResult, field, key, message string) {
 }
 
 // mappedTeamName resolves an Echo VR team entry to "blue"/"orange".
-// The API names teams "BLUE TEAM", "ORANGE TEAM" and "SPECTATORS"; matching is
-// case-insensitive on the colour word. Entries without a name fall back to the
-// array index (0=blue, 1=orange). Anything else (spectators, a third team, an
-// unnamed third entry) is not mapped.
+// Only exact canonical labels establish a role, independently of array order.
+// Colour words inside display names do not. Entries without a name fall back
+// to array index (0=blue, 1=orange); other labels need the snapshot-level layout
+// validation in MappedSessionTeamName, or are excluded.
 func mappedTeamName(name string, idx int) (string, bool) {
 	n := strings.ToLower(strings.TrimSpace(name))
-	switch {
-	case strings.Contains(n, "blue"):
+	switch n {
+	case "blue", "blue team":
 		return "blue", true
-	case strings.Contains(n, "orange"):
+	case "orange", "orange team":
 		return "orange", true
-	case n == "":
+	case "":
 		switch idx {
 		case 0:
 			return "blue", true
@@ -448,6 +451,43 @@ func mappedTeamName(name string, idx int) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// MappedSessionTeamName resolves a team consistently for telemetry, evidence,
+// diagnostics and summaries. A standard Echo snapshot has exactly three slots:
+// blue, orange, spectators. Only that complete layout, with an explicit final
+// SPECTATORS label and no conflicting canonical labels, permits custom names
+// in the first two slots. A two-team or unfamiliar layout cannot establish the
+// roles of arbitrary display names and retains the stricter name-based rule.
+// Sources with explicit roles (for example native tape) should project those
+// roles to canonical labels rather than interpreting header display names.
+func MappedSessionTeamName(raw *EchoVRSessionResponse, idx int) (string, bool) {
+	if raw == nil || idx < 0 || idx >= len(raw.Teams) {
+		return "", false
+	}
+	if standardEchoTeamLayout(raw.Teams) && idx < 2 {
+		return mappedTeamName("", idx)
+	}
+	return mappedTeamName(raw.Teams[idx].TeamName, idx)
+}
+
+func standardEchoTeamLayout(teams []EchoVRTeam) bool {
+	if len(teams) != 3 || !strings.EqualFold(strings.TrimSpace(teams[2].TeamName), "spectators") {
+		return false
+	}
+	for idx := 0; idx < 2; idx++ {
+		name := strings.ToLower(strings.TrimSpace(teams[idx].TeamName))
+		if strings.Contains(name, "spectator") {
+			return false
+		}
+		if named, ok := mappedTeamName(name, idx); ok {
+			byIndex, _ := mappedTeamName("", idx)
+			if named != byIndex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // sessionFingerprint hashes the parts of a snapshot that change every tick
@@ -573,7 +613,7 @@ func (m *Mapper) mapMatchContext(raw *EchoVRSessionResponse, result *MappingResu
 
 	// Collect player IDs of the two playing teams only.
 	for teamIdx, team := range raw.Teams {
-		teamName, ok := mappedTeamName(team.TeamName, teamIdx)
+		teamName, ok := MappedSessionTeamName(raw, teamIdx)
 		if !ok {
 			continue
 		}
@@ -840,9 +880,9 @@ func (m *Mapper) convertHand(h *EchoVRHand, warnings *[]MappingWarning, field, w
 // the decoded session directly (ParsedTick.Session).
 func PlayerIDOf(p *EchoVRPlayer) string { return playerID(*p) }
 
-// MappedTeamName resolves an Echo VR team entry to "blue"/"orange" exactly
-// as the mapper does (see mappedTeamName); ok is false for spectators and
-// any other team.
+// MappedTeamName resolves one canonical team label without snapshot context.
+// Consumers with a full snapshot should use MappedSessionTeamName so custom
+// display names receive the same layout validation as the mapper.
 func MappedTeamName(name string, idx int) (team string, ok bool) { return mappedTeamName(name, idx) }
 
 // playerID creates a stable player identifier from Echo VR player data.
@@ -895,7 +935,7 @@ type FieldMapping struct {
 func DocumentMappings() []FieldMapping {
 	return []FieldMapping{
 		{"PlayerID", "userid / name", Confirmed, "name:<display_name>", "UserID preferred; falls back to name"},
-		{"Team", "teams[].team", Confirmed, "(dropped)", "BLUE TEAM/ORANGE TEAM by name; SPECTATORS and other teams are excluded"},
+		{"Team", "teams[].team", Confirmed, "(dropped)", "Exact BLUE/ORANGE labels; custom names use a validated three-slot layout ending in SPECTATORS; spectators and unresolved teams are excluded"},
 		{"FrameIndex", "(sequential)", Inferred, "auto-increment", "0-based per Mapper and per match (NewMatch); ingest re-bases per match"},
 		{"Timestamp", "(sample time)", Inferred, "0 on first sample", "Seconds since the first sample time supplied to MapSessionAt (replay line prefix / receive time); monotonic: small backward samples are clamped, clock steps re-based"},
 		{"DeltaTime", "(computed)", Inferred, "0 on a player's first frame", "Timestamp minus the same player's previous Timestamp; 0 = unknown"},
