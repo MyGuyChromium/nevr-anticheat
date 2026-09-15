@@ -45,6 +45,10 @@ LIVE PATH
 OFFLINE PATH
   .echoreplay / legacy JSON replay ──▶ nevr-ac analyze|batch (internal/adapter + internal/replay)
 
+RESEARCH PATH (not shipped)
+  replay tick ──▶ egocentric encoder ──▶ frozen rate network ──▶ abstract action trace
+                cmd/fly-agent; no live source, matchmaking, or controller injection
+
 BOTH PATHS
   SQLite (source of truth) ──▶ feature extraction ──▶ 31 detectors ──▶ per-match scores
         ──▶ review cases (single-match RC-*, cross-match XM-*) ──▶ moderator verdicts ──▶ calibration
@@ -98,6 +102,14 @@ go build -o nevr-server  ./cmd/server      # live ingestion server
 go build -o nevr-bridge  ./cmd/bridge      # broadcaster → server bridge
 go build -o nevr-compat  ./cmd/compat      # /session payload compatibility checker
 ```
+
+The development-only `cmd/fly-agent` prototype turns one selected player's
+replay observations into bounded, abstract action intents. Its built-in graph
+is a tiny synthetic plumbing fixture, not a fruit-fly brain. It is deliberately
+excluded from Windows packaging and cannot control Echo VR or enter a live
+session. See [the connectome-agent guide](docs/fly_connectome_agent.md) for the
+current command, provenance rules, and the staged path to a MaleCNS-derived
+agent in authorized private environments.
 
 ## Quick start: offline (replays)
 

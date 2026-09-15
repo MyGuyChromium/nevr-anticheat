@@ -21,6 +21,7 @@ cmd/desktop/resource_windows_amd64.syso
 *.tape
 *.nevrcap
 tests/replays/
+/fly-agent-data/
 .nevr-pending/
 support-bundles/
 nevr-desktop-settings.json
