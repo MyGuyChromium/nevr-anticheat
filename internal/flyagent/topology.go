@@ -76,9 +76,12 @@ func LoadTopology(r io.Reader) (*Topology, error) {
 	if err := rejectDuplicateJSONKeys(document); err != nil {
 		return nil, fmt.Errorf("decode topology: %w", err)
 	}
+	var topology Topology
+	if err := rejectNonExactJSONFields(document, &topology); err != nil {
+		return nil, fmt.Errorf("decode topology: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(document))
 	dec.DisallowUnknownFields()
-	var topology Topology
 	if err := dec.Decode(&topology); err != nil {
 		return nil, fmt.Errorf("decode topology: %w", err)
 	}

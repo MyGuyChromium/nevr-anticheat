@@ -1,0 +1,2 @@
+# The compiler is optional; the Go fly-agent runtime does not depend on Python.
+pyarrow==25.0.1

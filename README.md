@@ -46,8 +46,10 @@ OFFLINE PATH
   .echoreplay / legacy JSON replay ──▶ nevr-ac analyze|batch (internal/adapter + internal/replay)
 
 RESEARCH PATH (not shipped)
-  replay tick ──▶ egocentric encoder ──▶ frozen rate network ──▶ abstract action trace
-                cmd/fly-agent; no live source, matchmaking, or controller injection
+  pinned MaleCNS files ──▶ verified corridor ──▶ frozen rate network ──▶ abstract intent
+                                      ▲               │
+  replay or local private /session ───┘     synthetic arena + bounded adapters
+  no controller input, matchmaking, public runner, or anti-cheat exception
 
 BOTH PATHS
   SQLite (source of truth) ──▶ feature extraction ──▶ 31 detectors ──▶ per-match scores
@@ -103,13 +105,35 @@ go build -o nevr-bridge  ./cmd/bridge      # broadcaster → server bridge
 go build -o nevr-compat  ./cmd/compat      # /session payload compatibility checker
 ```
 
-The development-only `cmd/fly-agent` prototype turns one selected player's
-replay observations into bounded, abstract action intents. Its built-in graph
-is a tiny synthetic plumbing fixture, not a fruit-fly brain. It is deliberately
-excluded from Windows packaging and cannot control Echo VR or enter a live
-session. See [the connectome-agent guide](docs/fly_connectome_agent.md) for the
-current command, provenance rules, and the staged path to a MaleCNS-derived
-agent in authorized private environments.
+The development-only research commands can compile and verify a bounded,
+hash-pinned MaleCNS v1.0 corridor, train only bounded sensory/readout adapters
+in a deterministic synthetic arena, compare fixed-connectivity weight and
+degree-preserving rewired controls, benchmark the frozen rate network, produce
+exact-byte-bound replay traces, and observe a local private `/session` endpoint
+through a dry-run-only sink. The pinned official build retained 16,550 neurons
+and 312,673 directed edges. None of these results demonstrates learned skill,
+biological fidelity, or public readiness.
+
+```powershell
+& fly-agent-data\malecns\.venv\Scripts\python.exe -m tools.malecns_compiler `
+  --data-dir fly-agent-data\malecns\v1.0\raw `
+  --output-dir fly-agent-data\malecns\v1.0\corridor
+go run ./cmd/fly-agent-benchmark --topology `
+  fly-agent-data\malecns\v1.0\corridor\male-cns-v1.0-corridor.topology.json
+go run ./cmd/fly-agent-arena --mode train --topology `
+  fly-agent-data\malecns\v1.0\corridor\male-cns-v1.0-corridor.topology.json `
+  --training-episodes 1 --evaluation-episodes 1 --passes 1 --max-steps 25
+go run ./cmd/fly-agent-readiness --controls=false --build-manifest `
+  fly-agent-data\malecns\v1.0\corridor\male-cns-v1.0-corridor.build-manifest.json
+```
+
+These tools are deliberately excluded from Windows packaging. Public use still
+requires a documented supported controller API/runtime, explicit server-operator
+approval, a signed deployment-bound grant, and a sanctioned disclosed bot slot;
+no such controller or public runner is implemented. Never bypass anti-cheat.
+See [the connectome-agent guide](docs/fly_connectome_agent.md) for the complete
+commands, provenance and trust boundaries, measured benchmark semantics,
+private dry-run limits, and remaining external gates.
 
 ## Quick start: offline (replays)
 

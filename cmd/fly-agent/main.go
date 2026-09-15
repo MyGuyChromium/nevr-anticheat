@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
@@ -28,6 +29,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	player := flags.String("player", "", "exact player ID or display name to embody")
 	attackGoal := flags.String("attack-goal", "", "goal end: negative-z or positive-z (required; telemetry does not identify attack direction)")
 	topologyPath := flags.String("topology", "", "bounded topology JSON; empty uses the synthetic plumbing circuit")
+	adapterReportPath := flags.String("adapter-report", "", "validated arena training report whose topology/model match this run")
 	outputPath := flags.String("output", "-", "action trace JSONL path, or - for stdout (existing files are never replaced)")
 	maxTicks := flags.Int("max-ticks", 0, "maximum emitted action records; 0 processes the full replay")
 	if err := flags.Parse(args); err != nil {
@@ -37,7 +39,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 || strings.TrimSpace(*replayPath) == "" || strings.TrimSpace(*player) == "" || strings.TrimSpace(*attackGoal) == "" {
-		fmt.Fprintln(stderr, "usage: fly-agent --replay FILE --player ID_OR_NAME --attack-goal negative-z|positive-z [--topology FILE] [--output FILE.jsonl]")
+		fmt.Fprintln(stderr, "usage: fly-agent --replay FILE --player ID_OR_NAME --attack-goal negative-z|positive-z [--topology FILE] [--adapter-report FILE] [--output FILE.jsonl]")
 		return 2
 	}
 	if *maxTicks < 0 {
@@ -71,11 +73,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if topology.Dataset.Synthetic {
 		fmt.Fprintln(stderr, "fly-agent: using the synthetic reflex topology; this verifies plumbing only and is not MaleCNS simulation")
 	}
-	inputDigest, err := digestInputFile(*replayPath)
+	policyAdapter := flyagent.DefaultPolicyAdapter()
+	policyAdapterReportDigest := ""
+	if strings.TrimSpace(*adapterReportPath) != "" {
+		_, capability, err := readAdapterReport(*adapterReportPath, topology, network.Dynamics())
+		if err != nil {
+			fmt.Fprintf(stderr, "fly-agent: adapter report: %v\n", err)
+			return 1
+		}
+		policyAdapter, policyAdapterReportDigest, err = capability.Bind(network)
+		if err != nil {
+			fmt.Fprintf(stderr, "fly-agent: adapter capability: %v\n", err)
+			return 1
+		}
+	}
+	policyAdapterDigest, err := flyagent.DigestPolicyAdapter(policyAdapter)
 	if err != nil {
-		fmt.Fprintf(stderr, "fly-agent: hash replay input: %v\n", err)
+		fmt.Fprintf(stderr, "fly-agent: policy adapter: %v\n", err)
 		return 1
 	}
+	replaySnapshotPath, inputDigest, cleanupReplaySnapshot, err := prepareReplaySnapshot(*replayPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "fly-agent: snapshot replay input: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if cleanupErr := cleanupReplaySnapshot(); cleanupErr != nil {
+			fmt.Fprintf(stderr, "fly-agent: WARNING: remove private replay snapshot: %v\n", cleanupErr)
+		}
+	}()
 
 	output, finishOutput, err := actionOutput(*outputPath, stdout)
 	if err != nil {
@@ -100,7 +126,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var priorSourceEpoch uint64
 	var priorSourceEpochKnown bool
 	stop := errors.New("requested action limit reached")
-	_, diagnostics, parseErr := parser.ParseFileStream(*replayPath, func(tick *adapter.ParsedTick) error {
+	_, diagnostics, parseErr := parser.ParseFileStream(replaySnapshotPath, func(tick *adapter.ParsedTick) error {
 		seen++
 		if tick.NewMatch {
 			network.Reset()
@@ -156,10 +182,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return fmt.Errorf("plan simulation at frame %d: %w", tick.FrameIndex, err)
 			}
-			if err := network.Step(stepDeltaTime, observation.Currents); err != nil {
+			adaptedCurrents, err := policyAdapter.AdaptCurrents(observation.Currents)
+			if err != nil {
+				return fmt.Errorf("adapt sensory currents at frame %d: %w", tick.FrameIndex, err)
+			}
+			if err := network.Step(stepDeltaTime, adaptedCurrents); err != nil {
 				return fmt.Errorf("simulate frame %d: %w", tick.FrameIndex, err)
 			}
-			action = flyagent.Decode(observation, network)
+			action, err = flyagent.DecodeWithAdapter(observation, network, policyAdapter)
+			if err != nil {
+				return fmt.Errorf("decode frame %d: %w", tick.FrameIndex, err)
+			}
 		}
 		observationDigest, err := flyagent.DigestObservation(observation)
 		if err != nil {
@@ -179,7 +212,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			TargetKind: observation.TargetKind, Target: observation.Target,
 			Action: action, ObservationDigest: observationDigest, StateDigest: network.StateDigest(),
 			TopologyDigest: network.TopologyDigest(), ModelDigest: network.ModelDigest(),
-			Dynamics: network.Dynamics(), StateResetReason: resetReason, Dataset: network.Dataset(),
+			PolicyAdapterSchema: flyagent.PolicyAdapterSchema, PolicyAdapterDigest: policyAdapterDigest,
+			PolicyAdapterReportDigest: policyAdapterReportDigest,
+			Dynamics:                  network.Dynamics(), StateResetReason: resetReason, Dataset: network.Dataset(),
 		}
 		if err := jsonOut.Encode(record); err != nil {
 			return fmt.Errorf("write action trace: %w", err)
@@ -192,14 +227,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	})
 	if errors.Is(parseErr, stop) {
 		parseErr = nil
-	}
-	if parseErr == nil {
-		verifiedDigest, digestErr := digestInputFile(*replayPath)
-		if digestErr != nil {
-			parseErr = fmt.Errorf("rehash replay input: %w", digestErr)
-		} else if verifiedDigest != inputDigest {
-			parseErr = errors.New("replay input changed while it was being processed")
-		}
 	}
 	if err := buffered.Flush(); err != nil && parseErr == nil {
 		parseErr = fmt.Errorf("flush action trace: %w", err)
@@ -280,15 +307,58 @@ func actionOutput(path string, stdout io.Writer) (io.Writer, func(bool) error, e
 	}, nil
 }
 
-func digestInputFile(path string) (string, error) {
-	file, err := os.Open(path) // #nosec G304 -- explicit operator-provided replay input.
+func prepareReplaySnapshot(path string) (string, string, func() error, error) {
+	return prepareReplaySnapshotWithLimit(path, adapter.DefaultMaxReplayBytes)
+}
+
+func prepareReplaySnapshotWithLimit(path string, limit int64) (string, string, func() error, error) {
+	noCleanup := func() error { return nil }
+	if limit < 1 {
+		return "", "", noCleanup, errors.New("replay snapshot byte limit must be positive")
+	}
+	source, err := os.Open(path) // #nosec G304 -- explicit operator-provided replay input.
 	if err != nil {
-		return "", err
+		return "", "", noCleanup, err
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return "", "", noCleanup, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", "", noCleanup, errors.New("replay input is not a regular file")
+	}
+	if info.Size() > limit {
+		return "", "", noCleanup, fmt.Errorf("replay input is %d bytes; limit is %d", info.Size(), limit)
+	}
+	extension := strings.ToLower(filepath.Ext(path))
+	snapshot, err := os.CreateTemp("", "nevr-fly-replay-*"+extension)
+	if err != nil {
+		return "", "", noCleanup, err
+	}
+	snapshotPath := snapshot.Name()
+	cleanup := func() error { return os.Remove(snapshotPath) }
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(snapshot, hash), io.LimitReader(source, limit+1))
+	if copyErr == nil && written > limit {
+		copyErr = fmt.Errorf("replay input exceeds %d bytes", limit)
+	}
+	if copyErr == nil {
+		copyErr = snapshot.Sync()
+	}
+	closeErr := snapshot.Close()
+	if copyErr != nil || closeErr != nil {
+		cleanupErr := cleanup()
+		return "", "", noCleanup, errors.Join(copyErr, closeErr, cleanupErr)
+	}
+	return snapshotPath, fmt.Sprintf("%x", hash.Sum(nil)), cleanup, nil
+}
+
+func readAdapterReport(path string, topology *flyagent.Topology, dynamics flyagent.Dynamics) (*flyagent.AdapterTrainingReport, flyagent.VerifiedPolicyAdapter, error) {
+	file, err := os.Open(path) // #nosec G304 -- explicit operator-provided training artifact.
+	if err != nil {
+		return nil, flyagent.VerifiedPolicyAdapter{}, err
 	}
 	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+	return flyagent.LoadVerifiedPolicyAdapter(file, topology, dynamics)
 }

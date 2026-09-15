@@ -47,7 +47,8 @@ func TestRunReplayProducesBoundedOfflineTrace(t *testing.T) {
 			t.Fatalf("record %d: %v\n%s", count, err, scanner.Text())
 		}
 		if record.Schema != flyagent.ActionTraceSchema || record.Action.Schema != flyagent.ActionSchema || record.Mode != flyagent.ModeReplay ||
-			record.ObservationSchema != flyagent.ObservationSchema || record.RateModelSchema != flyagent.RateModelSchema || record.DecoderPolicySchema != flyagent.DecoderPolicySchema {
+			record.ObservationSchema != flyagent.ObservationSchema || record.RateModelSchema != flyagent.RateModelSchema || record.DecoderPolicySchema != flyagent.DecoderPolicySchema ||
+			record.PolicyAdapterSchema != flyagent.PolicyAdapterSchema {
 			t.Fatalf("schemas = %q / %q", record.Schema, record.Action.Schema)
 		}
 		if !record.Dataset.Synthetic || record.PlayerID == "" || record.AttackGoal != flyagent.GoalPositiveZ || !record.SourceEpochKnown || record.Dynamics != flyagent.DefaultDynamics() ||
@@ -60,6 +61,7 @@ func TestRunReplayProducesBoundedOfflineTrace(t *testing.T) {
 		for name, digest := range map[string]string{
 			"observation": record.ObservationDigest, "state": record.StateDigest,
 			"topology": record.TopologyDigest, "model": record.ModelDigest, "input": record.InputDigest,
+			"policy adapter": record.PolicyAdapterDigest,
 		} {
 			decoded, err := hex.DecodeString(digest)
 			if err != nil || len(decoded) != 32 {
@@ -86,6 +88,110 @@ func TestRunReplayProducesBoundedOfflineTrace(t *testing.T) {
 	}
 	if nonNeutral == 0 {
 		t.Fatalf("trace contains no non-neutral actions: %s", stdout.String())
+	}
+}
+
+func TestRunLoadsOnlyTopologyBoundAdapterReport(t *testing.T) {
+	topology, err := flyagent.DemoTopology()
+	if err != nil {
+		t.Fatal(err)
+	}
+	arenaConfig := flyagent.DefaultArenaConfig()
+	arenaConfig.MaxSteps = 2
+	trainingConfig := flyagent.DefaultAdapterTrainingConfig()
+	trainingConfig.TrainingEpisodes, trainingConfig.EvaluationEpisodes, trainingConfig.Passes = 1, 1, 1
+	report, err := flyagent.TrainPolicyAdapter(topology, flyagent.DefaultDynamics(), arenaConfig, trainingConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(t.TempDir(), "adapter-report.json")
+	document, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportPath, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	replayPath := filepath.Join("..", "..", "tests", "fixtures", "synthetic_session.echoreplay")
+	code := run([]string{
+		"--replay", replayPath, "--player", "BlueOne", "--attack-goal", "positive-z",
+		"--max-ticks", "1", "--adapter-report", reportPath,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run code=%d stderr=%s", code, stderr.String())
+	}
+	records := decodeTrace(t, stdout.Bytes())
+	wantDigest, err := flyagent.DigestPolicyAdapter(report.TrainedAdapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportSum := sha256.Sum256(document)
+	wantReportDigest := hex.EncodeToString(reportSum[:])
+	if len(records) != 1 || records[0].PolicyAdapterDigest != wantDigest || records[0].PolicyAdapterReportDigest != wantReportDigest {
+		t.Fatalf("adapter-bound records = %+v", records)
+	}
+
+	shuffled, err := flyagent.ShuffledWeightBaseline(topology, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongReport, err := flyagent.TrainPolicyAdapter(shuffled, flyagent.DefaultDynamics(), arenaConfig, trainingConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongDocument, _ := json.Marshal(wrongReport)
+	wrongPath := filepath.Join(t.TempDir(), "wrong-adapter-report.json")
+	if err := os.WriteFile(wrongPath, wrongDocument, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"--replay", replayPath, "--player", "BlueOne", "--attack-goal", "positive-z",
+		"--max-ticks", "1", "--adapter-report", wrongPath,
+	}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "different topology or dynamics") {
+		t.Fatalf("mismatched report code=%d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestPrepareReplaySnapshotBindsExactBytesAndEnforcesLimit(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.tape")
+	original := []byte("exact replay bytes")
+	if err := os.WriteFile(sourcePath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath, digest, cleanup, err := prepareReplaySnapshotWithLimit(sourcePath, int64(len(original)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Ext(snapshotPath) != ".tape" {
+		_ = cleanup()
+		t.Fatalf("snapshot extension = %q", filepath.Ext(snapshotPath))
+	}
+	if err := os.WriteFile(sourcePath, []byte("different source"), 0o600); err != nil {
+		_ = cleanup()
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		_ = cleanup()
+		t.Fatal(err)
+	}
+	wantDigest := sha256.Sum256(original)
+	if !bytes.Equal(snapshot, original) || digest != hex.EncodeToString(wantDigest[:]) {
+		_ = cleanup()
+		t.Fatalf("snapshot=%q digest=%q", snapshot, digest)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(snapshotPath); !os.IsNotExist(err) {
+		t.Fatalf("snapshot was not removed: %v", err)
+	}
+	if _, _, _, err := prepareReplaySnapshotWithLimit(sourcePath, 2); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("oversize snapshot error = %v", err)
 	}
 }
 

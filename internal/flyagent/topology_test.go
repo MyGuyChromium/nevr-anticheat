@@ -38,6 +38,9 @@ func TestLoadTopologyStrictValidation(t *testing.T) {
 		`{"schema":"nevr.fly.topology/v1","dataset":{"name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"edges":[{"pre":"missing","post":"a","weight":1}],"inputs":{"x":["a"]},"outputs":{"x":["a"]}}`,
 		`{"schema":"nevr.fly.topology/v1","dataset":{"name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"inputs":{"x":["a"]},"outputs":{"x":["a"]},"surprise":true}`,
 		`{"schema":"nevr.fly.topology/v1","schema":"wrong","dataset":{"name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"inputs":{"x":["a"]},"outputs":{"x":["a"]}}`,
+		`{"SCHEMA":"nevr.fly.topology/v1","dataset":{"name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"inputs":{"x":["a"]},"outputs":{"x":["a"]}}`,
+		`{"schema":"nevr.fly.topology/v1","dataset":{"Name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"inputs":{"x":["a"]},"outputs":{"x":["a"]}}`,
+		`{"schema":"nevr.fly.topology/v1","SCHEMA":"wrong","dataset":{"name":"x","version":"1","synthetic":true},"nodes":[{"id":"a"}],"inputs":{"x":["a"]},"outputs":{"x":["a"]}}`,
 	}
 	for i, document := range bad {
 		if _, err := LoadTopology(strings.NewReader(document)); err == nil {

@@ -35,6 +35,10 @@ dump/
 /coverage.*
 cover.html
 
+# Python tooling caches
+__pycache__/
+*.py[cod]
+
 # Temp
 /tmp/
 /dist/
