@@ -32,6 +32,10 @@
 //   --shots <dir>      also write PNG screenshots into <dir>
 //   --label <name>     screenshot file prefix (default "check")
 //   --browser <path>   browser executable (or set NEVR_UI_BROWSER)
+//   --upload <file>    with --url: analyze this recording through the page's own
+//                      upload control in every pass instead of opening a stored
+//                      match (slow; for a private local look at real data - keep
+//                      such screenshots and output out of the repository)
 //   --report-only      print violations but exit 0 (for before/after captures)
 //
 // Exit code: 0 = all metrics within budget, 1 = violation, 2 = could not run.
@@ -243,10 +247,19 @@ async function main() {
       await send('Page.navigate', { url: baseURL });
       await waitFor(`!!document.getElementById('pref-theme') && !document.querySelector('#history.skeleton') && !document.querySelector('#flagged.skeleton')`, 'the history and review panels');
       await evaluate(`(() => { const s = document.getElementById('pref-theme'); s.value = ${JSON.stringify(theme)}; s.dispatchEvent(new Event('change', { bubbles: true })); return document.documentElement.dataset.theme; })()`);
+      const upload = option('--upload');
+      if (upload) {
+        const { result: { root } } = await send('DOM.getDocument', {});
+        const { result: { nodeId } } = await send('DOM.querySelector', { nodeId: root.nodeId, selector: '#files' });
+        await send('DOM.setFileInputFiles', { nodeId, files: [path.resolve(upload)] });
+        await evaluate(`document.getElementById('files').dispatchEvent(new Event('change', { bubbles: true }))`);
+        await waitFor(`!!document.querySelector('#results details.match, #results .fail')`, 'the uploaded analysis', 30 * 60 * 1000);
+      } else {
       // Open the stored match with the most detector events so the report tables are populated.
       const matchID = await evaluate(`fetch('api/matches', { cache: 'no-store' }).then((r) => r.json()).then((body) => { const list = body.matches || body || []; const best = list.slice().sort((a, b) => (b.event_count || b.events || 0) - (a.event_count || a.events || 0) || (b.player_count || 0) - (a.player_count || 0))[0]; return best ? best.match_id : null; })`);
       if (!matchID) throw new Error('the page lists no stored match; is this the seeded fixture?');
       await evaluate(`(() => { const b = document.createElement('button'); b.hidden = true; b.dataset.open = ${JSON.stringify(matchID)}; document.body.appendChild(b); b.click(); b.remove(); })()`);
+      }
       await waitFor(`!!document.querySelector('#results details.match')`, 'the match report');
       await evaluate(`(() => { document.querySelectorAll('#results details.match details.sub').forEach((d) => { d.open = true; }); })()`);
       await sleep(400);
