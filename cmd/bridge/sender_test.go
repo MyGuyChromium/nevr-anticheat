@@ -172,7 +172,9 @@ func TestWSSender_ControlMessagesAreDelivered(t *testing.T) {
 	if !waitFor(2*time.Second, func() bool { return len(fa.controlsOf(model.ControlMatchStart)) == 1 }) {
 		t.Fatal("match_start not delivered")
 	}
-	if stats.ControlSent.Load() != 1 || stats.TotalBatchesSent.Load() != 0 {
+	// The fake server can observe the message before the sender, returning from
+	// its write, has counted it: wait for the counter instead of reading it once.
+	if !waitFor(2*time.Second, func() bool { return stats.ControlSent.Load() == 1 }) || stats.TotalBatchesSent.Load() != 0 {
 		t.Errorf("control_sent=%d batches=%d", stats.ControlSent.Load(), stats.TotalBatchesSent.Load())
 	}
 }
