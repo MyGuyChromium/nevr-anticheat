@@ -177,6 +177,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/setup", s.handleSetupDiagnostics)
 	s.mux.HandleFunc("GET "+p+"/api/maintenance/backups", s.handleListBackups)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/restore", s.handleScheduleRestore)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/restore/cancel", s.handleCancelRestore)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)

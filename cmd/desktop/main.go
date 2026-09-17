@@ -153,8 +153,20 @@ func runDesktop(opts runOptions, env *runEnv) error {
 		env.logging = logging
 		fmt.Printf("%s NEVR-Anticheat desktop %s (%s) starting\n", time.Now().UTC().Format(time.RFC3339), appVersion, buildCommit)
 	}
-	if err := applyPendingRestore(cfg.General.DBPath); err != nil {
+	restoreFailed, err := resolvePendingRestore(cfg.General.DBPath)
+	if err != nil {
 		return fmt.Errorf("applying scheduled database restore: %w", err)
+	}
+	if restoreFailed != nil {
+		// The live database was not touched, so nothing justifies refusing to
+		// start. Say it here and keep saying it in the app (api/setup) until the
+		// moderator dismisses it.
+		summary := "The scheduled database restore could not be applied and was cancelled. Your current database was not changed."
+		fmt.Fprintln(os.Stderr, summary+" Reason: "+restoreFailed.Error)
+		if opts.failureDialog {
+			go showStartupDialog("NEVR-Anticheat: restore cancelled", summary+"\n\nReason: "+restoreFailed.Error+
+				"\n\nSchedule the restore again from Maintenance if you still want it.")
+		}
 	}
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {

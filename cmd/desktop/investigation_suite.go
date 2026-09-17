@@ -775,7 +775,12 @@ func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) 
 	sort.Strings(unsafe)
 	stored, _ := s.engine.Store().GetStoredMatchCount(r.Context())
 	labels, _ := s.engine.Store().MatchLabelCounts(r.Context())
-	writeJSON(w, 200, map[string]any{"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label observations and missed opportunities.", "Export the portable evidence library before moving to another PC."}})
+	// A restore waiting for the next launch can be cancelled, and one that
+	// failed at the last launch is shown until it is dismissed (both through
+	// POST api/maintenance/restore/cancel). Neither stops the app from starting.
+	restorePending, restoreFailed := readPendingRestore(s.engine.Store().Path()), readRestoreFailure(s.engine.Store().Path())
+	writeJSON(w, 200, map[string]any{"restore_pending": restorePending, "restore_failed": restoreFailed,
+		"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label observations and missed opportunities.", "Export the portable evidence library before moving to another PC."}})
 }
 
 func errorText(err error) string {
