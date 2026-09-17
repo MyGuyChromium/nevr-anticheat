@@ -105,6 +105,8 @@
   .btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); background: var(--neutral-bg); border-color: var(--line); cursor: not-allowed; }
   .btn-primary { color: var(--accent-ink); background: var(--action); border-color: var(--action); }
   .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--accent-ink); background: var(--action-hover); border-color: var(--action-hover); }
+  .btn-danger:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+  .btn-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
   .btn-text { border-color: transparent; padding-inline: 6px; color: var(--accent); background: transparent; }
   .btn-text:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
   .btn-sm { font-size: var(--text-xs); min-height: 32px; padding: 5px 9px; }
@@ -438,6 +440,22 @@
   .automatic-review, .match-tools, .throw-log, .physics-table, .playlist, .chart-shell { border-radius: var(--radius); }
   .notice { background: var(--warn-bg); padding: 12px 14px; border-radius: var(--radius-sm); overflow-wrap: anywhere; }
   .notice.bad { background: var(--bad-bg); }
+  .notice.info { background: var(--neutral-bg); border-left-color: var(--line-2); }
+  .notice.info .btn { margin-left: 6px; }
+  .conflict-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 48px; margin-top: 16px; }
+  .conflict-grid h4, .conflict-confirm h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .conflict-confirm { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--bad); border-radius: var(--radius-sm); background: var(--bad-bg); }
+  .conflict-confirm h4 { color: var(--bad); }
+  .conflict-confirm ul { margin: 0 0 12px; padding-left: 18px; font-size: 13px; }
+  .conflict-confirm li + li { margin-top: 4px; }
+  .conflict-confirm .help.err { color: var(--bad); }
+  .conflict .help { max-width: none; }
+  .restore-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px clamp(16px, 3vw, 48px); background: var(--warn-bg); color: var(--ink); border-bottom: 1px solid var(--warn); }
+  .restore-banner.bad { background: var(--bad-bg); border-bottom-color: var(--bad); }
+  .restore-banner div { display: grid; gap: 4px; min-width: 0; }
+  .restore-banner span { color: var(--ink-2); overflow-wrap: anywhere; }
+  .restore-banner .btn { flex: none; }
+  @media (max-width: 820px) { .conflict-grid { grid-template-columns: 1fr; } .restore-banner { align-items: flex-start; flex-direction: column; } }
   .notice-history { margin-top: 18px; max-height: 240px; overflow: auto; }
   .notice-history ol { padding-left: 22px; }
   .notice-history li { padding-block: 6px; overflow-wrap: anywhere; }
@@ -734,6 +752,7 @@
   <div><strong>Analysis engine disconnected.</strong><span>This browser tab is no longer connected to its local NEVR process. Relaunch <code>nevr-desktop.exe</code>, then use the new window it opens.</span></div>
   <button id="retry" class="btn">Retry connection</button>
 </div>
+<div id="restore-banner" class="restore-banner" role="status" hidden></div>
 <main class="wrap" id="workspace" tabindex="-1">
   <section class="operator-overview" aria-labelledby="workspace-title">
     <div class="section-kicker">Offline analysis · human review</div>
@@ -772,10 +791,10 @@
         </div>
         <div class="controls">
           <div class="check">
-            <span class="check-mark" aria-hidden="true">↻</span>
+            <input type="checkbox" id="reanalyze" aria-describedby="reanalyze-help">
             <div>
-              <strong>Stored replays refresh automatically</strong>
-              <p class="help">Every upload uses the current detectors and replaces earlier derived events and scores. Raw source telemetry and human labels remain preserved.</p>
+              <label for="reanalyze">Re-analyze recordings that are already stored</label>
+              <p class="help" id="reanalyze-help">Off: a recording this PC already analyzed is recognised and its stored analysis is shown. Stored replays refresh automatically only when the build or detector configuration changed, or when the file completes a copy that was cut short. A different recording of a stored match is never mixed in.</p>
             </div>
           </div>
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
@@ -2088,7 +2107,17 @@
     return `<details class="sub"><summary>Native capture provenance and limitations</summary><p class="help">This describes the recorded source, not authenticated gameplay. Original protobuf records are retained alongside derived session views.</p><dl class="kv">${fields.map(([key, value]) => `<dt>${esc(key)}</dt><dd class="mono">${esc(value || 'Unknown')}</dd>`).join('')}</dl>${Array.isArray(n.limitations) && n.limitations.length ? `<ul class="health-list">${n.limitations.map(value => `<li>${esc(value)}</li>`).join('')}</ul>` : ''}</details>`;
   }
 
-  function matchSection(m, source) {
+  // What the upload did with a recording whose match was already stored. The
+  // engine's own sentences (intake_note, source_detail) are shown as written.
+  function intakeNotices(m, intake) {
+    const again = intake && intake.token ? `<button class="btn btn-sm" data-reanalyze="${esc(intake.token)}">Re-analyze this recording</button>` : '';
+    if (m.already_analyzed) return [`<p class="notice info" data-intake-note><strong>Already analyzed.</strong> ${esc(m.intake_note || 'This recording was already analyzed; the stored analysis is shown and nothing was changed.')}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}${again}</p>`];
+    if (intake && intake.replacedSource) return [`<p class="notice" data-intake-note><strong>Stored recording replaced.</strong> The previous recording's raw ticks, findings and scores for this match were deleted (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots) and this file was analyzed instead. Labels on the previous findings stay in the evidence library and are not attached to the new findings. No backup was taken by this step.</p>`];
+    if (m.replaced) return [`<p class="notice" data-intake-note>Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).${m.source_status === 'extends' ? ' This file completes the stored copy, which was cut short.' : ''}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}</p>`];
+    return [];
+  }
+
+  function matchSection(m, source, intake) {
     const idx = views.push(m) - 1;
     viewState[idx] = { detector: '', all: false };
     noteMatchRendered(m);
@@ -2103,7 +2132,7 @@
       ? `<div class="score"><div class="pts"><span style="color:var(--blue)">${fmtInt(m.blue_score)}</span><span class="dash">–</span><span style="color:var(--orange)">${fmtInt(m.orange_score)}</span></div><div class="lbl"><span>Blue</span><span>Orange</span></div></div>`
       : '<div class="score none">No final score in this replay</div>';
     const notices = (m.source === 'tape' ? ['<p class="notice">Native tape capture. Session JSON and Spark clips are derived viewing representations; keep the original .tape as source evidence. Captured events and a valid file do not establish authoritative gameplay or confirmed cheating.</p>'] : [])
-      .concat(m.replaced ? [`<p class="notice">Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).</p>`] : [])
+      .concat(intakeNotices(m, intake))
       .concat(m.warnings.map((w) => `<p class="notice bad">${esc(w)}</p>`)).join('');
     const tel = m.telemetry ? `${sep}Stored ${fmtInt(m.telemetry.frames_inserted)} frames${m.telemetry.frames_ignored ? ` (${fmtInt(m.telemetry.frames_ignored)} already present)` : ''}${m.telemetry.ticks_inserted || m.telemetry.ticks_ignored ? `, ${fmtInt(m.telemetry.ticks_inserted)} raw ticks${m.telemetry.ticks_ignored ? ` (${fmtInt(m.telemetry.ticks_ignored)} present)` : ''}` : ''}` : '';
     return `<details class="match" id="${secId(m.match_id)}" open>
@@ -2132,7 +2161,55 @@
 
   // ---- failure card ---------------------------------------------------------
   const diagTexts = [];
+  // A result card can send its file again (Re-analyze, Replace stored recording).
+  // Only the File handle is kept, by token; nothing is read until it is asked for.
+  const intakeFiles = new Map();
+  let intakeSeq = 0;
+  function rememberIntakeFile(file) {
+    const token = String(++intakeSeq);
+    intakeFiles.set(token, file);
+    if (intakeFiles.size > 200) intakeFiles.delete(intakeFiles.keys().next().value);
+    return token;
+  }
+  // A different recording of a stored match arrived. Nothing was written; show
+  // both sides and make replacing an explicit, confirmed, separate step.
+  function conflictCard(res) {
+    const c = res.source_conflict || {}, id = String(res.match_id || c.match_id || '');
+    const token = String(res.intake_token ?? ''), file = intakeFiles.get(token);
+    const kv = (rows) => `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+    const none = (text) => `<span class="muted">${esc(text)}</span>`;
+    const stored = kv([
+      ['Recording', c.stored_source_file ? esc(c.stored_source_file) : none('File name not recorded')],
+      ['Analyzed', c.stored_analyzed_at ? timeAgo(c.stored_analyzed_at) : none('Unknown')],
+      ['Match start', c.stored_start_time ? esc(fmtStart(c.stored_start_time)) : none('Unknown')],
+      ['Raw ticks', Number.isFinite(c.stored_raw_ticks) && c.stored_raw_ticks > 0 ? fmtInt(c.stored_raw_ticks) : none('None active (archived, or a legacy recording)')],
+    ]);
+    const arrived = kv([
+      ['File', esc(res.file || (file && file.name) || 'Unknown')],
+      ['Size', file && Number.isFinite(file.size) ? esc(fmtBytes(file.size)) : none('Unknown')],
+      ['SHA-256', res.sha256 ? `<span class="mono">${esc(String(res.sha256).slice(0, 16))}…</span>` : none('Not reported')],
+      ['How it differs', c.detail ? esc(c.detail) : none('The engine gave no detail')],
+    ]);
+    const consequence = c.consequence || "Replacing deletes the stored recording's raw ticks, frames, findings and scores for this match and analyzes this file instead. Labels on the previous recording's findings stay in the library but will not be attached to the new findings.";
+    const replace = file
+      ? `<button class="btn" data-replace-ask aria-expanded="false">Replace stored recording…</button>`
+      : '<span class="help">To replace the stored recording, choose this file again.</span>';
+    return `<section class="fail conflict" id="conflict-${esc(secId(id))}" data-conflict-card>
+      <div class="ftitle"><span>${esc(res.file)}</span><span class="tag warn">different recording · stored analysis kept</span></div>
+      <p>A different recording of match <span class="mono">${esc(id)}</span> is already stored. Nothing was changed: the stored analysis was kept and this file was not analyzed.</p>
+      <div class="conflict-grid"><div><h4>Stored on this PC</h4>${stored}</div><div><h4>This upload</h4>${arrived}</div></div>
+      <p class="help">A match id names a match, not a recording: two observers, a late joiner and a clip all carry the same id. Keep the recording that covers the match best.</p>
+      <div class="studio-actions"><button class="btn" data-open="${esc(id)}">Open the stored match</button>${replace}</div>
+      <div class="conflict-confirm" data-replace-confirm hidden>
+        <h4>Replace the stored recording of this match?</h4>
+        <ul><li>${esc(consequence)}</li><li><strong>No automatic backup is taken.</strong> Back up the database first if you may want the stored recording, its findings or its scores back.</li><li>This cannot be undone from the app except by restoring a backup.</li></ul>
+        <label class="check-inline"><input type="checkbox" data-replace-ack> I understand that the stored recording of this match will be deleted</label>
+        <div class="studio-actions"><button class="btn" data-replace-backup>Back up database now</button><button class="btn btn-danger" data-replace-source="${esc(token)}" disabled>Delete stored recording and analyze this file</button><button class="btn btn-text" data-replace-cancel>Keep the stored recording</button></div>
+        <p class="help" data-replace-status role="status" aria-live="polite"></p>
+      </div></section>`;
+  }
   function failCard(res) {
+    if (res.already_stored && res.source_conflict) return conflictCard(res);
     const d = res.diagnostic;
     let body = '';
     if (d) {
@@ -2151,7 +2228,8 @@
         <div><h4>First 160 bytes</h4><pre>${esc(d.head_text) || '<span class="muted">(empty)</span>'}</pre><pre>${esc(d.head_hex) || '<span class="muted">(empty)</span>'}</pre></div>
         <div class="full"><button class="btn btn-text btn-sm" data-copy="${n}">Copy this diagnostic</button></div></div>`;
     } else if (res.already_stored) {
-      body = `<p class="muted">This direct API request did not enable replacement. Upload through the desktop page to re-analyze automatically, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
+      const token = String(res.intake_token ?? '');
+      body = `<p class="muted">Nothing was changed: the stored analysis was kept and this file was not analyzed. <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">Open the stored match</button>${intakeFiles.has(token) ? `, or, if this is the same recording, <button class="btn btn-text btn-sm" data-reanalyze="${esc(token)}">re-analyze it</button>` : ''}.</p>`;
     }
     return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
       ${res.already_stored ? `<p>${esc(res.error)}</p>${body}` : `<p>Analysis could not finish. Your original recording was not modified.</p><p class="help">Check the details below, then <a href="#h-upload">choose another recording</a> or retry after resolving the problem.</p><details class="sub"><summary>Analysis error &amp; file diagnostics</summary><p class="err">${esc(res.error)}</p>${body}</details>`}</section>`;
@@ -2202,17 +2280,33 @@
   };
   const overall = (text, sub = '') => { const el = $('overall'); if (el) el.innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
   const responseItems = (res) => (res.matches && res.matches.length ? res.matches : [res]);
-  function showResponse(res) {
-    const fileError = res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null;
+  // item is the queue entry the response belongs to: its file token lets a card
+  // send the same file again, and its flags say what was asked for.
+  function showResponse(res, item = {}) {
+    // The engine mirrors the first match's error into the file entry when no match
+    // was analyzed; only an error of the file itself gets its own card.
+    const fileError = res.matches && res.matches.length && res.error && !res.matches.some((m) => m.error === res.error) ? { file: res.file, error: res.error } : null;
     if (fileError) prepend(failCard(fileError));
-    responseItems(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
-    let analyzed = 0, stored = 0, failed = fileError ? 1 : 0;
-    responseItems(res).forEach((m) => { if (m.ok) analyzed++; else if (m.already_stored) stored++; else failed++; });
-    return { analyzed, stored, failed };
+    const counts = { analyzed: 0, known: 0, conflicts: 0, stored: 0, failed: fileError ? 1 : 0 };
+    responseItems(res).slice().reverse().forEach((m) => {
+      if (m.ok && m.match) {
+        const known = !!(m.already_analyzed || m.match.already_analyzed);
+        const replacedSource = !known && !!item.replaceSource && m.match.replaced === true;
+        document.getElementById('conflict-' + secId(m.match.match_id))?.remove();
+        prepend(matchSection(m.match, known ? 'already analyzed · stored analysis' : 'from upload', { token: item.token, replacedSource }));
+        counts[known ? 'known' : 'analyzed']++;
+      } else {
+        prepend(failCard({ ...res, ...m, match: null, intake_token: item.token }));
+        counts[m.already_stored ? (m.source_conflict ? 'conflicts' : 'stored') : 'failed']++;
+      }
+    });
+    return counts;
   }
   function processQueueItem(item, i) {
     return new Promise((resolve) => {
       const fd = new FormData(); fd.append('files', item.file, item.file.name);
+      // replace_source implies force on the engine; it is only ever set by the confirmed Replace action.
+      if (item.replaceSource) fd.append('replace_source', '1'); else if (item.force) fd.append('force', '1');
       const xhr = currentXHR = new XMLHttpRequest();
       xhr.open('POST', 'api/analyze'); xhr.responseType = 'json'; xhr.timeout = 30 * 60 * 1000;
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
@@ -2243,7 +2337,7 @@
     if (busy) return;
     busy = true; queueStopped = false; drop.setAttribute('aria-busy', 'true');
     $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Stop queue</button><a class="btn btn-text" href="#h-history">Browse stored results</a><span class="help">Analysis progress is indeterminate. Stopping requests cancellation; the current file may finish.</span>';
-    const totals = { analyzed: 0, stored: 0, failed: 0, cancelled: 0 };
+    const totals = { analyzed: 0, known: 0, conflicts: 0, stored: 0, failed: 0, cancelled: 0 };
     for (const i of indices) {
       if (queueStopped) { queue[i].state = 'cancelled'; setQueueState(i, 'not started · queue stopped', '', true); totals.cancelled++; continue; }
       const item = queue[i]; item.state = 'running';
@@ -2252,24 +2346,31 @@
       if (result.error || !result.response) {
         item.state = 'failed'; item.error = result.error || 'empty response'; setQueueState(i, 'failed · '+item.error, 'bad', true); totals.failed++;
       } else {
-        const counts = showResponse(result.response);
-        Object.keys(counts).forEach((key) => { totals[key] += counts[key]; });
-        item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : 'stored';
-        setQueueState(i, counts.analyzed ? 'complete · results available' : counts.failed ? 'analysis did not complete · see details' : 'stored results available', counts.failed ? 'bad' : 'ok', !!counts.failed);
-        if (counts.analyzed) { const match = responseItems(result.response).find(r => r.ok && r.match); if (match) $('ust-'+i).insertAdjacentHTML('afterend', ` <button class="btn btn-text btn-sm" data-open="${esc(match.match.match_id)}">Open results</button>`); }
+        const counts = showResponse(result.response, item);
+        Object.keys(counts).forEach((key) => { totals[key] = (totals[key] || 0) + counts[key]; });
+        item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : counts.conflicts ? 'conflict' : 'stored';
+        // Say what happened to the file, never "complete" for a file that was not analyzed.
+        const text = counts.failed ? 'analysis did not complete · see details'
+          : counts.conflicts ? 'different recording · nothing changed · see Results'
+          : counts.analyzed ? (item.replaceSource ? 'stored recording replaced · results available' : counts.known ? 'complete · part was already analyzed' : 'complete · results available')
+          : counts.known ? 'already analyzed · nothing changed' : 'already stored · nothing changed · see Results';
+        setQueueState(i, text, counts.failed ? 'bad' : counts.conflicts ? '' : 'ok', !!counts.failed);
+        if (counts.analyzed || counts.known) { const match = responseItems(result.response).find(r => r.ok && r.match); if (match) $('ust-'+i).insertAdjacentHTML('afterend', ` <button class="btn btn-text btn-sm" data-open="${esc(match.match.match_id)}">Open results</button>${!counts.analyzed && item.token ? ` <button class="btn btn-text btn-sm" data-reanalyze="${esc(item.token)}">Re-analyze</button>` : ''}`); }
       }
     }
     busy = false; drop.removeAttribute('aria-busy');
     $('files').value = ''; $('folder').value = '';
     const failed = queue.filter((item) => item.state === 'failed' || item.state === 'cancelled').length;
     $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / not started</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
-    const parts = [`${totals.analyzed} analyzed`]; if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} did not complete`); if (totals.cancelled) parts.push(`${totals.cancelled} not started`);
+    const parts = [`${totals.analyzed} analyzed`]; if (totals.known) parts.push(`${totals.known} already analyzed`); if (totals.conflicts) parts.push(`${totals.conflicts} different recording${totals.conflicts === 1 ? '' : 's'} of a stored match (nothing changed)`); if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} did not complete`); if (totals.cancelled) parts.push(`${totals.cancelled} not started`);
     overall(queueStopped ? 'Queue stopped' : 'Queue complete', parts.join(' · '));
-    setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : 'ok');
+    setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : totals.conflicts ? '' : 'ok');
     refreshPanels();
-    if (totals.analyzed) $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    if (totals.analyzed || totals.known || totals.conflicts) $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
   }
-  function analyze(fileList) {
+  // flags: { force, replaceSource } for every file of this queue. Without flags
+  // the Re-analyze switch decides; replaceSource never comes from a switch.
+  function analyze(fileList, flags) {
     if (busy) return;
     const all = Array.from(fileList || []);
     const supported = all.filter((f) => /\.(echoreplay|tape|json)$/i.test(f.name));
@@ -2280,7 +2381,8 @@
       else if (all.length) setStatus('No supported .echoreplay, native .tape, or legacy .json files were found.', 'err');
       return;
     }
-    queue = files.map((file) => ({ file, state: 'waiting' }));
+    const force = flags ? !!flags.force : !!$('reanalyze')?.checked;
+    queue = files.map((file) => ({ file, state: 'waiting', token: rememberIntakeFile(file), force, replaceSource: !!(flags && flags.replaceSource) }));
     if (queuePanel) queuePanel.remove();
     queuePanel = document.createElement('div'); queuePanel.innerHTML = uploadList(files); drop.appendChild(queuePanel);
     drop.classList.add('busy'); $('drop-idle').hidden = true;
@@ -2299,7 +2401,7 @@
   $('files').addEventListener('change', (e) => analyze(e.target.files));
   $('folder').addEventListener('change', (e) => analyze(e.target.files));
   $('clear').addEventListener('click', () => {
-    $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0;
+    $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0; intakeFiles.clear();
     $('results-block').hidden = true; $('clear').hidden = true; $('nav-results').hidden = true;
     setStatus('Results cleared. Stored matches stay in the history below.');
   });
@@ -3143,7 +3245,7 @@
     const loadFilter=e.target.closest('button[data-load-filter]');if(loadFilter){try{const f=JSON.parse(loadFilter.dataset.loadFilter);$('history-search').value=f.search||'';$('history-detector').value=f.detector||'';$('history-label').value=f.label||'';$('history-sort').value=f.sort||'newest';$('history-flagged').checked=!!f.flagged;renderHistory();$('h-history').scrollIntoView({behavior:reduced?'auto':'smooth'})}catch(err){setStatus('Saved filter is invalid.','err')}return}
     if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text())),imported=Object.values(result.imported||{}).reduce((a,b)=>a+b,0),rejected=Object.values(result.rejected||{}).reduce((a,b)=>a+b,0);setStatus(result.ok?`Imported ${imported} evidence records.`:`Imported ${imported}; rejected ${rejected}. ${result.first_error||'Inspect the library for invalid or overlapping records.'}`,result.ok?'ok':'err');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
     if(e.target.closest('#backup-db-studio')){try{const result=await postJSON('api/maintenance/backup');setStatus(`Backup created: ${result.path}`,'ok');await loadStudio()}catch(err){setStatus(`Backup failed: ${err.message}`,'err')}return}
-    if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok')}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
+    if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok');loadRestoreState()}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
     if (e.target.closest('#run-regression')) { await loadRegression(); return; }
     if (e.target.closest('#preview-threshold')) {
       const button = e.target.closest('#preview-threshold'), resultEl = $('threshold-result');
@@ -3320,6 +3422,44 @@
     const retryFile = e.target.closest('button[data-retry-file]');
     if (retryFile && !busy) {
       const i = +retryFile.dataset.retryFile; queue[i].state = 'waiting'; setQueueState(i, 'waiting'); setQueueBar(i, 0); runQueue([i]); return;
+    }
+    // Send a result card's file again: Re-analyze (force), or the confirmed Replace (replace_source).
+    const again = e.target.closest('button[data-reanalyze], button[data-replace-source]');
+    if (again) {
+      const replaceSource = again.hasAttribute('data-replace-source');
+      const file = intakeFiles.get(replaceSource ? again.dataset.replaceSource : again.dataset.reanalyze);
+      if (busy) { setStatus('Wait for the current queue to finish, then try again.', 'err'); return; }
+      if (!file) { setStatus('That file is no longer held by this window. Choose the recording again' + (replaceSource ? '.' : ' with “Re-analyze recordings that are already stored” turned on.'), 'err'); return; }
+      if (replaceSource && !again.closest('[data-replace-confirm]')?.querySelector('[data-replace-ack]')?.checked) return;
+      analyze([file], { force: true, replaceSource });
+      $('h-upload').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+      return;
+    }
+    const replaceAsk = e.target.closest('button[data-replace-ask], button[data-replace-cancel]');
+    if (replaceAsk) {
+      const card = replaceAsk.closest('[data-conflict-card]'), panel = card.querySelector('[data-replace-confirm]'), show = replaceAsk.hasAttribute('data-replace-ask') && panel.hidden;
+      panel.hidden = !show; card.querySelector('[data-replace-ask]')?.setAttribute('aria-expanded', String(show));
+      if (!show) { const ack = panel.querySelector('[data-replace-ack]'); ack.checked = false; panel.querySelector('[data-replace-source]').disabled = true; card.querySelector('[data-replace-ask]')?.focus(); }
+      else panel.querySelector('[data-replace-ack]').focus();
+      return;
+    }
+    const replaceBackup = e.target.closest('button[data-replace-backup]');
+    if (replaceBackup) {
+      const note = replaceBackup.closest('[data-replace-confirm]').querySelector('[data-replace-status]');
+      replaceBackup.disabled = true; note.className = 'help'; note.textContent = 'Creating a backup of the evidence database…';
+      try { const result = await postJSON('api/maintenance/backup'); note.textContent = `Backup created: ${result.path}`; setStatus(`Backup created: ${result.path}`, 'ok'); }
+      catch (err) { note.className = 'help err'; note.textContent = `Backup failed: ${err.message}. Nothing was replaced.`; }
+      finally { replaceBackup.disabled = false; }
+      return;
+    }
+    const restoreCancel = e.target.closest('button[data-restore-cancel]');
+    if (restoreCancel) {
+      restoreCancel.disabled = true;
+      try {
+        const result = await postJSON('api/maintenance/restore/cancel');
+        setStatus(result.cancelled_pending ? 'The scheduled restore was cancelled. The evidence database stays as it is.' : result.dismissed_failure ? 'Restore failure dismissed.' : 'There was no scheduled restore to cancel.', 'ok');
+      } catch (err) { setStatus(`Could not cancel the restore: ${err.message}`, 'err'); }
+      loadRestoreState(); return;
     }
     if (e.target.closest('#clear-queue') && !busy) {
       queue = []; if (queuePanel) queuePanel.remove(); queuePanel = null;
@@ -3510,6 +3650,7 @@
     if (e.target.id === 'case-search') { prefs.caseSearch=e.target.value; savePrefs(); renderFlagged(); }
   });
   document.addEventListener('change', e => {
+    if (e.target.matches?.('[data-replace-ack]')) { e.target.closest('[data-replace-confirm]').querySelector('[data-replace-source]').disabled = !e.target.checked; return; }
     if (e.target.id === 'case-state') { prefs.caseState=e.target.value;savePrefs();renderFlagged(); }
     const key = {'pref-theme':'theme','pref-density':'density','pref-text-size':'textSize','pref-motion':'motion','pref-shortcuts':'shortcuts'}[e.target.id];
     if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); if (key === 'textSize') document.querySelectorAll('figure[data-timeline]').forEach((fig) => renderTimeline(fig, true)); }
@@ -3546,7 +3687,25 @@
   }
   // loadCalibration, loadRegression and loadStudio return at once while their
   // advanced section is closed and run when it is opened.
-  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); refreshHealth(); loadStudio(); }
+  // A restore waiting for the next launch, or one that failed at the last launch
+  // (GET api/setup: restore_pending / restore_failed). Both are cleared through
+  // POST api/maintenance/restore/cancel. An engine without the fields shows nothing.
+  function restoreBannerHTML(s) {
+    const base = (p) => String(p || '').split(/[\\/]/).pop();
+    const when = (iso) => { const t = new Date(iso || ''); return isNaN(t) ? '' : fmtAbs(t); };
+    const failed = s && s.restore_failed, pending = s && s.restore_pending;
+    if (failed && failed.error) return { tone: 'bad', html: `<div><strong>The scheduled database restore did not run.</strong><span>${esc(failed.error)}${failed.source ? ` Backup: ${esc(base(failed.source))}.` : ''}${when(failed.failed_at) ? ` Tried ${esc(when(failed.failed_at))}.` : ''} The evidence database was left as it was.</span></div><button class="btn" data-restore-cancel>Dismiss</button>` };
+    if (pending) return { tone: '', html: `<div><strong>A database restore is scheduled for the next launch.</strong><span>${pending.source ? `Backup ${esc(base(pending.source))}` : 'A backup'} will replace the current evidence database when NEVR next starts${when(pending.requested_at) ? ` (scheduled ${esc(when(pending.requested_at))})` : ''}. Anything analyzed or labeled since that backup will not be in it. Cancel to keep the database as it is.</span></div><button class="btn" data-restore-cancel>Cancel the restore</button>` };
+    return null;
+  }
+  async function loadRestoreState() {
+    const el = $('restore-banner');
+    try {
+      const banner = restoreBannerHTML(await getJSON('api/setup'));
+      el.hidden = !banner; el.className = 'restore-banner' + (banner && banner.tone ? ' ' + banner.tone : ''); el.innerHTML = banner ? banner.html : '';
+    } catch (_) { /* the connection banner already reports an unreachable engine */ }
+  }
+  function refreshPanels() { loadRestoreState(); loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); refreshHealth(); loadStudio(); }
   for (const [id, loaders] of [['advanced-calibration', [loadCalibration, loadRegression]], ['advanced-tools', [loadStudio]]]) {
     $(id).addEventListener('toggle', (e) => {
       if (!e.target.open || !lazyStale[id]) return;
