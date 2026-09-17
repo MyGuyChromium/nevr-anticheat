@@ -296,8 +296,13 @@ jobs:
           # The updater installs a release only when this is strictly newer
           # than the installed build, so a re-run or out-of-order publish of an
           # older commit is refused by clients instead of downgrading them.
-          $commitTimeRaw = (& git show -s --format=%cI $env:GITHUB_SHA | Select-Object -First 1)
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitTimeRaw)) { throw "Could not read the committer time of $env:GITHUB_SHA" }
+          # Collect all output first: "| Select-Object -First 1" stops git early
+          # and PowerShell 7 then reports a failing exit code for it.
+          $commitTimeLines = @(& git show -s --format=%cI $env:GITHUB_SHA)
+          if ($LASTEXITCODE -ne 0 -or $commitTimeLines.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commitTimeLines[0])) {
+            throw "Could not read the committer time of $env:GITHUB_SHA (git exit code $LASTEXITCODE)"
+          }
+          $commitTimeRaw = [string]$commitTimeLines[0]
           $invariant = [Globalization.CultureInfo]::InvariantCulture
           $commitTime = [DateTimeOffset]::Parse($commitTimeRaw.Trim(), $invariant).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'", $invariant)
           # A silently ignored -X (renamed variable, different normalisation)
