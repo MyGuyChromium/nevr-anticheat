@@ -229,7 +229,7 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 		return in, err
 	}
 	if bound != 0 {
-		return in, errors.New("hash-bound review annotations are immutable; create a new session for a correction")
+		return in, ErrBoundOpportunityImmutable
 	}
 	var overlapping int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities
@@ -322,13 +322,35 @@ func (s *Store) ListCalibrationOpportunities(ctx context.Context, matchID, detec
 	return out, rows.Err()
 }
 
+// ErrBoundOpportunityImmutable is returned when a caller tries to edit or
+// delete the annotation a revealed blind-review session produced.
+var ErrBoundOpportunityImmutable = errors.New("hash-bound review annotations are immutable; create a new session for a correction")
+
+// DeleteCalibrationOpportunity removes a manual or imported ground-truth
+// window. The annotation a revealed blind-review session produced is refused
+// with ErrBoundOpportunityImmutable: its ballots and session are permanent,
+// and RevealBlindReview only checks for an overlapping annotation, so deleting
+// the consensus would let the same window be voted again until the wanted
+// answer appears (and would let verified ground truth that hurts a candidate
+// detector's gate metrics be removed selectively). The guard and the delete
+// are one statement, so they cannot interleave with a reveal.
 func (s *Store) DeleteCalibrationOpportunity(ctx context.Context, opportunityID string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM calibration_opportunities WHERE opportunity_id = ?`, strings.TrimSpace(opportunityID))
+	opportunityID = strings.TrimSpace(opportunityID)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM calibration_opportunities WHERE opportunity_id = ? AND review_session_id = ''`, opportunityID)
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, nil
+	}
+	var bound int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities WHERE opportunity_id = ?`, opportunityID).Scan(&bound); err != nil {
+		return false, err
+	}
+	if bound != 0 {
+		return false, ErrBoundOpportunityImmutable
+	}
+	return false, nil
 }
 
 // DetectorPromotion is a fail-closed approval for exactly one detector in a
