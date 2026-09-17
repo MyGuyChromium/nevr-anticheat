@@ -304,7 +304,8 @@ test('the update card decides before the click: a refused downgrade is not "up t
   assert.notEqual(older.tag, 'up to date');
   assert.notEqual(older.tone, 'ok');
   assert.deepEqual([older.button, older.canInstall], ['Nothing to install', false]);
-  assert.match(text(older), /not newer than this build, so nothing will be installed/);
+  assert.match(text(older), /^Nothing will be installed\. The published Windows release \(aaaaaaaaaaaa/);
+  assert.match(text(updateView({ downgrade: true, install_supported: true })), /Nothing will be installed\. The published Windows release is not newer than this build\./, 'a missing reason still says why');
   assert.ok(text(older).includes(reason), 'the engine\'s sentence is shown as written');
   assert.match(text(older), /installing it by hand would replace this build with one that is not newer/);
   // Contract: downgrade implies available=false. If an engine ever sent both, the page still must not offer the install.
@@ -349,6 +350,7 @@ test('library import reports rows this PC kept as "kept local", not as rejected 
   assert.equal(kept.status, 'Imported 1 evidence record · 4 kept local (newer label on this PC).');
   assert.doesNotMatch(kept.status, /reject/i);
   assert.match(kept.html, /Kept local \(newer label on this PC\)/);
+  assert.match(kept.html, /4 <span class="muted">2 labels, 1 review, 1 opportunity<\/span>/);
   assert.match(kept.html, /This is not an error\./);
   assert.match(kept.html, /2 newer on this PC; 2 where the imported row is equally old but different, or carries no review time/);
   assert.match(kept.html, /<dt>Rejected<\/dt><dd>0<\/dd>/);
@@ -385,14 +387,15 @@ test('the Regression Lab keeps "no current analysis for this match" apart from "
   const attention = html.slice(html.indexOf('Needs attention'), html.indexOf('data-regression-untested'));
   const untested = html.slice(html.indexOf('data-regression-untested'));
   assert.match(attention, /Needs attention<span class="count">2</);
-  assert.match(attention, /Detector stayed quiet<span class="explain">The match was analyzed here/);
-  assert.match(attention, /Detector fires here<span class="explain">severity 0\.72 · confidence 0\.80 · &lt;b&gt;21 m\/s&lt;\/b&gt;/);
+  assert.match(attention, /<b>Detector stayed quiet\.<\/b> The match was analyzed here/);
+  assert.match(attention, /<b>Detector fires here\.<\/b> Severity 0\.72 · confidence 0\.80 · &lt;b&gt;21 m\/s&lt;\/b&gt;/);
+  assert.equal((attention.match(/<th>/g) || []).length, 4, 'the lab card is half-width: four columns, as before');
   assert.doesNotMatch(attention, /SYN-AWAY|SYN-STALE|No current analysis/, 'an untested label is never listed as a failing one');
   assert.match(untested, /No current analysis for this match<span class="count">2</);
   assert.match(untested, /neither passing nor failing\. This is not the detector staying quiet/);
-  assert.doesNotMatch(untested, /Detector stayed quiet</);
-  assert.match(untested, /Match not stored on this PC<span class="explain">This match is not stored on this PC\. &lt;Analyze&gt; its recording here first\./);
-  assert.match(untested, /Stored, never analyzed here<span class="explain">Analyze its recording again\./);
+  assert.doesNotMatch(untested, /Detector stayed quiet\./);
+  assert.match(untested, /<b>Match not stored on this PC\.<\/b> This match is not stored on this PC\. &lt;Analyze&gt; its recording here first\./);
+  assert.match(untested, /<b>Stored, never analyzed here\.<\/b> Analyze its recording again\./);
   assert.doesNotMatch(untested, /data-open="SYN-AWAY"/, 'a match that is not stored cannot be opened');
   assert.match(untested, /data-open="SYN-STALE"/);
   assert.match(html, /<span>Not tested<\/span><b>2<\/b><small class="muted">no current analysis for 2 matches/);

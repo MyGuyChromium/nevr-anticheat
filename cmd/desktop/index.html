@@ -446,6 +446,7 @@
   .import-result h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
   .import-result .explain { display: block; color: var(--ink-2); font-size: var(--text-xs); margin-top: 2px; }
   .bad-text { color: var(--bad); font-weight: 600; }
+  .explain.lab-now b { color: var(--ink); font-weight: 600; }
   .conflict-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 48px; margin-top: 16px; }
   .conflict-grid h4, .conflict-confirm h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
   .conflict-confirm { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--bad); border-radius: var(--radius-sm); background: var(--bad-bg); }
@@ -1878,7 +1879,7 @@
       s ? (L.counts.throws ? '' : (s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.')) : 'Goals and throws are unavailable for this stored match; only detector signals are drawn.',
       clustered ? `${fmtInt(clustered)} mark${clustered === 1 ? ' stands' : 's stand'} for several events too close to separate at this width; every event stays in the tables.` : '',
       L.undated ? `${fmtInt(L.undated)} event${L.undated === 1 ? '' : 's'} had no usable time and appear only in the tables.` : '',
-      L.hasPhases ? '' : (s && L.hasTime ? 'Game phases are not drawn: this stored match carries no game-status runs (a legacy recording, or raw ticks archived before phases were recorded). An unshaded timeline is not a claim of continuous live play.' : ''),
+      L.hasPhases ? '' : (s && L.hasTime ? 'Game phases are not drawn: this match carries no game-status runs (the recording named no game status, or its raw ticks were archived before phases were recorded). An unshaded timeline is not a claim of continuous live play.' : ''),
       L.hasPhases && s && s.phases_merged > 0 ? `Phase bands are approximate: ${fmtInt(s.phases_merged)} very short status run${s.phases_merged === 1 ? ' was' : 's were'} folded into a neighbour.` : '',
       L.phasesSkipped ? `${fmtInt(L.phasesSkipped)} game-status run${L.phasesSkipped === 1 ? '' : 's'} had no usable span and ${L.phasesSkipped === 1 ? 'is' : 'are'} not drawn.` : '',
       L.lanesDropped ? `${fmtInt(L.lanesDropped)} further player${L.lanesDropped === 1 ? ' is' : 's are'} not drawn; the tables list everyone.` : '',
@@ -2746,7 +2747,8 @@
   function libraryImportView(result) {
     const r = result || {};
     const sum = (o) => Object.values(o && typeof o === 'object' ? o : {}).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
-    const kinds = (o) => Object.entries(o && typeof o === 'object' ? o : {}).filter(([, n]) => Number.isFinite(n) && n > 0).map(([kind, n]) => `${fmtInt(n)} ${esc(kind)}`).join(', ');
+    const singular = { labels: 'label', reviews: 'review', opportunities: 'opportunity', notes: 'note', filters: 'filter' };
+    const kinds = (o) => Object.entries(o && typeof o === 'object' ? o : {}).filter(([, n]) => Number.isFinite(n) && n > 0).map(([kind, n]) => `${fmtInt(n)} ${esc(n === 1 && Object.hasOwn(singular, kind) ? singular[kind] : kind)}`).join(', ');
     const imported = sum(r.imported), rejected = sum(r.rejected);
     // kept_local is the superset; an engine from before it only reports the newer-local subset.
     const keptAll = r.kept_local ? sum(r.kept_local) : sum(r.kept_newer_local), newer = Math.min(keptAll, sum(r.kept_newer_local));
@@ -2813,16 +2815,17 @@
     const untestedCount = Number.isFinite(r.no_current_analysis) ? r.no_current_analysis : untested.length;
     if (!r.total && !untestedCount) return '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
     const failed = items.filter((x) => !x.passed);
-    const label = (x) => `${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}`;
+    // The lab sits in a half-width card: what the current analysis says goes under the expectation, not in a fifth column.
+    const label = (x, outcome) => `${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}<span class="explain lab-now">${outcome}</span>`;
     const where = (x, stored = true) => (stored ? `<button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button>` : `<span class="mono">${esc(x.match_id)}</span> · ${fmtInt(x.frame_index)}`);
     const now = (x) => (x.current
-      ? `Detector fires here<span class="explain">severity ${fmtNum(x.current.severity, 2)} · confidence ${fmtNum(x.current.confidence, 2)}${x.current.observed_value ? ` · ${esc(x.current.observed_value)}` : ''}</span>`
-      : 'Detector stayed quiet<span class="explain">The match was analyzed here and no signal was raised near this frame.</span>');
+      ? `<b>Detector fires here.</b> Severity ${fmtNum(x.current.severity, 2)} · confidence ${fmtNum(x.current.confidence, 2)}${x.current.observed_value ? ` · ${esc(x.current.observed_value)}` : ''}`
+      : '<b>Detector stayed quiet.</b> The match was analyzed here and no signal was raised near this frame.');
     const matchesCount = Number.isFinite(r.no_current_analysis_matches) ? r.no_current_analysis_matches : new Set(untested.map((x) => x.match_id)).size;
     const state = (x) => (x.analysis_state === 'match_not_stored' ? 'Match not stored on this PC' : x.analysis_state === 'not_analyzed' ? 'Stored, never analyzed here' : 'No current analysis');
     return `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div>${untestedCount ? `<div class="health-card"><span>Not tested</span><b>${fmtInt(untestedCount)}</b><small class="muted">no current analysis for ${fmtInt(matchesCount)} match${matchesCount === 1 ? '' : 'es'}</small></div>` : ''}</div>
-      ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Current analysis</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x)}</td><td>${now(x)}</td><td>${where(x)}</td></tr>`).join('')}</tbody></table></details>` : (r.total ? '<p class="summary-note regression-pass">Every tested expectation currently passes.</p>' : '<p class="summary-note">No label could be tested yet.</p>')}
-      ${untestedCount ? `<details class="sub" ${failed.length ? '' : 'open'} data-regression-untested><summary><span class="tog"></span><h3>No current analysis for this match<span class="count">${fmtInt(untestedCount)}</span></h3></summary><p class="summary-note">These labels were not tested, so they are neither passing nor failing. This is not the detector staying quiet: there is no analysis on this PC to compare them with.</p>${untested.length ? `<table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Why it was not tested</th><th>Match / frame</th></tr></thead><tbody>${untested.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x)}</td><td>${esc(state(x))}${x.analysis_note ? `<span class="explain">${esc(x.analysis_note)}</span>` : ''}</td><td>${where(x, x.analysis_state !== 'match_not_stored')}</td></tr>`).join('')}</tbody></table>` : ''}</details>` : ''}
+      ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation · current analysis</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x, now(x))}</td><td>${where(x)}</td></tr>`).join('')}</tbody></table></details>` : (r.total ? '<p class="summary-note regression-pass">Every tested expectation currently passes.</p>' : '<p class="summary-note">No label could be tested yet.</p>')}
+      ${untestedCount ? `<details class="sub" ${failed.length ? '' : 'open'} data-regression-untested><summary><span class="tog"></span><h3>No current analysis for this match<span class="count">${fmtInt(untestedCount)}</span></h3></summary><p class="summary-note">These labels were not tested, so they are neither passing nor failing. This is not the detector staying quiet: there is no analysis on this PC to compare them with.</p>${untested.length ? `<table><thead><tr><th>Detector</th><th>Player</th><th>Expectation · why it was not tested</th><th>Match / frame</th></tr></thead><tbody>${untested.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x, `<b>${esc(state(x))}.</b>${x.analysis_note ? ` ${esc(x.analysis_note)}` : ''}`)}</td><td>${where(x, x.analysis_state !== 'match_not_stored')}</td></tr>`).join('')}</tbody></table>` : ''}</details>` : ''}
       <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.${r.superseded_labels > 0 ? ` ${fmtInt(r.superseded_labels)} older label${r.superseded_labels === 1 ? '' : 's'} of a re-analyzed observation ${r.superseded_labels === 1 ? 'was' : 'were'} folded into the newest one, so each observation counts once.` : ''}</p>`;
   }
   async function loadRegression() {
@@ -2879,7 +2882,7 @@
     if (u.error) { tag = 'check unavailable'; tone = 'bad'; button = 'Unavailable'; notes.push({ text: u.error }); }
     else if (u.downgrade) {
       tag = 'published release is not newer'; tone = ''; button = 'Nothing to install';
-      notes.push({ strong: 'The published Windows release is not newer than this build, so nothing will be installed.', text: u.downgrade_reason || '' });
+      notes.push({ strong: 'Nothing will be installed.', text: u.downgrade_reason || 'The published Windows release is not newer than this build.' });
       notes.push({ text: 'Manual download opens that release; installing it by hand would replace this build with one that is not newer.' });
     } else if (u.available) { tag = 'update available'; tone = 'warn'; button = blocked ? 'One-click install unavailable' : 'Install update'; }
     if (blocked && !u.downgrade) notes.push({ strong: u.available ? 'One-click install is not available on this copy.' : '', text: `${u.available ? '' : 'One-click install is not available on this copy: '}${why || 'The engine gave no reason.'}${u.available ? ' The verified installer can still be downloaded and run manually.' : ''}` });
