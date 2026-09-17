@@ -179,7 +179,15 @@ func (s *server) handleRegressionLab(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if _, ok := byMatch[review.MatchID]; !ok {
-			byMatch[review.MatchID], _ = store.GetMatchEvents(ctx, review.MatchID)
+			// A read failure is not detector behaviour: with no events loaded,
+			// every "False positive" label would look fixed and every
+			// "Correct" label broken. Report the failure instead.
+			events, eventErr := store.GetMatchEvents(ctx, review.MatchID)
+			if eventErr != nil {
+				writeError(w, 500, "loading current detector events for %s: %v", review.MatchID, eventErr)
+				return
+			}
+			byMatch[review.MatchID] = events
 			contexts[review.MatchID], _ = store.GetMatchContext(ctx, review.MatchID)
 		}
 		current := findReviewedEvent(review, byMatch[review.MatchID])
