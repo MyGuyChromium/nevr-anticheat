@@ -76,6 +76,9 @@ func TestLegacyJSONLoadMatchesOpen(t *testing.T) {
 	if err != nil || mc.MatchID != "bounds" || len(frames) != 3 {
 		t.Fatalf("ReadMatch: %v %+v %d frames", err, mc, len(frames))
 	}
+	if mc.ReplayFile != "legacy.json" {
+		t.Fatalf("ReplayFile = %q; the uploader's local path must not be persisted", mc.ReplayFile)
+	}
 }
 
 // TestLegacyJSONRejectsPlayerFlood: every "{}," used to become ~600 bytes of

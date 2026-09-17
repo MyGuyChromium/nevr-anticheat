@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -402,8 +403,10 @@ func convertHeader(h *ReplayHeader, path string) *model.MatchContext {
 		TeamAssignments: h.Teams,
 		ServerRegion:    h.ServerRegion,
 		Source:          "replay",
-		ReplayFile:      path,
-		Physics:         model.DefaultPhysics(),
+		// The file name only, like every other source: the full path names the
+		// uploader's user profile and would be persisted and exported as evidence.
+		ReplayFile: filepath.Base(path),
+		Physics:    model.DefaultPhysics(),
 	}
 }
 
