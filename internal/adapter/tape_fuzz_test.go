@@ -65,6 +65,12 @@ func FuzzNativeTapeRaw(f *testing.F) {
 // FuzzNativeTapeContainer exercises actual file dispatch, compression preflight,
 // the pinned codec, and mapping together. Limits stay enabled. Truncation seeds
 // include the magic/header, mid-stream envelopes, and footer/checksum boundary.
+//
+// Unlike the replay targets this one still writes a file per exec: the pinned
+// codec (codec.NewReader) and checkTapeContainer only accept a file name, so
+// the container cannot be fed from memory without changing tape.go. The cost
+// is throughput (and a slow O(n^2) minimisation of the large seed); run it
+// with a short -fuzzminimizetime.
 func FuzzNativeTapeContainer(f *testing.F) {
 	dir := f.TempDir()
 	path := filepath.Join(dir, "fuzz.tape")

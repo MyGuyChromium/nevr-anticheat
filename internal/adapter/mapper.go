@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -26,6 +27,15 @@ type MappingResult struct {
 	// SpectatorsDropped is the number of player entries on non-blue/orange
 	// teams (SPECTATORS, unknown) that were excluded from this snapshot.
 	SpectatorsDropped int
+	// DuplicatePlayersDropped is the number of blue/orange player entries
+	// dropped because an earlier entry of this snapshot had the same player id.
+	DuplicatePlayersDropped int
+	// LimitError is set when roster limits are enforced (EnforceRosterLimits)
+	// and the snapshot exceeds one. The snapshot is then ignored entirely: no
+	// frames, no context, and no mapper state (time base, frame index, match
+	// roster) is touched. It wraps ErrTooManySnapshotPlayers or
+	// ErrTooManyMatchPlayers and reads as a sentence for a moderator.
+	LimitError error
 }
 
 // MappingWarning is a non-fatal issue where a safe default was used.
@@ -77,6 +87,12 @@ type MapperStats struct {
 	ClockSteps int `json:"clock_steps"`
 	// PossessionConflicts counts ticks where more than one player reported possession.
 	PossessionConflicts int `json:"possession_conflicts"`
+	// DuplicatePlayerEntries counts blue/orange player entries dropped because
+	// their player id had already appeared in the same snapshot (the first
+	// entry wins). Storage keys frames by (match, player, frame index), so a
+	// second frame for the same id could only be dropped silently or break a
+	// later re-analysis.
+	DuplicatePlayerEntries int `json:"duplicate_player_entries"`
 
 	// Direction-vector basis quality, counted per converted pose (body + both hands).
 	BasesProper         int `json:"bases_proper"`
@@ -134,6 +150,16 @@ type Mapper struct {
 
 	stats MapperStats
 
+	// Roster limits for untrusted recordings (0 = not enforced); see
+	// EnforceRosterLimits. matchPlayers is the set of blue/orange player ids
+	// seen in the current match and is only kept while a limit is enforced.
+	maxSnapshotEntries int
+	maxSnapshotPlayers int
+	maxMatchPlayers    int
+	matchPlayers       map[string]struct{}
+	// tickSeen is the reused per-snapshot set behind duplicate-id detection.
+	tickSeen map[string]struct{}
+
 	// Track which fields have been warned about (warn once per field)
 	warnedFields map[string]bool
 
@@ -160,6 +186,139 @@ const (
 	clockStepThreshold = 1.0
 )
 
+// Roster limits for recordings, which are untrusted uploads. An Echo Arena
+// match has at most ten players on the two teams (the live ingest path caps a
+// frame at 16, the native tape path at 64 slots). Without a limit, a crafted
+// 800 KB replay with 10,000 players per snapshot took 3.7 GB of heap and
+// wrote a 1.9 GB database.
+const (
+	// MaxSnapshotPlayers bounds the blue/orange players of one snapshot.
+	MaxSnapshotPlayers = 32
+	// MaxSnapshotPlayerEntries bounds every player entry of one snapshot,
+	// spectators and unmapped teams included (they are counted in diagnostics).
+	MaxSnapshotPlayerEntries = 64
+	// MaxMatchPlayers bounds the distinct blue/orange player ids of one match
+	// (per-player state, coverage and summary documents grow with it).
+	MaxMatchPlayers = 64
+)
+
+var (
+	// ErrTooManySnapshotPlayers: one snapshot lists more players than
+	// MaxSnapshotPlayers / MaxSnapshotPlayerEntries.
+	ErrTooManySnapshotPlayers = errors.New("too many players in one snapshot")
+	// ErrTooManyMatchPlayers: one match names more distinct players than
+	// MaxMatchPlayers.
+	ErrTooManyMatchPlayers = errors.New("too many different players in one match")
+)
+
+const damagedRecordingHint = "the file is damaged or was not made by a recorder, so this match was not imported"
+
+// EnforceRosterLimits makes the mapper refuse snapshots that exceed
+// MaxSnapshotPlayers, MaxSnapshotPlayerEntries or MaxMatchPlayers (see
+// MappingResult.LimitError). The replay parser enables it for every upload;
+// producers with their own limits (live ingest, native tape) do not need it.
+func (m *Mapper) EnforceRosterLimits() {
+	m.maxSnapshotEntries = MaxSnapshotPlayerEntries
+	m.maxSnapshotPlayers = MaxSnapshotPlayers
+	m.maxMatchPlayers = MaxMatchPlayers
+}
+
+// snapshotSizeError applies the per-snapshot limits. It is cheap (it only
+// reads slice lengths) so callers can run it before doing any per-player work.
+func (m *Mapper) snapshotSizeError(raw *EchoVRSessionResponse) error {
+	if raw == nil || (m.maxSnapshotEntries <= 0 && m.maxSnapshotPlayers <= 0) {
+		return nil
+	}
+	entries, mapped := 0, 0
+	for teamIdx := range raw.Teams {
+		n := len(raw.Teams[teamIdx].Players)
+		entries += n
+		if _, ok := MappedSessionTeamName(raw, teamIdx); ok {
+			mapped += n
+		}
+	}
+	if m.maxSnapshotPlayers > 0 && mapped > m.maxSnapshotPlayers {
+		return fmt.Errorf("%w: %d players on the two teams (limit %d; an Echo Arena match has at most ten); %s",
+			ErrTooManySnapshotPlayers, mapped, m.maxSnapshotPlayers, damagedRecordingHint)
+	}
+	if m.maxSnapshotEntries > 0 && entries > m.maxSnapshotEntries {
+		return fmt.Errorf("%w: %d player entries including spectators (limit %d); %s",
+			ErrTooManySnapshotPlayers, entries, m.maxSnapshotEntries, damagedRecordingHint)
+	}
+	return nil
+}
+
+// admitMatchPlayers adds the snapshot's blue/orange player ids to the match
+// roster, or refuses the snapshot (leaving the roster untouched) when that
+// would exceed the per-match limit.
+func (m *Mapper) admitMatchPlayers(raw *EchoVRSessionResponse) error {
+	if m.maxMatchPlayers <= 0 {
+		return nil
+	}
+	var fresh []string
+	for teamIdx := range raw.Teams {
+		if _, ok := MappedSessionTeamName(raw, teamIdx); !ok {
+			continue
+		}
+		players := raw.Teams[teamIdx].Players
+		for i := range players {
+			pid := playerID(players[i])
+			if _, known := m.matchPlayers[pid]; known {
+				continue
+			}
+			repeated := false
+			for _, id := range fresh {
+				repeated = repeated || id == pid
+			}
+			if !repeated {
+				fresh = append(fresh, pid)
+			}
+		}
+	}
+	if len(m.matchPlayers)+len(fresh) > m.maxMatchPlayers {
+		return fmt.Errorf("%w: more than %d different player ids under one session id; %s",
+			ErrTooManyMatchPlayers, m.maxMatchPlayers, damagedRecordingHint)
+	}
+	if len(fresh) > 0 && m.matchPlayers == nil {
+		m.matchPlayers = make(map[string]struct{})
+	}
+	for _, pid := range fresh {
+		m.matchPlayers[pid] = struct{}{}
+	}
+	return nil
+}
+
+// duplicatePlayerEntries returns the blue/orange entries of a snapshot whose
+// player id already appeared earlier in it (team order, then player order):
+// the first entry wins. It returns nil for the normal case of no repeats.
+// A repeated id is either a damaged recording or players without a user id
+// sharing a name ("name:<name>").
+func (m *Mapper) duplicatePlayerEntries(raw *EchoVRSessionResponse) map[*EchoVRPlayer]struct{} {
+	if m.tickSeen == nil {
+		m.tickSeen = make(map[string]struct{})
+	}
+	clear(m.tickSeen)
+	var dups map[*EchoVRPlayer]struct{}
+	for teamIdx := range raw.Teams {
+		if _, ok := MappedSessionTeamName(raw, teamIdx); !ok {
+			continue
+		}
+		players := raw.Teams[teamIdx].Players
+		for i := range players {
+			pid := playerID(players[i])
+			if _, seen := m.tickSeen[pid]; !seen {
+				m.tickSeen[pid] = struct{}{}
+				continue
+			}
+			if dups == nil {
+				dups = make(map[*EchoVRPlayer]struct{})
+			}
+			dups[&players[i]] = struct{}{}
+		}
+	}
+	return dups
+}
+
 // NewMatch resets the per-match state: the time base (Timestamp restarts at
 // 0 on the next snapshot, which becomes MatchContext.StartTime), the frame
 // index, the per-player timestamp history and the duplicate fingerprint.
@@ -179,6 +338,7 @@ func (m *Mapper) NewMatch() {
 	m.lastThrow = EchoVRLastThrow{}
 	m.haveLastThrow = false
 	m.throwClientID, m.throwSessionID = "", ""
+	m.matchPlayers = nil
 }
 
 // NewFile resets both per-match state and file-level diagnostics. NewMatch
@@ -228,12 +388,34 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 		return result
 	}
 
+	// Roster limits come first: a refused snapshot must not cost per-player
+	// work or leave any trace in the mapper's state.
+	limitErr := m.snapshotSizeError(raw)
+	if limitErr == nil {
+		limitErr = m.admitMatchPlayers(raw)
+	}
+	if limitErr != nil {
+		result.LimitError = limitErr
+		result.Errors = append(result.Errors, MappingError{Field: "teams", Message: limitErr.Error()})
+		return result
+	}
+
 	if !m.haveFirstSample {
 		m.haveFirstSample = true
 		m.firstSampleTime = sampleTime
 	}
 
-	result.MatchCtx = m.mapMatchContext(raw, result)
+	// A player id repeated within the snapshot keeps its first entry only, for
+	// the roster, the possession pass and the frames alike.
+	dups := m.duplicatePlayerEntries(raw)
+	if len(dups) > 0 {
+		result.DuplicatePlayersDropped = len(dups)
+		m.stats.DuplicatePlayerEntries += len(dups)
+		m.warnOnce(result, "teams", "duplicate_player_id",
+			"the same player id appears more than once in one snapshot; the first entry is kept and the repeats are dropped (counted as duplicate_player_entries)")
+	}
+
+	result.MatchCtx = m.mapMatchContext(raw, dups)
 
 	clientID := uniqueClientPlayer(raw)
 	if clientID != m.throwClientID || raw.SessionID != m.throwSessionID {
@@ -289,8 +471,11 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 			continue
 		}
 		for i := range team.Players {
-			sampledPlayers++
 			p := &team.Players[i]
+			if _, dup := dups[p]; dup {
+				continue
+			}
+			sampledPlayers++
 			// Both fields must be explicit. HasDisc keeps its established
 			// one-field/legacy fallback semantics for existing detectors.
 			allHoldingKnown = allHoldingKnown && heldItemKnown(p.HoldingLeft) && heldItemKnown(p.HoldingRight)
@@ -336,6 +521,9 @@ func (m *Mapper) MapSessionAt(raw *EchoVRSessionResponse, sampleTime time.Time) 
 
 		for i := range team.Players {
 			player := &team.Players[i]
+			if _, dup := dups[player]; dup {
+				continue
+			}
 			pid := playerID(*player)
 
 			dt := 0.0
@@ -600,7 +788,7 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 }
 
 // mapMatchContext extracts match-level metadata.
-func (m *Mapper) mapMatchContext(raw *EchoVRSessionResponse, result *MappingResult) *model.MatchContext {
+func (m *Mapper) mapMatchContext(raw *EchoVRSessionResponse, dups map[*EchoVRPlayer]struct{}) *model.MatchContext {
 	mc := &model.MatchContext{
 		MatchID:         raw.SessionID, // CONFIRMED
 		GameMode:        raw.MatchType, // CONFIRMED
@@ -622,11 +810,13 @@ func (m *Mapper) mapMatchContext(raw *EchoVRSessionResponse, result *MappingResu
 		if !ok {
 			continue
 		}
-		for _, p := range team.Players {
-			pid := playerID(p)
-			if _, dup := mc.TeamAssignments[pid]; !dup {
-				mc.PlayerIDs = append(mc.PlayerIDs, pid)
+		for i := range team.Players {
+			p := &team.Players[i]
+			if _, dup := dups[p]; dup {
+				continue // the first entry of a repeated id decides team and name
 			}
+			pid := playerID(*p)
+			mc.PlayerIDs = append(mc.PlayerIDs, pid)
 			mc.TeamAssignments[pid] = teamName
 			if p.Name != "" {
 				if mc.PlayerNames == nil {
