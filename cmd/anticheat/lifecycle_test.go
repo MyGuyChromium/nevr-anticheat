@@ -117,7 +117,7 @@ func TestAnalyzeReplay_ForceKeepsPreviousAnalysisOnParseFailure(t *testing.T) {
 	ctx := context.Background()
 	const matchID = "SYN-FIXTURE-001"
 	captureStdout(t, func() {
-		if err := analyzeReplay(ctx, a, fixtureReplay, false); err != nil {
+		if err := analyzeReplay(ctx, a, fixtureReplay, analyzeIntake{}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -129,7 +129,7 @@ func TestAnalyzeReplay_ForceKeepsPreviousAnalysisOnParseFailure(t *testing.T) {
 
 	corrupt := writeCorruptCopy(t, t.TempDir(), 30)
 	var err error
-	captureStdout(t, func() { err = analyzeReplay(ctx, a, corrupt, true) })
+	captureStdout(t, func() { err = analyzeReplay(ctx, a, corrupt, analyzeIntake{Force: true}) })
 	if err == nil || !strings.Contains(err.Error(), "reading echoreplay") {
 		t.Fatalf("corrupt forced analyze: err = %v, want a parse error", err)
 	}
@@ -139,7 +139,7 @@ func TestAnalyzeReplay_ForceKeepsPreviousAnalysisOnParseFailure(t *testing.T) {
 	// Without --force a stored match is left alone and reported as such;
 	// the file is still read through (a later session would be analyzed),
 	// so the corrupt line is reported too.
-	out := captureStdout(t, func() { err = analyzeReplay(ctx, a, corrupt, false) })
+	out := captureStdout(t, func() { err = analyzeReplay(ctx, a, corrupt, analyzeIntake{}) })
 	if err == nil || !strings.Contains(err.Error(), "reading echoreplay") || !strings.Contains(out, "already stored") {
 		t.Errorf("non-forced analyze of a stored, corrupt replay: err=%v out=%s", err, out)
 	}
@@ -150,7 +150,7 @@ func TestAnalyzeReplay_ForceKeepsPreviousAnalysisOnParseFailure(t *testing.T) {
 	// A good replay with --force replaces the analysis exactly once: the
 	// seeded events are cleared and the seeded pending case, whose player the
 	// real analysis does not flag, is closed (not deleted).
-	out = captureStdout(t, func() { err = analyzeReplay(ctx, a, fixtureReplay, true) })
+	out = captureStdout(t, func() { err = analyzeReplay(ctx, a, fixtureReplay, analyzeIntake{Force: true}) })
 	if err != nil {
 		t.Fatalf("forced analyze: %v", err)
 	}

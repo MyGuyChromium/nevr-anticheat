@@ -32,7 +32,7 @@ func TestRunAnalyze_TwoSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{}) })
 	if !strings.Contains(out, "Parsed 480 player-frames from "+replayPath) || strings.Count(out, "Session id changes (matches):  1 (2 matches in file)") != 1 {
 		t.Errorf("file header and diagnostics should appear once:\n%s", out)
 	}
@@ -46,7 +46,7 @@ func TestRunAnalyze_TwoSessions(t *testing.T) {
 		t.Errorf("analyze output:\n%s", out)
 	}
 
-	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{}) })
 	for _, want := range []string{"Match SYN-FIXTURE-001 is already stored", "Match SYN-FIXTURE-002 is already stored"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("second analyze lacks %q:\n%s", want, out)
@@ -56,7 +56,7 @@ func TestRunAnalyze_TwoSessions(t *testing.T) {
 		t.Errorf("second analyze without --force should refuse both matches and still report the file it read:\n%s", out)
 	}
 
-	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{Force: true}) })
 	if strings.Count(out, "Cleared previous analysis for") != 2 || strings.Count(out, "Match: ") != 2 ||
 		strings.Count(out, "Stored 240 telemetry frames (0 already present), 0 raw ticks (60 already present)") != 2 {
 		t.Errorf("forced analyze output:\n%s", out)
@@ -171,17 +171,17 @@ func TestRunAnalyze_SyntheticReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	replayPath := filepath.Join("..", "..", "tests", "fixtures", "synthetic_session.echoreplay")
-	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	out := captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{}) })
 	for _, want := range []string{"Match: SYN-FIXTURE-001", "Frames: 120 processed, 0 invalid", "Stored 480 telemetry frames", "120 raw ticks"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("analyze output lacks %q:\n%s", want, out)
 		}
 	}
-	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, false) })
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{}) })
 	if !strings.Contains(out, "already stored") {
 		t.Errorf("second analyze should refuse without --force:\n%s", out)
 	}
-	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, true) })
+	out = captureStdout(t, func() { runAnalyze(cfgPath, replayPath, analyzeIntake{Force: true}) })
 	if !strings.Contains(out, "Cleared previous analysis") || !strings.Contains(out, "Stored 480 telemetry frames (0 already present), 0 raw ticks (120 already present)") {
 		t.Errorf("forced analyze output:\n%s", out)
 	}
