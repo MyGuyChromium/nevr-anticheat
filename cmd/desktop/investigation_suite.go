@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"math"
@@ -718,9 +719,26 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{"labels": 0, "reviews": 0, "opportunities": 0, "notes": 0, "filters": 0}
 	rejected := map[string]int{"labels": 0, "reviews": 0, "opportunities": 0, "notes": 0, "filters": 0}
 	var firstError string
+	// keptLocal counts every row that was NOT imported because this PC's own
+	// review was kept: the local one is newer, equally old but different, or the
+	// imported one carries no review time. That is the merge working as
+	// designed, not a failure, so such rows are neither "rejected" nor do they
+	// clear "ok". It includes the rows counted in kept_newer_local below.
+	keptLocal := map[string]int{"labels": 0, "reviews": 0, "opportunities": 0}
+	var keptLocalExamples []string
+	noteKeptLocal := func(kind, what string) {
+		keptLocal[kind]++
+		if len(keptLocalExamples) < 20 {
+			keptLocalExamples = append(keptLocalExamples, what)
+		}
+	}
 	record := func(kind string, err error) {
 		if err == nil {
 			counts[kind]++
+			return
+		}
+		if errors.Is(err, sqlite.ErrImportKeptLocal) {
+			noteKeptLocal(kind, err.Error())
 			return
 		}
 		rejected[kind]++
@@ -735,6 +753,7 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 	kept := map[string]int{"labels": 0, "reviews": 0}
 	var keptExamples []string
 	keep := func(kind, what string) {
+		noteKeptLocal(kind, what)
 		kept[kind]++
 		if len(keptExamples) < 20 {
 			keptExamples = append(keptExamples, what)
@@ -779,7 +798,8 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 		totalRejected += count
 	}
 	writeJSON(w, 200, map[string]any{"ok": totalRejected == 0, "imported": counts, "rejected": rejected, "first_error": firstError,
-		"kept_newer_local": kept, "kept_newer_local_examples": keptExamples})
+		"kept_newer_local": kept, "kept_newer_local_examples": keptExamples,
+		"kept_local": keptLocal, "kept_local_examples": keptLocalExamples})
 }
 
 func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) {
