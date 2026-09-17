@@ -2,10 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -308,21 +310,75 @@ type CrossMatchReviewCase struct {
 	UpdatedAt       time.Time      `json:"updated_at,omitempty"`
 }
 
-// StoreCrossMatchReviewCase inserts or refreshes the aggregate case for a
-// player. On conflict the scores, matches, detectors and explanation are
-// updated, but a status a moderator has set (anything other than 'pending')
-// is preserved and created_at keeps its original value. Superseded negative-
-// review cases keep their entire audit snapshot. A relevant current negative
-// review also closes a first insert: without an exact evidence-snapshot
-// fingerprint we cannot establish that a concurrent aggregate was recomputed.
+// Outcomes of StoreCrossMatchReviewCaseResult.
+const (
+	// CrossMatchCaseCreated: the player's first aggregate case was inserted.
+	CrossMatchCaseCreated = "created"
+	// CrossMatchCaseRefreshed: an existing case was updated in place; a status
+	// a moderator set is preserved.
+	CrossMatchCaseRefreshed = "refreshed"
+	// CrossMatchCaseNewCase: the player's latest case is a finished audit
+	// record (superseded by a negative review, or decided/closed by a moderator
+	// over a narrower match scope), so the aggregate opened a successor case.
+	CrossMatchCaseNewCase = "new_case"
+	// CrossMatchCaseRevoked: the player had no case and the aggregate still
+	// contains evidence a current human review rejected, so it was inserted
+	// closed (an audit record), never pending.
+	CrossMatchCaseRevoked = "revoked"
+	// CrossMatchCaseIgnored: nothing was written. The aggregate contains
+	// rejected evidence and must not replace the player's existing case.
+	CrossMatchCaseIgnored = "ignored"
+)
+
+// CrossMatchStoreResult reports what StoreCrossMatchReviewCaseResult did, so a
+// caller never counts an ignored write as a created or refreshed case.
+type CrossMatchStoreResult struct {
+	CaseID           string `json:"case_id"` // the row written, or the untouched latest row when ignored
+	Outcome          string `json:"outcome"`
+	Status           string `json:"status"`
+	SupersededCaseID string `json:"superseded_case_id,omitempty"` // set for CrossMatchCaseNewCase
+}
+
+// StoreCrossMatchReviewCase is StoreCrossMatchReviewCaseResult without the
+// outcome.
 func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchReviewCase) error {
+	_, err := s.StoreCrossMatchReviewCaseResult(ctx, rc)
+	return err
+}
+
+// StoreCrossMatchReviewCaseResult inserts or refreshes the aggregate case for
+// a player. rc.CaseID is the base id of a case lineage (BuildCrossMatchReviewCase
+// uses "XM-<player>"); successors are "<base>-r2", "<base>-r3", ...
+//
+//   - An open case (pending, assigned, in_review, appealed) is refreshed in
+//     place: scores, matches, detectors and explanation are updated, a status a
+//     moderator set is preserved and created_at keeps its original value.
+//   - A finished case is an audit record and is never reopened. A case a
+//     negative review superseded keeps its whole snapshot; a case a moderator
+//     decided or closed keeps its match scope (a false_positive verdict must
+//     never grow to cover matches the moderator did not see) and is refreshed
+//     only while the aggregate stays inside that scope. Otherwise the aggregate
+//     opens a successor case, so one "no" label or one verdict can never freeze
+//     the player's only case against later evidence.
+//   - A pending aggregate is rejected only when a current negative review
+//     overlaps its scope AND it still contains evidence that review made
+//     ineligible, i.e. it was computed before the review. It is then ignored,
+//     or, for a player without any case, inserted closed as an audit record.
+//     An aggregate computed afterwards cannot contain rejected evidence
+//     (GetAllPlayerEvents filters it), which the per-detector event counts
+//     verify inside this transaction.
+func (s *Store) StoreCrossMatchReviewCaseResult(ctx context.Context, rc CrossMatchReviewCase) (CrossMatchStoreResult, error) {
+	var out CrossMatchStoreResult
+	if strings.TrimSpace(rc.CaseID) == "" || strings.TrimSpace(rc.PlayerID) == "" {
+		return out, fmt.Errorf("cross-match case needs a case id and a player id")
+	}
 	matchIDsJSON, err := json.Marshal(rc.MatchIDs)
 	if err != nil {
-		return fmt.Errorf("marshal match ids: %w", err)
+		return out, fmt.Errorf("marshal match ids: %w", err)
 	}
 	detectorsJSON, err := json.Marshal(rc.Detectors)
 	if err != nil {
-		return fmt.Errorf("marshal detectors: %w", err)
+		return out, fmt.Errorf("marshal detectors: %w", err)
 	}
 	status := rc.Status
 	if status == "" {
@@ -330,19 +386,64 @@ func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchRevi
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return out, err
 	}
 	defer tx.Rollback()
+
+	revoked := false
 	if status == CaseStatusPending {
 		negative, err := currentNegativeReviewTx(ctx, tx, rc.PlayerID, string(matchIDsJSON))
 		if err != nil {
-			return err
+			return out, err
 		}
 		if negative {
-			status = CaseStatusClosed
-			rc.Explanation = crossMatchReviewRevoked + " " + rc.Explanation
+			if revoked, err = aggregateHasIneligibleEvidenceTx(ctx, tx, rc, string(matchIDsJSON)); err != nil {
+				return out, err
+			}
 		}
 	}
+	explanation := rc.Explanation
+	if revoked {
+		status = CaseStatusClosed
+		explanation = crossMatchReviewRevoked + " " + explanation
+	}
+
+	latest, predecessorID, found, err := latestCrossMatchCaseTx(ctx, tx, rc.CaseID, rc.PlayerID)
+	if err != nil {
+		return out, err
+	}
+	targetID, outcome := rc.CaseID, CrossMatchCaseCreated
+	switch {
+	case !found:
+	case revoked:
+		// Totals computed before a review must not replace anything: not a
+		// finished audit record, and not an open case either. Every negative
+		// review already closed the pending cases it overlapped, so an open
+		// case was computed from eligible evidence; the next aggregation
+		// refreshes it.
+		return CrossMatchStoreResult{CaseID: latest.CaseID, Outcome: CrossMatchCaseIgnored, Status: latest.Status}, nil
+	case !crossMatchCaseFinished(latest.Status):
+		targetID, outcome = latest.CaseID, CrossMatchCaseRefreshed
+	case strings.Contains(latest.Explanation, crossMatchReviewRevoked) || !matchScopeWithin(rc.MatchIDs, latest.MatchIDs):
+		outcome = CrossMatchCaseNewCase
+	default:
+		targetID, outcome = latest.CaseID, CrossMatchCaseRefreshed
+	}
+	if outcome == CrossMatchCaseNewCase {
+		out.SupersededCaseID, predecessorID = latest.CaseID, latest.CaseID
+		if targetID, err = nextCrossMatchCaseIDTx(ctx, tx, rc.CaseID); err != nil {
+			return out, err
+		}
+	}
+	if targetID != rc.CaseID && predecessorID != "" {
+		// Written on every refresh too, so the successor never loses the
+		// pointer to the audit record it continues.
+		explanation = fmt.Sprintf(crossMatchSuccessorNote, predecessorID) + " " + explanation
+	}
+	if revoked {
+		outcome = CrossMatchCaseRevoked
+	}
+
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO cross_match_review_cases
 		 (case_id, player_id, match_ids, match_count, severity, cumulative_score, decayed_score,
@@ -362,15 +463,154 @@ func (s *Store) StoreCrossMatchReviewCase(ctx context.Context, rc CrossMatchRevi
 			updated_at = excluded.updated_at
 		 WHERE NOT (cross_match_review_cases.status = 'closed'
 		   AND instr(COALESCE(cross_match_review_cases.explanation,''), ?) > 0)`,
-		rc.CaseID, rc.PlayerID, string(matchIDsJSON), rc.MatchCount,
+		targetID, rc.PlayerID, string(matchIDsJSON), rc.MatchCount,
 		rc.Severity, rc.CumulativeScore, rc.DecayedScore,
-		string(detectorsJSON), rc.Explanation, status,
+		string(detectorsJSON), explanation, status,
 		fmtDBTime(rc.CreatedAt), fmtDBTime(time.Now()), crossMatchReviewRevoked,
 	)
 	if err != nil {
-		return err
+		return out, err
 	}
-	return tx.Commit()
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM cross_match_review_cases WHERE case_id = ?`, targetID).Scan(&out.Status); err != nil {
+		return out, err
+	}
+	if err := tx.Commit(); err != nil {
+		return out, err
+	}
+	out.CaseID, out.Outcome = targetID, outcome
+	return out, nil
+}
+
+// crossMatchSuccessorNote must never contain crossMatchReviewRevoked.
+const crossMatchSuccessorNote = "Successor of case %s, which is kept unchanged as an audit record; this case is computed from currently eligible evidence only."
+
+// crossMatchCaseFinished reports a status from which aggregation must not
+// silently continue the same case (review.ValidTransition has no way back to
+// pending from either).
+func crossMatchCaseFinished(status string) bool {
+	return status == CaseStatusDecided || status == CaseStatusClosed
+}
+
+func matchScopeWithin(scope, within []string) bool {
+	known := make(map[string]bool, len(within))
+	for _, id := range within {
+		known[id] = true
+	}
+	for _, id := range scope {
+		if !known[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// latestCrossMatchCaseTx returns the newest case of a lineage: the base id or
+// one of its "-r<n>" successors, for the same player (so a player whose id
+// happens to end in "-r2" is never mistaken for another player's successor).
+func latestCrossMatchCaseTx(ctx context.Context, tx *sql.Tx, baseID, playerID string) (latest CrossMatchReviewCase, predecessorID string, found bool, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+crossMatchCaseColumns+` FROM cross_match_review_cases
+		 WHERE player_id = ? AND (case_id = ? OR substr(case_id, 1, length(?) + 2) = ? || '-r')`,
+		playerID, baseID, baseID, baseID)
+	if err != nil {
+		return latest, "", false, err
+	}
+	defer rows.Close()
+	ids := make(map[int]string)
+	latestRevision := 0
+	for rows.Next() {
+		rc, err := scanCrossMatchCase(rows)
+		if err != nil {
+			return latest, "", false, err
+		}
+		revision := 1
+		if rc.CaseID != baseID {
+			n, err := strconv.Atoi(rc.CaseID[len(baseID)+2:])
+			if err != nil || n < 2 {
+				continue // not a successor id this store generated
+			}
+			revision = n
+		}
+		ids[revision] = rc.CaseID
+		if revision > latestRevision {
+			latest, latestRevision = rc, revision
+		}
+	}
+	for revision := latestRevision - 1; revision >= 1 && predecessorID == ""; revision-- {
+		predecessorID = ids[revision]
+	}
+	return latest, predecessorID, latestRevision > 0, rows.Err()
+}
+
+func nextCrossMatchCaseIDTx(ctx context.Context, tx *sql.Tx, baseID string) (string, error) {
+	for revision := 2; revision < 1_000_000; revision++ {
+		id := fmt.Sprintf("%s-r%d", baseID, revision)
+		var taken int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cross_match_review_cases WHERE case_id = ?`, id).Scan(&taken); err != nil {
+			return "", err
+		}
+		if taken == 0 {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("no free successor id for cross-match case %s", baseID)
+}
+
+// aggregateHasIneligibleEvidenceTx reports whether rc counts more events for
+// any detector than are currently score-eligible for the player inside rc's
+// match scope. That is only possible when the aggregate was computed before a
+// review rejected some of its evidence (or was not computed from this database
+// at all). An aggregate without per-detector counts cannot be verified and is
+// treated as containing rejected evidence.
+func aggregateHasIneligibleEvidenceTx(ctx context.Context, tx *sql.Tx, rc CrossMatchReviewCase, matchIDsJSON string) (bool, error) {
+	if len(rc.Detectors) == 0 {
+		return true, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT de.detector_id, COUNT(*) FROM detection_events de
+		 WHERE de.player_id = ? AND de.match_id IN (SELECT value FROM json_each(?)) AND `+eligibleScoringEventSQL+`
+		 GROUP BY de.detector_id`, rc.PlayerID, matchIDsJSON)
+	if err != nil {
+		return false, fmt.Errorf("verify aggregate evidence: %w", err)
+	}
+	defer rows.Close()
+	eligible := make(map[string]int)
+	for rows.Next() {
+		var detector string
+		var n int
+		if err := rows.Scan(&detector, &n); err != nil {
+			return false, err
+		}
+		eligible[detector] = n
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for detector, counted := range rc.Detectors {
+		if counted > eligible[detector] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListCrossMatchReviewCasesForPlayer returns every aggregate case of a player,
+// oldest first: finished audit records followed by the current case.
+func (s *Store) ListCrossMatchReviewCasesForPlayer(ctx context.Context, playerID string) ([]CrossMatchReviewCase, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+crossMatchCaseColumns+` FROM cross_match_review_cases
+		 WHERE player_id = ? ORDER BY created_at, rowid`, playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cases []CrossMatchReviewCase
+	for rows.Next() {
+		rc, err := scanCrossMatchCase(rows)
+		if err != nil {
+			return nil, err
+		}
+		cases = append(cases, rc)
+	}
+	return cases, rows.Err()
 }
 
 const crossMatchCaseColumns = `case_id, player_id, match_ids, match_count, severity,
@@ -448,8 +688,10 @@ func BuildCrossMatchReviewCase(summary PlayerCrossMatchSummary, table model.Leve
 		return nil
 	}
 	now := time.Now()
-	// Case ID is stable per-player: re-running aggregation refreshes the existing
-	// case rather than creating a new one per run (see StoreCrossMatchReviewCase).
+	// The case id is the stable per-player base of a case lineage: re-running
+	// aggregation refreshes the player's open case rather than creating one per
+	// run, and opens a "-r<n>" successor only once the latest case is a finished
+	// audit record (see StoreCrossMatchReviewCaseResult).
 	return &CrossMatchReviewCase{
 		CaseID:          fmt.Sprintf("XM-%s", summary.PlayerID),
 		PlayerID:        summary.PlayerID,

@@ -204,18 +204,59 @@ func (s *Store) CalibrationWindowHasSamples(ctx context.Context, matchID, player
 // ImportCalibrationOpportunity restores portable evidence before or after its
 // replay is imported. Like imported match labels, it becomes measurable once
 // the referenced match telemetry exists.
+//
+// The library import rules apply (see ImportEventReview): an annotation that
+// is already stored is a no-op, a differing local annotation is only replaced
+// by a strictly newer one (ErrImportKeptLocal otherwise), and calibration
+// exposure is recorded only in the transaction that actually writes a row. A
+// rejected import (hash-bound target, overlapping window) exposes nothing.
 func (s *Store) ImportCalibrationOpportunity(ctx context.Context, in CalibrationOpportunity) error {
 	// Portable text cannot recreate proof of actual bytes/ballot order.
 	in.ReviewSessionID = ""
+	importedAt := in.ReviewedAt
 	in, err := normalizeOpportunity(in)
 	if err != nil {
 		return err
 	}
-	if err := s.RecordCalibrationExposure(ctx, in.MatchID, in.PlayerID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("starting calibration opportunity import: %w", err)
+	}
+	defer tx.Rollback()
+	local, err := scanCalibrationOpportunity(tx.QueryRowContext(ctx,
+		`SELECT `+calibrationOpportunityColumns+` FROM calibration_opportunities WHERE opportunity_id = ?`, in.OpportunityID))
+	switch {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return fmt.Errorf("loading local calibration opportunity: %w", err)
+	case local.ReviewSessionID != "":
+		return ErrBoundOpportunityImmutable
+	case sameOpportunityContent(local, in):
+		return nil // already stored: no new information, no exposure
+	case !importedReviewIsNewer(importedAt, local.ReviewedAt):
+		return keptLocal("ground-truth window", in.OpportunityID, importedAt, local.ReviewedAt)
+	}
+	if err := checkOpportunityWritableTx(ctx, tx, in); err != nil {
 		return err
 	}
-	_, err = s.upsertCalibrationOpportunity(ctx, in)
-	return err
+	if err := recordCalibrationExposureTx(ctx, tx, in.MatchID, in.PlayerID); err != nil {
+		return err
+	}
+	if err := writeCalibrationOpportunityTx(ctx, tx, in); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing calibration opportunity import: %w", err)
+	}
+	return nil
+}
+
+// sameOpportunityContent compares everything a reviewer can change. The review
+// time is deliberately excluded: an identical annotation with another time
+// carries no new information.
+func sameOpportunityContent(a, b CalibrationOpportunity) bool {
+	a.ReviewedAt, b.ReviewedAt = time.Time{}, time.Time{}
+	return a == b
 }
 
 func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in CalibrationOpportunity) (CalibrationOpportunity, error) {
@@ -224,28 +265,47 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 		return in, fmt.Errorf("starting calibration opportunity transaction: %w", err)
 	}
 	defer tx.Rollback()
-	var bound int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities WHERE opportunity_id=? AND review_session_id<>''`, in.OpportunityID).Scan(&bound); err != nil {
+	if err := checkOpportunityWritableTx(ctx, tx, in); err != nil {
 		return in, err
 	}
+	if err := writeCalibrationOpportunityTx(ctx, tx, in); err != nil {
+		return in, err
+	}
+	if err := tx.Commit(); err != nil {
+		return in, fmt.Errorf("committing calibration opportunity: %w", err)
+	}
+	return in, nil
+}
+
+// checkOpportunityWritableTx refuses to replace a hash-bound annotation or to
+// create a second ground-truth window over the same frames.
+func checkOpportunityWritableTx(ctx context.Context, tx *sql.Tx, in CalibrationOpportunity) error {
+	var bound int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities WHERE opportunity_id=? AND review_session_id<>''`, in.OpportunityID).Scan(&bound); err != nil {
+		return err
+	}
 	if bound != 0 {
-		return in, errors.New("hash-bound review annotations are immutable; create a new session for a correction")
+		return ErrBoundOpportunityImmutable
 	}
 	var overlapping int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities
 		WHERE match_id = ? AND player_id = ? AND detector_id = ? AND opportunity_id <> ?
 		AND frame_end >= ? AND frame_start <= ?`, in.MatchID, in.PlayerID, in.DetectorID,
 		in.OpportunityID, in.FrameStart, in.FrameEnd).Scan(&overlapping); err != nil {
-		return in, fmt.Errorf("checking opportunity overlap: %w", err)
+		return fmt.Errorf("checking opportunity overlap: %w", err)
 	}
 	if overlapping > 0 {
-		return in, errors.New("this detector already has an overlapping ground-truth window for the player")
+		return errors.New("this detector already has an overlapping ground-truth window for the player")
 	}
+	return nil
+}
+
+func writeCalibrationOpportunityTx(ctx context.Context, tx *sql.Tx, in CalibrationOpportunity) error {
 	blind := 0
 	if in.BlindReview {
 		blind = 1
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO calibration_opportunities
+	_, err := tx.ExecContext(ctx, `INSERT INTO calibration_opportunities
 		(opportunity_id, match_id, player_id, detector_id, behavior_type, opportunity_kind,
 		 frame_start, frame_end, timestamp_start, timestamp_end, ground_truth, comment,
 		 reviewer_id, blind_review, reviewed_at, verifier_id, verified_ground_truth, evidence_method, evidence_reference)
@@ -265,12 +325,9 @@ func (s *Store) upsertCalibrationOpportunity(ctx context.Context, in Calibration
 		in.Comment, in.ReviewerID, blind, fmtDBTime(in.ReviewedAt),
 		in.VerifierID, in.VerifiedGroundTruth, in.EvidenceMethod, in.EvidenceReference)
 	if err != nil {
-		return in, fmt.Errorf("storing calibration opportunity: %w", err)
+		return fmt.Errorf("storing calibration opportunity: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return in, fmt.Errorf("committing calibration opportunity: %w", err)
-	}
-	return in, nil
+	return nil
 }
 
 const calibrationOpportunityColumns = `opportunity_id, match_id, player_id, detector_id,
@@ -322,13 +379,35 @@ func (s *Store) ListCalibrationOpportunities(ctx context.Context, matchID, detec
 	return out, rows.Err()
 }
 
+// ErrBoundOpportunityImmutable is returned when a caller tries to edit or
+// delete the annotation a revealed blind-review session produced.
+var ErrBoundOpportunityImmutable = errors.New("hash-bound review annotations are immutable; create a new session for a correction")
+
+// DeleteCalibrationOpportunity removes a manual or imported ground-truth
+// window. The annotation a revealed blind-review session produced is refused
+// with ErrBoundOpportunityImmutable: its ballots and session are permanent,
+// and RevealBlindReview only checks for an overlapping annotation, so deleting
+// the consensus would let the same window be voted again until the wanted
+// answer appears (and would let verified ground truth that hurts a candidate
+// detector's gate metrics be removed selectively). The guard and the delete
+// are one statement, so they cannot interleave with a reveal.
 func (s *Store) DeleteCalibrationOpportunity(ctx context.Context, opportunityID string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM calibration_opportunities WHERE opportunity_id = ?`, strings.TrimSpace(opportunityID))
+	opportunityID = strings.TrimSpace(opportunityID)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM calibration_opportunities WHERE opportunity_id = ? AND review_session_id = ''`, opportunityID)
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, nil
+	}
+	var bound int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM calibration_opportunities WHERE opportunity_id = ?`, opportunityID).Scan(&bound); err != nil {
+		return false, err
+	}
+	if bound != 0 {
+		return false, ErrBoundOpportunityImmutable
+	}
+	return false, nil
 }
 
 // DetectorPromotion is a fail-closed approval for exactly one detector in a

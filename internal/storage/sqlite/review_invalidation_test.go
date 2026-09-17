@@ -108,22 +108,35 @@ func TestAggregateFirstInsertRequiresCurrentReviewReconsideration(t *testing.T) 
 	if _, err := s.StoreEventReview(ctx, event.EventID, "no", "", "r"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StoreCrossMatchReviewCase(ctx, pendingAggregate("stale", "p", "m")); err != nil {
+	// Production only ever generates the per-player id (BuildCrossMatchReviewCase),
+	// so the whole reconsideration path has to work under that one id.
+	productionID := BuildCrossMatchReviewCase(PlayerCrossMatchSummary{PlayerID: "p", DecayedScore: 100}, model.DefaultLevelTable()).CaseID
+	stale := pendingAggregate(productionID, "p", "m")
+	stale.Detectors = map[string]int{"MOV_001": 1} // counts the event the review rejected
+	first, err := s.StoreCrossMatchReviewCaseResult(ctx, stale)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rc, _ := s.GetCrossMatchReviewCase(ctx, "stale"); rc.Status != CaseStatusClosed {
-		t.Fatal("first insert ignored negative review")
+	if rc, _ := s.GetCrossMatchReviewCase(ctx, productionID); rc.Status != CaseStatusClosed || first.Outcome != CrossMatchCaseRevoked || first.CaseID != productionID {
+		t.Fatalf("first insert ignored negative review: %+v %+v", rc, first)
 	}
 	if _, err := s.StoreEventReview(ctx, event.EventID, "yes", "explicit reconsideration", "r"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StoreCrossMatchReviewCase(ctx, pendingAggregate("reconsidered", "p", "m")); err != nil {
+	reconsidered, err := s.StoreCrossMatchReviewCaseResult(ctx, stale)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rc, _ := s.GetCrossMatchReviewCase(ctx, "reconsidered"); rc.Status != CaseStatusPending {
-		t.Fatal("latest positive reconsideration was ignored")
+	if reconsidered.Outcome != CrossMatchCaseNewCase || reconsidered.CaseID == productionID || reconsidered.SupersededCaseID != productionID {
+		t.Fatalf("reconsideration under the production id: %+v", reconsidered)
 	}
-	if rc, _ := s.GetCrossMatchReviewCase(ctx, "stale"); rc.Status != CaseStatusClosed {
+	if rc, _ := s.GetCrossMatchReviewCase(ctx, reconsidered.CaseID); rc.Status != CaseStatusPending || rc.PlayerID != "p" {
+		t.Fatalf("latest positive reconsideration was ignored: %+v", rc)
+	}
+	if pending, _ := s.GetPendingCrossMatchReviewCases(ctx, 10); len(pending) != 1 || pending[0].CaseID != reconsidered.CaseID {
+		t.Fatalf("reconsidered player is not in the pending queue: %+v", pending)
+	}
+	if rc, _ := s.GetCrossMatchReviewCase(ctx, productionID); rc.Status != CaseStatusClosed || !strings.Contains(rc.Explanation, crossMatchReviewRevoked) {
 		t.Fatal("reconsideration silently reopened closed historical case")
 	}
 }
