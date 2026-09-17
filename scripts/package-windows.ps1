@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
-    [switch]$BuildInstaller
+    [switch]$BuildInstaller,
+    # Package nevr-desktop.exe as a console program (debugging only).
+    [switch]$AllowConsoleDesktop
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,11 +59,34 @@ try {
         $embeddedCommit = if ($sourceDirty) { "development" } else { $revision }
         if ($sourceDirty) { Write-Warning "Packaging uncommitted changes as a development candidate; source_dirty=true." }
         $buildTime = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        # The desktop app is released as a GUI-subsystem program: double-clicking
+        # it opens only the app window, never a console. Such a process can only
+        # quit by itself once the embedded page sends heartbeats (the server then
+        # exits after the window closes). Without them a windowed build would be
+        # an invisible process nobody can close, so the switch is refused until
+        # the page in this checkout sends them. -AllowConsoleDesktop packages a
+        # console build for debugging.
+        $pageSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "cmd\desktop\index.html")
+        $pageSendsHeartbeat = $pageSource -match "api/heartbeat"
+        $desktopSubsystem = "console"
+        if ($AllowConsoleDesktop) {
+            Write-Warning "Packaging nevr-desktop.exe as a console program (-AllowConsoleDesktop)."
+        }
+        elseif (-not $pageSendsHeartbeat) {
+            Write-Warning "cmd/desktop/index.html does not send api/heartbeat yet; nevr-desktop.exe stays a console program so closing its window cannot leave an invisible process behind."
+        }
+        else {
+            $desktopSubsystem = "windows"
+        }
         foreach ($program in $programs) {
             $target = Join-Path $stage $program.Name
             $linkerFlags = "-s -w"
             if ($program.Name -eq "nevr-desktop.exe") {
                 $linkerFlags += " -X main.buildCommit=$embeddedCommit -X main.buildTime=$buildTime"
+                if ($desktopSubsystem -eq "windows") {
+                    # guiSubsystem=true makes the app log to <data dir>\logs\nevr-desktop.log.
+                    $linkerFlags += " -H=windowsgui -X main.guiSubsystem=true"
+                }
             }
             & go build -buildvcs=true -trimpath -ldflags $linkerFlags -o $target $program.Package
             if ($LASTEXITCODE -ne 0) {
@@ -102,6 +127,7 @@ try {
         source_dirty = $sourceDirty
         embedded_build_commit = $embeddedCommit
         built_at = $buildTime
+        desktop_subsystem = $desktopSubsystem
         executables = @($programs | ForEach-Object {
             [ordered]@{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath (Join-Path $stage $_.Name) -Algorithm SHA256).Hash.ToLowerInvariant() }
         })

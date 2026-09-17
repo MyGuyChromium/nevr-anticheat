@@ -52,6 +52,27 @@ Rollback-NEVR.cmd from LocalAppData\Programs\NEVR-Anticheat to restore the
 newest program snapshot. Database backup/restore is a separate, verified action
 inside the desktop app's Investigation & reliability studio.
 
+WINDOW, LOGS AND QUITTING
+
+Once the app page sends heartbeats, packaged builds start without a console
+window: only the NEVR app window opens. Closing that window quits NEVR a few
+seconds later, after any running analysis, recovery, backup, restore or update
+has finished. Start nevr-desktop.exe with --no-auto-exit to keep it running
+until the in-app Quit button is used.
+
+Without a console, everything NEVR would have printed is written to
+
+  <data folder>\logs\nevr-desktop.log      (rotated at 5 MB, 3 older files kept)
+  <data folder>\logs\nevr-desktop-crash.log (only written if NEVR crashes)
+
+The data folder is the one that holds the database (Health & maintenance >
+Open data folder). If NEVR cannot start, it shows the reason in a dialog and in
+that log. From a terminal, nevr-desktop.exe --console prints there instead.
+
+A database that a newer NEVR has already upgraded is refused by an older copy
+with "needs an update" rather than opened: install the latest version. The
+database is not modified by the refusal.
+
 SPARK REPLAY VIEWER
 
 Detection rows have an Open clip button and every throw-log row has an Open
