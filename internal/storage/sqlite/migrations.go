@@ -62,6 +62,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -141,6 +142,7 @@ var requiredTables = []string{
 	"calibration_split_assignments",
 	"match_analysis_coverage",
 	"blind_evidence_artifacts", "blind_review_sessions", "blind_review_ballots",
+	"match_telemetry_health",
 }
 
 var migrations = []MigrationVersion{
@@ -592,6 +594,20 @@ var migrations = []MigrationVersion{
 		CREATE TRIGGER blind_artifacts_no_update BEFORE UPDATE ON blind_evidence_artifacts BEGIN SELECT RAISE(ABORT,'evidence is immutable'); END;
 		CREATE TRIGGER blind_bindings_no_update BEFORE UPDATE OF binding_json,artifact_sha256,candidate_fingerprint,window_sha256 ON blind_review_sessions BEGIN SELECT RAISE(ABORT,'review bindings are immutable'); END;`,
 	},
+	{
+		// Derived, recomputable from raw ticks: the telemetry/schema health of a
+		// match as the parser saw it, so viewing a stored match never has to
+		// re-read and re-parse every raw tick. source is 'analysis' (written by
+		// the run that parsed the recording) or 'backfill' (rebuilt once from
+		// stored raw ticks for a match analyzed before this table existed).
+		Version: 20, Description: "per-match telemetry health persisted at analysis time",
+		SQL: `CREATE TABLE IF NOT EXISTS match_telemetry_health (
+			match_id    TEXT PRIMARY KEY,
+			source      TEXT NOT NULL DEFAULT 'analysis',
+			health_json TEXT NOT NULL,
+			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);`,
+	},
 }
 
 // normalizeTimestampSQL rewrites every legacy value of one timestamp column
@@ -648,6 +664,17 @@ func RunMigrationsV2(db *sql.DB, logger *slog.Logger) error {
 	)`); err != nil {
 		return fmt.Errorf("creating migration table: %w", err)
 	}
+	// A database migrated by a newer build may hold tables, columns and
+	// invariants this build does not know. Refuse it before migrating or
+	// writing anything: the one-click updater plus rollback makes this a real
+	// situation, and re-stamping user_version below would otherwise hide it.
+	applied, err := AppliedSchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("reading applied schema version: %w", err)
+	}
+	if applied > SchemaVersion() {
+		return &NewerSchemaError{Applied: applied, Supported: SchemaVersion()}
+	}
 
 	for _, m := range migrations {
 		var count int
@@ -690,6 +717,25 @@ func applyMigration(db *sql.DB, m MigrationVersion) error {
 	}
 	return nil
 }
+
+// ErrNewerSchema is matched (errors.Is) by the error NewStore returns for a
+// database whose applied schema version is newer than this binary supports.
+var ErrNewerSchema = errors.New("database schema is newer than this build")
+
+// NewerSchemaError reports a database written by a newer build. Nothing was
+// migrated or written when it is returned.
+type NewerSchemaError struct {
+	Applied   int // highest version recorded in schema_migrations
+	Supported int // SchemaVersion() of this binary
+}
+
+func (e *NewerSchemaError) Error() string {
+	return fmt.Sprintf("this database was written by a newer NEVR-Anticheat (schema version %d; this build supports up to %d). "+
+		"Update the app to open it. The database was not changed", e.Applied, e.Supported)
+}
+
+// Is makes errors.Is(err, ErrNewerSchema) true.
+func (e *NewerSchemaError) Is(target error) bool { return target == ErrNewerSchema }
 
 // SchemaVersion returns the highest migration version this binary knows about.
 func SchemaVersion() int {
