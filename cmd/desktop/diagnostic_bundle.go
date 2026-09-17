@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,42 +30,100 @@ func (s *server) configFingerprint() string {
 	return displayConfigFingerprint(s.engine.Config())
 }
 
+// diagnosticRedactor replaces what identifies people or the match in a
+// diagnostic export. Keys are compared without case, "_" and "-", so the
+// game's sessionid, the app's own session_id and a future sessionId all hit.
 type diagnosticRedactor struct {
-	ids  map[string]string
-	next int
+	players map[string]string // canonical player identity -> PLAYER-nnn
+	secrets map[string]string // literal text -> replacement, for the final sweep
+	next    int
 }
 
+func redactionKey(key string) string {
+	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+}
+
+var (
+	redactedNameKeys = map[string]bool{"name": true, "playername": true, "clientname": true, "displayname": true,
+		"username": true, "personscored": true, "assistedby": true, "assistscored": true}
+	redactedMatchKeys = map[string]bool{"matchid": true, "sessionid": true, "sessionguid": true, "captureid": true,
+		"lobbyid": true, "sourceid": true}
+	redactedOpaqueKeys = map[string]bool{"ip": true, "ipaddress": true, "clientip": true, "sessionip": true, "serverid": true,
+		"accesstoken": true, "refreshtoken": true, "sessiontoken": true, "authtoken": true,
+		"replayfile": true, "sourcefile": true, "sourcepath": true}
+)
+
+func playerIdentityKey(normalized string) bool {
+	return normalized == "userid" || normalized == "playerid" || strings.HasSuffix(normalized, "playerid") ||
+		normalized == "throwerid" || normalized == "possessorid" || normalized == "holderid" ||
+		normalized == "previouspossessorid" || normalized == "scorerid" || normalized == "assistid"
+}
+
+func (r *diagnosticRedactor) remember(literal, replacement string) {
+	if len(literal) < 4 {
+		return // too short to sweep for without shredding unrelated text
+	}
+	if r.secrets == nil {
+		r.secrets = make(map[string]string)
+	}
+	r.secrets[literal] = replacement
+}
+
+// pseudonym maps one player to one stable placeholder. The app's player id
+// ("echovr:1001") and the game's userid (1001) are the same person and get the
+// same placeholder, so the raw tick can still be matched to the derived frames.
 func (r *diagnosticRedactor) pseudonym(value string) string {
 	if value == "" {
 		return ""
 	}
-	if r.ids == nil {
-		r.ids = make(map[string]string)
+	canonical := strings.TrimPrefix(strings.ToLower(value), "echovr:")
+	if r.players == nil {
+		r.players = make(map[string]string)
 	}
-	if found := r.ids[value]; found != "" {
-		return found
+	name := r.players[canonical]
+	if name == "" {
+		r.next++
+		name = fmt.Sprintf("PLAYER-%03d", r.next)
+		r.players[canonical] = name
 	}
-	r.next++
-	name := fmt.Sprintf("PLAYER-%03d", r.next)
-	r.ids[value] = name
+	r.remember(value, name)
+	r.remember("echovr:"+canonical, name)
 	return name
 }
 
+func scalarText(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case json.Number:
+		return v.String(), true
+	default:
+		return "", false
+	}
+}
+
 func (r *diagnosticRedactor) redact(value any, key string) any {
-	lower := strings.ToLower(key)
-	switch lower {
-	case "name", "player_name", "client_name", "display_name", "username", "user_name", "person_scored", "assisted_by", "assist_scored":
-		if value != nil && fmt.Sprint(value) != "" {
+	normalized := redactionKey(key)
+	if text, scalar := scalarText(value); scalar && text != "" {
+		switch {
+		case redactedNameKeys[normalized]:
+			r.remember(text, "[redacted]")
 			return "[redacted]"
-		}
-	case "player_id", "playerid", "userid", "thrower_id", "possessor_id", "holder_id", "previous_possessor_id", "scorer_id", "assist_id":
-		return r.pseudonym(fmt.Sprint(value))
-	case "match_id", "sessionid":
-		if value != nil && fmt.Sprint(value) != "" {
+		case redactedMatchKeys[normalized]:
+			r.remember(text, "MATCH")
 			return "MATCH"
+		case redactedOpaqueKeys[normalized]:
+			r.remember(text, "[redacted]")
+			return "[redacted]"
+		case playerIdentityKey(normalized):
+			// The game's "playerid" is a slot index (0-15), not an identity.
+			if number, isNumber := value.(json.Number); isNumber && key == "playerid" {
+				if slot, err := number.Int64(); err == nil && slot >= 0 && slot < 64 {
+					return value
+				}
+			}
+			return r.pseudonym(text)
 		}
-	case "ip", "ip_address", "client_ip", "access_token", "refresh_token", "session_token", "auth_token":
-		return "[redacted]"
 	}
 	switch current := value.(type) {
 	case map[string]any:
@@ -84,17 +143,75 @@ func (r *diagnosticRedactor) redact(value any, key string) any {
 	}
 }
 
-func redactedJSON(value any) ([]byte, error) {
+// sweep replaces every remembered identity wherever else it appears: map keys
+// (rosters keyed by player id), evidence text, file names, and numbers that
+// are exactly a remembered id. It works on the decoded tree, so the result is
+// always valid JSON. Longer literals go first so an id is not cut in half by
+// a shorter one it contains.
+func (r *diagnosticRedactor) sweep(value any) any {
+	literals := make([]string, 0, len(r.secrets))
+	for literal := range r.secrets {
+		literals = append(literals, literal)
+	}
+	sort.Slice(literals, func(i, j int) bool {
+		if len(literals[i]) != len(literals[j]) {
+			return len(literals[i]) > len(literals[j])
+		}
+		return literals[i] < literals[j]
+	})
+	pairs := make([]string, 0, 2*len(literals))
+	for _, literal := range literals {
+		pairs = append(pairs, literal, r.secrets[literal])
+	}
+	replacer := strings.NewReplacer(pairs...)
+	var walk func(any) any
+	walk = func(node any) any {
+		switch current := node.(type) {
+		case string:
+			return replacer.Replace(current)
+		case json.Number:
+			if replacement, ok := r.secrets[current.String()]; ok {
+				return replacement
+			}
+			return current
+		case map[string]any:
+			out := make(map[string]any, len(current))
+			for key, child := range current {
+				out[replacer.Replace(key)] = walk(child)
+			}
+			return out
+		case []any:
+			out := make([]any, len(current))
+			for i, child := range current {
+				out[i] = walk(child)
+			}
+			return out
+		default:
+			return node
+		}
+	}
+	return walk(value)
+}
+
+// redactedJSON renders value with identities replaced. known are identities
+// the caller already has (the match id, the focus player) so they are swept
+// even where no recognised key carries them.
+func redactedJSON(value any, known map[string]string) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber() // a 64-bit user id must not be rewritten as 3.9e+15
 	var generic any
-	if err := json.Unmarshal(raw, &generic); err != nil {
+	if err := decoder.Decode(&generic); err != nil {
 		return nil, err
 	}
-	redacted := (&diagnosticRedactor{}).redact(generic, "")
-	return json.MarshalIndent(redacted, "", "  ")
+	redactor := &diagnosticRedactor{}
+	for literal, replacement := range known {
+		redactor.remember(literal, replacement)
+	}
+	return json.MarshalIndent(redactor.sweep(redactor.redact(generic, "")), "", "  ")
 }
 
 func addZipBytes(zw *zip.Writer, name string, data []byte) error {
@@ -107,7 +224,12 @@ func addZipBytes(zw *zip.Writer, name string, data []byte) error {
 }
 
 func (s *server) buildDiagnosticBundle(inspection *physicsInspection) ([]byte, error) {
-	inspectionJSON, err := redactedJSON(inspection)
+	known := map[string]string{}
+	if inspection != nil {
+		known[inspection.MatchID] = "MATCH"
+		known[inspection.PlayerName] = "[redacted]"
+	}
+	inspectionJSON, err := redactedJSON(inspection, known)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +237,7 @@ func (s *server) buildDiagnosticBundle(inspection *physicsInspection) ([]byte, e
 		Version: 1, CreatedAt: time.Now().UTC().Format(time.RFC3339), AppVersion: appVersion, BuildRevision: buildRevision(),
 		SchemaVersion: s.schemaVersion(), ConfigFingerprint: s.configFingerprint(),
 		Contents:          []string{"manifest.json", "physics-inspector.redacted.json", "README.txt"},
-		Privacy:           "Known identity fields are redacted or pseudonymized. Raw source and evidence may contain unknown identifying fields or free text; this is not guaranteed anonymous. Inspect before sharing only with authorized private reviewers.",
+		Privacy:           "Known identity fields (player names and ids, the match/session id, addresses, file names) are redacted or pseudonymized wherever their values appear. Raw source and evidence may contain unknown identifying fields or free text; this is not guaranteed anonymous. Inspect before sharing only with authorized private reviewers.",
 		RuntimeProvenance: s.currentRuntimeProvenance(),
 	}
 	manifestJSON, _ := json.MarshalIndent(manifest, "", "  ")

@@ -7,23 +7,32 @@ import (
 	"testing"
 )
 
-func TestDesktopSingleInstanceHandsOffExistingURL(t *testing.T) {
+func TestDesktopSingleInstanceAsksTheRunningAppToShowItsWindow(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "evidence.db")
-	first, existing := claimDesktopInstance(db)
-	if first == nil || existing != "" {
-		t.Fatalf("first claim = %#v, %q", first, existing)
+	first, running := claimDesktopInstance(db, true)
+	if first == nil || running {
+		t.Fatalf("first claim = %#v, %v", first, running)
 	}
 	defer first.close()
-	appURL := "http://127.0.0.1:54321/0123456789abcdef/"
-	first.publish(appURL)
+	shown := make(chan struct{}, 4)
+	first.publish(func() { shown <- struct{}{} })
 
-	second, existing := claimDesktopInstance(db)
-	if second != nil || existing != appURL {
-		t.Fatalf("second claim = %#v, %q; want existing URL", second, existing)
+	second, running := claimDesktopInstance(db, true)
+	if second != nil || !running {
+		t.Fatalf("second claim = %#v, %v; want the running instance", second, running)
 	}
-	other, otherURL := claimDesktopInstance(filepath.Join(t.TempDir(), "other.db"))
-	if other == nil || otherURL != "" {
-		t.Fatalf("separate database claim = %#v, %q", other, otherURL)
+	select {
+	case <-shown:
+	default:
+		t.Fatal("the running instance was not asked to show its window")
+	}
+	// --no-browser only finds out that the app runs; it opens nothing.
+	if third, running := claimDesktopInstance(db, false); third != nil || !running || len(shown) != 0 {
+		t.Fatalf("no-browser claim = %#v, %v, shown=%d", third, running, len(shown))
+	}
+	other, otherRunning := claimDesktopInstance(filepath.Join(t.TempDir(), "other.db"), true)
+	if other == nil || otherRunning {
+		t.Fatalf("separate database claim = %#v, %v", other, otherRunning)
 	}
 	_ = other.close()
 }
@@ -73,21 +82,12 @@ func TestReplayViewerCandidatesPreferSparkInstallAndOverride(t *testing.T) {
 		"OneDrive":           `C:\Users\tester\OneDrive`,
 		"ProgramFiles":       `C:\Program Files`,
 	}
-	candidates := replayViewerCandidates("windows", func(k string) string { return env[k] }, `C:\NEVR`)
+	candidates := replayViewerCandidates("windows", func(k string) string { return env[k] })
 	if got, want := candidates[0], env["NEVR_REPLAY_VIEWER"]; got != want {
 		t.Fatalf("first viewer candidate = %q, want override %q", got, want)
 	}
 	wantSpark := filepath.Join(env["USERPROFILE"], "Documents", "Replay Viewer", "Replay Viewer.exe")
 	if candidates[1] != wantSpark {
 		t.Errorf("Spark install candidate = %q, want %q", candidates[1], wantSpark)
-	}
-	seenSibling := false
-	for _, candidate := range candidates {
-		if candidate == filepath.Join(`C:\NEVR`, "Replay Viewer.exe") {
-			seenSibling = true
-		}
-	}
-	if !seenSibling {
-		t.Errorf("portable sibling viewer missing from %+v", candidates)
 	}
 }

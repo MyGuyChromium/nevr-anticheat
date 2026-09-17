@@ -166,7 +166,7 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 		"playlist": buildPlaylist(events, view.Summary, mc),
 		"limits": []string{
 			"Replays do not identify the physical object contacted by a hand or head; slap, push, head contact, and tracking-loss context remain conservative possibilities.",
-			"Uncertainty bands describe measurement tolerance, not permission to exceed the configured game cap.",
+			"The margin shown around each throw is an unvalidated heuristic scaled by telemetry quality and ping (margin_kind heuristic_unvalidated), not a measured tolerance. It cannot establish that a throw exceeded the configured game cap, and it is not permission to exceed it.",
 			"Detector agreement raises review priority but is not proof because detectors can share telemetry inputs.",
 		},
 	}, nil
@@ -728,10 +728,38 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 			firstError = err.Error()
 		}
 	}
+	// An import merges, it never rolls back: a verdict recorded here after the
+	// imported one was made stays, and the response says which were kept. The
+	// import used to be an unconditional upsert, so an old export (or a
+	// colleague's) silently flipped the moderator's newer verdicts.
+	kept := map[string]int{"labels": 0, "reviews": 0}
+	var keptExamples []string
+	keep := func(kind, what string) {
+		kept[kind]++
+		if len(keptExamples) < 20 {
+			keptExamples = append(keptExamples, what)
+		}
+	}
 	for _, x := range lib.Labels {
+		if local, ok, err := s.engine.Store().GetMatchLabel(r.Context(), x.MatchID); err == nil && ok &&
+			!x.ReviewedAt.IsZero() && local.ReviewedAt.After(x.ReviewedAt) && (local.Label != x.Label || local.Comment != x.Comment) {
+			keep("labels", fmt.Sprintf("match %s: kept %q from %s over imported %q from %s", x.MatchID, local.Label, fmtTime(local.ReviewedAt), x.Label, fmtTime(x.ReviewedAt)))
+			continue
+		}
 		record("labels", s.engine.Store().ImportMatchLabel(r.Context(), x))
 	}
+	localReviews := make(map[string]map[string]sqlite.EventReview)
 	for _, x := range lib.Reviews {
+		reviews, loaded := localReviews[x.MatchID]
+		if !loaded {
+			reviews, _ = s.engine.Store().GetEventReviewsByMatch(r.Context(), x.MatchID)
+			localReviews[x.MatchID] = reviews
+		}
+		if local, ok := reviews[x.EventID]; ok && !x.ReviewedAt.IsZero() && local.ReviewedAt.After(x.ReviewedAt) &&
+			(local.Verdict != x.Verdict || local.Comment != x.Comment) {
+			keep("reviews", fmt.Sprintf("event %s: kept %q from %s over imported %q from %s", x.EventID, local.Verdict, fmtTime(local.ReviewedAt), x.Verdict, fmtTime(x.ReviewedAt)))
+			continue
+		}
 		record("reviews", s.engine.Store().ImportEventReview(r.Context(), x))
 	}
 	for _, x := range lib.Opportunities {
@@ -750,7 +778,8 @@ func (s *server) handleImportLibrary(w http.ResponseWriter, r *http.Request) {
 	for _, count := range rejected {
 		totalRejected += count
 	}
-	writeJSON(w, 200, map[string]any{"ok": totalRejected == 0, "imported": counts, "rejected": rejected, "first_error": firstError})
+	writeJSON(w, 200, map[string]any{"ok": totalRejected == 0, "imported": counts, "rejected": rejected, "first_error": firstError,
+		"kept_newer_local": kept, "kept_newer_local_examples": keptExamples})
 }
 
 func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -775,7 +804,12 @@ func (s *server) handleSetupDiagnostics(w http.ResponseWriter, r *http.Request) 
 	sort.Strings(unsafe)
 	stored, _ := s.engine.Store().GetStoredMatchCount(r.Context())
 	labels, _ := s.engine.Store().MatchLabelCounts(r.Context())
-	writeJSON(w, 200, map[string]any{"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label observations and missed opportunities.", "Export the portable evidence library before moving to another PC."}})
+	// A restore waiting for the next launch can be cancelled, and one that
+	// failed at the last launch is shown until it is dismissed (both through
+	// POST api/maintenance/restore/cancel). Neither stops the app from starting.
+	restorePending, restoreFailed := readPendingRestore(s.engine.Store().Path()), readRestoreFailure(s.engine.Store().Path())
+	writeJSON(w, 200, map[string]any{"restore_pending": restorePending, "restore_failed": restoreFailed,
+		"ready": writable && len(unsafe) == 0, "data_folder": base, "database": db, "writable": writable, "write_error": errorText(err), "spark_installed": sparkOK, "spark_path": sparkPath, "unsafe_detectors": unsafe, "stored_matches": stored, "labels": labels, "steps": []string{"Confirm the evidence folder is writable.", "Install or open Spark Replay Viewer for exact-frame review.", "Add known-clean and confirmed-cheat replays, then label observations and missed opportunities.", "Export the portable evidence library before moving to another PC."}})
 }
 
 func errorText(err error) string {

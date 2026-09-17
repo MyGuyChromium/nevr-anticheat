@@ -112,6 +112,10 @@ func TestDesktopCalibrationPhysicsDiagnosticsAndArchive(t *testing.T) {
 	if strings.Contains(joined, "BlueOne") || strings.Contains(joined, playerID) {
 		t.Fatal("diagnostic ZIP leaked a player name or identifier")
 	}
+	// The app's own frames carry the session id as observation.session_id.
+	if strings.Contains(joined, matchID) || strings.Contains(joined, "Recorder") {
+		t.Fatal("diagnostic ZIP leaked the match/session id or the recorder's name")
+	}
 
 	before, err := s.engine.Store().GetMatchTickCount(context.Background(), matchID)
 	if err != nil || before == 0 {

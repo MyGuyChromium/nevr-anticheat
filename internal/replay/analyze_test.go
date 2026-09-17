@@ -467,14 +467,41 @@ func TestAnalyzeFileAll_StoredCheckPerMatch(t *testing.T) {
 		t.Errorf("second match not stored: %v %v", exists, err)
 	}
 
+	// Force re-analyzes the second match (the same recording of it) but must
+	// not let this file's 60-tick copy of the first match take over the stored
+	// 120-tick recording: that used to leave 240 frames beside 120 raw ticks.
 	results, err = e.AnalyzeFileAll(ctx, path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 || !results[0].Replaced || !results[1].Replaced ||
-		results[0].Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) ||
-		results[1].Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) {
-		t.Errorf("forced run: %+v", results)
+	if len(results) != 2 || !results[0].AlreadyStored || results[0].Replaced || results[0].StoredSource != SourceDifferent ||
+		results[0].SourceDetail == "" || results[0].Result != nil {
+		t.Errorf("forced run let a shorter copy replace the stored first match: %+v", results[0])
+	}
+	if rows := tickRows(t, store, "SYN-FIXTURE-001"); rows.ticks != 120 || rows.frames != 480 {
+		t.Errorf("refused forced match was written to: %+v", rows)
+	}
+	if r := results[1]; !r.Replaced || r.StoredSource != SourceIdentical ||
+		r.Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksIgnored: 60}) {
+		t.Errorf("forced run of the identical second match: %+v", r)
+	}
+
+	// An explicit source replacement swaps the whole recording: no tick of the
+	// previous one is left beside the new frames.
+	results, err = AnalyzeFileAll(ctx, store, path, func() AnalyzeOptions {
+		o := e.analyzeOptions(true)
+		o.ReplaceSource = true
+		return o
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := results[0]; !r.Replaced || !r.SourceReplaced || r.StoredSource != SourceDifferent ||
+		r.Telemetry != (sqlite.TelemetryStoreResult{Inserted: 240, TicksInserted: 60}) {
+		t.Errorf("explicit source replacement: %+v", r)
+	}
+	if rows := tickRows(t, store, "SYN-FIXTURE-001"); rows.ticks != 60 || rows.frames != 240 {
+		t.Errorf("replaced match holds a mix of two recordings: %+v", rows)
 	}
 }
 

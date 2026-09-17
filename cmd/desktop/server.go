@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,6 +177,7 @@ func newServer(engine *replay.Engine, token string) *server {
 	s.mux.HandleFunc("GET "+p+"/api/setup", s.handleSetupDiagnostics)
 	s.mux.HandleFunc("GET "+p+"/api/maintenance/backups", s.handleListBackups)
 	s.mux.HandleFunc("POST "+p+"/api/maintenance/restore", s.handleScheduleRestore)
+	s.mux.HandleFunc("POST "+p+"/api/maintenance/restore/cancel", s.handleCancelRestore)
 	s.mux.HandleFunc(p+"/quit", s.handleQuit)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -360,6 +363,15 @@ type matchView struct {
 	Storage               *sqlite.StorageStats `json:"storage,omitempty"`
 	Warnings              []string             `json:"warnings"`
 	Summary               *replay.MatchSummary `json:"summary,omitempty"`
+	// AlreadyAnalyzed is set on an upload response when this exact recording
+	// was stored before and its analysis is current: the view is the stored
+	// analysis and nothing was written. SourceStatus and SourceDetail say how
+	// the uploaded file relates to the stored recording (replay.SourceRelation)
+	// and IntakeNote is one sentence for the moderator.
+	AlreadyAnalyzed bool   `json:"already_analyzed,omitempty"`
+	SourceStatus    string `json:"source_status,omitempty"`
+	SourceDetail    string `json:"source_detail,omitempty"`
+	IntakeNote      string `json:"intake_note,omitempty"`
 }
 
 // matchData is what a match view is built from, whether the match was just
@@ -765,16 +777,42 @@ type analyzeEntry struct {
 	Match         *matchView      `json:"match,omitempty"`
 	Diagnostic    *fileDiagnostic `json:"diagnostic,omitempty"`
 	Matches       []matchEntry    `json:"matches,omitempty"`
+	// SHA256 identifies the uploaded bytes. AlreadyAnalyzed, SourceStatus and
+	// SourceConflict mirror the first match like the fields above.
+	SHA256          string          `json:"sha256,omitempty"`
+	AlreadyAnalyzed bool            `json:"already_analyzed,omitempty"`
+	SourceStatus    string          `json:"source_status,omitempty"`
+	SourceConflict  *sourceConflict `json:"source_conflict,omitempty"`
 }
 
 // matchEntry is the outcome of one match of an uploaded file: analyzed
-// (Match), or refused because it is already stored.
+// (Match), recognised as already analyzed (OK, AlreadyAnalyzed and the stored
+// Match), or refused because a different recording of it is stored
+// (AlreadyStored, Error and SourceConflict; the stored analysis is untouched).
 type matchEntry struct {
-	OK            bool       `json:"ok"`
-	Error         string     `json:"error,omitempty"`
-	AlreadyStored bool       `json:"already_stored,omitempty"`
-	MatchID       string     `json:"match_id"`
-	Match         *matchView `json:"match,omitempty"`
+	OK              bool            `json:"ok"`
+	Error           string          `json:"error,omitempty"`
+	AlreadyStored   bool            `json:"already_stored,omitempty"`
+	MatchID         string          `json:"match_id"`
+	Match           *matchView      `json:"match,omitempty"`
+	AlreadyAnalyzed bool            `json:"already_analyzed,omitempty"`
+	SourceStatus    string          `json:"source_status,omitempty"`
+	SourceConflict  *sourceConflict `json:"source_conflict,omitempty"`
+}
+
+// sourceConflict tells the page what is stored under the match id an uploaded
+// file also carries, and how to replace it if that is really wanted.
+type sourceConflict struct {
+	MatchID          string `json:"match_id"`
+	Detail           string `json:"detail"`
+	StoredSourceFile string `json:"stored_source_file,omitempty"`
+	StoredAnalyzedAt string `json:"stored_analyzed_at,omitempty"`
+	StoredStartTime  string `json:"stored_start_time,omitempty"`
+	StoredRawTicks   int    `json:"stored_raw_ticks"`
+	// ReplaceField is the multipart field (or query parameter) that, set to
+	// "1" on a new upload of the same file, replaces the stored recording.
+	ReplaceField string `json:"replace_field"`
+	Consequence  string `json:"consequence"`
 }
 
 // mirrorFirst fills the single-match fields from Matches (see analyzeEntry).
@@ -782,27 +820,63 @@ func (e *analyzeEntry) mirrorFirst() {
 	for i := range e.Matches {
 		if m := &e.Matches[i]; m.OK {
 			e.OK, e.MatchID, e.Match = true, m.MatchID, m.Match
+			e.AlreadyAnalyzed, e.SourceStatus = m.AlreadyAnalyzed, m.SourceStatus
 			return
 		}
 	}
 	if len(e.Matches) > 0 {
 		m := e.Matches[0]
 		e.AlreadyStored, e.MatchID, e.Error = m.AlreadyStored, m.MatchID, m.Error
+		e.SourceStatus, e.SourceConflict = m.SourceStatus, m.SourceConflict
 	}
 }
 
 // matchEntry renders one AnalyzeFileAll result.
 func (s *server) matchEntry(ctx context.Context, res *replay.AnalyzeResult, sourceFile string) matchEntry {
+	id := res.MatchCtx.MatchID
+	if res.AlreadyStored && res.StoredSource == replay.SourceDifferent {
+		return s.sourceConflictEntry(ctx, res)
+	}
 	if res.AlreadyStored {
-		id := res.MatchCtx.MatchID
-		return matchEntry{AlreadyStored: true, MatchID: id,
-			Error: fmt.Sprintf("match %s is already stored; tick \"Re-analyze\" to replace its detection events and scores", id)}
+		// The stored recording is this file (or nothing says otherwise): show
+		// the stored analysis. Nothing was written.
+		mv, err := s.storedMatchView(ctx, id)
+		if err != nil {
+			return matchEntry{AlreadyStored: true, MatchID: id, SourceStatus: string(res.StoredSource),
+				Error: fmt.Sprintf("match %s is already analyzed, but its stored analysis could not be loaded: %v", id, err)}
+		}
+		mv.AlreadyAnalyzed, mv.SourceStatus, mv.SourceDetail = true, string(res.StoredSource), res.SourceDetail
+		mv.IntakeNote = "This recording was already analyzed; the stored analysis is shown and nothing was changed. Upload it with Re-analyze to run the detectors again."
+		if res.StoredSource == replay.SourceUnverified {
+			mv.IntakeNote = "A match with this id is already stored and this file could not be compared with it byte for byte (" + res.SourceDetail + "). The stored analysis is shown and nothing was changed."
+		}
+		return matchEntry{OK: true, MatchID: id, Match: &mv, AlreadyAnalyzed: true, SourceStatus: string(res.StoredSource)}
 	}
 	if err := s.recordCalibrationViewExposure(ctx); err != nil {
-		return matchEntry{MatchID: res.MatchCtx.MatchID, Error: fmt.Sprintf("analysis completed, but calibration exposure could not be recorded before displaying findings: %v", err)}
+		return matchEntry{MatchID: id, Error: fmt.Sprintf("analysis completed, but calibration exposure could not be recorded before displaying findings: %v", err)}
 	}
 	mv := s.freshMatchView(ctx, res, sourceFile)
-	return matchEntry{OK: true, MatchID: mv.MatchID, Match: &mv}
+	mv.SourceStatus, mv.SourceDetail = string(res.StoredSource), res.SourceDetail
+	return matchEntry{OK: true, MatchID: mv.MatchID, Match: &mv, SourceStatus: string(res.StoredSource)}
+}
+
+// sourceConflictEntry reports an upload that was refused because a different
+// recording is stored under its match id. It keeps the existing already_stored
+// shape so an older page still shows the message and the stored match link.
+func (s *server) sourceConflictEntry(ctx context.Context, res *replay.AnalyzeResult) matchEntry {
+	id := res.MatchCtx.MatchID
+	conflict := &sourceConflict{MatchID: id, Detail: res.SourceDetail, ReplaceField: "replace_source",
+		Consequence: "Replacing deletes the stored recording's raw ticks, frames, findings and scores for this match and analyzes this file instead. Labels on the previous recording's findings stay in the library but will not be attached to the new findings."}
+	if sm, err := s.engine.Store().GetStoredMatch(ctx, id); err == nil && sm.Context != nil {
+		conflict.StoredSourceFile = filepath.Base(sm.Context.ReplayFile)
+		conflict.StoredAnalyzedAt = fmtTime(sm.IngestedAt)
+		conflict.StoredStartTime = fmtTime(sm.Context.StartTime)
+	}
+	if ticks, _, err := s.engine.Store().GetMatchStorageCounts(ctx, id); err == nil {
+		conflict.StoredRawTicks = ticks
+	}
+	return matchEntry{AlreadyStored: true, MatchID: id, SourceStatus: string(replay.SourceDifferent), SourceConflict: conflict,
+		Error: fmt.Sprintf("A different recording of match %s is already stored. The stored analysis was kept and this file was not analyzed: %s.", id, res.SourceDetail)}
 }
 
 // fileDiagnostic describes an upload that could not be parsed, in enough
@@ -1041,8 +1115,10 @@ func truncate(s string, n int) string {
 }
 
 type analyzeResponse struct {
-	Force   bool           `json:"force"`
-	Results []analyzeEntry `json:"results"`
+	// Force and ReplaceSource echo what the request asked for.
+	Force         bool           `json:"force"`
+	ReplaceSource bool           `json:"replace_source"`
+	Results       []analyzeEntry `json:"results"`
 }
 
 // uploadName reduces a client file name to a safe base name that keeps its
@@ -1064,19 +1140,24 @@ func uploadName(name string) string {
 
 var errUploadTooLarge = errors.New("replay exceeds the 4 GB desktop limit")
 
-func saveUploadPart(dir string, idx int, part *multipart.Part) (path string, err error) {
-	return saveUploadPartLimited(dir, idx, part, maxUploadFileBytes)
+func saveUploadPartLimited(dir string, idx int, part *multipart.Part, maxBytes int64) (path string, err error) {
+	path, _, err = saveUploadPartHashed(dir, idx, part, maxBytes)
+	return path, err
 }
 
-func saveUploadPartLimited(dir string, idx int, part *multipart.Part, maxBytes int64) (path string, err error) {
+// saveUploadPartHashed spools one upload and returns its path and SHA-256. The
+// bytes are written to "<name>.part" and renamed to "<name>" only after the
+// last byte was synced, so a process killed mid-upload never leaves a
+// half-written file under a name crash recovery would analyze as a match.
+func saveUploadPartHashed(dir string, idx int, part *multipart.Part, maxBytes int64) (path, sum string, err error) {
 	sub := filepath.Join(dir, fmt.Sprint(idx))
 	if err := os.MkdirAll(sub, 0o700); err != nil {
-		return "", err
+		return "", "", err
 	}
 	root, err := os.OpenRoot(sub)
 	if err != nil {
 		_ = os.Remove(sub)
-		return "", err
+		return "", "", err
 	}
 	defer func() {
 		if closeErr := root.Close(); err == nil {
@@ -1089,30 +1170,42 @@ func saveUploadPartLimited(dir string, idx int, part *multipart.Part, maxBytes i
 		}
 	}()
 	name := uploadName(part.FileName())
+	partial := name + partialSpoolSuffix
 	path = filepath.Join(sub, name)
-	dst, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	dst, err := root.OpenFile(partial, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	closed := false
 	defer func() {
-		if closeErr := dst.Close(); err == nil {
-			err = closeErr
+		if !closed {
+			_ = dst.Close()
 		}
 		if err != nil {
+			_ = root.Remove(partial)
 			_ = root.Remove(name)
 		}
 	}()
-	written, err := io.Copy(dst, io.LimitReader(part, maxBytes+1))
+	digest := sha256.New()
+	written, err := io.Copy(io.MultiWriter(dst, digest), io.LimitReader(part, maxBytes+1))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if written > maxBytes {
-		return "", errUploadTooLarge
+		return "", "", errUploadTooLarge
 	}
 	if err := dst.Sync(); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return path, nil
+	closed = true
+	if err := dst.Close(); err != nil {
+		return "", "", err
+	}
+	// Complete: only now does the file get the name recovery looks for.
+	if err := root.Rename(partial, name); err != nil {
+		return "", "", err
+	}
+	return path, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func (s *server) beginAnalysis() (context.Context, uint64) {
@@ -1172,11 +1265,14 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad multipart upload: %v", err)
 		return
 	}
-	// Desktop intake is deliberately idempotent from the user's point of view:
-	// uploading a replay that is already in the database refreshes its derived
-	// analysis instead of surfacing an "already stored" refusal. The CLI keeps
-	// its explicit --force safety switch for automation and scripting.
-	const force = true
+	// See intake.go for the policy. "force" re-analyzes a recording that is
+	// already stored; "replace_source" lets a different recording replace the
+	// stored one. Both may be sent as query parameters or as multipart fields
+	// (in any position: analysis starts after the whole request was spooled).
+	request := intakeRequest{
+		Force:         formFlag(r.URL.Query().Get("force")),
+		ReplaceSource: formFlag(r.URL.Query().Get("replace_source")),
+	}
 
 	// Upload spooling, analysis and cleanup are one serialized transaction.
 	// Otherwise the background crash-recovery worker could discover a large
@@ -1212,6 +1308,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	type pendingUpload struct {
 		entry analyzeEntry
 		path  string
+		sum   string
 	}
 	var uploads []pendingUpload
 	for {
@@ -1228,6 +1325,18 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if part.FileName() == "" && (part.FormName() == "force" || part.FormName() == "replace_source") {
+			value, _ := io.ReadAll(io.LimitReader(part, 16))
+			if formFlag(string(value)) {
+				if part.FormName() == "force" {
+					request.Force = true
+				} else {
+					request.ReplaceSource = true
+				}
+			}
+			_ = part.Close()
+			continue
+		}
 		if part.FormName() != "files" || part.FileName() == "" {
 			_, _ = io.Copy(io.Discard, part)
 			_ = part.Close()
@@ -1236,7 +1345,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		entry := analyzeEntry{File: uploadName(part.FileName())}
 		switch strings.ToLower(filepath.Ext(entry.File)) {
 		case ".echoreplay", ".tape", ".json":
-			path, saveErr := saveUploadPart(tmp, len(uploads), part)
+			path, sum, saveErr := saveUploadPartHashed(tmp, len(uploads), part, maxUploadFileBytes)
 			if saveErr != nil {
 				if errors.Is(saveErr, errUploadTooLarge) {
 					entry.Error = errUploadTooLarge.Error()
@@ -1250,7 +1359,8 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 					entry.Error = "saving upload: " + saveErr.Error()
 				}
 			}
-			uploads = append(uploads, pendingUpload{entry: entry, path: path})
+			entry.SHA256 = sum
+			uploads = append(uploads, pendingUpload{entry: entry, path: path, sum: sum})
 		default:
 			_, _ = io.Copy(io.Discard, part)
 			entry.Error = "unsupported file type (expected .echoreplay, a native .tape capture, or a legacy .json replay)"
@@ -1271,7 +1381,10 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	analysisCtx, analysisID := s.beginAnalysis()
 	defer s.finishAnalysis(analysisID)
 
-	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(uploads))}
+	if request.ReplaceSource {
+		request.Force = true
+	}
+	resp := analyzeResponse{Force: request.Force, ReplaceSource: request.ReplaceSource, Results: make([]analyzeEntry, 0, len(uploads))}
 	analyzed := false
 	for _, upload := range uploads {
 		entry, path := upload.entry, upload.path
@@ -1288,7 +1401,8 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		// but the explicit Cancel action can stop it at the next replay tick.
 		queueID := s.runtime.queueStart(entry.File, "upload")
 		started := time.Now()
-		results, err := s.engine.AnalyzeFileAll(analysisCtx, path, force)
+		outcome := s.runtime.analyzeRecording(analysisCtx, path, upload.sum, request)
+		results, err := outcome.Results, outcome.Err
 		recordAnalysisResults(analysisCtx, s.engine, results, "upload", time.Since(started))
 		queueErr := err
 		if queueErr == nil {
@@ -1299,7 +1413,13 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		s.runtime.queueFinish(queueID, len(results), queueErr)
+		// A refused different recording is shown in the queue, but the spooled
+		// copy is consumed all the same: analyzing it again cannot end otherwise.
+		shownErr := queueErr
+		if shownErr == nil {
+			shownErr = outcome.conflictError()
+		}
+		s.runtime.queueFinish(queueID, len(results), shownErr)
 		for _, res := range results {
 			entry.Matches = append(entry.Matches, s.matchEntry(analysisCtx, res, entry.File))
 		}
@@ -1830,7 +1950,8 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
 	w.WriteHeader(http.StatusOK)
-	// #nosec G705 -- csv.Writer produced an attachment, not executable HTML.
+	// #nosec G705 -- an attachment, not HTML; PlayersCSV neutralises spreadsheet
+	// formulas in every cell (replay.CSVSafeCell), since names are untrusted.
 	_, _ = w.Write(sum.PlayersCSV())
 }
 

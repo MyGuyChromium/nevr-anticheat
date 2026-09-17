@@ -106,23 +106,23 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 		t.Errorf("history %+v", hist.Matches)
 	}
 
-	// Both stored: desktop intake transparently refreshes both matches even
-	// when an older client does not send the legacy force field.
+	// Both stored from this very file: recognised as already analyzed. The
+	// stored analysis is shown and nothing is re-run without being asked.
 	resp, out = upload(t, ts, false, map[string]string{"rematch.echoreplay": two})
 	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
 		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
 	}
 	r = out.Results[0]
-	if !out.Force || !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || len(r.Matches) != 2 {
+	if out.Force || !r.OK || !r.AlreadyAnalyzed || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || len(r.Matches) != 2 {
 		t.Fatalf("second upload %+v", r)
 	}
 	for i, m := range r.Matches {
-		if !m.OK || m.AlreadyStored || m.Error != "" || m.Match == nil || !m.Match.Replaced {
+		if !m.OK || !m.AlreadyAnalyzed || m.AlreadyStored || m.Error != "" || m.Match == nil || m.Match.Replaced || !m.Match.AlreadyAnalyzed {
 			t.Errorf("second upload match %d: %+v", i, m)
 		}
 	}
 
-	// First match stored, a new second one: the stored match is refreshed and
+	// First match stored, a new second one: the stored match is recognised and
 	// the new match is inserted in the same ordinary successful response.
 	mixed := filepath.Join(dir, "mixed.echoreplay")
 	if _, _, err := testutil.SplitReplaySessions(fixturePath, mixed, "SYN-FIXTURE-003", 10*time.Minute); err != nil {
@@ -134,7 +134,7 @@ func TestDesktop_AnalyzeTwoSessions(t *testing.T) {
 	}
 	r = out.Results[0]
 	if !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || len(r.Matches) != 2 ||
-		!r.Matches[0].OK || r.Matches[0].MatchID != "SYN-FIXTURE-001" || r.Matches[0].Match == nil || !r.Matches[0].Match.Replaced ||
+		!r.Matches[0].OK || r.Matches[0].MatchID != "SYN-FIXTURE-001" || r.Matches[0].Match == nil || r.Matches[0].Match.Replaced || !r.Matches[0].AlreadyAnalyzed ||
 		!r.Matches[1].OK || r.Matches[1].MatchID != "SYN-FIXTURE-003" || r.Matches[1].Match == nil || r.Matches[1].Match.Replaced {
 		t.Errorf("mixed upload %+v", r)
 	}
@@ -411,13 +411,15 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 		t.Errorf("match summary %+v", m.Summary)
 	}
 
-	// Second upload without the legacy force field: refreshed without an error.
+	// Second upload of the same bytes: already analyzed, the stored analysis is
+	// shown, nothing is replaced and the page is told so.
 	resp, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
 	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 {
 		t.Fatalf("status %d, results %+v", resp.StatusCode, out.Results)
 	}
 	r = out.Results[0]
-	if !out.Force || !r.OK || r.AlreadyStored || r.Error != "" || r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || !r.Match.Replaced {
+	if out.Force || !r.OK || !r.AlreadyAnalyzed || r.SourceStatus != "identical" || r.AlreadyStored || r.Error != "" ||
+		r.MatchID != "SYN-FIXTURE-001" || r.Match == nil || r.Match.Replaced || r.Match.IntakeNote == "" || len(r.Match.Players) != 4 {
 		t.Errorf("second upload %+v", r)
 	}
 
@@ -841,10 +843,10 @@ func TestDesktop_FailureDiagnostics(t *testing.T) {
 		t.Errorf("zip findings %q", d.Findings)
 	}
 
-	// A stored match is accepted as an ordinary refresh, not a parse failure.
+	// A stored match is an ordinary success (already analyzed), not a parse failure.
 	_, out = upload(t, ts, false, map[string]string{"again.echoreplay": fixturePath})
-	if !out.Force || len(out.Results) != 1 || !out.Results[0].OK || out.Results[0].AlreadyStored || out.Results[0].Error != "" || out.Results[0].Diagnostic != nil || out.Results[0].Match == nil || !out.Results[0].Match.Replaced {
-		t.Errorf("stored replay refresh %+v", out.Results)
+	if out.Force || len(out.Results) != 1 || !out.Results[0].OK || !out.Results[0].AlreadyAnalyzed || out.Results[0].AlreadyStored || out.Results[0].Error != "" || out.Results[0].Diagnostic != nil || out.Results[0].Match == nil {
+		t.Errorf("stored replay upload %+v", out.Results)
 	}
 }
 

@@ -124,14 +124,11 @@ func runDesktop(opts runOptions, env *runEnv) error {
 	if logLevel != "" {
 		cfg.General.LogLevel = logLevel
 	}
-	instance, existingURL := claimDesktopInstance(cfg.General.DBPath)
-	if existingURL != "" {
-		fmt.Printf("NEVR-Anticheat is already running: %s\n", existingURL)
-		if !noBrowser {
-			if err := openAppWindow(existingURL); err != nil {
-				return fmt.Errorf("opening the existing app window: %w", err)
-			}
-		}
+	// The running instance opens its own window when asked: its URL carries the
+	// access token and is never sent over the rendezvous socket.
+	instance, alreadyRunning := claimDesktopInstance(cfg.General.DBPath, !noBrowser)
+	if alreadyRunning {
+		fmt.Println("NEVR-Anticheat is already running for this database; its window was brought back.")
 		return nil
 	}
 	if instance != nil {
@@ -153,8 +150,20 @@ func runDesktop(opts runOptions, env *runEnv) error {
 		env.logging = logging
 		fmt.Printf("%s NEVR-Anticheat desktop %s (%s) starting\n", time.Now().UTC().Format(time.RFC3339), appVersion, buildCommit)
 	}
-	if err := applyPendingRestore(cfg.General.DBPath); err != nil {
+	restoreFailed, err := resolvePendingRestore(cfg.General.DBPath)
+	if err != nil {
 		return fmt.Errorf("applying scheduled database restore: %w", err)
+	}
+	if restoreFailed != nil {
+		// The live database was not touched, so nothing justifies refusing to
+		// start. Say it here and keep saying it in the app (api/setup) until the
+		// moderator dismisses it.
+		summary := "The scheduled database restore could not be applied and was cancelled. Your current database was not changed."
+		fmt.Fprintln(os.Stderr, summary+" Reason: "+restoreFailed.Error)
+		if opts.failureDialog {
+			go showStartupDialog("NEVR-Anticheat: restore cancelled", summary+"\n\nReason: "+restoreFailed.Error+
+				"\n\nSchedule the restore again from Maintenance if you still want it.")
+		}
 	}
 	store, err := sqlite.NewStore(cfg.General.DBPath)
 	if err != nil {
@@ -192,7 +201,11 @@ func runDesktop(opts runOptions, env *runEnv) error {
 
 	url := fmt.Sprintf("http://%s/%s/", ln.Addr(), token)
 	if instance != nil {
-		instance.publish(url)
+		instance.publish(func() {
+			if err := openAppWindow(url); err != nil {
+				fmt.Fprintf(os.Stderr, "Could not bring the app window back for a second launch: %v\n", err)
+			}
+		})
 	}
 	announce := fmt.Sprintf("NEVR-Anticheat desktop: open %s (press Ctrl+C to quit)\n", url)
 	if env.logging != nil {

@@ -186,3 +186,92 @@ func TestApplyPendingRestoreKeepsDistinctRecoverySets(t *testing.T) {
 		t.Fatalf("original recovery set changed: %v", err)
 	}
 }
+
+// A scheduled restore whose backup was deleted used to fail every later
+// launch: the request stayed and main returned the error before the store
+// opened. Mutation: make resolvePendingRestore return the error instead of
+// recording it and the first assertion fails.
+func TestFailedScheduledRestoreIsCancelledAndStartupContinues(t *testing.T) {
+	target, original := preparePendingRestore(t)
+	var request restoreRequest
+	doc, _ := os.ReadFile(restoreRequestPath(target))
+	if err := json.Unmarshal(doc, &request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(request.Source); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(filepath.Dir(target), sourceIndexFileName)
+	if err := os.WriteFile(index, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	failure, err := resolvePendingRestore(target)
+	if err != nil || failure == nil || !strings.Contains(failure.Error, "verifying restore source") || failure.Source != request.Source {
+		t.Fatalf("launch 1: failure=%+v err=%v, want a recorded failure and no startup error", failure, err)
+	}
+	if _, err := os.Stat(restoreRequestPath(target)); !os.IsNotExist(err) {
+		t.Fatalf("the failed request is still pending and would fail the next launch too: %v", err)
+	}
+	for suffix, want := range original {
+		if data, err := os.ReadFile(target + suffix); err != nil || string(data) != want {
+			t.Fatalf("live database file %q changed: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(index); err != nil {
+		t.Fatalf("a restore that did not happen dropped the analyzed-files index: %v", err)
+	}
+	if recorded := readRestoreFailure(target); recorded == nil || recorded.Error != failure.Error {
+		t.Fatalf("failure record: %+v", recorded)
+	}
+	if failure, err := resolvePendingRestore(target); err != nil || failure != nil {
+		t.Fatalf("launch 2: failure=%+v err=%v, want a normal start", failure, err)
+	}
+}
+
+// Startup is refused only when the live database could not be put back.
+func TestRestoreRollbackFailureStillStopsStartup(t *testing.T) {
+	target, _ := preparePendingRestore(t)
+	failure, err := resolvePendingRestoreWithRename(target, func(from, to string) error {
+		if strings.Contains(from, ".nevr-restore-stage-") || to == target+"-wal" {
+			return errors.New("locked")
+		}
+		return os.Rename(from, to)
+	})
+	if failure != nil || !errors.Is(err, errRestoreRollbackFailed) {
+		t.Fatalf("failure=%+v err=%v, want a startup error", failure, err)
+	}
+	if _, statErr := os.Stat(restoreRequestPath(target)); statErr != nil {
+		t.Fatalf("request dropped although the database needs attention: %v", statErr)
+	}
+}
+
+func TestSetupReportsAndCancelsRestores(t *testing.T) {
+	s, ts := newTestServer(t)
+	base := ts.URL + "/" + testToken
+	db := s.engine.Store().Path()
+	failed, _ := json.Marshal(restoreFailure{Source: "gone.db", FailedAt: "now", Error: "verifying restore source: missing"})
+	pending, _ := json.Marshal(restoreRequest{Source: "next.db", Target: db})
+	if err := os.WriteFile(restoreFailedPath(db), failed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(restoreRequestPath(db), pending, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var setup struct {
+		Pending *restoreRequest `json:"restore_pending"`
+		Failed  *restoreFailure `json:"restore_failed"`
+	}
+	if resp := getJSON(t, base+"/api/setup", &setup); resp.StatusCode != 200 || setup.Pending == nil || setup.Pending.Source != "next.db" ||
+		setup.Failed == nil || !strings.Contains(setup.Failed.Error, "missing") {
+		t.Fatalf("setup: %+v", setup)
+	}
+	var out map[string]bool
+	if resp := postAPI(t, base+"/api/maintenance/restore/cancel", nil, &out); resp.StatusCode != 200 || !out["cancelled_pending"] || !out["dismissed_failure"] {
+		t.Fatalf("cancel: %d %+v", resp.StatusCode, out)
+	}
+	setup.Pending, setup.Failed = nil, nil
+	if getJSON(t, base+"/api/setup", &setup); setup.Pending != nil || setup.Failed != nil {
+		t.Fatalf("after cancel: %+v", setup)
+	}
+}

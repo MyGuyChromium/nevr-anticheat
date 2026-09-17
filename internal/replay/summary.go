@@ -676,8 +676,32 @@ var csvColumns = []string{
 	"review_status", "review_signals",
 }
 
+// CSVSafeCell neutralises spreadsheet formula injection. Player names, ids and
+// team names come straight from an uploaded recording, and the person under
+// review chooses their own name; encoding/csv only quotes for the CSV grammar,
+// so a name like =HYPERLINK(...) or @SUM(...) would become a live formula when
+// the moderator opens the export in Excel or LibreOffice. A cell that starts
+// with = + - @ or a control character is prefixed with a single quote (the
+// OWASP guidance), which spreadsheets show as text. A plain number such as
+// -1.50 is left alone: it is data, not a formula.
+func CSVSafeCell(cell string) string {
+	if cell == "" {
+		return cell
+	}
+	switch c := cell[0]; {
+	case c == '=' || c == '@' || c < 0x20 || c == 0x7f:
+		return "'" + cell
+	case c == '+' || c == '-':
+		if _, err := strconv.ParseFloat(cell, 64); err == nil && !strings.ContainsAny(cell, "xXpP_nNiI") {
+			return cell
+		}
+		return "'" + cell
+	}
+	return cell
+}
+
 // PlayersCSV renders the roster as CSV (UTF-8, CRLF, header row), one row
-// per player in roster order.
+// per player in roster order. Every cell goes through CSVSafeCell.
 func (s *MatchSummary) PlayersCSV() []byte {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
@@ -690,7 +714,7 @@ func (s *MatchSummary) PlayersCSV() []byte {
 			su = &PlayerSuspicion{Assessment: model.AssessPlayerEvents(p.PlayerID, nil)}
 		}
 		st := p.Stats
-		_ = w.Write([]string{
+		row := []string{
 			p.PlayerID, p.Name, p.Team, strconv.Itoa(p.Level), strconv.Itoa(p.Frames), f(p.FirstSeen, 2), f(p.LastSeen, 2),
 			f(p.PingAvg, 1), strconv.Itoa(p.PingMax),
 			strconv.Itoa(st.Points), strconv.Itoa(st.Goals), strconv.Itoa(st.Assists), strconv.Itoa(st.Saves), strconv.Itoa(st.Steals),
@@ -699,7 +723,11 @@ func (s *MatchSummary) PlayersCSV() []byte {
 			strconv.Itoa(p.Throws.Count), f(p.Throws.MeanSpeed, 2), f(p.Throws.MaxSpeed, 2), strconv.Itoa(p.Throws.Goals),
 			f(su.Score, 2), su.Level, strconv.Itoa(su.Detections), strconv.Itoa(su.ShadowDetections), strings.Join(su.TopDetectors, "; "),
 			su.Assessment.Status, strconv.Itoa(su.Assessment.SignalCount),
-		})
+		}
+		for i := range row {
+			row[i] = CSVSafeCell(row[i])
+		}
+		_ = w.Write(row)
 	}
 	w.Flush()
 	return buf.Bytes()

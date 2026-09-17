@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +78,54 @@ func TestSparkReplayViewerPreservesExactPathAsSingleArgument(t *testing.T) {
 	})
 	if err != nil || got != viewer || called != 1 {
 		t.Fatalf("viewer launch = %q, %v, calls=%d", got, err, called)
+	}
+}
+
+// "Open in Spark" used to run a file named "Replay Viewer.exe" found next to
+// nevr-desktop.exe, which for the portable build is usually Downloads or the
+// Desktop. Mutation: put the executable-directory candidates back, or drop the
+// insideAnyDir check, and a planted file is resolved.
+func TestReplayViewerIsNeverResolvedFromTheAppFolder(t *testing.T) {
+	appDir := t.TempDir()
+	planted := filepath.Join(appDir, "Replay Viewer.exe")
+	nested := filepath.Join(appDir, "Replay Viewer", "Replay Viewer.exe")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{planted, nested} {
+		if err := os.WriteFile(path, []byte("not the viewer"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := t.TempDir()
+	env := map[string]string{"USERPROFILE": home}
+	getenv := func(k string) string { return env[k] }
+	for _, candidate := range replayViewerCandidates("windows", getenv) {
+		if strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(appDir)) {
+			t.Fatalf("the app folder is a viewer candidate: %s", candidate)
+		}
+	}
+	// PATH (or a relative lookup) pointing back into the app folder is refused too.
+	lookPath := func(name string) (string, error) { return filepath.Join(appDir, name), nil }
+	if got := resolveReplayViewers(replayViewerCandidates("windows", getenv), "", []string{appDir}, lookPath); len(got) != 0 {
+		t.Fatalf("resolved a viewer from the app folder: %v", got)
+	}
+
+	// Spark's real install location still resolves, and so does an explicit override.
+	installed := filepath.Join(home, "Documents", "Replay Viewer", "Replay Viewer.exe")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, []byte("viewer"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveReplayViewers(replayViewerCandidates("windows", getenv), "", []string{appDir}, lookPath)
+	if len(got) != 1 || got[0] != installed {
+		t.Fatalf("installed viewer: %v", got)
+	}
+	env["NEVR_REPLAY_VIEWER"] = planted
+	got = resolveReplayViewers(replayViewerCandidates("windows", getenv), planted, []string{appDir}, lookPath)
+	if len(got) == 0 || got[0] != planted {
+		t.Fatalf("explicit override was not honoured: %v", got)
 	}
 }
