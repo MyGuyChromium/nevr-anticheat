@@ -148,86 +148,283 @@ func TestParsePublishedChecksum(t *testing.T) {
 	}
 }
 
-func TestDownloadVerifiedUpdate(t *testing.T) {
-	oldCommit := strings.Repeat("b", 40)
-	previousCommit := buildCommit
-	buildCommit = oldCommit
-	t.Cleanup(func() { buildCommit = previousCommit })
-	for _, tt := range []struct {
-		name   string
-		tamper bool
-	}{
-		{"verified", false},
-		{"tampered download", true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			installer := []byte("signed setup fixture")
-			served := append([]byte(nil), installer...)
-			if tt.tamper {
-				served[0] ^= 0xff
-			}
-			sum := sha256.Sum256(installer)
-			digest := hex.EncodeToString(sum[:])
-			commit := strings.Repeat("a", 40)
-			manifest := updateManifest{SchemaVersion: 1, Tag: updateTag, Commit: commit, Version: "0.10.0"}
-			manifest.Installer.Name = updateInstallerName
-			manifest.Installer.SHA256 = digest
-			manifest.Installer.Size = int64(len(installer))
+// testUpdateDir returns a private staging directory for one test.
+func testUpdateDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "updates")
+}
 
-			refRequests := 0
-			var api *httptest.Server
-			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/git/ref/tags/" + updateTag:
-					refRequests++
-					_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": commit}})
-				case "/releases/tags/" + updateTag:
-					_ = json.NewEncoder(w).Encode(githubRelease{TagName: updateTag, Assets: []githubReleaseAsset{
-						{Name: updateInstallerName, URL: api.URL + "/assets/installer", Size: int64(len(installer))},
-						{Name: updateChecksumName, URL: api.URL + "/assets/checksum"},
-						{Name: updateManifestName, URL: api.URL + "/assets/manifest"},
-					}})
-				case "/assets/installer":
-					_, _ = w.Write(served)
-				case "/assets/checksum":
-					_, _ = io.WriteString(w, digest+"  "+updateInstallerName+"\n")
-				case "/assets/manifest":
-					_ = json.NewEncoder(w).Encode(manifest)
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer api.Close()
+// updateFixture is a fake GitHub API origin serving one rolling release. Every
+// knob defaults to a fully valid release so that each refusal test changes
+// exactly one thing; a test that still passes after its guard is deleted would
+// therefore be a test of nothing.
+type updateFixture struct {
+	commit      string
+	refCommits  []string // successive tag-ref answers; the last one repeats
+	installer   []byte   // bytes the checksum and manifest describe
+	served      []byte   // bytes the installer asset URL actually returns
+	manifest    updateManifest
+	manifestRaw []byte // served verbatim when set
+	releaseRaw  []byte // served verbatim when set
+	refRaw      []byte // served verbatim when set
+	release     func(apiURL string, valid githubRelease) githubRelease
 
-			rt := &desktopRuntime{
-				updateURL:    api.URL,
-				httpClient:   &http.Client{Timeout: time.Second},
-				updateClient: &http.Client{Timeout: time.Second},
-				updateDir:    filepath.Join(t.TempDir(), "updates"),
-			}
-			path, gotCommit, err := rt.downloadVerifiedUpdate(context.Background())
-			if tt.tamper {
-				if err == nil || !strings.Contains(err.Error(), "SHA-256") {
-					t.Fatalf("tampered installer error = %v", err)
-				}
+	refRequests, releaseRequests, assetRequests int
+	api                                         *httptest.Server
+}
+
+func newUpdateFixture(t *testing.T) *updateFixture {
+	t.Helper()
+	f := &updateFixture{commit: strings.Repeat("a", 40), installer: []byte("integrity-checked setup fixture")}
+	f.served = append([]byte(nil), f.installer...)
+	sum := sha256.Sum256(f.installer)
+	f.manifest = updateManifest{SchemaVersion: 1, Tag: updateTag, Commit: f.commit, Version: "0.10.0"}
+	f.manifest.Installer.Name = updateInstallerName
+	f.manifest.Installer.SHA256 = hex.EncodeToString(sum[:])
+	f.manifest.Installer.Size = int64(len(f.installer))
+	return f
+}
+
+func (f *updateFixture) digest() string { return f.manifest.Installer.SHA256 }
+
+func (f *updateFixture) start(t *testing.T) *desktopRuntime {
+	t.Helper()
+	f.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/git/ref/tags/" + updateTag:
+			f.refRequests++
+			if f.refRaw != nil {
+				_, _ = w.Write(f.refRaw)
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
+			commit := f.commit
+			if len(f.refCommits) > 0 {
+				commit = f.refCommits[min(f.refRequests, len(f.refCommits))-1]
 			}
-			if gotCommit != commit || refRequests != 2 {
-				t.Fatalf("commit=%q ref requests=%d", gotCommit, refRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": commit}})
+		case "/releases/tags/" + updateTag:
+			f.releaseRequests++
+			if f.releaseRaw != nil {
+				_, _ = w.Write(f.releaseRaw)
+				return
 			}
-			if stagedHash, err := stagedInstallerSHA256(path); err != nil || stagedHash != digest {
-				t.Fatalf("staged digest = %q, %v", stagedHash, err)
+			release := githubRelease{TagName: updateTag, Assets: []githubReleaseAsset{
+				{Name: updateInstallerName, URL: f.api.URL + "/assets/installer", Size: f.manifest.Installer.Size},
+				{Name: updateChecksumName, URL: f.api.URL + "/assets/checksum"},
+				{Name: updateManifestName, URL: f.api.URL + "/assets/manifest"},
+			}}
+			if f.release != nil {
+				release = f.release(f.api.URL, release)
 			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
+			_ = json.NewEncoder(w).Encode(release)
+		case "/assets/installer":
+			f.assetRequests++
+			_, _ = w.Write(f.served)
+		case "/assets/checksum":
+			f.assetRequests++
+			_, _ = io.WriteString(w, f.digest()+"  "+updateInstallerName+"\n")
+		case "/assets/manifest":
+			f.assetRequests++
+			if f.manifestRaw != nil {
+				_, _ = w.Write(f.manifestRaw)
+				return
 			}
-			if string(got) != string(installer) {
-				t.Fatalf("staged installer = %q", got)
+			_ = json.NewEncoder(w).Encode(f.manifest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.api.Close)
+	return &desktopRuntime{
+		updateURL:    f.api.URL,
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+		updateClient: &http.Client{Timeout: 5 * time.Second},
+		updateDir:    testUpdateDir(t),
+	}
+}
+
+// setInstalledBuild pretends the running binary is a packaged build of commit.
+func setInstalledBuild(t *testing.T, commit string) {
+	t.Helper()
+	previous := buildCommit
+	buildCommit = commit
+	t.Cleanup(func() { buildCommit = previous })
+}
+
+func assertNothingStaged(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Errorf("refused update left %s in the staging directory", entry.Name())
+	}
+}
+
+func TestDownloadVerifiedUpdate(t *testing.T) {
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	f := newUpdateFixture(t)
+	rt := f.start(t)
+	path, gotCommit, err := rt.downloadVerifiedUpdate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCommit != f.commit || f.refRequests != 2 {
+		t.Fatalf("commit=%q ref requests=%d", gotCommit, f.refRequests)
+	}
+	if filepath.Dir(path) != rt.updateDir {
+		t.Fatalf("installer staged at %q, outside %q", path, rt.updateDir)
+	}
+	if stagedHash, err := stagedInstallerSHA256(path); err != nil || stagedHash != f.digest() {
+		t.Fatalf("staged digest = %q, %v", stagedHash, err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(f.installer) {
+		t.Fatalf("staged installer = %q", got)
+	}
+}
+
+// Each case below breaks exactly one property of an otherwise valid release.
+// The "guard" comment names the statement in updater.go whose removal makes
+// that case fail; every one of them was checked by mutation.
+func TestDownloadVerifiedUpdateRefusals(t *testing.T) {
+	padded := func(v any) []byte {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Trailing whitespace keeps the document valid JSON, so only the size
+		// guard, never the decoder, can be what refuses it.
+		return append(raw, []byte(strings.Repeat(" ", maxUpdateMetadataSize+6*1024))...)
+	}
+	for _, tt := range []struct {
+		name    string
+		arrange func(t *testing.T, f *updateFixture)
+		want    string
+		// wantNoAssets asserts the refusal happened before any asset download.
+		wantNoAssets bool
+	}{
+		{
+			// guard: actualHash != publishedHash
+			name:    "tampered download",
+			arrange: func(_ *testing.T, f *updateFixture) { f.served[0] ^= 0xff },
+			want:    "SHA-256",
+		},
+		{
+			// guard: !sameHTTPOrigin(asset.URL, rt.updateURL) in releaseAssets
+			name: "asset URL on another origin",
+			arrange: func(t *testing.T, f *updateFixture) {
+				foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(f.served) }))
+				t.Cleanup(foreign.Close)
+				f.release = func(_ string, valid githubRelease) githubRelease {
+					valid.Assets[0].URL = foreign.URL + "/assets/installer"
+					return valid
+				}
+			},
+			want: "points outside", wantNoAssets: true,
+		},
+		{
+			// guard: afterCommit != releaseCommit after staging
+			name: "rolling tag moved during download",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.refCommits = []string{f.commit, strings.Repeat("c", 40)}
+			},
+			want: "newer Windows release appeared",
+		},
+		{
+			// guard: written != manifest.Installer.Size. The served bytes carry a
+			// matching published hash, so only the size binding can refuse them.
+			name: "download longer than the manifest size",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.served = append(f.served, []byte(" plus appended payload")...)
+				sum := sha256.Sum256(f.served)
+				f.manifest.Installer.SHA256 = hex.EncodeToString(sum[:])
+			},
+			want: "downloaded installer size",
+		},
+		{
+			name: "download shorter than the manifest size",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.served = f.served[:len(f.served)-4]
+				sum := sha256.Sum256(f.served)
+				f.manifest.Installer.SHA256 = hex.EncodeToString(sum[:])
+			},
+			want: "downloaded installer size",
+		},
+		{
+			// guard: duplicate asset name in releaseAssets
+			name: "duplicate asset name",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.release = func(apiURL string, valid githubRelease) githubRelease {
+					valid.Assets = append(valid.Assets, githubReleaseAsset{Name: updateInstallerName, URL: apiURL + "/assets/installer"})
+					return valid
+				}
+			},
+			want: "duplicate asset", wantNoAssets: true,
+		},
+		{
+			// guard: release.TagName != updateTag
+			name: "release metadata for another tag",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.release = func(_ string, valid githubRelease) githubRelease {
+					valid.TagName = "v0.0.1"
+					return valid
+				}
+			},
+			want: "unexpected release tag", wantNoAssets: true,
+		},
+		{
+			// guard: len(raw) > maxUpdateMetadataSize in decodeUpdateJSON
+			name: "oversized release metadata",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.releaseRaw = padded(githubRelease{TagName: updateTag})
+			},
+			want: "safety limit", wantNoAssets: true,
+		},
+		{
+			// guard: the same decodeUpdateJSON limit, reached through the tag ref
+			name: "oversized release revision",
+			arrange: func(_ *testing.T, f *updateFixture) {
+				f.refRaw = padded(map[string]any{"object": map[string]string{"sha": f.commit}})
+			},
+			want: "safety limit", wantNoAssets: true,
+		},
+		{
+			// guard: int64(len(data)) > limit in readAsset
+			name:    "oversized update manifest",
+			arrange: func(_ *testing.T, f *updateFixture) { f.manifestRaw = padded(f.manifest) },
+			want:    "safety limit",
+		},
+		{
+			// guard: sameCommit(buildCommit, releaseCommit)
+			name:    "already on the published revision",
+			arrange: func(t *testing.T, f *updateFixture) { setInstalledBuild(t, f.commit) },
+			want:    "already on the latest", wantNoAssets: true,
+		},
+		{
+			// guard: buildCommit == "development"
+			name:    "development build",
+			arrange: func(t *testing.T, _ *updateFixture) { setInstalledBuild(t, "development") },
+			want:    "development builds cannot replace themselves", wantNoAssets: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setInstalledBuild(t, strings.Repeat("b", 40))
+			f := newUpdateFixture(t)
+			tt.arrange(t, f)
+			rt := f.start(t)
+			path, _, err := rt.downloadVerifiedUpdate(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v (staged %q), want one containing %q", err, path, tt.want)
 			}
+			if tt.wantNoAssets && f.assetRequests != 0 {
+				t.Errorf("%d asset requests were made before the refusal", f.assetRequests)
+			}
+			assertNothingStaged(t, rt.updateDir)
 		})
 	}
 }
