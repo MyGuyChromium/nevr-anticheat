@@ -447,7 +447,10 @@ func TestDesktop_AnalyzeFixture(t *testing.T) {
 	}
 	if stored.MatchID != m.MatchID || len(stored.Players) != 4 || stored.PlayerFrames != 480 || stored.FramesProcessed != 120 ||
 		stored.Players[0].Name != "BlueOne" || stored.Players[0].Team != "blue" || stored.HasScore != m.HasScore ||
-		stored.BlueScore != m.BlueScore || stored.OrangeScore != m.OrangeScore || stored.Diagnostics != nil || stored.Telemetry != nil ||
+		stored.BlueScore != m.BlueScore || stored.OrangeScore != m.OrangeScore || stored.Telemetry != nil ||
+		// The adapter diagnostics of the analysis are persisted with the match's
+		// telemetry health, so a reopened match shows what the import showed.
+		stored.Diagnostics == nil || m.Diagnostics == nil || stored.Diagnostics.FramesMapped != m.Diagnostics.FramesMapped || stored.Diagnostics.Report != m.Diagnostics.Report ||
 		stored.Summary == nil || stored.Summary.MatchID != m.MatchID || len(stored.Summary.Players) != 4 {
 		t.Errorf("stored view %+v", stored)
 	}

@@ -64,6 +64,10 @@ type server struct {
 	quitOnce  sync.Once
 	quit      chan struct{}
 	requests  requestGate
+
+	healthBackfills healthBackfills
+	storageMu       sync.Mutex
+	storageStats    map[string]matchStorageEntry
 }
 
 func newServer(engine *replay.Engine, token string) *server {
@@ -302,6 +306,11 @@ type telemetryHealthView struct {
 	UnknownFields   map[string]int                      `json:"unknown_fields"`
 	FieldPresence   map[string]*adapter.FieldDiagnostic `json:"field_presence"`
 	Compatibility   string                              `json:"compatibility"`
+	// Source and Scope describe a stored report (empty on a fresh analysis):
+	// "analysis" is the parser's own report, "backfill" was rebuilt from stored
+	// raw ticks; scope "file" covers a recording that held several matches.
+	Source string `json:"source,omitempty"`
+	Scope  string `json:"scope,omitempty"`
 }
 
 type matchView struct {
@@ -713,9 +722,12 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 		orange:          orange,
 	})
 	mv.Summary = s.loadSummary(ctx, sm.Context, scores, events)
-	diag, diagErr := storedTelemetryDiagnostics(ctx, store, matchID)
-	if diagErr == nil {
-		mv.TelemetryHealth = telemetryHealth(diag)
+	// Telemetry health was persisted when the match was analyzed; reading it
+	// never touches raw ticks. Matches older than that are rebuilt once.
+	if health, healthErr := s.storedTelemetryHealth(ctx, matchID); healthErr == nil {
+		applyStoredTelemetryHealth(&mv, health)
+	} else if ctx.Err() != nil {
+		return matchView{}, ctx.Err()
 	}
 	s.decorateMatchMetadata(ctx, &mv)
 	return mv, nil
