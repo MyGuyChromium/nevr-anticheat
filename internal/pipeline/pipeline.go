@@ -369,6 +369,11 @@ func (p *Pipeline) ProcessMatch(
 				}
 				sourceReset = true
 			}
+			// A disc that lands on a team's nest outside live play is the game
+			// respawning it after a goal. It is named in the disc detectors'
+			// decision traces (ps.CurrentDisc is still the previous sample
+			// here); it is never an anomaly, a sanitisation or a detector input.
+			coverage.traceDiscJump(pf.PlayerID, fi, ps.CurrentDisc, pf.Disc, matchCtx.IsActivePhase(pf.GamePhase))
 			p.extractor.UpdatePlayerState(ps, pf, matchCtx)
 			p.reviewRelease(ps, fi)
 			framePlayers[pf.PlayerID] = ps
