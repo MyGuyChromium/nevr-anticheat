@@ -503,9 +503,53 @@
   /* Tables retain their column meaning; constrained containers own scrolling. */
   .events, .assessment-players, .stat-tables, .physics-table, .throw-table, .playlist { max-width: 100%; scrollbar-gutter: stable; overscroll-behavior: contain; }
   .events, .assessment-players, .table-scroll, #history, #observations, #flagged { overflow-x: auto; min-width: 0; max-width: 100%; }
-  .who { overflow-wrap: anywhere; }
+  /* A player cell never collapses: auto table layout may not shrink it below a
+     readable measure, names wrap between words and the id sits on its own line. */
+  .who { overflow-wrap: break-word; }
   .who .name { font-weight: 600; }
   .who .id { display: inline-block; font-size: var(--text-xs); max-width: 100%; overflow-wrap: anywhere; }
+  td .who { display: block; min-width: 184px; max-width: 300px; }
+  td .who .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  td .who .id { display: block; margin: 1px 0 0; }
+  /* Wide report tables scroll sideways inside their own container; the first
+     column stays pinned so every number keeps its row label. */
+  .stat-tables :is(th, td):first-child, .events :is(th, td):first-child, .assessment-players :is(th, td):first-child, .throw-table :is(th, td):first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: inset -1px 0 0 var(--line);
+  }
+  .stat-tables thead th:first-child, .events thead th:first-child, .assessment-players thead th:first-child, .throw-table thead th:first-child { z-index: 3; background: var(--panel-solid); }
+  :is(.stat-tables, .events, .assessment-players, .throw-table) tbody tr:hover > td:first-child { background: var(--neutral-bg); }
+  :is(.stat-tables, .events, .assessment-players, .throw-table) tr.tfoot > td:first-child { position: static; box-shadow: none; }
+  tr.cap-breach-row > td:first-child { background: color-mix(in srgb, var(--bad-bg) 45%, var(--panel)); }
+  .stat-tables th, .stat-tables td { padding-inline: 6px; }
+  .stat-tables thead th { letter-spacing: 0; }
+  .stat-tables td .who { min-width: 164px; }
+  .stat-tables table { min-width: 0; }
+  /* Detections: one row per incident, sized to fit the default 1280 px window. */
+  .events td.det { white-space: normal; width: 190px; min-width: 170px; }
+  .events .when, .events .sev-cell { white-space: nowrap; }
+  .events .sev-cell > span { display: block; }
+  .events .sev-cell .conf { margin-top: 6px; color: var(--muted); }
+  .events tbody.incident > tr:first-child > td:not([rowspan]) { border-bottom: 0; padding-bottom: 6px; }
+  .events .evidence-row > td.evidence { padding-top: 0; padding-left: 14px; }
+  .events .evidence .explain, .events .evidence .expected { max-width: 78ch; }
+  .events .evidence .expected { display: block; margin-top: 4px; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+  .evidence-label { margin-right: 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 650; letter-spacing: .035em; text-transform: uppercase; }
+  .events tbody.incident tr:hover { background: transparent; }
+  .events tbody.incident:hover { background: var(--neutral-bg); }
+  .events tbody.incident:hover > tr > td:first-child { background: var(--neutral-bg); }
+  .events .evidence-row > td:first-child { position: static; background: transparent; box-shadow: none; }
+  .events .review-cell { min-width: 0; }
+  .event-actions { width: 250px; min-width: 250px; }
+  .event-actions .action-stack { min-width: 0; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .assessment-players .action-stack { min-width: 148px; flex-direction: column; align-items: stretch; }
+  .assessment-players td.num .det-name { white-space: nowrap; }
+  /* Physics inspector: per-frame signals read as a sentence under the frame
+     they belong to instead of a 50 px column. */
+  .physics-table tr.has-signals > td { border-bottom: 0; padding-bottom: 4px; }
+  .physics-table tr.focus.has-signals > td { box-shadow: inset 0 1px 0 var(--accent); }
+  .physics-table tr.focus.signal-row > td { box-shadow: inset 0 -1px 0 var(--accent); }
+  .physics-table tr.signal-row > td { padding-top: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+  .physics-table tr.signal-row .signal-label { margin-right: 8px; color: var(--ink-2); font-weight: 650; letter-spacing: .035em; text-transform: uppercase; }
   .kv { grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); }
   .kv dd, .kv dt, .mmeta, .mtitle, .ftitle { overflow-wrap: anywhere; }
   tbody tr:hover { background: var(--neutral-bg); }
@@ -602,7 +646,7 @@
     body { background: #fff; color: #000; font-size: 11px; }
     .top .btn, .upload, .btn, .status, .tog { display: none !important; }
     .block, .match, .fail { break-inside: avoid; }
-    thead th { position: static; }
+    thead th, th:first-child, td:first-child { position: static !important; box-shadow: none !important; }
     pre { max-height: none; }
   }
   /* Navigation stays a single scrollable strip; header actions own their row. */
@@ -816,7 +860,7 @@
   const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`;
   const fmtDur = (sec) => {
     if (!sec || sec <= 0) return '—';
-    const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    const total = Math.round(sec), m = Math.floor(total / 60), s = total % 60;
     return m ? (s ? `${m} min ${s} s` : `${m} min`) : `${s} s`;
   };
   const fmtClock = (sec) => {
@@ -850,7 +894,7 @@
   const badge = (l) => `<span class="lvl lvl-${esc(l)}">${esc(lvlName(l))}</span>`;
   const sevBadge = (l) => `<span class="tag sev-${esc(l)}">${esc(l)}</span>`;
   const team = (t) => t === 'blue' || t === 'orange' ? `<span class="team team-${t}">${t}</span>` : '<span class="team team-none">none</span>';
-  const who = (name, id) => `<span class="who">${name ? `<span class="name">${esc(name)}</span>` : ''}<span class="id mono">${esc(id)}</span></span>`;
+  const who = (name, id) => `<span class="who">${name ? `<span class="name" title="${esc(name)}">${esc(name)}</span>` : ''}<span class="id mono">${esc(id)}</span></span>`;
   const bar = (v, max, tone = '') => `<span class="bar mini ${tone}" aria-hidden="true"><i style="width:${max > 0 ? Math.min(100, Math.max(0, v / max * 100)).toFixed(0) : 0}%"></i></span>`;
   const meter = (v, tone = '') => `<span class="val">${fmtNum(v, 2)}</span>${bar(v, 1, tone)}`;
   const sep = '<span class="sep">·</span>';
@@ -1155,7 +1199,7 @@
   function gameStatsTable(s) {
     const players = s.players || [];
     if (!players.length) return '<p class="empty">The replay carried no player statistics.</p>';
-    return `<div class="stat-tables"><table><thead><tr><th>Player</th><th>Team</th><th class="num">Level</th><th class="num">Ping</th>
+    return `<div class="stat-tables"><table><thead><tr><th>Player</th><th>Team</th><th class="num" title="Player level">Lvl</th><th class="num" title="Average / maximum ping in milliseconds">Ping</th>
       <th class="num">Pts</th><th class="num">Goals</th><th class="num">Ast</th><th class="num">Saves</th><th class="num">Steals</th><th class="num">Stuns</th>
       <th class="num">Pass</th><th class="num">Catch</th><th class="num">Block</th><th class="num">Int</th><th class="num">Poss.</th><th class="num">Shots</th>
       <th class="num">Throws</th><th class="num">Avg m/s</th><th class="num">Max m/s</th><th class="num">Scored</th></tr></thead><tbody>` +
@@ -1226,19 +1270,16 @@
   }
 
   function eventRows(events, matchID) {
-    return events.map((e) => { const concealed = blindReview && !revealedEvents.has(e.event_id); return `<tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
-      <td class="det">${concealed ? '<span class="blind-mask">Detector hidden</span>' : `<span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span>`}</td>
+    return events.map((e) => { const concealed = blindReview && !revealedEvents.has(e.event_id); return `<tbody class="incident"><tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
+      <td class="det" rowspan="2">${concealed ? '<span class="blind-mask">Detector hidden</span>' : `<span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span>`}</td>
       <td>${who(e.player_name, e.player_id)}</td>
-      <td class="num" title="Frame ${fmtInt(e.frame_index)}">${e.frame_range_start === e.frame_range_end ? fmtInt(e.frame_range_start) : `${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</td>
-      <td class="num">${fmtClock(e.timestamp)}</td>
-      <td class="num">${concealed ? '<span class="blind-mask">hidden</span>' : `${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}`}</td>
-      <td class="num">${concealed ? '—' : meter(e.confidence)}</td>
-      <td class="wide">${concealed ? '<span class="blind-mask">Conclusion hidden</span>' : `${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span>`}</td><td class="wide dim">${concealed ? '—' : esc(e.expected_range) || '—'}</td>
-      <td class="review-cell">${reviewControls(e, concealed)}</td>
-      <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
+      <td class="num when" title="Frame ${fmtInt(e.frame_index)}"><span class="mono">${fmtClock(e.timestamp)}</span><span class="det-name">${e.frame_range_start === e.frame_range_end ? `frame ${fmtInt(e.frame_range_start)}` : `frames ${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</span></td>
+      <td class="sev-cell">${concealed ? '<span class="blind-mask">hidden</span>' : `<span>${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</span><span class="conf">${meter(e.confidence)} confidence</span>`}</td>
+      <td class="event-actions" rowspan="2"><div class="review-cell">${reviewControls(e, concealed)}</div><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
       ${concealed ? `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(e.frame_index) ? e.frame_index : 0}" data-physics-player="${esc(e.player_id)}">Inspect raw physics</button>` : `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>`}
       ${concealed ? `<button class="btn btn-sm" data-reveal-event="${esc(e.event_id)}">Reveal detector</button>` : ''}
-      <a class="btn btn-sm" href="${concealed ? `api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(e.frame_index) ? e.frame_index : 0}?player=${encodeURIComponent(e.player_id)}` : `api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}`}">Diagnostic ZIP</a></span></td></tr>`;
+      <a class="btn btn-sm" href="${concealed ? `api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(e.frame_index) ? e.frame_index : 0}?player=${encodeURIComponent(e.player_id)}` : `api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}`}">Diagnostic ZIP</a></span></td></tr>
+      <tr class="evidence-row${e.is_shadow ? ' shadow' : ''}"><td class="evidence" colspan="3">${concealed ? '<span class="blind-mask">Conclusion hidden</span>' : `<span class="evidence-label">Observed</span>${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span>${e.expected_range ? `<span class="expected"><span class="evidence-label">Expected</span>${esc(e.expected_range)}</span>` : ''}`}</td></tr></tbody>`;
     }).join('');
   }
 
@@ -1248,10 +1289,10 @@
     if (!n) return `<p class="empty">${detectorID ? `${esc(detectorID)} did not fire on this match.` : 'No detector fired on this match.'}</p>`;
     const sorted = filtered.slice().sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index));
     const shown = all ? sorted : sorted.slice(0, EVENT_LIMIT);
-    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="10">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
+    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="5">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
-    return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
-      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Detector verdict</th><th>Investigation</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>
+    return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Match time</th>
+      <th>Severity · confidence</th><th>Your verdict · investigation</th></tr></thead>${eventRows(shown, m.match_id)}${foot}</table>
       <p class="summary-note">“Correct” means the detector observation is valid; “False positive” means the play was legal. These labels feed local calibration and never punish a player.</p>`;
   }
 
@@ -2077,15 +2118,15 @@
   function renderPhysics(p) {
     const event = p.event ? `<div><span>Detector</span><b class="mono">${esc(p.event.detector_id)} v${esc(p.event.detector_version)}</b></div>` : '<div><span>Incident</span><b>Throw / selected frame</b></div>';
     const health = p.telemetry_health ? `<span class="tag ${p.telemetry_health.status === 'healthy' ? 'ok' : p.telemetry_health.status === 'warning' ? 'warn' : 'bad'}">${esc(p.telemetry_health.status)}</span>` : '<span class="tag warn">raw unavailable</span>';
-    const rows = (p.frames || []).map((f) => { const d = f.derived || {}, a = f.independent_audit || {}, src = f.source || {}, disc = src.disc || {}; return `<tr class="${f.focus ? 'focus' : ''}">
+    const rows = (p.frames || []).map((f) => { const d = f.derived || {}, a = f.independent_audit || {}, src = f.source || {}, disc = src.disc || {}; const signals = (f.signals || []).filter(Boolean); return `<tr class="${f.focus ? 'focus' : ''}${signals.length ? ' has-signals' : ''}">
       <td class="num mono">${fmtInt(f.frame_index)}</td><td class="num mono">${fmtClock(f.timestamp)}</td><td>${esc(f.contact_classification)}</td>
       <td class="num">${fmtNum(d.speed, 2)}</td><td class="num">${d.has_reported_velocity ? fmtNum(d.reported_speed, 2) : '—'}</td><td class="num">${d.playspace_valid ? fmtNum(d.playspace_speed, 2) : '—'}</td>
       <td class="num">${fmtNum(d.acceleration_magnitude, 1)}</td><td class="num">${fmtNum(d.left_hand_relative_speed, 2)} / ${fmtNum(d.right_hand_relative_speed, 2)}</td><td class="num">${a.valid ? fmtNum(a.extractor_velocity_delta, 6) : '—'}</td>
-      <td class="num">${disc.speed !== undefined ? fmtNum(disc.speed, 2) : '—'}</td><td class="mono">${esc(d.movement_origin || 'unavailable')}</td><td class="signal-list">${(f.signals || []).map(esc).join('<br>')}</td></tr>`; }).join('');
+      <td class="num">${disc.speed !== undefined ? fmtNum(disc.speed, 2) : '—'}</td><td class="mono">${esc(d.movement_origin || 'unavailable')}</td></tr>${signals.length ? `<tr class="signal-row${f.focus ? ' focus' : ''}"><td></td><td colspan="10"><span class="signal-label">Signals</span>${signals.map(esc).join(' · ')}</td></tr>` : ''}`; }).join('');
     const raw = p.raw_tick_present ? `<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Original focus tick</h3></summary><pre>${esc(JSON.stringify(p.raw_focus_tick, null, 2))}</pre></details>` : '<p class="notice bad">The original raw focus tick is not active. Normalized values remain available; restore the match archive for full raw inspection.</p>';
     const evidence = p.event ? `<dl class="kv"><dt>Observed</dt><dd>${esc(p.event.observed_value || '—')}</dd><dt>Expected</dt><dd>${esc(p.event.expected_range || '—')}</dd><dt>Confidence</dt><dd>${fmtNum(p.event.confidence, 2)}</dd></dl><details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector evidence</h3></summary><pre>${esc(JSON.stringify(p.event.evidence || {}, null, 2))}</pre></details>` : '';
     return `<div class="inspector-grid"><div><span>Match</span><b class="mono">${esc(p.match_id)}</b></div><div><span>Player</span><b>${esc(p.player_name || p.player_id)}</b></div><div><span>Focus frame</span><b class="mono">${fmtInt(p.focus_frame)}</b></div>${event}<div><span>Telemetry</span><b>${health}</b></div><div><span>Disc cap</span><b>${fmtNum(p.disc_speed_cap, 1)} m/s</b></div></div>
-      ${evidence}${p.event && p.event.detector_id === 'STATE_008' ? renderCatchTrajectory(p.event.evidence) : ''}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th><th>Signals</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${evidence}${p.event && p.event.detector_id === 'STATE_008' ? renderCatchTrajectory(p.event.evidence) : ''}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th></tr></thead><tbody>${rows}</tbody></table></div>
       ${raw}<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(p.limitations || []).map((x) => `<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
   }
 
