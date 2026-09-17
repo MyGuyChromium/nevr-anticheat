@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const updateHelperMode = "--nevr-update-helper"
@@ -144,6 +145,11 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	// Refuse invalid helper inputs while the desktop is still running. A helper
 	// that exits during argument validation cannot bring the desktop back.
 	if err := validateUpdateHelperPaths(installer, currentExe, updateDir, expectedHash); err != nil {
+		return err
+	}
+	// The download took time; another NEVR program may have been started since
+	// the preflight at the beginning of downloadVerifiedUpdate.
+	if err := updatePreflight(); err != nil {
 		return err
 	}
 	relaunchJSON, err := json.Marshal(stripUpdateOverrideArgs(os.Args[1:]))
@@ -394,4 +400,113 @@ func waitForDesktopHandle(handle syscall.Handle, timeout time.Duration) error {
 	default:
 		return fmt.Errorf("unexpected Windows process wait result: %d", event)
 	}
+}
+
+// The installer replaces all five NEVR programs and runs with
+// /CLOSEAPPLICATIONS, so Windows Restart Manager is asked to close every
+// process using a payload file: a live nevr-server.exe (telemetry ingest) or
+// nevr-bridge.exe started from the install folder, not just the desktop. The
+// helper waits for and reopens ONLY the desktop. A one-click update would then
+// end live capture with no message, or, if such a process does not exit, abort
+// after some executables were already replaced. The PowerShell installer and
+// rollback refuse in exactly this situation (Assert-NEVRProgramsClosed); the
+// one-click path now follows the same rule and terminates nothing.
+var nevrProgramNames = map[string]bool{
+	"nevr-desktop.exe": true, "nevr-ac.exe": true, "nevr-server.exe": true,
+	"nevr-bridge.exe": true, "nevr-compat.exe": true,
+}
+
+type runningProgram struct {
+	PID   uint32
+	Name  string // executable file name as the process list reports it
+	Image string // full image path; empty when Windows would not disclose it
+}
+
+// listRunningPrograms is replaced in tests that must not depend on what else is
+// running on the machine.
+var listRunningPrograms = listNEVRProcesses
+
+var procQueryFullProcessImageName = syscall.NewLazyDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
+
+func listNEVRProcesses() ([]runningProgram, error) {
+	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, fmt.Errorf("list running processes: %w", err)
+	}
+	defer syscall.CloseHandle(snapshot)
+	var entry syscall.ProcessEntry32
+	// #nosec G103 G115 -- Process32First requires the structure's own size, a
+	// small compile-time constant; no pointer arithmetic is involved.
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	var programs []runningProgram
+	for err = syscall.Process32First(snapshot, &entry); err == nil; err = syscall.Process32Next(snapshot, &entry) {
+		name := syscall.UTF16ToString(entry.ExeFile[:])
+		if nevrProgramNames[strings.ToLower(name)] {
+			programs = append(programs, runningProgram{PID: entry.ProcessID, Name: name, Image: processImagePath(entry.ProcessID)})
+		}
+	}
+	if !errors.Is(err, syscall.ERROR_NO_MORE_FILES) {
+		return nil, fmt.Errorf("list running processes: %w", err)
+	}
+	return programs, nil
+}
+
+func processImagePath(pid uint32) string {
+	const processQueryLimitedInformation = 0x1000
+	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer syscall.CloseHandle(handle)
+	const maxImagePath = 32768 // the longest path Windows can return, in UTF-16 units
+	buffer := make([]uint16, maxImagePath)
+	size := uint32(maxImagePath)
+	// #nosec G103 -- QueryFullProcessImageNameW writes at most size UTF-16 units
+	// into buffer and stores the written length in size; both outlive the call.
+	ok, _, _ := procQueryFullProcessImageName.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
+	if ok == 0 || size > maxImagePath {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer[:size])
+}
+
+// refuseUpdateWhileProgramsRun reports the NEVR programs, other than this
+// process, that run from installDir. A NEVR-named process whose location
+// Windows will not disclose is refused too: "probably somewhere else" is not a
+// reason to let an installer close it.
+func refuseUpdateWhileProgramsRun(installDir string, self uint32, programs []runningProgram) error {
+	for _, program := range programs {
+		if program.PID == self {
+			continue
+		}
+		if program.Image == "" {
+			return fmt.Errorf("cannot verify whether %s (process %d) runs from this installation; close it and update again. No process was terminated", program.Name, program.PID)
+		}
+		if samePath(filepath.Dir(program.Image), installDir) {
+			return fmt.Errorf("close %s (process %d) before updating: the installer replaces every NEVR program in %s and reopens only the desktop app. No process was terminated", program.Name, program.PID, installDir)
+		}
+	}
+	return nil
+}
+
+// updatePreflight runs before anything is downloaded and again immediately
+// before the helper is launched.
+func updatePreflight() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	programs, err := listRunningPrograms()
+	if err != nil {
+		return err
+	}
+	self := os.Getpid()
+	if self <= 0 || uint64(self) > uint64(^uint32(0)) {
+		return errors.New("NEVR process ID is invalid")
+	}
+	return refuseUpdateWhileProgramsRun(filepath.Dir(exe), uint32(self), programs)
 }

@@ -12,6 +12,8 @@ func updateInstallSupport() (bool, string) {
 // updateInstallSupport already reports one-click installation as unavailable.
 func verifyUpdateStagingDir(string) error { return nil }
 
+func updatePreflight() error { return nil }
+
 func launchUpdateHelper(updateLaunchRequest) error {
 	return errors.New("one-click installation is only supported on Windows")
 }

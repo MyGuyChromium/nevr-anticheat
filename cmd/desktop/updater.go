@@ -404,6 +404,9 @@ func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, s
 	if err := verifyUpdateStagingDir(rt.updateDir); err != nil {
 		return "", "", err
 	}
+	if err := updatePreflight(); err != nil {
+		return "", "", err
+	}
 	releaseCommit, err := rt.latestReleaseCommit(ctx)
 	if err != nil {
 		return "", "", err

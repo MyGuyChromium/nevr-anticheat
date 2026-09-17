@@ -159,7 +159,17 @@ func testUpdateDir(t *testing.T) string {
 	t.Helper()
 	local := t.TempDir()
 	t.Setenv("LOCALAPPDATA", local)
+	// Whatever NEVR programs happen to run on the machine executing the tests
+	// must not decide their outcome.
+	stubRunningPrograms(t, nil)
 	return filepath.Join(local, "NEVR-Anticheat", "updates")
+}
+
+func stubRunningPrograms(t *testing.T, programs []runningProgram) {
+	t.Helper()
+	previous := listRunningPrograms
+	listRunningPrograms = func() ([]runningProgram, error) { return programs, nil }
+	t.Cleanup(func() { listRunningPrograms = previous })
 }
 
 func stagedInstallerName(digest string) string { return "NEVR-Anticheat-Setup-" + digest + ".exe" }
@@ -363,5 +373,99 @@ func TestRunUpdateHelperDerivesStagingFromItsOwnLocation(t *testing.T) {
 				t.Fatal("a refused helper invocation still ran the installer step")
 			}
 		})
+	}
+}
+
+func TestRefuseUpdateWhileProgramsRun(t *testing.T) {
+	install := `C:\Users\tester\AppData\Local\Programs\NEVR-Anticheat`
+	const self = 100
+	for _, tt := range []struct {
+		name     string
+		programs []runningProgram
+		want     string // empty: update may proceed
+	}{
+		{"nothing else running", []runningProgram{{PID: self, Name: "nevr-desktop.exe", Image: install + `\nevr-desktop.exe`}}, ""},
+		{"same program from another folder", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: `D:\portable\nevr-server.exe`}}, ""},
+		{"folder that only shares a prefix", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: install + `-old\nevr-server.exe`}}, ""},
+		{"live ingest server from this installation", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: install + `\nevr-server.exe`}}, "close nevr-server.exe (process 7)"},
+		{"differently spelled installation path", []runningProgram{{PID: 8, Name: "nevr-bridge.exe", Image: strings.ToUpper(install) + `\NEVR-BRIDGE.EXE`}}, "close nevr-bridge.exe (process 8)"},
+		{"second desktop from this installation", []runningProgram{{PID: 9, Name: "nevr-desktop.exe", Image: install + `\nevr-desktop.exe`}}, "close nevr-desktop.exe (process 9)"},
+		{"location Windows will not disclose", []runningProgram{{PID: 10, Name: "nevr-server.exe"}}, "cannot verify"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := refuseUpdateWhileProgramsRun(install, self, tt.programs)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("update refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "No process was terminated") {
+				t.Fatalf("error = %v, want one containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// The process listing is real Win32 code, so exercise it against a real
+// process: a copy of this test binary named nevr-server.exe.
+func TestListNEVRProcessesFindsARunningProgramAndItsFolder(t *testing.T) {
+	if os.Getenv("NEVR_TEST_IDLE_PROCESS") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	install := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(install, "nevr-server.exe")
+	if err := copyUpdateHelper(self, program); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(program, "-test.run=^TestListNEVRProcessesFindsARunningProgramAndItsFolder$")
+	cmd.Env = append(os.Environ(), "NEVR_TEST_IDLE_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	programs, err := listNEVRProcesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, running := range programs {
+		if int(running.PID) == cmd.Process.Pid {
+			found = strings.EqualFold(running.Name, "nevr-server.exe") && samePath(running.Image, program)
+			if !found {
+				t.Fatalf("child reported as %+v, want image %s", running, program)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("running nevr-server.exe (process %d) was not listed: %+v", cmd.Process.Pid, programs)
+	}
+	if err := refuseUpdateWhileProgramsRun(install, uint32(os.Getpid()), programs); err == nil || !strings.Contains(err.Error(), "close nevr-server.exe") {
+		t.Fatalf("update not refused while nevr-server.exe runs from the installation: %v", err)
+	}
+}
+
+func TestDownloadVerifiedUpdateRefusesWhileAnotherProgramRuns(t *testing.T) {
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	f := newUpdateFixture(t)
+	rt := f.start(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubRunningPrograms(t, []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: filepath.Join(filepath.Dir(self), "nevr-server.exe")}})
+	if _, _, err := rt.downloadVerifiedUpdate(context.Background()); err == nil || !strings.Contains(err.Error(), "close nevr-server.exe") {
+		t.Fatalf("update prepared while the ingest server runs: %v", err)
+	}
+	if f.refRequests+f.releaseRequests+f.assetRequests != 0 {
+		t.Fatal("the release was contacted before the running program was reported")
 	}
 }
