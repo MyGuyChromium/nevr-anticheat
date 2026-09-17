@@ -83,6 +83,7 @@ func (s *Store) DeleteMatchSummary(ctx context.Context, matchID string) error {
 // telemetry_frames.raw_json, including partially upgraded matches. Returns fn's
 // error as it is; n is the number of ticks delivered.
 func (s *Store) ForEachMatchTick(ctx context.Context, matchID string, fn func(frameIndex int, raw string) error) (n int, err error) {
+	s.rawTickScans.Add(1)
 	rows, err := s.db.QueryContext(ctx, matchRawTicksSelect+` ORDER BY frame_index`, matchID, matchID)
 	if err != nil {
 		return 0, err

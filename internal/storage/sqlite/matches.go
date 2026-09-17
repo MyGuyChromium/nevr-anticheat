@@ -194,8 +194,11 @@ func (s *Store) GetMatchPlayerFrameCounts(ctx context.Context, matchID string) (
 func (s *Store) GetMatchFinalScore(ctx context.Context, matchID string) (blue, orange int, ok bool, err error) {
 	var frameJSON string
 	err = s.db.QueryRowContext(ctx,
+		// Same row as ORDER BY frame_index DESC, player_id LIMIT 1, without
+		// sorting every frame of the match (with its JSON) to find it.
 		`SELECT frame_json FROM telemetry_frames WHERE match_id = ?
-		 ORDER BY frame_index DESC, player_id LIMIT 1`, matchID).Scan(&frameJSON)
+		 AND frame_index = (SELECT MAX(frame_index) FROM telemetry_frames WHERE match_id = ?)
+		 ORDER BY player_id LIMIT 1`, matchID, matchID).Scan(&frameJSON)
 	if err == sql.ErrNoRows {
 		return 0, 0, false, nil
 	}

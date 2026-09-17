@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
 )
 
@@ -22,9 +23,56 @@ func (s *server) decorateMatchMetadata(ctx context.Context, view *matchView) {
 		view.CalibrationComment = label.Comment
 		view.CalibrationReviewedAt = fmtTime(label.ReviewedAt)
 	}
-	if stats, err := s.engine.Store().GetMatchStorageStats(ctx, view.MatchID); err == nil {
+	if stats, err := s.matchStorageStats(ctx, view.MatchID); err == nil {
 		view.Storage = &stats
 	}
+}
+
+// matchStorageKey identifies the state a byte measurement was taken in: raw
+// ticks only change by archive/restore (their count), normalized frames by a
+// (re-)analysis, which always records a new analysis run.
+type matchStorageKey struct {
+	rawTicks, frames int
+	latestRun        int64
+}
+
+type matchStorageEntry struct {
+	key   matchStorageKey
+	stats sqlite.StorageStats
+}
+
+// matchStorageStats is GetMatchStorageStats behind a small in-process cache.
+// Measuring the payload bytes of a full-length match reads every raw tick and
+// frame row (seconds on a large match), and nothing about it changes between
+// two views, so the measurement is reused while the cheap, index-only counts
+// and the latest analysis run say the match is unchanged.
+func (s *server) matchStorageStats(ctx context.Context, matchID string) (sqlite.StorageStats, error) {
+	store := s.engine.Store()
+	var key matchStorageKey
+	var err error
+	if key.rawTicks, key.frames, err = store.GetMatchStorageCounts(ctx, matchID); err != nil {
+		return sqlite.StorageStats{}, err
+	}
+	if runs, runErr := store.ListAnalysisRuns(ctx, matchID, 1); runErr == nil && len(runs) > 0 {
+		key.latestRun = runs[0].RunID
+	}
+	s.storageMu.Lock()
+	cached, ok := s.storageStats[matchID]
+	s.storageMu.Unlock()
+	if ok && cached.key == key {
+		return cached.stats, nil
+	}
+	stats, err := store.GetMatchStorageStats(ctx, matchID)
+	if err != nil {
+		return stats, err
+	}
+	s.storageMu.Lock()
+	if s.storageStats == nil || len(s.storageStats) >= 256 {
+		s.storageStats = make(map[string]matchStorageEntry)
+	}
+	s.storageStats[matchID] = matchStorageEntry{key: key, stats: stats}
+	s.storageMu.Unlock()
+	return stats, nil
 }
 
 type calibrationDetectorView struct {
@@ -143,8 +191,9 @@ func (s *server) handlePhysicsEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func attachInspectionHealth(ctx context.Context, s *server, inspection *physicsInspection) {
-	if diag, err := storedTelemetryDiagnostics(ctx, s.engine.Store(), inspection.MatchID); err == nil {
-		inspection.Telemetry = telemetryHealth(diag)
+	if doc, err := s.storedTelemetryHealth(ctx, inspection.MatchID); err == nil && doc != nil && doc.Report != nil {
+		inspection.Telemetry = telemetryHealth(doc.Report)
+		inspection.Telemetry.Source, inspection.Telemetry.Scope = doc.Source, doc.Scope
 	}
 }
 
@@ -231,6 +280,12 @@ func (s *server) handleArchiveMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	result := rawArchiveResult{OK: true, Path: path, Bytes: fileSize(path), TicksArchived: manifest.TickCount, Message: "Raw telemetry archived and verified; database source remains intact."}
 	if body.PruneRaw {
+		// A match analyzed before telemetry health was persisted can only get
+		// its health from the raw ticks about to leave the database.
+		if _, err := s.storedTelemetryHealth(r.Context(), matchID); err != nil {
+			writeError(w, http.StatusInternalServerError, "archive was saved to %s, but telemetry health could not be preserved before pruning: %v", path, err)
+			return
+		}
 		removed, err := s.engine.Store().DeleteMatchRawTicks(r.Context(), matchID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "archive was saved to %s, but pruning failed: %v", path, err)
@@ -263,6 +318,13 @@ func (s *server) handleRestoreMatchRaw(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "restoring archive: %v", err)
 		return
+	}
+	// A health document written while the raw ticks were away says "nothing to
+	// inspect"; drop it so the next view rebuilds it from the restored ticks.
+	if raw, _, healthErr := s.engine.Store().GetMatchTelemetryHealth(r.Context(), matchID); healthErr == nil {
+		if doc, decodeErr := replay.DecodeTelemetryHealth(raw); decodeErr != nil || doc.Report == nil {
+			_ = s.engine.Store().DeleteMatchTelemetryHealth(r.Context(), matchID)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "path": path, "ticks_in_archive": manifest.TickCount,

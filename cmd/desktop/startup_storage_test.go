@@ -157,7 +157,7 @@ func TestPrepareDesktopDatabaseDirectorySpecialPaths(t *testing.T) {
 // directory, signal handler or database from the user's installation is used.
 func TestDesktopFirstLaunchRun(t *testing.T) {
 	if configPath := os.Getenv("NEVR_TEST_FIRST_LAUNCH_CONFIG"); configPath != "" {
-		if err := run(configPath, true, 0, "error"); err != nil {
+		if err := run(runOptions{configPath: configPath, noBrowser: true, logLevel: "error"}); err != nil {
 			t.Fatal(err)
 		}
 		return

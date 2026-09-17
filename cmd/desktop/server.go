@@ -64,6 +64,12 @@ type server struct {
 	quitOnce  sync.Once
 	quit      chan struct{}
 	requests  requestGate
+
+	detached     detachedWork
+	storageMu    sync.Mutex
+	storageStats map[string]matchStorageEntry
+	heartbeat    *heartbeatWatchdog
+	uiPrefs      *uiPrefsStore
 }
 
 func newServer(engine *replay.Engine, token string) *server {
@@ -82,10 +88,15 @@ func newServer(engine *replay.Engine, token string) *server {
 	}
 	s.runtime = newDesktopRuntime(engine, s.quit)
 	s.runtime.analyzeMu = &s.analyzeMu
+	s.heartbeat = newHeartbeatWatchdog(defaultHeartbeatTimings, nil, s.backgroundWorkActive)
+	s.uiPrefs = &uiPrefsStore{path: filepath.Join(filepath.Dir(engine.Store().Path()), uiPrefsFileName)}
 	p := "/" + token
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
+	s.mux.HandleFunc("POST "+p+"/api/heartbeat", s.handleHeartbeat)
+	s.mux.HandleFunc("GET "+p+"/api/ui-prefs", s.handleGetUIPrefs)
+	s.mux.HandleFunc("PUT "+p+"/api/ui-prefs", s.handlePutUIPrefs)
 	s.mux.HandleFunc("GET "+p+"/api/status", s.handleStatus)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
 	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
@@ -172,7 +183,13 @@ func newServer(engine *replay.Engine, token string) *server {
 }
 
 // Handler is the routed handler.
-func (s *server) Handler() http.Handler { return desktopSafety(s.requests.wrap(s.mux)) }
+func (s *server) Handler() http.Handler {
+	routed := http.Handler(s.mux)
+	if s.heartbeat != nil {
+		routed = s.heartbeat.track(routed)
+	}
+	return desktopSafety(s.requests.wrap(routed))
+}
 
 // Done is closed when /quit was requested.
 func (s *server) Done() <-chan struct{} { return s.quit }
@@ -302,6 +319,11 @@ type telemetryHealthView struct {
 	UnknownFields   map[string]int                      `json:"unknown_fields"`
 	FieldPresence   map[string]*adapter.FieldDiagnostic `json:"field_presence"`
 	Compatibility   string                              `json:"compatibility"`
+	// Source and Scope describe a stored report (empty on a fresh analysis):
+	// "analysis" is the parser's own report, "backfill" was rebuilt from stored
+	// raw ticks; scope "file" covers a recording that held several matches.
+	Source string `json:"source,omitempty"`
+	Scope  string `json:"scope,omitempty"`
 }
 
 type matchView struct {
@@ -713,9 +735,12 @@ func (s *server) storedMatchView(ctx context.Context, matchID string) (matchView
 		orange:          orange,
 	})
 	mv.Summary = s.loadSummary(ctx, sm.Context, scores, events)
-	diag, diagErr := storedTelemetryDiagnostics(ctx, store, matchID)
-	if diagErr == nil {
-		mv.TelemetryHealth = telemetryHealth(diag)
+	// Telemetry health was persisted when the match was analyzed; reading it
+	// never touches raw ticks. Matches older than that are rebuilt once.
+	if health, healthErr := s.storedTelemetryHealth(ctx, matchID); healthErr == nil {
+		applyStoredTelemetryHealth(&mv, health)
+	} else if ctx.Err() != nil {
+		return matchView{}, ctx.Err()
 	}
 	s.decorateMatchMetadata(ctx, &mv)
 	return mv, nil
@@ -1247,6 +1272,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	defer s.finishAnalysis(analysisID)
 
 	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(uploads))}
+	analyzed := false
 	for _, upload := range uploads {
 		entry, path := upload.entry, upload.path
 		if entry.Error != "" || path == "" {
@@ -1288,11 +1314,19 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				entry.Diagnostic = diagnoseUpload(path)
 			}
 		}
-		if queueErr == nil {
+		// A fully stored upload is consumed. So is one that can never succeed
+		// (garbage, a truncated recording, a session JSON without a match id):
+		// keeping it would re-analyze and re-fail it on every launch. Anything
+		// else (cancel, shutdown, a storage or I/O failure) stays queued.
+		if queueErr == nil || analysisFailureIsPermanent(analysisCtx, results, err) {
 			_ = os.Remove(path)
 			_ = os.Remove(filepath.Dir(path))
 		}
+		analyzed = analyzed || len(results) > 0
 		resp.Results = append(resp.Results, entry)
+	}
+	if analyzed {
+		s.runtime.checkpointAfterAnalysis()
 	}
 	if entries, readErr := os.ReadDir(tmp); readErr == nil && len(entries) == 0 {
 		_ = os.Remove(tmp)

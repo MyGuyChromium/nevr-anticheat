@@ -255,6 +255,7 @@ func (s *Store) GetMatchRawTicks(ctx context.Context, matchID string, fromIdx, t
 // range based on normalized frame indices, this also retains raw snapshots
 // whose player rows were all rejected or absent; archive callers must use it.
 func (s *Store) GetAllMatchRawTicks(ctx context.Context, matchID string) (map[int]string, error) {
+	s.rawTickScans.Add(1)
 	out := make(map[int]string)
 	rows, err := s.db.QueryContext(ctx,
 		matchRawTicksSelect+` ORDER BY frame_index`, matchID, matchID)

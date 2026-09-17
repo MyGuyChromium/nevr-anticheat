@@ -363,6 +363,9 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 		rt.mu.Unlock()
 		count++
 	}
+	if count > 0 {
+		rt.checkpointAfterAnalysis()
+	}
 	if len(failures) > 0 {
 		err := fmt.Errorf("%d replay(s) could not be analyzed; first error: %s", len(failures), failures[0])
 		finish(count, err)
@@ -404,6 +407,12 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 	if ctx.Err() != nil || rt.updateInProgress() {
 		return
 	}
+	stored := 0
+	defer func() {
+		if stored > 0 {
+			rt.checkpointAfterAnalysis()
+		}
+	}()
 	for _, path := range rt.pendingFiles() {
 		if ctx.Err() != nil {
 			return
@@ -412,6 +421,25 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 		started := time.Now()
 		results, err := rt.engine.AnalyzeFileAll(ctx, path, true)
 		recordAnalysisResults(ctx, rt.engine, results, "recovery", time.Since(started))
+		stored += len(results)
+		if analysisFailureIsPermanent(ctx, results, err) {
+			// The copy can never be analyzed: report it once and drop it rather
+			// than failing the same way at every launch.
+			if err == nil {
+				err = errors.New("no match was found in the recording")
+			}
+			err = fmt.Errorf("discarded pending upload %s, which can never be analyzed: %w", filepath.Base(path), err)
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("removing it failed: %w", removeErr))
+			} else if filepath.Clean(filepath.Dir(path)) != filepath.Clean(rt.pendingDir) {
+				_ = os.Remove(filepath.Dir(path))
+			}
+			rt.queueFinish(queueID, len(results), err)
+			rt.mu.Lock()
+			rt.recoveryErr = err.Error()
+			rt.mu.Unlock()
+			continue
+		}
 		ok := err == nil && len(results) > 0
 		for _, result := range results {
 			if result.PersistError() != nil {

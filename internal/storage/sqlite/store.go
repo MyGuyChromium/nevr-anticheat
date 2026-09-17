@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,6 +67,8 @@ const pruneChunkSize = 5000
 type Store struct {
 	db   *sql.DB
 	path string
+
+	rawTickScans atomic.Int64 // see RawTickScans
 }
 
 // NewStore opens or creates a SQLite database with optimized settings and

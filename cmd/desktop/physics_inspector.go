@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/storage/sqlite"
@@ -307,28 +306,6 @@ func findMatchEvent(ctx context.Context, store *sqlite.Store, matchID, eventID s
 		}
 	}
 	return nil, fmt.Errorf("event %s in match %s: %w", eventID, matchID, sqlite.ErrNotFound)
-}
-
-func storedTelemetryDiagnostics(ctx context.Context, store *sqlite.Store, matchID string) (*adapter.DiagnosticReport, error) {
-	ticks, err := store.GetAllMatchRawTicks(ctx, matchID)
-	if err != nil {
-		return nil, err
-	}
-	if len(ticks) == 0 {
-		return nil, nil
-	}
-	indices := make([]int, 0, len(ticks))
-	for idx := range ticks {
-		indices = append(indices, idx)
-	}
-	sort.Ints(indices)
-	diag := adapter.NewDiagnosticReport()
-	for _, idx := range indices {
-		if _, err := diag.RecordSessionJSON([]byte(ticks[idx])); err != nil {
-			diag.FramesRejected++
-		}
-	}
-	return diag, nil
 }
 
 func isInspectorNotFound(err error) bool {

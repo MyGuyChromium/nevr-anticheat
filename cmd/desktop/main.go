@@ -48,15 +48,67 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "Do not open the app window; only print the URL")
 	port := flag.Int("port", 0, "Loopback port to listen on (default: a random free port)")
 	logLevel := flag.String("log-level", "warn", "Engine log level (debug|info|warn|error); the console stays quiet unless something goes wrong")
+	noAutoExit := flag.Bool("no-auto-exit", false, "Keep running after the app window has closed (by default the app quits once the window stops sending heartbeats)")
+	console := flag.Bool("console", false, "Windowed release build only: print to the terminal that started the app instead of the log file")
+	logFile := flag.Bool("log-file", false, "Write logs to the rotated file under the data directory (the windowed release build always does)")
 	flag.Parse()
 
-	if err := run(*configPath, *noBrowser, *port, *logLevel); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	gui := guiSubsystem == "true"
+	if gui && *console && !attachParentConsole() {
+		*console = false // nothing to print to: keep the log file
+	}
+	toFile := logToFile(gui, *console, *logFile)
+	err := run(runOptions{
+		configPath: *configPath, noBrowser: *noBrowser, port: *port, logLevel: *logLevel,
+		noAutoExit: *noAutoExit, logToFile: toFile,
+		// Without a console nobody would see a startup failure on stderr.
+		failureDialog: gui && !*console,
+	})
+	if err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(configPath string, noBrowser bool, port int, logLevel string) error {
+// runOptions is the parsed command line.
+type runOptions struct {
+	configPath    string
+	noBrowser     bool
+	port          int
+	logLevel      string
+	noAutoExit    bool
+	logToFile     bool
+	failureDialog bool
+}
+
+// runEnv is what a failed run needs to explain itself.
+type runEnv struct {
+	dbPath  string
+	logging *fileLogging
+	started bool
+}
+
+// run starts the app and reports its own failure on the startup error surface
+// (stderr or the log file, plus a dialog when there is no console).
+func run(opts runOptions) error {
+	env := &runEnv{}
+	err := runDesktop(opts, env)
+	if err != nil {
+		logPath := ""
+		if env.logging != nil {
+			logPath = env.logging.path
+		}
+		failure := describeStartupFailure(err, env.dbPath, logPath)
+		if env.started {
+			failure.Title = "NEVR-Anticheat stopped because of an error"
+		}
+		reportStartupFailure(failure, opts.failureDialog)
+	}
+	env.logging.stop()
+	return err
+}
+
+func runDesktop(opts runOptions, env *runEnv) error {
+	configPath, noBrowser, port, logLevel := opts.configPath, opts.noBrowser, opts.port, opts.logLevel
 	if configPath == "" {
 		// Like the CLI's drag-and-drop mode: without --config the database
 		// lives next to the executable so results accumulate in one place
@@ -87,6 +139,19 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	}
 	if err := prepareDesktopDatabaseDirectory(cfg.General.DBPath); err != nil {
 		return err
+	}
+	env.dbPath = cfg.General.DBPath
+	if abs, absErr := filepath.Abs(cfg.General.DBPath); absErr == nil {
+		env.dbPath = abs
+	}
+	if opts.logToFile {
+		// Before the engine exists: its logger captures os.Stderr once.
+		logging, logErr := startFileLogging(filepath.Dir(env.dbPath))
+		if logErr != nil {
+			return logErr
+		}
+		env.logging = logging
+		fmt.Printf("%s NEVR-Anticheat desktop %s (%s) starting\n", time.Now().UTC().Format(time.RFC3339), appVersion, buildCommit)
 	}
 	if err := applyPendingRestore(cfg.General.DBPath); err != nil {
 		return fmt.Errorf("applying scheduled database restore: %w", err)
@@ -120,14 +185,32 @@ func run(configPath string, noBrowser bool, port int, logLevel string) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- hs.Serve(ln) }()
 
+	if !opts.noAutoExit {
+		srv.startAutoExit()
+	}
+	env.started = true
+
 	url := fmt.Sprintf("http://%s/%s/", ln.Addr(), token)
 	if instance != nil {
 		instance.publish(url)
 	}
-	fmt.Printf("NEVR-Anticheat desktop: open %s (press Ctrl+C to quit)\n", url)
+	announce := fmt.Sprintf("NEVR-Anticheat desktop: open %s (press Ctrl+C to quit)\n", url)
+	if env.logging != nil {
+		// A parent that redirected stdout (the release smoke tests do) still gets
+		// the URL; a windowed build started normally has no stdout and this is a
+		// no-op. The per-run secret in the URL is kept out of the log file.
+		_, _ = env.logging.prevOut.WriteString(announce)
+		fmt.Printf("listening on %s\n", ln.Addr())
+	} else {
+		fmt.Print(announce)
+	}
 	if !noBrowser {
 		if err := openAppWindow(url); err != nil {
 			fmt.Fprintf(os.Stderr, "Could not open the app window (%v); open the URL above yourself.\n", err)
+			if opts.failureDialog {
+				// No console shows the URL, so say it where the person can see it.
+				go showStartupDialog("NEVR-Anticheat is running", "The app window could not be opened automatically.\n\nOpen this address in Edge or Chrome:\n"+url)
+			}
 		}
 	}
 

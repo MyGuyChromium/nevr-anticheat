@@ -245,6 +245,11 @@ type AnalyzeResult struct {
 	TelemetryErr error // storing telemetry frames
 	ContextErr   error // storing the match context
 	AnalysisErr  error // storing (or, after a source-data failure, skipping) events, scores and review cases
+
+	// TelemetryHealthErr is a failure to persist the telemetry-health document.
+	// It is a warning only, never part of PersistError: the document is derived
+	// and is rebuilt from the raw ticks the first time the match is viewed.
+	TelemetryHealthErr error
 }
 
 // Warnings renders the non-fatal storage failures as messages.
@@ -264,6 +269,9 @@ func (r *AnalyzeResult) Warnings() []string {
 	}
 	if r.SummaryErr != nil {
 		out = append(out, "failed to store match summary: "+r.SummaryErr.Error())
+	}
+	if r.TelemetryHealthErr != nil {
+		out = append(out, "failed to store telemetry health (it will be rebuilt when the match is next opened): "+r.TelemetryHealthErr.Error())
 	}
 	return out
 }
@@ -416,7 +424,114 @@ func AnalyzeFileAll(ctx context.Context, store *sqlite.Store, path string, opts 
 	if err != nil && run != nil {
 		run.abortRaw()
 	}
+	if err == nil {
+		a.storeTelemetryHealth(diag)
+	}
 	return a.results, err
+}
+
+// TelemetryHealthSchema identifies the document StoreMatchTelemetryHealth keeps.
+const TelemetryHealthSchema = "nevr-telemetry-health/v1"
+
+// Telemetry health scopes: what the persisted report covers.
+const (
+	// TelemetryHealthScopeMatch reports cover exactly one match.
+	TelemetryHealthScopeMatch = "match"
+	// TelemetryHealthScopeFile reports cover a whole recording that held more
+	// than one match; the parser keeps one report per file, and that is also
+	// what the fresh analysis view showed for each of its matches.
+	TelemetryHealthScopeFile = "file"
+)
+
+// TelemetryHealthDoc is the per-match telemetry/schema health persisted at
+// analysis time, so a stored match can be shown without re-reading and
+// re-parsing every raw tick. It is derived data: deleting it only costs one
+// rebuild from the raw ticks.
+type TelemetryHealthDoc struct {
+	Schema string `json:"schema"`
+	// Source is sqlite.TelemetryHealthSourceAnalysis (the parser's report,
+	// including mapping counters) or sqlite.TelemetryHealthSourceBackfill
+	// (field presence rebuilt from stored raw ticks; no mapping counters).
+	Source string `json:"source"`
+	Scope  string `json:"scope"`
+	// FileMatches is how many matches the recording held (Scope "file").
+	FileMatches int `json:"file_matches,omitempty"`
+	// Report is nil when no raw snapshot was available to inspect (a legacy
+	// JSON replay, or raw ticks that were archived before the backfill).
+	Report *adapter.DiagnosticReport `json:"report"`
+}
+
+// EncodeTelemetryHealth renders the document for a report. The parser's
+// sample payloads are left out: they repeat raw ticks the store already holds
+// and are not needed to compute health warnings or detector compatibility.
+func EncodeTelemetryHealth(diag *adapter.DiagnosticReport, source string, fileMatches int) ([]byte, error) {
+	doc := map[string]any{"schema": TelemetryHealthSchema, "source": source, "scope": TelemetryHealthScopeMatch, "report": nil}
+	if fileMatches > 1 {
+		doc["scope"], doc["file_matches"] = TelemetryHealthScopeFile, fileMatches
+	}
+	if diag != nil {
+		raw, err := json.Marshal(diag)
+		if err != nil {
+			return nil, fmt.Errorf("encoding telemetry report: %w", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, fmt.Errorf("encoding telemetry report: %w", err)
+		}
+		delete(fields, "sample_payloads")
+		doc["report"] = fields
+	}
+	return json.Marshal(doc)
+}
+
+// DecodeTelemetryHealth parses a stored document. A document of another
+// schema is an error so the caller can rebuild it instead of misreading it.
+func DecodeTelemetryHealth(raw []byte) (*TelemetryHealthDoc, error) {
+	var doc TelemetryHealthDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("decoding telemetry health: %w", err)
+	}
+	if doc.Schema != TelemetryHealthSchema {
+		return nil, fmt.Errorf("unsupported telemetry health schema %q", doc.Schema)
+	}
+	if r := doc.Report; r != nil {
+		if r.FieldPresence == nil {
+			r.FieldPresence = make(map[string]*adapter.FieldDiagnostic)
+		}
+		if r.UnknownFields == nil {
+			r.UnknownFields = make(map[string]int)
+		}
+		if r.RejectionsByField == nil {
+			r.RejectionsByField = make(map[string]int)
+		}
+	}
+	return &doc, nil
+}
+
+// storeTelemetryHealth persists the parser's report for every match this call
+// fully stored. It runs after the whole file parsed because the report covers
+// the file. A failure is reported on the result (Warnings) but is not a
+// PersistError: the document is derived and the viewer rebuilds it on demand.
+func (a *fileAnalysis) storeTelemetryHealth(diag *adapter.DiagnosticReport) {
+	if diag == nil {
+		return
+	}
+	var doc []byte
+	for _, res := range a.results {
+		if res.AlreadyStored || res.Result == nil || res.MatchCtx == nil || res.PersistError() != nil {
+			continue
+		}
+		if doc == nil {
+			var err error
+			if doc, err = EncodeTelemetryHealth(diag, sqlite.TelemetryHealthSourceAnalysis, len(a.results)); err != nil {
+				res.TelemetryHealthErr = err
+				return
+			}
+		}
+		if err := a.store.StoreMatchTelemetryHealth(a.ctx, res.MatchCtx.MatchID, sqlite.TelemetryHealthSourceAnalysis, doc); err != nil {
+			res.TelemetryHealthErr = err
+		}
+	}
 }
 
 // fileAnalysis is one AnalyzeFileAll call: its store and options, and the
