@@ -74,8 +74,8 @@ func TestReleaseAmbiguitiesAreInconclusive(t *testing.T) {
 		name, reason string
 		mutate       func(*model.PlayerTelemetryFrame)
 	}{
-		{"same_player_regrab", "release_reattachment_or_transfer", func(f *model.PlayerTelemetryFrame) { *f = releaseFrame(4, "left") }},
-		{"other_player_transfer", "release_reattachment_or_transfer", func(f *model.PlayerTelemetryFrame) {
+		{"same_player_regrab", "release_same_holder_regrab", func(f *model.PlayerTelemetryFrame) { *f = releaseFrame(4, "left") }},
+		{"other_player_transfer", "release_transfer_within_one_sample", func(f *model.PlayerTelemetryFrame) {
 			f.Disc.IsHeld = true
 			f.Disc.PossessorID = "p2"
 			f.Disc.Attachment = &model.DiscAttachment{State: "held", HolderID: "p2", HandCandidates: []string{"right"}}

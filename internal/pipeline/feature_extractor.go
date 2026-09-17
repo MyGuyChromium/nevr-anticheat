@@ -298,8 +298,15 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// (respawn teleport). Continuous immune movement (god mode) still computes
 	// kinematics so STATE_004 can see active play during immunity.
 	immuneRespawnJump := false
-	if dtKnown && frame.IsImmune && !prevPos.IsZero() {
-		immuneRespawnJump = frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+	// positionJump is the same displacement test without the immunity
+	// condition. It does not gate kinematics (MOV detectors must still see an
+	// unexplained jump); it only stops a held-to-free transition across a
+	// teleport from being read as a throw.
+	positionJump := false
+	if dtKnown && !prevPos.IsZero() {
+		jump := frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+		immuneRespawnJump = jump && frame.IsImmune
+		positionJump = jump && matchCtx.Physics.MaxPlayerSpeed > 0
 	}
 
 	kinematicsValid := dtKnown && !prevPos.IsZero() && !largeGap && !immuneRespawnJump
@@ -486,6 +493,11 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 			// the disc was knocked out of the hand. The free disc's velocity is
 			// then the opponent's contact, not a release this player authored.
 			immediateReason = releaseForcedDropReason
+		} else if positionJump {
+			// The holder was moved (respawn, reset) inside the release interval:
+			// the disc was taken away rather than thrown, and the interval's
+			// hand and player velocities are teleport artifacts (hundreds of m/s).
+			immediateReason = "release_player_discontinuity"
 		}
 		if possessionFrames >= 2 && immediateReason == "" {
 			pending.unavailableReason = "release_motion_unavailable"

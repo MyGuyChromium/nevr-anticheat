@@ -88,8 +88,15 @@ func (fe *FeatureExtractor) confirmRelease(ps *model.PlayerState, frame *model.P
 		reason = "release_inactive_phase"
 	case !ps.DiscAttachment.Known():
 		reason = "release_attachment_unknown"
+	case ps.DiscAttachment.HeldBy(ps.PlayerID):
+		// Held again by the same player one sample after going free: a regrab,
+		// hand swap or attachment flicker with no sampled flight, not a throw.
+		reason = "release_same_holder_regrab"
 	case !ps.DiscAttachment.Free():
-		reason = "release_reattachment_or_transfer"
+		// Another player holds the disc one sample after it left this hand. A
+		// point-blank pass, a steal and a knock-out look identical here, so the
+		// first-free velocity is not attributed to this player as a throw.
+		reason = "release_transfer_within_one_sample"
 	case frame.IsStunned:
 		// The stun flag can lag the knock-out by one sample; a holder who is
 		// stunned by the confirming sample did not author this release.

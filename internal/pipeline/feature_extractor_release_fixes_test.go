@@ -99,3 +99,42 @@ func TestExtractor_HeadContactUsesTrackedHeadNotBody(t *testing.T) {
 		t.Fatalf("body fallback changed: distance=%v contact=%v", fallback.HeadToDiscDistance, fallback.PossibleHeadContact)
 	}
 }
+
+// A holder who is teleported (reset or respawn without the immunity flag)
+// inside the release interval did not throw: the disc was taken away, and the
+// interval's finite differences are teleport artifacts (hundreds of m/s) that
+// would enter ThrowCount, the THROW_004 signature and the THROW_005 window.
+// Mutation: removing the `positionJump` release branch publishes a "throw"
+// with PlayerVelocity and HandSpeed above 500 m/s.
+func TestReleaseAcrossPlayerTeleportIsNotAThrow(t *testing.T) {
+	for _, teleport := range []bool{false, true} {
+		fe, ps := releaseStart(t)
+		var reasons []string
+		fe.SetReleaseObserver(func(_ string, _ model.ReleaseObservation, reason string) { reasons = append(reasons, reason) })
+		for i := 3; i <= 4; i++ {
+			f := releaseFrame(i, "free")
+			disc := f.Disc.Position
+			if teleport {
+				// 37 m in one 50 ms sample (740 m/s); the disc stays behind.
+				shift := model.Vec3{0, 0, 37}
+				f.Position = f.Position.Add(shift)
+				f.LeftHandPosition, f.RightHandPosition = f.LeftHandPosition.Add(shift), f.RightHandPosition.Add(shift)
+				f.Disc.Position, f.Disc.Velocity, f.Disc.Speed = disc, model.Vec3{0.05, 0, 0}, 0.05
+			}
+			fe.UpdatePlayerState(ps, &f, feTestCtx())
+			if teleport && i == 3 && ps.Speed < 500 {
+				t.Fatalf("fixture did not teleport (speed %.1f); unexplained jumps must still reach the movement detectors", ps.Speed)
+			}
+		}
+		fe.DrainPendingReleases("eof")
+		if !teleport {
+			if ps.LastThrow == nil || len(reasons) != 0 {
+				t.Fatalf("control release lost: %v", reasons)
+			}
+			continue
+		}
+		if ps.LastThrow != nil || ps.ThrowCount != 0 || !reflect.DeepEqual(reasons, []string{"release_player_discontinuity"}) {
+			t.Fatalf("teleport became a throw: %+v reasons=%v", ps.LastThrow, reasons)
+		}
+	}
+}
