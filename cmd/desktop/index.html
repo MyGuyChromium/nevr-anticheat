@@ -1361,7 +1361,7 @@
     const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="5">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
     return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Match time</th>
-      <th>Severity · confidence</th><th>Your verdict · investigation</th></tr></thead>${eventRows(shown, m.match_id)}${foot}</table>
+      <th>Severity · confidence</th><th>Detector verdict · investigation</th></tr></thead>${eventRows(shown, m.match_id)}${foot}</table>
       <p class="summary-note">“Correct” means the detector observation is valid; “False positive” means the play was legal. These labels feed local calibration and never punish a player.</p>`;
   }
 
