@@ -143,6 +143,21 @@ jobs:
           ./scripts/test-test-release-verifier.ps1
           ./scripts/test-desktop-workload-runner.ps1
 
+      - name: Test rollback snapshot, pruning and uninstaller contracts
+        # Windows PowerShell on purpose: it is what Rollback-NEVR.cmd and
+        # Uninstall-NEVR.cmd start on a user's machine. The second script also
+        # compiles the installer's real [Code] section into a harness and runs
+        # Setup's snapshot naming and pruning against a scratch folder.
+        shell: powershell
+        run: |
+          # Both scripts report failure with "exit 1", which ends only the
+          # script and leaves the code here. It is unset when nothing exited.
+          $global:LASTEXITCODE = 0
+          ./scripts/test-windows-snapshots.ps1
+          if ($LASTEXITCODE) { throw "Snapshot tests failed with exit code $LASTEXITCODE" }
+          ./packaging/Test-ProgramSnapshots.ps1 -RequireSetupCompiler
+          if ($LASTEXITCODE) { throw "Release-safety packaging tests failed with exit code $LASTEXITCODE" }
+
       - name: Select signing mode
         shell: pwsh
         env:
@@ -394,6 +409,11 @@ jobs:
           $snapshots = @(Get-ChildItem -LiteralPath (Join-Path $dataRoot "program-rollbacks") -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
           if ($snapshots.Count -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $snapshots[0].FullName "nevr-desktop.exe"))) {
             throw "Upgrade did not create a usable program rollback snapshot."
+          }
+          # Setup and Program-Snapshot.ps1 share this folder and must share one
+          # clock: a local-time name here made Rollback pick the wrong build.
+          if ($snapshots[0].Name -cnotmatch '^\d{8}-\d{6}Z-\d+$') {
+            throw "Setup named its rollback snapshot '$($snapshots[0].Name)', not in UTC (yyyymmdd-hhnnssZ-N)."
           }
 
           $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" | Select-Object -First 1
