@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -13,16 +14,29 @@ const CalibrationSplitPolicyVersion = 1
 // RecordCalibrationExposure reserves imported evidence as previously inspected
 // training data. It cannot erase an existing held-out assignment: such imports
 // quarantine it instead. The exposure persists even before its replay exists.
+//
+// Quarantine never clears, so callers must only record an exposure for an
+// import that actually adds or changes information. The library importers
+// (ImportMatchLabel, ImportEventReview, ImportCalibrationOpportunity) record it
+// in the same transaction as the row they write and skip it for a row that is
+// already stored, is older than the local one, or is rejected.
 func (s *Store) RecordCalibrationExposure(ctx context.Context, matchID string, knownPlayers ...string) error {
-	matchID = strings.TrimSpace(matchID)
-	if matchID == "" {
-		return fmt.Errorf("calibration exposure needs a match ID")
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := recordCalibrationExposureTx(ctx, tx, matchID, knownPlayers...); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func recordCalibrationExposureTx(ctx context.Context, tx *sql.Tx, matchID string, knownPlayers ...string) error {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return fmt.Errorf("calibration exposure needs a match ID")
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_split_assignments
 		(match_id, policy_version, group_key, split, players_json) VALUES (?, ?, 'imported-exposure', 'training', '[]')
 		ON CONFLICT(match_id) DO UPDATE SET quarantined=CASE WHEN split <> 'training' THEN 1 ELSE quarantined END`,
@@ -59,7 +73,7 @@ func (s *Store) RecordCalibrationExposure(ctx context.Context, matchID string, k
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // CalibrationSplitAssignment survives replay deletion. Split and group key are

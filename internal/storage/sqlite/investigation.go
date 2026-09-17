@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -346,9 +347,45 @@ func (s *Store) DeleteSavedFilter(ctx context.Context, name string) (bool, error
 	return n > 0, nil
 }
 
+// ErrImportKeptLocal reports that a library import left the local row alone:
+// the local review differs from the imported one and the imported copy is not
+// strictly newer (or carries no review time at all). Nothing is written and no
+// calibration exposure is recorded. Importers wrap it with the row identity,
+// so callers test with errors.Is. An older export, or another reviewer's
+// library, can therefore never silently replace a newer local verdict,
+// comment or reviewer.
+var ErrImportKeptLocal = errors.New("kept the local review: the imported copy is not newer")
+
+// importedReviewIsNewer is the single last-writer-wins rule for library
+// imports. Stored times have second precision, so both sides are compared at
+// that precision; an import without a review time can never win.
+func importedReviewIsNewer(imported, local time.Time) bool {
+	if imported.IsZero() {
+		return false
+	}
+	return imported.UTC().Truncate(time.Second).After(local.UTC().Truncate(time.Second))
+}
+
+func keptLocal(kind, id string, imported, local time.Time) error {
+	importedAt := "no review time"
+	if !imported.IsZero() {
+		importedAt = "reviewed " + fmtDBTime(imported)
+	}
+	return fmt.Errorf("%s %s: %w (local reviewed %s, imported %s)", kind, id, ErrImportKeptLocal, fmtDBTime(local), importedAt)
+}
+
 // ImportEventReview restores an exported event review even when the current
 // analysis no longer has that event id. The copied evidence remains ground
 // truth for the regression library.
+//
+// An import never replaces a newer local label: a row whose verdict, comment,
+// reviewer and blind flag already match is a no-op, and a differing row is
+// only replaced by a strictly newer review (ErrImportKeptLocal otherwise).
+// Calibration exposure is recorded only when a row is actually written, in the
+// same transaction, so re-importing an unchanged library cannot quarantine a
+// held-out match. An imported "no" that becomes the newest verdict for its
+// observation supersedes pending cross-match recommendations exactly as
+// StoreEventReview does.
 func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error {
 	if strings.TrimSpace(review.EventID) == "" || strings.TrimSpace(review.MatchID) == "" || strings.TrimSpace(review.DetectorID) == "" || !validEventVerdict(review.Verdict) {
 		return fmt.Errorf("invalid imported event review")
@@ -356,7 +393,23 @@ func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error
 	if len(review.Comment) > 2000 || (review.EvidenceJSON != "" && !json.Valid([]byte(review.EvidenceJSON))) {
 		return fmt.Errorf("invalid imported event review payload")
 	}
-	if err := s.RecordCalibrationExposure(ctx, review.MatchID, review.PlayerID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin event review import: %w", err)
+	}
+	defer tx.Rollback()
+	local, err := scanEventReview(tx.QueryRowContext(ctx, `SELECT `+eventReviewColumns+` FROM event_reviews WHERE event_id = ?`, review.EventID))
+	switch {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return fmt.Errorf("loading local event review: %w", err)
+	case local.Verdict == review.Verdict && local.Comment == review.Comment &&
+		local.ReviewerID == review.ReviewerID && local.BlindReview == review.BlindReview:
+		return nil // already stored: no new information, no exposure
+	case !importedReviewIsNewer(review.ReviewedAt, local.ReviewedAt):
+		return keptLocal("event review", review.EventID, review.ReviewedAt, local.ReviewedAt)
+	}
+	if err := recordCalibrationExposureTx(ctx, tx, review.MatchID, review.PlayerID); err != nil {
 		return err
 	}
 	if review.ReviewedAt.IsZero() {
@@ -366,34 +419,84 @@ func (s *Store) ImportEventReview(ctx context.Context, review EventReview) error
 	if review.BlindReview {
 		blind = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO event_reviews (`+eventReviewColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO event_reviews (`+eventReviewColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_id) DO UPDATE SET verdict=excluded.verdict, comment=excluded.comment,
 		reviewer_id=excluded.reviewer_id, reviewed_at=excluded.reviewed_at,
 		blind_review=excluded.blind_review`,
 		review.EventID, review.MatchID, review.PlayerID, review.DetectorID, review.DetectorVersion,
 		review.FrameIndex, review.Timestamp, review.Severity, review.Confidence, review.ObservedValue,
 		review.ExpectedRange, review.EvidenceType, review.EvidenceJSON, review.Verdict,
-		review.Comment, review.ReviewerID, fmtDBTime(review.ReviewedAt), blind)
-	return err
+		review.Comment, review.ReviewerID, fmtDBTime(review.ReviewedAt), blind); err != nil {
+		return fmt.Errorf("storing imported event review: %w", err)
+	}
+	if review.Verdict == "no" {
+		// Same identity rule as eligibleScoringEventSQL: the label only rejects
+		// evidence while it is the newest verdict for its observation. The
+		// stored row is read back because an update keeps the local evidence
+		// columns, which define that identity.
+		var newest, playerID, matchID string
+		if err := tx.QueryRowContext(ctx, `SELECT newer.event_id, er.player_id, er.match_id FROM event_reviews er, event_reviews newer
+			WHERE er.event_id = ? AND (newer.event_id = er.event_id OR
+			 (newer.match_id = er.match_id AND newer.player_id = er.player_id
+			  AND newer.detector_id = er.detector_id AND newer.detector_version = er.detector_version
+			  AND newer.frame_index = er.frame_index AND newer.timestamp = er.timestamp
+			  AND newer.observed_value = er.observed_value AND newer.expected_range = er.expected_range
+			  AND newer.evidence_type = er.evidence_type AND newer.evidence_json = er.evidence_json))
+			ORDER BY newer.reviewed_at DESC, newer.event_id DESC LIMIT 1`, review.EventID).Scan(&newest, &playerID, &matchID); err != nil {
+			return fmt.Errorf("resolving newest verdict for imported review: %w", err)
+		}
+		if newest == review.EventID {
+			if err := invalidatePendingCrossMatchTx(ctx, tx, playerID, []string{matchID}, nowUTC()); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit event review import: %w", err)
+	}
+	return nil
 }
 
 // ImportMatchLabel restores an exported label without requiring the replay to
 // already be present; it becomes visible when that match is later imported.
+// The same no-op, last-writer-wins and exposure rules as ImportEventReview
+// apply.
 func (s *Store) ImportMatchLabel(ctx context.Context, label MatchLabel) error {
 	if strings.TrimSpace(label.MatchID) == "" || !validMatchLabel(label.Label) || len(label.Comment) > 4000 {
 		return fmt.Errorf("invalid imported match label")
 	}
-	if err := s.RecordCalibrationExposure(ctx, label.MatchID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin match label import: %w", err)
+	}
+	defer tx.Rollback()
+	local, err := scanMatchLabel(tx.QueryRowContext(ctx, `SELECT `+matchLabelColumns+` FROM match_labels WHERE match_id = ?`, label.MatchID))
+	switch {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return fmt.Errorf("loading local match label: %w", err)
+	case local.Label == label.Label && local.Comment == label.Comment && local.ReviewerID == label.ReviewerID &&
+		local.AppVersion == label.AppVersion && local.ConfigFingerprint == label.ConfigFingerprint:
+		return nil // already stored: no new information, no exposure
+	case !importedReviewIsNewer(label.ReviewedAt, local.ReviewedAt):
+		return keptLocal("match label", label.MatchID, label.ReviewedAt, local.ReviewedAt)
+	}
+	if err := recordCalibrationExposureTx(ctx, tx, label.MatchID); err != nil {
 		return err
 	}
 	if label.ReviewedAt.IsZero() {
 		label.ReviewedAt = nowUTC()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO match_labels (`+matchLabelColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO match_labels (`+matchLabelColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(match_id) DO UPDATE SET label=excluded.label, comment=excluded.comment,
 		reviewer_id=excluded.reviewer_id, app_version=excluded.app_version,
 		config_fingerprint=excluded.config_fingerprint, reviewed_at=excluded.reviewed_at`,
 		label.MatchID, label.Label, label.Comment, label.ReviewerID, label.AppVersion,
-		label.ConfigFingerprint, fmtDBTime(label.ReviewedAt))
-	return err
+		label.ConfigFingerprint, fmtDBTime(label.ReviewedAt)); err != nil {
+		return fmt.Errorf("storing imported match label: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit match label import: %w", err)
+	}
+	return nil
 }
