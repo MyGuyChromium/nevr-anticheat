@@ -1489,7 +1489,7 @@ test('a label is recorded as blind only if this session never showed that match 
   for (const e of m.events) assert.equal(seen.context.blindEligible(e.event_id), false);
   const html = seen.context.eventsTable(m, 0, false);
   for (const secret of HIDDEN) assert.ok(!html.includes(secret), `re-concealed view leaks ${secret}`);
-  assert.equal((html.match(/will not be recorded as blinded/g) || []).length, 3);
+  assert.equal((html.match(/>Shown earlier; not recorded as blinded.</g) || []).length, 3);
   assert.doesNotMatch(html, /Decision will be recorded as blinded\./);
 
   // Exposed by match id before the match payload was loaded (case queue, History filter, report tool).

@@ -1368,7 +1368,7 @@
     const button = (verdict, label) => `<button class="btn btn-sm ${chosen === verdict ? 'selected' : ''}" data-review-event="${esc(e.event_id)}" data-verdict="${verdict}" title="Label whether this detector observation is correct">${label}</button>`;
     return `<div class="review-buttons">${button('yes', '✓ Correct')}${button('no', '✕ False positive')}${button('uncertain', '? Unsure')}
       <button class="btn btn-sm" data-review-event="${esc(e.event_id)}" data-review-note="1">Note</button></div>
-      ${concealed ? `<span class="review-note">${recordedBlind ? 'Decision will be recorded as blinded.' : 'Detector output for this match was already shown in this session, so this decision will not be recorded as blinded.'}</span>` : ''}${e.blind_review ? '<span class="review-note">Previously reviewed blind.</span>' : ''}
+      ${concealed ? (recordedBlind ? '<span class="review-note">Decision will be recorded as blinded.</span>' : '<span class="review-note" title="Detector output for this match was already shown in this session, so this decision is saved as an ordinary label, not a blind one.">Shown earlier; not recorded as blinded.</span>') : ''}${e.blind_review ? '<span class="review-note">Previously reviewed blind.</span>' : ''}
       ${e.review_comment ? `<span class="review-note" title="${esc(e.review_comment)}">${esc(e.review_comment)}</span>` : ''}`;
   }
 
