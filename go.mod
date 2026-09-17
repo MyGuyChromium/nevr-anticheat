@@ -12,4 +12,4 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-require github.com/klauspost/compress v1.19.2
+require github.com/klauspost/compress v1.20.0
