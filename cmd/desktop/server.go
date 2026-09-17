@@ -65,11 +65,11 @@ type server struct {
 	quit      chan struct{}
 	requests  requestGate
 
-	healthBackfills healthBackfills
-	storageMu       sync.Mutex
-	storageStats    map[string]matchStorageEntry
-	heartbeat       *heartbeatWatchdog
-	uiPrefs         *uiPrefsStore
+	detached     detachedWork
+	storageMu    sync.Mutex
+	storageStats map[string]matchStorageEntry
+	heartbeat    *heartbeatWatchdog
+	uiPrefs      *uiPrefsStore
 }
 
 func newServer(engine *replay.Engine, token string) *server {

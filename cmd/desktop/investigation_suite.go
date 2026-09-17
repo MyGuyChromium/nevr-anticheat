@@ -120,10 +120,6 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 	if err != nil {
 		return nil, err
 	}
-	frames, err := store.GetMatchFrames(ctx, matchID)
-	if err != nil {
-		return nil, err
-	}
 	events, err := store.GetMatchEvents(ctx, matchID)
 	if err != nil {
 		return nil, err
@@ -131,52 +127,13 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 	reviews, _ := store.GetEventReviewsByMatch(ctx, matchID)
 	notes, _ := store.ListInvestigationNotes(ctx, matchID)
 	runs, _ := store.ListAnalysisRuns(ctx, matchID, 20)
-	quality := pipeline.AssessTelemetryQuality(frames, s.engine.Config())
-
-	sort.SliceStable(frames, func(i, j int) bool {
-		if frames[i].FrameIndex != frames[j].FrameIndex {
-			return frames[i].FrameIndex < frames[j].FrameIndex
-		}
-		return frames[i].PlayerID < frames[j].PlayerID
-	})
-	extractor := pipeline.NewFeatureExtractor(s.engine.Config().Pipeline.HistoryWindow)
-	extractor.SetMaxFrameDt(s.engine.Config().Pipeline.MaxFrameDt)
-	extractor.SetHighPingThreshold(s.engine.Config().Pipeline.HighPingThresholdMs)
-	states := make(map[string]*model.PlayerState)
-	playerTarget := maxInt(20, 600/maxInt(1, quality.Players))
-	playerSeen := make(map[string]int)
-	points := make([]investigationPoint, 0, minInt(len(frames), 600))
-	contexts := map[string]int{}
-	for i := range frames {
-		frame := &frames[i]
-		state := states[frame.PlayerID]
-		if state == nil {
-			state = &model.PlayerState{PlayerID: frame.PlayerID, Team: mc.TeamAssignments[frame.PlayerID]}
-			states[frame.PlayerID] = state
-		}
-		extractor.UpdatePlayerState(state, frame, mc)
-		contexts[state.LegalContext.PrimaryExplanation]++
-		playerSeen[frame.PlayerID]++
-		playerStep := maxInt(1, int(math.Ceil(float64(quality.PerPlayerRows[frame.PlayerID])/float64(playerTarget))))
-		if (playerSeen[frame.PlayerID]-1)%playerStep != 0 && playerSeen[frame.PlayerID] != quality.PerPlayerRows[frame.PlayerID] {
-			continue
-		}
-		// Unknown measurements remain null in the presentation contract. A
-		// measured stationary velocity is distinct from an absent source.
-		var gameSpeed, discSpeed *float64
-		if frame.ReportedVelocity != nil {
-			speed := frame.ReportedVelocity.Magnitude()
-			gameSpeed = &speed
-		}
-		if frame.Disc != nil {
-			speed := frame.Disc.Speed
-			discSpeed = &speed
-		}
-		points = append(points, investigationPoint{Frame: frame.FrameIndex, Time: frame.Timestamp,
-			PlayerID: frame.PlayerID, PlayerName: nameOf(mc, frame.PlayerID), PoseSpeed: state.Speed,
-			GameSpeed: gameSpeed, DiscSpeed: discSpeed, LeftHandSpeed: state.LeftHandSpeed,
-			RightHandSpeed: state.RightHandSpeed, PingMS: frame.EstimatedPingMs, Context: state.LegalContext})
+	// The frame-derived part (quality, timeline, legal contexts, mean ping) is
+	// cached per analysis run and config; see investigationTelemetry.
+	telemetry, err := s.investigationTelemetry(ctx, matchID, mc)
+	if err != nil {
+		return nil, err
 	}
+	quality, points, contexts := telemetry.Quality, telemetry.Timeline, telemetry.Contexts
 
 	view, err := s.storedMatchView(ctx, matchID)
 	if err != nil {
@@ -184,20 +141,10 @@ func (s *server) investigationDocument(ctx context.Context, matchID string) (map
 	}
 	var throws []throwEnvelope
 	if view.Summary != nil {
-		pingByPlayer := map[string][]float64{}
-		for _, frame := range frames {
-			if frame.EstimatedPingMs > 0 {
-				pingByPlayer[frame.PlayerID] = append(pingByPlayer[frame.PlayerID], frame.EstimatedPingMs)
-			}
-		}
 		for _, throw := range view.Summary.Throws {
 			uncertainty := .12 + (100-quality.Score)*.006
-			if values := pingByPlayer[throw.PlayerID]; len(values) > 0 {
-				var sum float64
-				for _, value := range values {
-					sum += value
-				}
-				uncertainty += (sum / float64(len(values))) * .0015
+			if meanPing, ok := telemetry.MeanPing[throw.PlayerID]; ok {
+				uncertainty += meanPing * .0015
 			}
 			cap := mc.Physics.DiscSpeedCap
 			throws = append(throws, throwEnvelope{ThrowEvent: throw, Cap: cap, Uncertainty: uncertainty,

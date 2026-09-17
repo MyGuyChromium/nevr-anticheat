@@ -10,13 +10,14 @@ import (
 
 // TestStoredMatchReopenTiming is an opt-in local measurement, not a pass/fail
 // gate: set NEVR_PERF_REPLAY to a large recording (for example the synthetic
-// fixture looped to ~36,000 frames) and NEVR_PERF_MATCH to its match id. It
-// prints how long each stored-match route takes after the analysis, which is
-// what a moderator waits for when reopening a match from History.
+// fixture looped to ~36,000 frames). It prints how long each stored-match
+// route takes after the analysis, which is what a moderator waits for when
+// reopening a match from History. It never prints the match id or any player
+// data, so it is safe to point at a private recording.
 func TestStoredMatchReopenTiming(t *testing.T) {
-	path, matchID := os.Getenv("NEVR_PERF_REPLAY"), os.Getenv("NEVR_PERF_MATCH")
-	if path == "" || matchID == "" {
-		t.Skip("set NEVR_PERF_REPLAY and NEVR_PERF_MATCH to measure stored-match reopen time")
+	path := os.Getenv("NEVR_PERF_REPLAY")
+	if path == "" {
+		t.Skip("set NEVR_PERF_REPLAY to measure stored-match reopen time")
 	}
 	_, ts := newTestServer(t)
 	base := ts.URL + "/" + testToken
@@ -25,8 +26,10 @@ func TestStoredMatchReopenTiming(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(out.Results) != 1 || !out.Results[0].OK {
 		t.Fatalf("upload status=%d", resp.StatusCode)
 	}
-	t.Logf("analyze+store: %s (frames=%d)", time.Since(started).Round(time.Millisecond), out.Results[0].Match.FramesProcessed)
-	for _, route := range []string{"", "", "/investigation", "/report", "/summary.json", "/export.csv"} {
+	matchID := out.Results[0].MatchID
+	t.Logf("analyze+store: %s (frames=%d, players=%d, events=%d)", time.Since(started).Round(time.Millisecond),
+		out.Results[0].Match.FramesProcessed, len(out.Results[0].Match.Players), len(out.Results[0].Match.Events))
+	for _, route := range []string{"", "", "/investigation", "/investigation", "/report", "/summary.json", "/export.csv"} {
 		started := time.Now()
 		resp, err := http.Get(base + "/api/match/" + matchID + route)
 		if err != nil {
