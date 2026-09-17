@@ -28,7 +28,7 @@ type DetectorCalibration struct {
 	CasesReviewed  int // decisions in which the detector fired or received feedback
 	FeedbackGiven  int // decisions carrying explicit feedback for this detector
 	EventsReviewed int // events by this detector inside reviewed cases
-	DirectLabels   int // individual desktop event labels for this detector
+	DirectLabels   int // directly labelled observations (newest verdict each) for this detector
 }
 
 // Precision returns confirmed / (confirmed + false positives) and whether
@@ -181,7 +181,7 @@ func (s *Store) ComputeCalibration(ctx context.Context, since time.Time) ([]Dete
 	if err != nil {
 		return nil, fmt.Errorf("listing event reviews: %w", err)
 	}
-	for _, review := range direct {
+	for _, review := range LatestEventReviewPerObservation(direct) {
 		c := get(review.DetectorID)
 		c.DirectLabels++
 		c.EventsReviewed++
@@ -201,6 +201,58 @@ func (s *Store) ComputeCalibration(ctx context.Context, since time.Time) ([]Dete
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DetectorID < out[j].DetectorID })
 	return out, nil
+}
+
+// eventObservationKey is the identity of one sampled detector observation,
+// independent of its event id. It is the Go form of the match clause in
+// eligibleScoringEventSQL and currentNegativeReviewTx; the three must agree.
+type eventObservationKey struct {
+	matchID, playerID, detectorID, detectorVersion string
+	frameIndex                                     int
+	timestamp                                      float64
+	observedValue, expectedRange                   string
+	evidenceType, evidenceJSON                     string
+}
+
+func observationKey(r EventReview) eventObservationKey {
+	return eventObservationKey{
+		matchID: r.MatchID, playerID: r.PlayerID, detectorID: r.DetectorID, detectorVersion: r.DetectorVersion,
+		frameIndex: r.FrameIndex, timestamp: r.Timestamp,
+		observedValue: r.ObservedValue, expectedRange: r.ExpectedRange,
+		evidenceType: r.EvidenceType, evidenceJSON: r.EvidenceJSON,
+	}
+}
+
+// LatestEventReviewPerObservation collapses direct labels to one per sampled
+// observation, keeping the newest verdict (reviewed_at, then event id, the
+// same order scoring eligibility uses). Every re-analysis gives an unchanged
+// observation a new event id while the earlier event_reviews row is retained,
+// so a moderator who labels it again leaves several rows for one physical
+// observation. Counting each of them moved a detector's precision once per
+// re-analysis. The input is not modified; the result keeps the input order of
+// the surviving rows.
+func LatestEventReviewPerObservation(reviews []EventReview) []EventReview {
+	newest := make(map[eventObservationKey]int, len(reviews))
+	for i, review := range reviews {
+		key := observationKey(review)
+		j, seen := newest[key]
+		if !seen {
+			newest[key] = i
+			continue
+		}
+		kept := reviews[j]
+		if review.ReviewedAt.After(kept.ReviewedAt) ||
+			(review.ReviewedAt.Equal(kept.ReviewedAt) && review.EventID > kept.EventID) {
+			newest[key] = i
+		}
+	}
+	out := make([]EventReview, 0, len(newest))
+	for i, review := range reviews {
+		if newest[observationKey(review)] == i {
+			out = append(out, review)
+		}
+	}
+	return out
 }
 
 // ParseDetectorFeedback parses CLI-style "DETECTOR_ID=yes|no|uncertain" pairs.
