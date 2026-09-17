@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -25,12 +27,36 @@ const (
 	maxUpdateInstaller    = 512 << 20
 )
 
+const allowDowngradeFlag = "allow-update-downgrade"
+
+var (
+	// buildCommitTime is the committer timestamp (RFC 3339, UTC) of buildCommit,
+	// embedded by the release workflow with -X main.buildCommitTime. It is the
+	// installed side of the downgrade check below. Unlike buildTime it is the
+	// same for every rebuild of one commit, so re-running an old workflow run
+	// cannot make an old commit look new.
+	buildCommitTime = ""
+
+	// allowUpdateDowngrade is the only way to install a rolling release that is
+	// not newer than the running build. It is deliberately a command-line flag
+	// and not a setting or a button: it lasts for one process, it cannot be
+	// switched on by the page or by anything the release serves, and it is
+	// stripped before the helper reopens NEVR after the update.
+	allowUpdateDowngrade = flag.Bool(allowDowngradeFlag, false,
+		"Allow one-click update to install a Windows release that is NOT newer than this build (manual downgrade; this run only)")
+)
+
 type updateManifest struct {
 	SchemaVersion int    `json:"schema_version"`
 	Tag           string `json:"tag"`
 	Commit        string `json:"commit"`
-	Version       string `json:"version"`
-	Installer     struct {
+	// CommitTime is the committer timestamp of Commit (RFC 3339). It orders
+	// releases: the rolling tag and its assets are replaced in place, and
+	// every build carries the same appVersion, so nothing else in the manifest
+	// says whether a release is older or newer than the installed build.
+	CommitTime string `json:"commit_time,omitempty"`
+	Version    string `json:"version"`
+	Installer  struct {
 		Name   string `json:"name"`
 		SHA256 string `json:"sha256"`
 		Size   int64  `json:"size"`
@@ -257,7 +283,130 @@ func validateUpdateManifest(manifest updateManifest, releaseCommit, publishedHas
 	return nil
 }
 
+// buildMoment is the point in source history the running binary was built
+// from, as far as the binary itself can tell.
+type buildMoment struct {
+	Commit string
+	Time   time.Time
+	// Exact is true when Time is the committer timestamp of Commit. When it is
+	// false, Time is the build clock, which is never earlier than the commit
+	// it built; comparing against it can only refuse too much, never too little.
+	Exact bool
+}
+
+func parseUpdateTime(value string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil || t.IsZero() {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+func installedBuildMoment() buildMoment {
+	var vcsRevision, vcsTime string
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				vcsRevision = setting.Value
+			case "vcs.time":
+				vcsTime = setting.Value
+			}
+		}
+	}
+	return resolveBuildMoment(buildCommit, buildCommitTime, vcsRevision, vcsTime, buildTime)
+}
+
+// resolveBuildMoment prefers, in order: the commit time embedded by the
+// release workflow; the commit time the Go toolchain stamped (local packages
+// are built with -buildvcs=true), but only when it describes the same commit;
+// and finally the build clock as a conservative upper bound.
+func resolveBuildMoment(commit, embeddedCommitTime, vcsRevision, vcsTime, builtAt string) buildMoment {
+	moment := buildMoment{Commit: commit}
+	if t, ok := parseUpdateTime(embeddedCommitTime); ok {
+		moment.Time, moment.Exact = t, true
+	} else if t, ok := parseUpdateTime(vcsTime); ok && sameCommit(commit, vcsRevision) {
+		moment.Time, moment.Exact = t, true
+	} else if t, ok := parseUpdateTime(builtAt); ok {
+		moment.Time = t
+	}
+	return moment
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
+// refuseUpdateDowngrade is the monotonicity rule of the rolling release.
+//
+// "windows-latest" is one tag whose assets are overwritten by whichever publish
+// job finishes last. An out-of-order or re-run publish therefore moves it
+// BACKWARDS, and "the tag names a different commit" is not evidence of a newer
+// build. An older binary would then open a database already migrated by a newer
+// one. So a release is installed only when the commit it was built from is
+// strictly newer than the commit this binary was built from.
+//
+// This orders honest releases; it is not authentication. Whoever can replace
+// the release assets can also write any commit_time. The manifest, checksum
+// and installer remain integrity-checked against each other, not signed.
+func refuseUpdateDowngrade(manifest updateManifest, installed buildMoment, allowDowngrade bool) error {
+	if allowDowngrade {
+		return nil
+	}
+	override := "To install it anyway, quit NEVR and start nevr-desktop.exe once with --" + allowDowngradeFlag +
+		", or run NEVR-Anticheat-Setup.exe yourself"
+	published, ok := parseUpdateTime(manifest.CommitTime)
+	if !ok {
+		return errors.New("the published Windows release does not state when its source was committed, so NEVR cannot tell whether it is newer than this build; refusing a possible downgrade. " + override)
+	}
+	if installed.Time.IsZero() {
+		return errors.New("this build does not record when it was built, so NEVR cannot tell whether the published Windows release is newer; refusing a possible downgrade. " + override)
+	}
+	if published.After(installed.Time) {
+		return nil
+	}
+	basis := "committed"
+	if !installed.Exact {
+		basis = "built"
+	}
+	return fmt.Errorf("the published Windows release (%s, committed %s) is not newer than this build (%s, %s %s); refusing to downgrade. %s",
+		shortCommit(manifest.Commit), published.Format(time.RFC3339), shortCommit(installed.Commit), basis, installed.Time.Format(time.RFC3339), override)
+}
+
+// stripUpdateOverrideArgs removes the downgrade override from the arguments the
+// update helper uses to reopen NEVR, so one deliberate downgrade does not turn
+// into a permanently disabled check. A boolean flag never consumes the next
+// argument, so only the flag token itself is dropped; everything after "--" is
+// positional and is kept.
+func stripUpdateOverrideArgs(args []string) []string {
+	kept := make([]string, 0, len(args))
+	for i, arg := range args {
+		if arg == "--" {
+			return append(kept, args[i:]...)
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-")
+		if strings.HasPrefix(arg, "-") && (name == allowDowngradeFlag || strings.HasPrefix(name, allowDowngradeFlag+"=")) {
+			continue
+		}
+		kept = append(kept, arg)
+	}
+	return kept
+}
+
 func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, string, error) {
+	// Decide where the installer may be staged before contacting the network:
+	// an installation whose data directory was moved is told so immediately
+	// instead of after a download it could never use.
+	if err := verifyUpdateStagingDir(rt.updateDir); err != nil {
+		return "", "", err
+	}
+	if err := updatePreflight(); err != nil {
+		return "", "", err
+	}
 	releaseCommit, err := rt.latestReleaseCommit(ctx)
 	if err != nil {
 		return "", "", err
@@ -289,6 +438,9 @@ func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, s
 		return "", "", err
 	}
 	if err := validateUpdateManifest(manifest, releaseCommit, publishedHash, assets[updateInstallerName]); err != nil {
+		return "", "", err
+	}
+	if err := refuseUpdateDowngrade(manifest, installedBuildMoment(), *allowUpdateDowngrade); err != nil {
 		return "", "", err
 	}
 

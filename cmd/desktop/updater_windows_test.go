@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -17,7 +18,7 @@ func TestCopyUpdateHelper(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.exe")
 	target := filepath.Join(dir, "helper.exe")
-	if err := os.WriteFile(source, []byte("signed desktop fixture"), 0o700); err != nil {
+	if err := os.WriteFile(source, []byte("desktop fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := copyUpdateHelper(source, target); err != nil {
@@ -27,7 +28,7 @@ func TestCopyUpdateHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "signed desktop fixture" {
+	if string(got) != "desktop fixture" {
 		t.Fatalf("helper contents = %q", got)
 	}
 }
@@ -151,40 +152,320 @@ func TestWaitForDesktopExit(t *testing.T) {
 	})
 }
 
+// testUpdateDir points LOCALAPPDATA at a temporary profile and returns the
+// only staging directory the Windows updater accepts inside it, so no test can
+// touch the real %LOCALAPPDATA%\NEVR-Anticheat of the machine running it.
+func testUpdateDir(t *testing.T) string {
+	t.Helper()
+	local := t.TempDir()
+	t.Setenv("LOCALAPPDATA", local)
+	// Whatever NEVR programs happen to run on the machine executing the tests
+	// must not decide their outcome.
+	stubRunningPrograms(t, nil)
+	return filepath.Join(local, "NEVR-Anticheat", "updates")
+}
+
+func stubRunningPrograms(t *testing.T, programs []runningProgram) {
+	t.Helper()
+	previous := listRunningPrograms
+	listRunningPrograms = func() ([]runningProgram, error) { return programs, nil }
+	t.Cleanup(func() { listRunningPrograms = previous })
+}
+
+func stagedInstallerName(digest string) string { return "NEVR-Anticheat-Setup-" + digest + ".exe" }
+
 func TestLaunchUpdateHelperRejectsInvalidInputsBeforeStaging(t *testing.T) {
-	dir := t.TempDir()
-	err := launchUpdateHelper(updateLaunchRequest{
-		InstallerPath: filepath.Join(dir, "unexpected-installer.exe"),
-		UpdateDir:     dir,
-		LatestCommit:  strings.Repeat("a", 40),
-		ExpectedHash:  strings.Repeat("ab", 32),
-	})
-	if err == nil || !strings.Contains(err.Error(), "installer name is invalid") {
-		t.Fatalf("helper accepted invalid installer before launch: %v", err)
+	updateDir := testUpdateDir(t)
+	if err := os.MkdirAll(updateDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	files, readErr := os.ReadDir(dir)
-	if readErr != nil || len(files) != 0 {
-		t.Fatalf("invalid launch staged a helper: %v, %v", files, readErr)
+	digest := strings.Repeat("ab", 32)
+	for _, tt := range []struct {
+		name, installer, updateDir, want string
+	}{
+		{"installer name without its digest", filepath.Join(updateDir, "unexpected-installer.exe"), updateDir, "installer name is invalid"},
+		// guard: verifyUpdateStagingDir in validateUpdateHelperPaths. The request
+		// is self-consistent (installer inside its update directory); only the
+		// fact that the directory is not NEVR's own can refuse it.
+		{"self-consistent request outside the profile", filepath.Join(t.TempDir(), stagedInstallerName(digest)), "", "staged only in"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requestDir := tt.updateDir
+			if requestDir == "" {
+				requestDir = filepath.Dir(tt.installer)
+			}
+			err := launchUpdateHelper(updateLaunchRequest{
+				InstallerPath: tt.installer, UpdateDir: requestDir,
+				LatestCommit: strings.Repeat("a", 40), ExpectedHash: digest,
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("helper launch error = %v, want one containing %q", err, tt.want)
+			}
+			for _, dir := range []string{updateDir, requestDir} {
+				files, readErr := os.ReadDir(dir)
+				if readErr != nil || len(files) != 0 {
+					t.Fatalf("refused launch staged a helper in %s: %v, %v", dir, files, readErr)
+				}
+			}
+		})
 	}
 }
 
 func TestValidateUpdateHelperPaths(t *testing.T) {
-	local := t.TempDir()
-	t.Setenv("LOCALAPPDATA", local)
-	updateDir := filepath.Join(local, "NEVR-Anticheat", "updates")
+	updateDir := testUpdateDir(t)
+	local := os.Getenv("LOCALAPPDATA")
+	if err := os.MkdirAll(filepath.Join(updateDir, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	digest := strings.Repeat("ab", 32)
-	installer := filepath.Join(updateDir, "NEVR-Anticheat-Setup-"+digest+".exe")
+	name := stagedInstallerName(digest)
+	installer := filepath.Join(updateDir, name)
 	relaunch := filepath.Join(local, "Programs", "NEVR-Anticheat", "nevr-desktop.exe")
 	if err := validateUpdateHelperPaths(installer, relaunch, updateDir, digest); err != nil {
 		t.Fatalf("valid helper paths rejected: %v", err)
 	}
-	if err := validateUpdateHelperPaths(filepath.Join(local, "other.exe"), relaunch, updateDir, digest); err == nil {
-		t.Fatal("installer outside staging directory was accepted")
+	// Every rejected installer below carries a VALID staged name, so the name
+	// check cannot be what refuses it. Removing the containment comparison in
+	// validateUpdateHelperPaths makes the first three cases fail.
+	for _, tt := range []struct {
+		name, installer, relaunch, updateDir, digest, want string
+	}{
+		{"installer beside the staging directory", filepath.Join(filepath.Dir(updateDir), name), relaunch, updateDir, digest, "outside its staging directory"},
+		{"installer reached through dot-dot", updateDir + `\..\..\` + name, relaunch, updateDir, digest, "outside its staging directory"},
+		{"installer in a subdirectory of staging", filepath.Join(updateDir, "nested", name), relaunch, updateDir, digest, "outside its staging directory"},
+		{"staging directory chosen by the caller", filepath.Join(local, "elsewhere", name), relaunch, filepath.Join(local, "elsewhere"), digest, "staged only in"},
+		{"foreign relaunch target", installer, filepath.Join(local, "other.exe"), updateDir, digest, "relaunch target"},
+		{"relaunch target outside the installation", installer, filepath.Join(local, "nevr-desktop.exe"), updateDir, digest, "outside the NEVR installation"},
+		{"mismatched installer digest", installer, relaunch, updateDir, strings.Repeat("cd", 32), "installer name is invalid"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateUpdateHelperPaths(tt.installer, tt.relaunch, tt.updateDir, tt.digest)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tt.want)
+			}
+		})
 	}
-	if err := validateUpdateHelperPaths(installer, filepath.Join(local, "other.exe"), updateDir, digest); err == nil {
-		t.Fatal("foreign relaunch target was accepted")
+}
+
+func TestVerifyUpdateStagingDir(t *testing.T) {
+	updateDir := testUpdateDir(t)
+	local := os.Getenv("LOCALAPPDATA")
+	if err := verifyUpdateStagingDir(updateDir); err != nil {
+		t.Fatalf("staging directory that does not exist yet was refused: %v", err)
 	}
-	if err := validateUpdateHelperPaths(installer, relaunch, updateDir, strings.Repeat("cd", 32)); err == nil {
-		t.Fatal("mismatched installer digest was accepted")
+	if err := verifyUpdateStagingDir(strings.ToUpper(updateDir) + `\.`); err != nil {
+		t.Fatalf("equivalent spelling of the staging directory was refused: %v", err)
+	}
+	// The pre-fix location: "updates" beside a database configured elsewhere.
+	shared := filepath.Join(t.TempDir(), "team-share", "updates")
+	if err := verifyUpdateStagingDir(shared); err == nil || !strings.Contains(err.Error(), "staged only in") {
+		t.Fatalf("staging beside a relocated database was accepted: %v", err)
+	}
+	t.Run("unavailable profile", func(t *testing.T) {
+		for _, value := range []string{"", "relative-profile"} {
+			t.Setenv("LOCALAPPDATA", value)
+			if err := verifyUpdateStagingDir(updateDir); err == nil || !strings.Contains(err.Error(), "LOCALAPPDATA") {
+				t.Fatalf("LOCALAPPDATA=%q accepted: %v", value, err)
+			}
+		}
+	})
+	// guard: the Lstat link check. A junction needs no privilege, and would
+	// silently redirect the download and the helper copy to its target.
+	for _, linked := range []string{updateDir, filepath.Dir(updateDir)} {
+		t.Run("junction at "+filepath.Base(linked), func(t *testing.T) {
+			target := t.TempDir()
+			if err := os.RemoveAll(filepath.Join(local, "NEVR-Anticheat")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(linked), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("cmd", "/c", "mklink", "/J", linked, target).CombinedOutput(); err != nil {
+				t.Skipf("cannot create a junction here: %v: %s", err, out)
+			}
+			defer os.Remove(linked)
+			if err := verifyUpdateStagingDir(updateDir); err == nil || !strings.Contains(err.Error(), "is a link") {
+				t.Fatalf("junction %s was accepted as the staging directory: %v", linked, err)
+			}
+		})
+	}
+	if err := os.RemoveAll(filepath.Join(local, "NEVR-Anticheat")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "NEVR-Anticheat"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyUpdateStagingDir(updateDir); err == nil {
+		t.Fatal("a file in place of the data directory was accepted")
+	}
+}
+
+func TestDownloadVerifiedUpdateRefusesForeignStagingDirectory(t *testing.T) {
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	f := newUpdateFixture(t)
+	rt := f.start(t)
+	rt.updateDir = filepath.Join(t.TempDir(), "team-share", "updates")
+	_, _, err := rt.downloadVerifiedUpdate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "staged only in") {
+		t.Fatalf("update staged beside a relocated database: %v", err)
+	}
+	if f.refRequests+f.releaseRequests+f.assetRequests != 0 {
+		t.Fatal("the release was contacted before the staging directory was refused")
+	}
+	if _, statErr := os.Stat(rt.updateDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("refused staging directory was created: %v", statErr)
+	}
+}
+
+// The helper used to take --update-dir from its own command line and compare
+// it only with --installer from the same command line. It now derives the
+// directory from where the helper copy itself runs.
+func TestRunUpdateHelperDerivesStagingFromItsOwnLocation(t *testing.T) {
+	updateDir := testUpdateDir(t)
+	local := os.Getenv("LOCALAPPDATA")
+	if err := os.MkdirAll(updateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("ab", 32)
+	relaunch := filepath.Join(local, "Programs", "NEVR-Anticheat", "nevr-desktop.exe")
+	helper := filepath.Join(updateDir, "nevr-update-helper-aaaaaaaaaaaa.exe")
+	arguments := func(installer string, extra ...string) []string {
+		return append([]string{updateHelperMode, "--installer", installer, "--sha256", digest, "--wait-pid", "4242",
+			"--relaunch-exe", relaunch, "--relaunch-args", "WyItLW5vLWJyb3dzZXIiXQ"}, extra...)
+	}
+	applied := 0
+	apply := func(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, gotDir string) error {
+		applied++
+		if !samePath(gotDir, updateDir) || !samePath(filepath.Dir(installer), updateDir) || expectedHash != digest || waitPID != 4242 ||
+			relaunchExe != relaunch || len(relaunchArgs) != 1 || relaunchArgs[0] != "--no-browser" {
+			t.Errorf("apply(%q, %q, %d, %q, %q, %q)", installer, expectedHash, waitPID, relaunchExe, relaunchArgs, gotDir)
+		}
+		return nil
+	}
+	if err := runUpdateHelper(arguments(filepath.Join(updateDir, stagedInstallerName(digest))), helper, apply); err != nil || applied != 1 {
+		t.Fatalf("valid helper invocation: err=%v applied=%d", err, applied)
+	}
+
+	foreign := t.TempDir()
+	for _, tt := range []struct {
+		name, helper string
+		args         []string
+		want         string
+	}{
+		// The exact proxy-execution invocation from the finding: every path is
+		// chosen by the caller and they are consistent with each other.
+		{"caller-chosen directory", filepath.Join(foreign, "nevr-update-helper-aaaaaaaaaaaa.exe"),
+			arguments(filepath.Join(foreign, stagedInstallerName(digest))), "staged only in"},
+		{"helper in staging, installer elsewhere", helper,
+			arguments(filepath.Join(foreign, stagedInstallerName(digest))), "outside its staging directory"},
+		{"update-dir is no longer an argument", helper,
+			arguments(filepath.Join(foreign, stagedInstallerName(digest)), "--update-dir", foreign), "not defined"},
+		{"installed desktop run in helper mode", filepath.Join(updateDir, "nevr-desktop.exe"),
+			arguments(filepath.Join(updateDir, stagedInstallerName(digest))), "only available to the staged update helper"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := applied
+			err := runUpdateHelper(tt.args, tt.helper, apply)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tt.want)
+			}
+			if applied != before {
+				t.Fatal("a refused helper invocation still ran the installer step")
+			}
+		})
+	}
+}
+
+func TestRefuseUpdateWhileProgramsRun(t *testing.T) {
+	install := `C:\Users\tester\AppData\Local\Programs\NEVR-Anticheat`
+	const self = 100
+	for _, tt := range []struct {
+		name     string
+		programs []runningProgram
+		want     string // empty: update may proceed
+	}{
+		{"nothing else running", []runningProgram{{PID: self, Name: "nevr-desktop.exe", Image: install + `\nevr-desktop.exe`}}, ""},
+		{"same program from another folder", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: `D:\portable\nevr-server.exe`}}, ""},
+		{"folder that only shares a prefix", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: install + `-old\nevr-server.exe`}}, ""},
+		{"live ingest server from this installation", []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: install + `\nevr-server.exe`}}, "close nevr-server.exe (process 7)"},
+		{"differently spelled installation path", []runningProgram{{PID: 8, Name: "nevr-bridge.exe", Image: strings.ToUpper(install) + `\NEVR-BRIDGE.EXE`}}, "close nevr-bridge.exe (process 8)"},
+		{"second desktop from this installation", []runningProgram{{PID: 9, Name: "nevr-desktop.exe", Image: install + `\nevr-desktop.exe`}}, "close nevr-desktop.exe (process 9)"},
+		{"location Windows will not disclose", []runningProgram{{PID: 10, Name: "nevr-server.exe"}}, "cannot verify"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := refuseUpdateWhileProgramsRun(install, self, tt.programs)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("update refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "No process was terminated") {
+				t.Fatalf("error = %v, want one containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// The process listing is real Win32 code, so exercise it against a real
+// process: a copy of this test binary named nevr-server.exe.
+func TestListNEVRProcessesFindsARunningProgramAndItsFolder(t *testing.T) {
+	if os.Getenv("NEVR_TEST_IDLE_PROCESS") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	install := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(install, "nevr-server.exe")
+	if err := copyUpdateHelper(self, program); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(program, "-test.run=^TestListNEVRProcessesFindsARunningProgramAndItsFolder$")
+	cmd.Env = append(os.Environ(), "NEVR_TEST_IDLE_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	programs, err := listNEVRProcesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, running := range programs {
+		if int(running.PID) == cmd.Process.Pid {
+			found = strings.EqualFold(running.Name, "nevr-server.exe") && samePath(running.Image, program)
+			if !found {
+				t.Fatalf("child reported as %+v, want image %s", running, program)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("running nevr-server.exe (process %d) was not listed: %+v", cmd.Process.Pid, programs)
+	}
+	if err := refuseUpdateWhileProgramsRun(install, uint32(os.Getpid()), programs); err == nil || !strings.Contains(err.Error(), "close nevr-server.exe") {
+		t.Fatalf("update not refused while nevr-server.exe runs from the installation: %v", err)
+	}
+}
+
+func TestDownloadVerifiedUpdateRefusesWhileAnotherProgramRuns(t *testing.T) {
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	f := newUpdateFixture(t)
+	rt := f.start(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubRunningPrograms(t, []runningProgram{{PID: 7, Name: "nevr-server.exe", Image: filepath.Join(filepath.Dir(self), "nevr-server.exe")}})
+	if _, _, err := rt.downloadVerifiedUpdate(context.Background()); err == nil || !strings.Contains(err.Error(), "close nevr-server.exe") {
+		t.Fatalf("update prepared while the ingest server runs: %v", err)
+	}
+	if f.refRequests+f.releaseRequests+f.assetRequests != 0 {
+		t.Fatal("the release was contacted before the running program was reported")
 	}
 }

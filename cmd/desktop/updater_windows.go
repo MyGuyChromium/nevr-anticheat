@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const updateHelperMode = "--nevr-update-helper"
@@ -59,6 +60,60 @@ func updateInstallSupport() (bool, string) {
 	return true, ""
 }
 
+// trustedUpdateDir is the one directory NEVR stages an update into and
+// executes it from: %LOCALAPPDATA%\NEVR-Anticheat\updates. It is resolved from
+// the user profile and from nothing else. The evidence database may be
+// configured anywhere (installed.toml db_path can name a shared, synced or
+// network folder whose ACLs NEVR does not control), so "next to the database"
+// is not a place to run executables from.
+func trustedUpdateDir() (string, error) {
+	local := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if local == "" || !filepath.IsAbs(local) {
+		return "", errors.New("LOCALAPPDATA is unavailable, so NEVR has no private update directory")
+	}
+	return filepath.Join(filepath.Clean(local), "NEVR-Anticheat", "updates"), nil
+}
+
+func samePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// verifyUpdateStagingDir accepts dir only when it IS the trusted update
+// directory and neither it nor its parent has been replaced by a junction or
+// symbolic link that would redirect staging somewhere else.
+//
+// This is a same-user control. It cannot stop another process running as the
+// same Windows user from racing the final hash check and the launch.
+func verifyUpdateStagingDir(dir string) error {
+	trusted, err := trustedUpdateDir()
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return errors.New("update staging directory is invalid")
+	}
+	if !samePath(abs, trusted) {
+		return fmt.Errorf("one-click updates are staged only in %s, but this installation keeps its data in %s; download and run NEVR-Anticheat-Setup.exe instead", trusted, filepath.Dir(abs))
+	}
+	for _, path := range []string{filepath.Dir(trusted), trusted} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect update staging directory: %w", err)
+		}
+		// A symbolic link is ModeSymlink. A junction is ModeSymlink or a
+		// non-directory ModeIrregular depending on the Go version's winsymlink
+		// setting; every spelling of "not a plain directory" is refused.
+		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !info.IsDir() {
+			return fmt.Errorf("refusing to stage an update through %s because it is a link or not a directory", path)
+		}
+	}
+	return nil
+}
+
 func launchUpdateHelper(req updateLaunchRequest) error {
 	installer, err := filepath.Abs(req.InstallerPath)
 	if err != nil {
@@ -67,10 +122,6 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	updateDir, err := filepath.Abs(req.UpdateDir)
 	if err != nil {
 		return err
-	}
-	rel, err := filepath.Rel(updateDir, installer)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("staged installer is outside the update directory")
 	}
 	currentExe, err := os.Executable()
 	if err != nil {
@@ -96,7 +147,12 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	if err := validateUpdateHelperPaths(installer, currentExe, updateDir, expectedHash); err != nil {
 		return err
 	}
-	relaunchJSON, err := json.Marshal(os.Args[1:])
+	// The download took time; another NEVR program may have been started since
+	// the preflight at the beginning of downloadVerifiedUpdate.
+	if err := updatePreflight(); err != nil {
+		return err
+	}
+	relaunchJSON, err := json.Marshal(stripUpdateOverrideArgs(os.Args[1:]))
 	if err != nil {
 		return err
 	}
@@ -108,8 +164,11 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	if err := copyUpdateHelper(currentExe, helperPath); err != nil {
 		return fmt.Errorf("stage update helper: %w", err)
 	}
-	// #nosec G702 -- helperPath is constructed from NEVR's private update directory
-	// and a validated hexadecimal release revision, then populated from this executable.
+	// #nosec G702 -- helperPath is %LOCALAPPDATA%\NEVR-Anticheat\updates (verified
+	// above to be exactly that directory and not a link) plus a validated
+	// hexadecimal release revision, and was just populated from this executable.
+	// The helper takes no directory argument: it derives the staging directory
+	// from its own location and re-verifies it, see runUpdateHelper.
 	cmd := exec.Command(helperPath,
 		updateHelperMode,
 		"--installer", installer,
@@ -117,7 +176,6 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 		"--wait-pid", strconv.Itoa(os.Getpid()),
 		"--relaunch-exe", currentExe,
 		"--relaunch-args", relaunchArgs,
-		"--update-dir", updateDir,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
@@ -154,6 +212,31 @@ func maybeRunUpdateHelper(args []string) (bool, error) {
 	if len(args) == 0 || args[0] != updateHelperMode {
 		return false, nil
 	}
+	helperExe, err := os.Executable()
+	if err != nil {
+		return true, errors.New("update helper could not locate itself")
+	}
+	return true, runUpdateHelper(args, helperExe, applyStagedUpdate)
+}
+
+// runUpdateHelper is the helper-mode entry point of the shipped binary. The
+// helper is a copy of nevr-desktop.exe placed INSIDE the staging directory, so
+// the staging directory is wherever the helper itself is running from. It used
+// to be a command-line argument validated only against the installer argument
+// beside it, which made "the installer is inside the staging directory" true
+// for any pair of paths a caller chose and let the shipped binary hidden-launch
+// an arbitrary correctly-named executable and write logs to any directory.
+func runUpdateHelper(args []string, helperExe string,
+	apply func(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, updateDir string) error,
+) error {
+	helperExe, err := filepath.Abs(helperExe)
+	if err != nil {
+		return errors.New("update helper could not locate itself")
+	}
+	updateDir := filepath.Dir(helperExe)
+	if name := strings.ToLower(filepath.Base(helperExe)); !strings.HasPrefix(name, "nevr-update-helper-") || !strings.HasSuffix(name, ".exe") {
+		return errors.New("update helper mode is only available to the staged update helper")
+	}
 	fs := flag.NewFlagSet("nevr-update-helper", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	installer := fs.String("installer", "", "")
@@ -161,28 +244,27 @@ func maybeRunUpdateHelper(args []string) (bool, error) {
 	waitPID := fs.Int("wait-pid", 0, "")
 	relaunchExe := fs.String("relaunch-exe", "", "")
 	relaunchEncoded := fs.String("relaunch-args", "", "")
-	updateDir := fs.String("update-dir", "", "")
 	if err := fs.Parse(args[1:]); err != nil {
-		return true, err
+		return err
 	}
-	if *installer == "" || *expectedHash == "" || *waitPID <= 0 || *relaunchExe == "" || *updateDir == "" {
-		return true, errors.New("update helper arguments are incomplete")
+	if *installer == "" || *expectedHash == "" || *waitPID <= 0 || *relaunchExe == "" {
+		return errors.New("update helper arguments are incomplete")
 	}
-	if err := validateUpdateHelperPaths(*installer, *relaunchExe, *updateDir, *expectedHash); err != nil {
-		return true, err
+	if err := validateUpdateHelperPaths(*installer, *relaunchExe, updateDir, *expectedHash); err != nil {
+		return err
 	}
 	if len(*relaunchEncoded) > 64<<10 {
-		return true, errors.New("update helper relaunch arguments are too large")
+		return errors.New("update helper relaunch arguments are too large")
 	}
 	rawArgs, err := base64.RawURLEncoding.DecodeString(*relaunchEncoded)
 	if err != nil {
-		return true, errors.New("update helper relaunch arguments are invalid")
+		return errors.New("update helper relaunch arguments are invalid")
 	}
 	var relaunchArgs []string
 	if err := json.Unmarshal(rawArgs, &relaunchArgs); err != nil {
-		return true, errors.New("update helper relaunch arguments are invalid")
+		return errors.New("update helper relaunch arguments are invalid")
 	}
-	return true, applyStagedUpdate(*installer, *expectedHash, *waitPID, *relaunchExe, relaunchArgs, *updateDir)
+	return apply(*installer, *expectedHash, *waitPID, *relaunchExe, relaunchArgs, updateDir)
 }
 
 func validateUpdateHelperPaths(installer, relaunchExe, updateDir, expectedHash string) error {
@@ -194,8 +276,13 @@ func validateUpdateHelperPaths(installer, relaunchExe, updateDir, expectedHash s
 	if err != nil {
 		return errors.New("update helper directory is invalid")
 	}
-	rel, err := filepath.Rel(updateDir, installer)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err := verifyUpdateStagingDir(updateDir); err != nil {
+		return err
+	}
+	// The installer must be a file directly inside the staging directory, not
+	// merely somewhere below it: downloadVerifiedUpdate never creates
+	// subdirectories, so anything deeper was not staged by NEVR.
+	if !samePath(filepath.Dir(installer), updateDir) {
 		return errors.New("update helper installer is outside its staging directory")
 	}
 	digest, err := stagedInstallerSHA256(installer)
@@ -313,4 +400,113 @@ func waitForDesktopHandle(handle syscall.Handle, timeout time.Duration) error {
 	default:
 		return fmt.Errorf("unexpected Windows process wait result: %d", event)
 	}
+}
+
+// The installer replaces all five NEVR programs and runs with
+// /CLOSEAPPLICATIONS, so Windows Restart Manager is asked to close every
+// process using a payload file: a live nevr-server.exe (telemetry ingest) or
+// nevr-bridge.exe started from the install folder, not just the desktop. The
+// helper waits for and reopens ONLY the desktop. A one-click update would then
+// end live capture with no message, or, if such a process does not exit, abort
+// after some executables were already replaced. The PowerShell installer and
+// rollback refuse in exactly this situation (Assert-NEVRProgramsClosed); the
+// one-click path now follows the same rule and terminates nothing.
+var nevrProgramNames = map[string]bool{
+	"nevr-desktop.exe": true, "nevr-ac.exe": true, "nevr-server.exe": true,
+	"nevr-bridge.exe": true, "nevr-compat.exe": true,
+}
+
+type runningProgram struct {
+	PID   uint32
+	Name  string // executable file name as the process list reports it
+	Image string // full image path; empty when Windows would not disclose it
+}
+
+// listRunningPrograms is replaced in tests that must not depend on what else is
+// running on the machine.
+var listRunningPrograms = listNEVRProcesses
+
+var procQueryFullProcessImageName = syscall.NewLazyDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
+
+func listNEVRProcesses() ([]runningProgram, error) {
+	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, fmt.Errorf("list running processes: %w", err)
+	}
+	defer syscall.CloseHandle(snapshot)
+	var entry syscall.ProcessEntry32
+	// #nosec G103 G115 -- Process32First requires the structure's own size, a
+	// small compile-time constant; no pointer arithmetic is involved.
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	var programs []runningProgram
+	for err = syscall.Process32First(snapshot, &entry); err == nil; err = syscall.Process32Next(snapshot, &entry) {
+		name := syscall.UTF16ToString(entry.ExeFile[:])
+		if nevrProgramNames[strings.ToLower(name)] {
+			programs = append(programs, runningProgram{PID: entry.ProcessID, Name: name, Image: processImagePath(entry.ProcessID)})
+		}
+	}
+	if !errors.Is(err, syscall.ERROR_NO_MORE_FILES) {
+		return nil, fmt.Errorf("list running processes: %w", err)
+	}
+	return programs, nil
+}
+
+func processImagePath(pid uint32) string {
+	const processQueryLimitedInformation = 0x1000
+	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer syscall.CloseHandle(handle)
+	const maxImagePath = 32768 // the longest path Windows can return, in UTF-16 units
+	buffer := make([]uint16, maxImagePath)
+	size := uint32(maxImagePath)
+	// #nosec G103 -- QueryFullProcessImageNameW writes at most size UTF-16 units
+	// into buffer and stores the written length in size; both outlive the call.
+	ok, _, _ := procQueryFullProcessImageName.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
+	if ok == 0 || size > maxImagePath {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer[:size])
+}
+
+// refuseUpdateWhileProgramsRun reports the NEVR programs, other than this
+// process, that run from installDir. A NEVR-named process whose location
+// Windows will not disclose is refused too: "probably somewhere else" is not a
+// reason to let an installer close it.
+func refuseUpdateWhileProgramsRun(installDir string, self uint32, programs []runningProgram) error {
+	for _, program := range programs {
+		if program.PID == self {
+			continue
+		}
+		if program.Image == "" {
+			return fmt.Errorf("cannot verify whether %s (process %d) runs from this installation; close it and update again. No process was terminated", program.Name, program.PID)
+		}
+		if samePath(filepath.Dir(program.Image), installDir) {
+			return fmt.Errorf("close %s (process %d) before updating: the installer replaces every NEVR program in %s and reopens only the desktop app. No process was terminated", program.Name, program.PID, installDir)
+		}
+	}
+	return nil
+}
+
+// updatePreflight runs before anything is downloaded and again immediately
+// before the helper is launched.
+func updatePreflight() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	programs, err := listRunningPrograms()
+	if err != nil {
+		return err
+	}
+	self := os.Getpid()
+	if self <= 0 || uint64(self) > uint64(^uint32(0)) {
+		return errors.New("NEVR process ID is invalid")
+	}
+	return refuseUpdateWhileProgramsRun(filepath.Dir(exe), uint32(self), programs)
 }

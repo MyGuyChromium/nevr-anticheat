@@ -107,6 +107,183 @@ Type: dirifempty; Name: "{app}\configs"
 Type: dirifempty; Name: "{app}"
 
 [Code]
+const
+  // Newest verified-looking program snapshots kept after an update. Must match
+  // the default of Remove-NEVRStaleProgramSnapshots in Program-Snapshot.ps1.
+  SnapshotsToKeep = 3;
+  SnapshotManifestHeader = 'nevr-program-snapshot/v1';
+
+type
+  TNEVRSystemTime = record
+    Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds: Word;
+  end;
+
+procedure NEVRGetSystemTime(var SystemTime: TNEVRSystemTime);
+  external 'GetSystemTime@kernel32.dll stdcall';
+
+// Snapshot folders are named in UTC, with a trailing Z, like the PowerShell
+// writer in Program-Snapshot.ps1. GetDateTimeString is LOCAL time, which made
+// "newest by name" wrong by the zone offset whenever both writers were used.
+function UtcSnapshotStamp: String;
+var
+  Stamp: TNEVRSystemTime;
+begin
+  NEVRGetSystemTime(Stamp);
+  Result := Format('%.4d%.2d%.2d-%.2d%.2d%.2dZ', [Stamp.Year, Stamp.Month, Stamp.Day, Stamp.Hour, Stamp.Minute, Stamp.Second]);
+end;
+
+function IsLinkedPath(const Path: String): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := False;
+  if FindFirst(Path, FindRec) then
+  begin
+    try
+      Result := (FindRec.Attributes and 1024) <> 0;
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+// A folder this installer (or Program-Snapshot.ps1) wrote: it has a manifest
+// with the expected header. Nothing else is ever a pruning candidate.
+function LooksLikeProgramSnapshot(const Snapshot: String): Boolean;
+var
+  Manifest: AnsiString;
+begin
+  Result := (not IsLinkedPath(Snapshot)) and
+    LoadStringFromFile(AddBackslash(Snapshot) + 'SHA256SUMS.txt', Manifest) and
+    (Copy(Manifest, 1, Length(SnapshotManifestHeader)) = SnapshotManifestHeader);
+end;
+
+function IsProgramSnapshotFileName(const Name: String): Boolean;
+begin
+  Result := (CompareText(Name, 'nevr-desktop.exe') = 0) or (CompareText(Name, 'nevr-ac.exe') = 0) or
+    (CompareText(Name, 'nevr-server.exe') = 0) or (CompareText(Name, 'nevr-bridge.exe') = 0) or
+    (CompareText(Name, 'nevr-compat.exe') = 0) or (CompareText(Name, 'README.md') = 0) or
+    (CompareText(Name, 'README-WINDOWS.txt') = 0) or (CompareText(Name, 'nevr.ico') = 0) or
+    (CompareText(Name, 'SHA256SUMS.txt') = 0);
+end;
+
+// Visits Folder. With Remove = False it only answers whether every entry is a
+// name a program snapshot can contain (Depth 0: program files and a "configs"
+// folder; Depth 1: *.toml files). With Remove = True it deletes those files.
+function VisitProgramSnapshot(const Folder: String; const Depth: Integer; const Remove: Boolean): Boolean;
+var
+  FindRec: TFindRec;
+  Expected: Boolean;
+begin
+  Result := not IsLinkedPath(Folder);
+  if not Result then
+    Exit;
+  if FindFirst(AddBackslash(Folder) + '*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          if (FindRec.Attributes and 1024) <> 0 then
+            Expected := False
+          else if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          begin
+            // Nested, not "and": the recursive visit must never run for a folder
+            // that is not the expected one, whatever the evaluation order.
+            Expected := (Depth = 0) and (CompareText(FindRec.Name, 'configs') = 0);
+            if Expected then
+              Expected := VisitProgramSnapshot(AddBackslash(Folder) + FindRec.Name, 1, Remove);
+          end
+          else if Depth = 0 then
+            Expected := IsProgramSnapshotFileName(FindRec.Name)
+          else
+            Expected := CompareText(ExtractFileExt(FindRec.Name), '.toml') = 0;
+          if not Expected then
+            Result := False
+          else if Remove and ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) then
+            DeleteFile(AddBackslash(Folder) + FindRec.Name);
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+// Removes one snapshot WITHOUT a recursive delete. A folder holding anything
+// a snapshot cannot contain is not ours to remove and is left exactly as it
+// was: the check runs to completion before the first file is deleted.
+procedure RemoveProgramSnapshot(const Snapshot: String);
+begin
+  if not VisitProgramSnapshot(Snapshot, 0, False) then
+  begin
+    Log('Program snapshot kept because it holds unexpected content: ' + Snapshot);
+    Exit;
+  end;
+  VisitProgramSnapshot(Snapshot, 0, True);
+  RemoveDir(AddBackslash(Snapshot) + 'configs');
+  if not RemoveDir(Snapshot) then
+    Log('Program snapshot folder could not be removed: ' + Snapshot);
+end;
+
+function IsNewerFileTime(const AHigh, ALow, BHigh, BLow: Cardinal): Boolean;
+begin
+  Result := (AHigh > BHigh) or ((AHigh = BHigh) and (ALow > BLow));
+end;
+
+// Keeps the newest Keep snapshots plus Current and removes the older ones.
+// Age is the folder's last-write time, a UTC FILETIME set when the snapshot's
+// manifest was written: independent of time zone and of either naming scheme.
+procedure PruneProgramSnapshots(const RollbackRoot, Current: String; const Keep: Integer);
+var
+  FindRec: TFindRec;
+  Names: array of String;
+  TimeHigh, TimeLow: array of Cardinal;
+  Kept: array of Boolean;
+  Count, I, Pass, Best: Integer;
+begin
+  if IsLinkedPath(RemoveBackslash(RollbackRoot)) then
+    Exit;
+  Count := 0;
+  if FindFirst(AddBackslash(RollbackRoot) + '*', FindRec) then
+  begin
+    try
+      repeat
+        if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and (FindRec.Name <> '.') and (FindRec.Name <> '..') and
+          LooksLikeProgramSnapshot(AddBackslash(RollbackRoot) + FindRec.Name) then
+        begin
+          SetArrayLength(Names, Count + 1);
+          SetArrayLength(TimeHigh, Count + 1);
+          SetArrayLength(TimeLow, Count + 1);
+          SetArrayLength(Kept, Count + 1);
+          Names[Count] := FindRec.Name;
+          TimeHigh[Count] := FindRec.LastWriteTime.dwHighDateTime;
+          TimeLow[Count] := FindRec.LastWriteTime.dwLowDateTime;
+          Kept[Count] := CompareText(AddBackslash(RollbackRoot) + FindRec.Name, Current) = 0;
+          Count := Count + 1;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+  for Pass := 1 to Keep do
+  begin
+    Best := -1;
+    for I := 0 to Count - 1 do
+      if (not Kept[I]) and ((Best < 0) or IsNewerFileTime(TimeHigh[I], TimeLow[I], TimeHigh[Best], TimeLow[Best])) then
+        Best := I;
+    if Best >= 0 then
+      Kept[Best] := True;
+  end;
+  for I := 0 to Count - 1 do
+    if not Kept[I] then
+    begin
+      Log('Removing old program snapshot: ' + Names[I]);
+      RemoveProgramSnapshot(AddBackslash(RollbackRoot) + Names[I]);
+    end;
+end;
+
 procedure RejectSnapshotLink(const Path: String);
 var
   FindRec: TFindRec;
@@ -162,7 +339,7 @@ begin
   Prefix := ExpandConstant('{localappdata}\NEVR-Anticheat\program-rollbacks\');
   if not ForceDirectories(Prefix) then
     RaiseException('Cannot create program rollback directory. Installation stopped.');
-  Prefix := Prefix + GetDateTimeString('yyyymmdd-hhnnss', '-', ':') + '-';
+  Prefix := Prefix + UtcSnapshotStamp + '-';
   Attempt := 0;
   repeat
     SnapshotRoot := Prefix + IntToStr(Attempt);
@@ -188,6 +365,13 @@ begin
     SnapshotProgramFile('configs\shadow_deploy.toml', SnapshotRoot, Manifest);
   if not SaveStringToFile(AddBackslash(SnapshotRoot) + 'SHA256SUMS.txt', Manifest, False) then
     RaiseException('Cannot finish program snapshot manifest. Installation stopped.');
+  // Housekeeping only after the new snapshot is complete, and never fatal:
+  // ~40 MB per update otherwise accumulates inside the evidence directory.
+  try
+    PruneProgramSnapshots(ExpandConstant('{localappdata}\NEVR-Anticheat\program-rollbacks'), SnapshotRoot, SnapshotsToKeep - 1);
+  except
+    Log('Old program snapshots were not pruned: ' + GetExceptionMessage);
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

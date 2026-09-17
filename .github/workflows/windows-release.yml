@@ -59,6 +59,11 @@ jobs:
           package="dist/NEVR-Anticheat-Windows-x64"
           mkdir -p "$package/configs" "$package/installer"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The committer time of the built commit orders rolling releases for
+          # the desktop updater (cmd/desktop/updater.go refuseUpdateDowngrade).
+          # It is identical for every re-run of one commit, unlike build_time.
+          commit_time="$(TZ=UTC0 git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$GITHUB_SHA")"
+          [[ "$commit_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
           app_version="$(sed -n 's/^const appVersion = "\([0-9.]*\)"/\1/p' cmd/desktop/main.go)"
           test -n "$app_version"
           IFS=. read -r version_major version_minor version_patch <<< "$app_version"
@@ -68,7 +73,7 @@ jobs:
             -DNEVR_VERSION_PATCH="$version_patch" \
             packaging/nevr-version.rc -O coff -o cmd/desktop/resource_windows_amd64.syso
 
-          go build -trimpath -ldflags "-s -w -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
+          go build -trimpath -ldflags "-s -w -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time} -X main.buildCommitTime=${commit_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-ac.exe" ./cmd/anticheat
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-server.exe" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
@@ -137,6 +142,21 @@ jobs:
         run: |
           ./scripts/test-test-release-verifier.ps1
           ./scripts/test-desktop-workload-runner.ps1
+
+      - name: Test rollback snapshot, pruning and uninstaller contracts
+        # Windows PowerShell on purpose: it is what Rollback-NEVR.cmd and
+        # Uninstall-NEVR.cmd start on a user's machine. The second script also
+        # compiles the installer's real [Code] section into a harness and runs
+        # Setup's snapshot naming and pruning against a scratch folder.
+        shell: powershell
+        run: |
+          # Both scripts report failure with "exit 1", which ends only the
+          # script and leaves the code here. It is unset when nothing exited.
+          $global:LASTEXITCODE = 0
+          ./scripts/test-windows-snapshots.ps1
+          if ($LASTEXITCODE) { throw "Snapshot tests failed with exit code $LASTEXITCODE" }
+          ./packaging/Test-ProgramSnapshots.ps1 -RequireSetupCompiler
+          if ($LASTEXITCODE) { throw "Release-safety packaging tests failed with exit code $LASTEXITCODE" }
 
       - name: Select signing mode
         shell: pwsh
@@ -271,10 +291,32 @@ jobs:
           $setupPath = Join-Path $PWD "dist\NEVR-Anticheat-Setup.exe"
           $setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $releaseTag = if ($env:GITHUB_REF -eq "refs/heads/master") { "windows-latest" } else { $env:GITHUB_REF_NAME }
+          # commit_time must equal main.buildCommitTime embedded by the build
+          # job: both are the committer time of GITHUB_SHA, normalised to UTC.
+          # The updater installs a release only when this is strictly newer
+          # than the installed build, so a re-run or out-of-order publish of an
+          # older commit is refused by clients instead of downgrading them.
+          # Collect all output first: "| Select-Object -First 1" stops git early
+          # and PowerShell 7 then reports a failing exit code for it.
+          $commitTimeLines = @(& git show -s --format=%cI $env:GITHUB_SHA)
+          if ($LASTEXITCODE -ne 0 -or $commitTimeLines.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commitTimeLines[0])) {
+            throw "Could not read the committer time of $env:GITHUB_SHA (git exit code $LASTEXITCODE)"
+          }
+          $commitTimeRaw = [string]$commitTimeLines[0]
+          $invariant = [Globalization.CultureInfo]::InvariantCulture
+          $commitTime = [DateTimeOffset]::Parse($commitTimeRaw.Trim(), $invariant).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss'Z'", $invariant)
+          # A silently ignored -X (renamed variable, different normalisation)
+          # would make installed clients and the manifest disagree about time.
+          $desktopBytes = [IO.File]::ReadAllBytes((Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64\nevr-desktop.exe"))
+          if ([Text.Encoding]::ASCII.GetString($desktopBytes).IndexOf($commitTime, [StringComparison]::Ordinal) -lt 0) {
+            throw "nevr-desktop.exe does not embed the manifest commit_time $commitTime"
+          }
+          $desktopBytes = $null
           $manifest = [ordered]@{
             schema_version = 1
             tag = $releaseTag
             commit = $env:GITHUB_SHA
+            commit_time = $commitTime
             version = $version
             installer = [ordered]@{
               name = "NEVR-Anticheat-Setup.exe"
@@ -373,6 +415,11 @@ jobs:
           if ($snapshots.Count -eq 0 -or -not (Test-Path -LiteralPath (Join-Path $snapshots[0].FullName "nevr-desktop.exe"))) {
             throw "Upgrade did not create a usable program rollback snapshot."
           }
+          # Setup and Program-Snapshot.ps1 share this folder and must share one
+          # clock: a local-time name here made Rollback pick the wrong build.
+          if ($snapshots[0].Name -cnotmatch '^\d{8}-\d{6}Z-\d+$') {
+            throw "Setup named its rollback snapshot '$($snapshots[0].Name)', not in UTC (yyyymmdd-hhnnssZ-N)."
+          }
 
           $uninstaller = Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" | Select-Object -First 1
           if ($null -eq $uninstaller) { throw "Windows uninstall entry was not created." }
@@ -426,16 +473,64 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # One publisher per release at a time. The rolling release is five assets
+    # replaced one by one and then a force-moved tag; two overlapping publish
+    # jobs could leave Setup.exe from one run beside the manifest and checksum
+    # of another. Runs for other refs get their own group and never wait.
+    # GitHub keeps only ONE waiting job per group: when a third master run
+    # reaches this job while one publishes and one waits, the waiting one is
+    # cancelled. That cannot publish an older build, because the ordering guard
+    # below, not arrival order, decides what may be published; a cancelled
+    # publish of the newest commit shows as cancelled and can be re-run safely.
+    concurrency:
+      group: release-publish-${{ github.ref == 'refs/heads/master' && 'windows-latest' || github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The ordering guard needs the history between the published tag and
+          # this commit; the default depth of 1 cannot answer ancestry.
+          fetch-depth: 0
+
+      - name: Refuse to move the rolling release backwards
+        id: ordering
+        if: github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          # Whichever publish job finishes LAST used to win, and "Re-run all
+          # jobs" on an old master run republished that old build. Every
+          # installed client then took the older build as an update. Publish
+          # only a commit that is the published one or a descendant of it.
+          release_tag="windows-latest"
+          published="$(git ls-remote origin "refs/tags/$release_tag" "refs/tags/$release_tag^{}" | tail -n 1 | cut -f1)"
+          if [[ -z "$published" ]]; then
+            echo "No $release_tag tag exists yet; this is the first rolling release."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$published^{commit}" 2>/dev/null; then
+            echo "::error::$release_tag points at $published, which is not in this repository's fetched history. Refusing to publish over a release whose order cannot be established."
+            exit 1
+          fi
+          if [[ "$published" == "$GITHUB_SHA" ]] || git merge-base --is-ancestor "$published" "$GITHUB_SHA"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif git merge-base --is-ancestor "$GITHUB_SHA" "$published"; then
+            echo "::notice::$release_tag already points at $published, which is newer than this run's commit $GITHUB_SHA. Nothing was published; this run was superseded."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::$release_tag points at $published, which is neither an ancestor nor a descendant of $GITHUB_SHA (rewritten history?). Refusing to publish. Move or delete the tag deliberately, by hand, and re-run."
+            exit 1
+          fi
 
       - name: Download verified release files
+        if: github.ref != 'refs/heads/master' || steps.ordering.outputs.publish == 'true'
         uses: actions/download-artifact@v8
         with:
           name: NEVR-Anticheat-Windows
           path: dist
 
       - name: Publish GitHub Release
+        if: github.ref != 'refs/heads/master' || steps.ordering.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
