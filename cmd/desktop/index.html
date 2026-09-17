@@ -503,9 +503,53 @@
   /* Tables retain their column meaning; constrained containers own scrolling. */
   .events, .assessment-players, .stat-tables, .physics-table, .throw-table, .playlist { max-width: 100%; scrollbar-gutter: stable; overscroll-behavior: contain; }
   .events, .assessment-players, .table-scroll, #history, #observations, #flagged { overflow-x: auto; min-width: 0; max-width: 100%; }
-  .who { overflow-wrap: anywhere; }
+  /* A player cell never collapses: auto table layout may not shrink it below a
+     readable measure, names wrap between words and the id sits on its own line. */
+  .who { overflow-wrap: break-word; }
   .who .name { font-weight: 600; }
   .who .id { display: inline-block; font-size: var(--text-xs); max-width: 100%; overflow-wrap: anywhere; }
+  td .who { display: block; min-width: 184px; max-width: 300px; }
+  td .who .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  td .who .id { display: block; margin: 1px 0 0; }
+  /* Wide report tables scroll sideways inside their own container; the first
+     column stays pinned so every number keeps its row label. */
+  .stat-tables :is(th, td):first-child, .events :is(th, td):first-child, .assessment-players :is(th, td):first-child, .throw-table :is(th, td):first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: inset -1px 0 0 var(--line);
+  }
+  .stat-tables thead th:first-child, .events thead th:first-child, .assessment-players thead th:first-child, .throw-table thead th:first-child { z-index: 3; background: var(--panel-solid); }
+  :is(.stat-tables, .events, .assessment-players, .throw-table) tbody tr:hover > td:first-child { background: var(--neutral-bg); }
+  :is(.stat-tables, .events, .assessment-players, .throw-table) tr.tfoot > td:first-child { position: static; box-shadow: none; }
+  tr.cap-breach-row > td:first-child { background: color-mix(in srgb, var(--bad-bg) 45%, var(--panel)); }
+  .stat-tables th, .stat-tables td { padding-inline: 6px; }
+  .stat-tables thead th { letter-spacing: 0; }
+  .stat-tables td .who { min-width: 164px; }
+  .stat-tables table { min-width: 0; }
+  /* Detections: one row per incident, sized to fit the default 1280 px window. */
+  .events td.det { white-space: normal; width: 190px; min-width: 170px; }
+  .events .when, .events .sev-cell { white-space: nowrap; }
+  .events .sev-cell > span { display: block; }
+  .events .sev-cell .conf { margin-top: 6px; color: var(--muted); }
+  .events tbody.incident > tr:first-child > td:not([rowspan]) { border-bottom: 0; padding-bottom: 6px; }
+  .events .evidence-row > td.evidence { padding-top: 0; padding-left: 14px; }
+  .events .evidence .explain, .events .evidence .expected { max-width: 78ch; }
+  .events .evidence .expected { display: block; margin-top: 4px; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+  .evidence-label { margin-right: 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 650; letter-spacing: .035em; text-transform: uppercase; }
+  .events tbody.incident tr:hover { background: transparent; }
+  .events tbody.incident:hover { background: var(--neutral-bg); }
+  .events tbody.incident:hover > tr > td:first-child { background: var(--neutral-bg); }
+  .events .evidence-row > td:first-child { position: static; background: transparent; box-shadow: none; }
+  .events .review-cell { min-width: 0; }
+  .event-actions { width: 250px; min-width: 250px; }
+  .event-actions .action-stack { min-width: 0; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .assessment-players .action-stack { min-width: 148px; flex-direction: column; align-items: stretch; }
+  .assessment-players td.num .det-name { white-space: nowrap; }
+  /* Physics inspector: per-frame signals read as a sentence under the frame
+     they belong to instead of a 50 px column. */
+  .physics-table tr.has-signals > td { border-bottom: 0; padding-bottom: 4px; }
+  .physics-table tr.focus.has-signals > td { box-shadow: inset 0 1px 0 var(--accent); }
+  .physics-table tr.focus.signal-row > td { box-shadow: inset 0 -1px 0 var(--accent); }
+  .physics-table tr.signal-row > td { padding-top: 0; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; }
+  .physics-table tr.signal-row .signal-label { margin-right: 8px; color: var(--ink-2); font-weight: 650; letter-spacing: .035em; text-transform: uppercase; }
   .kv { grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); }
   .kv dd, .kv dt, .mmeta, .mtitle, .ftitle { overflow-wrap: anywhere; }
   tbody tr:hover { background: var(--neutral-bg); }
@@ -602,7 +646,7 @@
     body { background: #fff; color: #000; font-size: 11px; }
     .top .btn, .upload, .btn, .status, .tog { display: none !important; }
     .block, .match, .fail { break-inside: avoid; }
-    thead th { position: static; }
+    thead th, th:first-child, td:first-child { position: static !important; box-shadow: none !important; }
     pre { max-height: none; }
   }
   /* Navigation stays a single scrollable strip; header actions own their row. */
@@ -630,7 +674,7 @@
     <button id="quick-setup" class="btn" title="Check storage and Spark readiness">Setup</button>
     <button id="quit" class="btn quit-btn" title="Stop the desktop app">Quit</button>
   </div>
-  <nav class="workspace-nav wrap" aria-label="Workspace sections"><a href="#workspace" aria-current="location">Overview</a><a href="#h-upload">Import replay</a><a href="#h-flagged">Review queue</a><a href="#h-history">History</a><a href="#appearance">Appearance</a><a href="#h-automation">Settings &amp; recovery</a><a href="#advanced-tools">Advanced tools</a></nav>
+  <nav class="workspace-nav wrap" aria-label="Workspace sections"><a href="#workspace" aria-current="location">Overview</a><a href="#h-upload">Import replay</a><a href="#h-results" id="nav-results" hidden>Results</a><a href="#h-flagged">Review queue</a><a href="#h-history">History</a><a href="#appearance">Appearance</a><a href="#h-automation">Settings &amp; recovery</a><a href="#advanced-tools">Advanced tools</a></nav>
 </header>
 <div id="offline-banner" class="offline-banner" hidden>
   <div><strong>Analysis engine disconnected.</strong><span>This browser tab is no longer connected to its local NEVR process. Relaunch <code>nevr-desktop.exe</code>, then use the new window it opens.</span></div>
@@ -729,7 +773,7 @@
   <section class="block" aria-labelledby="h-history">
     <div class="section-kicker"><span>07</span> Preserved evidence</div>
     <h2 id="h-history">History</h2>
-    <p class="section-intro">Search the latest 200 stored matches. Filters and page position stay in this browser; refresh when you want new results.</p>
+    <p class="section-intro">Search the latest 200 stored matches. Filters and page position are remembered on this PC; refresh when you want new results.</p>
     <div class="filters" aria-label="History filters">
       <input id="history-search" type="search" placeholder="Search match, file, player, map…" aria-label="Search history">
       <select id="history-detector" aria-label="Filter history by detector"><option value="">All detectors</option></select>
@@ -741,7 +785,7 @@
     </div>
     <div id="history" class="panel skeleton" aria-busy="true"><div class="sk" style="width:64%"></div><div class="sk" style="width:52%"></div><div class="sk" style="width:58%"></div></div>
   </section>
-  <section class="block" id="appearance" aria-labelledby="h-appearance"><div class="section-kicker">Personal workspace</div><h2 id="h-appearance">Appearance &amp; controls</h2><p class="section-intro">These browser-local preferences change the interface only, never detector settings or enforcement.</p><div class="appearance-controls form-row"><label class="form-field">Theme<select id="pref-theme"><option value="dark">NEVR dark</option><option value="light">Light</option><option value="system">Follow system</option></select></label><label class="form-field">Table spacing<select id="pref-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="form-field">Text size<select id="pref-text-size"><option value="normal">Standard</option><option value="large">Larger</option></select></label><label class="form-field">Motion<select id="pref-motion"><option value="system">Follow system</option><option value="reduced">Reduced</option></select></label><label class="check-inline"><input type="checkbox" id="pref-shortcuts"> Enable J/K within the focused incident queue</label></div><p class="help">Tab and Enter always work. Arrow keys move within the incident queue. Shortcuts never act while typing notes.</p></section>
+  <section class="block" id="appearance" aria-labelledby="h-appearance"><div class="section-kicker">Personal workspace</div><h2 id="h-appearance">Appearance &amp; controls</h2><p class="section-intro">These preferences are kept on this PC and change the interface only, never detector settings or enforcement.</p><div class="appearance-controls form-row"><label class="form-field">Theme<select id="pref-theme"><option value="dark">NEVR dark</option><option value="light">Light</option><option value="system">Follow system</option></select></label><label class="form-field">Table spacing<select id="pref-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="form-field">Text size<select id="pref-text-size"><option value="normal">Standard</option><option value="large">Larger</option></select></label><label class="form-field">Motion<select id="pref-motion"><option value="system">Follow system</option><option value="reduced">Reduced</option></select></label><label class="check-inline"><input type="checkbox" id="pref-shortcuts"> Enable J/K within the focused incident queue</label></div><p class="help">Tab and Enter always work. Arrow keys move within the incident queue. Shortcuts never act while typing notes.</p></section>
   <section class="block" aria-labelledby="h-automation">
     <div class="section-kicker"><span>08</span> Hands-free workflow</div>
     <h2 id="h-automation">Automation, recovery &amp; updates</h2>
@@ -816,7 +860,7 @@
   const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`;
   const fmtDur = (sec) => {
     if (!sec || sec <= 0) return '—';
-    const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    const total = Math.round(sec), m = Math.floor(total / 60), s = total % 60;
     return m ? (s ? `${m} min ${s} s` : `${m} min`) : `${s} s`;
   };
   const fmtClock = (sec) => {
@@ -850,7 +894,7 @@
   const badge = (l) => `<span class="lvl lvl-${esc(l)}">${esc(lvlName(l))}</span>`;
   const sevBadge = (l) => `<span class="tag sev-${esc(l)}">${esc(l)}</span>`;
   const team = (t) => t === 'blue' || t === 'orange' ? `<span class="team team-${t}">${t}</span>` : '<span class="team team-none">none</span>';
-  const who = (name, id) => `<span class="who">${name ? `<span class="name">${esc(name)}</span>` : ''}<span class="id mono">${esc(id)}</span></span>`;
+  const who = (name, id) => `<span class="who">${name ? `<span class="name" title="${esc(name)}">${esc(name)}</span>` : ''}<span class="id mono">${esc(id)}</span></span>`;
   const bar = (v, max, tone = '') => `<span class="bar mini ${tone}" aria-hidden="true"><i style="width:${max > 0 ? Math.min(100, Math.max(0, v / max * 100)).toFixed(0) : 0}%"></i></span>`;
   const meter = (v, tone = '') => `<span class="val">${fmtNum(v, 2)}</span>${bar(v, 1, tone)}`;
   const sep = '<span class="sep">·</span>';
@@ -858,7 +902,72 @@
   const prefKey = 'nevr-desktop-preferences-v1';
   let prefs = {};
   try { const stored = JSON.parse(localStorage.getItem(prefKey) || '{}'); if (stored && typeof stored === 'object' && !Array.isArray(stored)) prefs = stored; } catch (_) {}
-  const savePrefs = () => { try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {} };
+  // The loopback port, and with it the origin that owns localStorage, changes on
+  // every launch. api/ui-prefs keeps the same preferences and unsent note drafts
+  // beside the evidence database. localStorage paints the first frame and stays
+  // the only store when the running app has no such route (404).
+  const uiStore = { available: null, drafts: {}, timer: 0, dirty: false };
+  const plainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+  function uiPrefsPayload() {
+    // The server accepts at most 64 KiB: keep the newest drafts that fit.
+    const drafts = Object.values(uiStore.drafts).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 6);
+    for (;;) {
+      const payload = { schema: 'nevr-ui-prefs/v1', updated_at: Number(prefs.updatedAt) || Date.now(), prefs, note_drafts: Object.fromEntries(drafts.map((d) => [d.matchID, d])) };
+      if (new TextEncoder().encode(JSON.stringify(payload)).length <= 60000 || !drafts.length) return payload;
+      drafts.pop();
+    }
+  }
+  async function pushUIPrefs(keepalive = false) {
+    if (uiStore.available !== true || !uiStore.dirty) return;
+    uiStore.dirty = false;
+    try {
+      const r = await fetch('api/ui-prefs', { method: 'PUT', cache: 'no-store', keepalive: keepalive === true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(uiPrefsPayload()) });
+      if (r.status === 404 || r.status === 405) uiStore.available = false;
+      else if (!r.ok) uiStore.dirty = true;
+    } catch (_) { uiStore.dirty = true; }
+  }
+  function queuePrefsSave() {
+    uiStore.dirty = true;
+    if (uiStore.available !== true) return;
+    clearTimeout(uiStore.timer); uiStore.timer = setTimeout(pushUIPrefs, 400);
+  }
+  function mergeUIPrefs(body) {
+    // Returns true when the stored copy replaced what localStorage offered.
+    const remote = plainObject(body) ? body : {};
+    for (const [matchID, d] of Object.entries(plainObject(remote.note_drafts) ? remote.note_drafts : {})) {
+      if (plainObject(d) && d.matchID === matchID && typeof d.body === 'string' && typeof d.id === 'string') uiStore.drafts[matchID] = d;
+    }
+    if (plainObject(remote.prefs) && (Number(remote.updated_at) || 0) >= (Number(prefs.updatedAt) || 0)) {
+      prefs = { ...remote.prefs };
+      try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {}
+      return true;
+    }
+    if (Object.keys(prefs).length) queuePrefsSave();
+    return false;
+  }
+  async function loadUIPrefs() {
+    let body;
+    try {
+      const r = await fetch('api/ui-prefs', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      if (r.status === 404 || r.status === 405) { uiStore.available = false; return false; }
+      if (!r.ok) return false; // unreadable now: never overwrite what could not be read
+      body = await r.json();
+    } catch (_) { return false; }
+    uiStore.available = true;
+    return mergeUIPrefs(body);
+  }
+  function serverNoteDraft(matchID) {
+    const d = uiStore.drafts[matchID];
+    return d ? { id: d.id, matchID, body: d.body.slice(0, 8000), frame: Number.isInteger(d.frame) ? d.frame : -1 } : null;
+  }
+  function mirrorNoteDraft(draft) {
+    if (!draft || typeof draft.matchID !== 'string') return false;
+    if (String(draft.body || '').trim()) uiStore.drafts[draft.matchID] = { id: draft.id, matchID: draft.matchID, body: String(draft.body).slice(0, 8000), frame: Number.isInteger(draft.frame) ? draft.frame : -1, at: Date.now() };
+    else delete uiStore.drafts[draft.matchID];
+    queuePrefsSave();
+    return uiStore.available === true;
+  }
+  const savePrefs = () => { prefs.updatedAt = Date.now(); try { localStorage.setItem(prefKey, JSON.stringify(prefs)); } catch (_) {} queuePrefsSave(); };
   function applyAppearance() {
     const options = {theme:['dark','light','system'], density:['comfortable','compact'], textSize:['normal','large'], motion:['system','reduced']};
     for (const [key, values] of Object.entries(options)) {
@@ -882,15 +991,19 @@
     notices.length = Math.min(notices.length, 30);
     $('notice-history').innerHTML = notices.map(n => `<div class="screen-state tone-${n.tone === 'err' ? 'warn' : n.tone === 'ok' ? 'ok' : 'neutral'}"><p>${esc(n.message)}</p><small>${esc(fmtAbs(n.at))}${n.count > 1 ? ` · repeated ${n.count} times` : ''}</small></div>`).join('');
   }
-  $('history-search').value = prefs.historySearch || '';
-  $('history-sort').value = prefs.historySort || 'newest';
-  $('history-flagged').checked = !!prefs.historyFlagged;
-  $('history-label').value = prefs.historyLabel || '';
-  $('case-search').value = prefs.caseSearch || '';
-  $('case-state').value = prefs.caseState || '';
-  let blindReview = !!prefs.blindReview;
+  let blindReview = false;
   const revealedEvents = new Set();
-  $('blind-review').checked = blindReview;
+  function applyPrefControls() {
+    $('history-search').value = prefs.historySearch || '';
+    $('history-sort').value = prefs.historySort || 'newest';
+    $('history-flagged').checked = !!prefs.historyFlagged;
+    $('history-label').value = prefs.historyLabel || '';
+    $('case-search').value = prefs.caseSearch || '';
+    $('case-state').value = prefs.caseState || '';
+    blindReview = !!prefs.blindReview;
+    $('blind-review').checked = blindReview;
+  }
+  applyPrefControls();
   const setStatus = (msg, cls = '') => {
     const el = $('status'); el.textContent = msg; el.className = 'status ' + cls;
     const modalStatus = $('lab-dialog-status');
@@ -1155,7 +1268,7 @@
   function gameStatsTable(s) {
     const players = s.players || [];
     if (!players.length) return '<p class="empty">The replay carried no player statistics.</p>';
-    return `<div class="stat-tables"><table><thead><tr><th>Player</th><th>Team</th><th class="num">Level</th><th class="num">Ping</th>
+    return `<div class="stat-tables"><table><thead><tr><th>Player</th><th>Team</th><th class="num" title="Player level">Lvl</th><th class="num" title="Average / maximum ping in milliseconds">Ping</th>
       <th class="num">Pts</th><th class="num">Goals</th><th class="num">Ast</th><th class="num">Saves</th><th class="num">Steals</th><th class="num">Stuns</th>
       <th class="num">Pass</th><th class="num">Catch</th><th class="num">Block</th><th class="num">Int</th><th class="num">Poss.</th><th class="num">Shots</th>
       <th class="num">Throws</th><th class="num">Avg m/s</th><th class="num">Max m/s</th><th class="num">Scored</th></tr></thead><tbody>` +
@@ -1226,19 +1339,16 @@
   }
 
   function eventRows(events, matchID) {
-    return events.map((e) => { const concealed = blindReview && !revealedEvents.has(e.event_id); return `<tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
-      <td class="det">${concealed ? '<span class="blind-mask">Detector hidden</span>' : `<span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span>`}</td>
+    return events.map((e) => { const concealed = blindReview && !revealedEvents.has(e.event_id); return `<tbody class="incident"><tr class="${e.is_shadow ? 'shadow' : ''}" data-event-row="${esc(e.event_id)}">
+      <td class="det" rowspan="2">${concealed ? '<span class="blind-mask">Detector hidden</span>' : `<span class="mono">${esc(e.detector_id)}</span> <span class="muted">v${esc(e.detector_version)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''}${e.merged_count > 1 ? ` <span class="muted">×${fmtInt(e.merged_count)}</span>` : ''}<span class="det-name">${esc(e.detector_name || e.detector_id)}</span>`}</td>
       <td>${who(e.player_name, e.player_id)}</td>
-      <td class="num" title="Frame ${fmtInt(e.frame_index)}">${e.frame_range_start === e.frame_range_end ? fmtInt(e.frame_range_start) : `${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</td>
-      <td class="num">${fmtClock(e.timestamp)}</td>
-      <td class="num">${concealed ? '<span class="blind-mask">hidden</span>' : `${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}`}</td>
-      <td class="num">${concealed ? '—' : meter(e.confidence)}</td>
-      <td class="wide">${concealed ? '<span class="blind-mask">Conclusion hidden</span>' : `${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span>`}</td><td class="wide dim">${concealed ? '—' : esc(e.expected_range) || '—'}</td>
-      <td class="review-cell">${reviewControls(e, concealed)}</td>
-      <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
+      <td class="num when" title="Frame ${fmtInt(e.frame_index)}"><span class="mono">${fmtClock(e.timestamp)}</span><span class="det-name">${e.frame_range_start === e.frame_range_end ? `frame ${fmtInt(e.frame_range_start)}` : `frames ${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</span></td>
+      <td class="sev-cell">${concealed ? '<span class="blind-mask">hidden</span>' : `<span>${meter(e.severity, { low: '', medium: 'warn', high: 'hot', critical: 'bad' }[e.severity_label] || '')} ${sevBadge(e.severity_label)}</span><span class="conf">${meter(e.confidence)} confidence</span>`}</td>
+      <td class="event-actions" rowspan="2"><div class="review-cell">${reviewControls(e, concealed)}</div><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-event="${esc(e.event_id)}">Open clip</button>
       ${concealed ? `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(e.frame_index) ? e.frame_index : 0}" data-physics-player="${esc(e.player_id)}">Inspect raw physics</button>` : `<button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-event="${esc(e.event_id)}">Inspect physics</button>`}
       ${concealed ? `<button class="btn btn-sm" data-reveal-event="${esc(e.event_id)}">Reveal detector</button>` : ''}
-      <a class="btn btn-sm" href="${concealed ? `api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(e.frame_index) ? e.frame_index : 0}?player=${encodeURIComponent(e.player_id)}` : `api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}`}">Diagnostic ZIP</a></span></td></tr>`;
+      <a class="btn btn-sm" href="${concealed ? `api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(e.frame_index) ? e.frame_index : 0}?player=${encodeURIComponent(e.player_id)}` : `api/match/${encodeURIComponent(matchID)}/diagnostic/event/${encodeURIComponent(e.event_id)}`}">Diagnostic ZIP</a></span></td></tr>
+      <tr class="evidence-row${e.is_shadow ? ' shadow' : ''}"><td class="evidence" colspan="3">${concealed ? '<span class="blind-mask">Conclusion hidden</span>' : `<span class="evidence-label">Observed</span>${esc(e.observed_value) || '<span class="muted">—</span>'}<span class="explain">${esc(e.explanation || '')}</span>${e.expected_range ? `<span class="expected"><span class="evidence-label">Expected</span>${esc(e.expected_range)}</span>` : ''}`}</td></tr></tbody>`;
     }).join('');
   }
 
@@ -1248,10 +1358,10 @@
     if (!n) return `<p class="empty">${detectorID ? `${esc(detectorID)} did not fire on this match.` : 'No detector fired on this match.'}</p>`;
     const sorted = filtered.slice().sort((a, b) => (a.is_shadow - b.is_shadow) || (b.severity - a.severity) || (a.frame_index - b.frame_index));
     const shown = all ? sorted : sorted.slice(0, EVENT_LIMIT);
-    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="10">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
+    const foot = n > EVENT_LIMIT ? `<tfoot><tr class="tfoot"><td colspan="5">${all ? `All ${fmtInt(n)} detections, strongest first.` : `Showing the ${EVENT_LIMIT} strongest of ${fmtInt(n)} detections.`}
       <button class="btn btn-text btn-sm" data-showall="${idx}" data-all="${all ? 1 : 0}">${all ? `Show the top ${EVENT_LIMIT}` : 'Show all'}</button></td></tr></tfoot>` : '';
-    return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Frames</th><th class="num">Time</th>
-      <th class="num">Severity</th><th class="num">Confidence</th><th class="wide">Observed</th><th class="wide">Expected</th><th>Detector verdict</th><th>Investigation</th></tr></thead><tbody>${eventRows(shown, m.match_id)}</tbody>${foot}</table>
+    return `<table><thead><tr><th>Detector</th><th>Player</th><th class="num">Match time</th>
+      <th>Severity · confidence</th><th>Detector verdict · investigation</th></tr></thead>${eventRows(shown, m.match_id)}${foot}</table>
       <p class="summary-note">“Correct” means the detector observation is valid; “False positive” means the play was legal. These labels feed local calibration and never punish a player.</p>`;
   }
 
@@ -1386,7 +1496,7 @@
     const el = wrap.content.firstElementChild;
     if (el.id) document.getElementById(el.id)?.remove();
     $('results').prepend(el);
-    $('results-block').hidden = false;
+    $('results-block').hidden = false; $('nav-results').hidden = false;
     $('clear').hidden = false;
     return el;
   }
@@ -1522,7 +1632,7 @@
   $('folder').addEventListener('change', (e) => analyze(e.target.files));
   $('clear').addEventListener('click', () => {
     $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0;
-    $('results-block').hidden = true; $('clear').hidden = true;
+    $('results-block').hidden = true; $('clear').hidden = true; $('nav-results').hidden = true;
     setStatus('Results cleared. Stored matches stay in the history below.');
   });
 
@@ -1576,7 +1686,16 @@
     } catch (e) { panelError(el, 'the detector observations', e); }
   }
 
+  // Closed advanced sections fetch nothing. Their loaders run when the section
+  // is opened; a refresh while it is closed only marks it stale.
+  const lazyStale = { 'advanced-calibration': true, 'advanced-tools': true };
+  function deferUntilOpen(id) {
+    const section = $(id);
+    if (!section || section.open) return false;
+    lazyStale[id] = true; return true;
+  }
   async function loadCalibration() {
+    if (deferUntilOpen('advanced-calibration')) return;
     const el = $('calibration');
     try {
       const [c,v,promotions] = await Promise.all([getJSON('api/calibration'),getJSON('api/lab/validation'),getJSON('api/lab/promotions')]);
@@ -1711,12 +1830,14 @@
   }
   function readNoteDraft(matchID) {
     try { const d = JSON.parse(localStorage.getItem(draftKey(matchID)) || 'null'); if (d && d.matchID === matchID && typeof d.body === 'string' && typeof d.id === 'string') return {...d, body:d.body.slice(0,8000)}; } catch (_) {}
-    return {id:crypto.randomUUID(), matchID, body:'', frame:-1};
+    // A new launch has a new origin and an empty localStorage: fall back to the copy kept beside the database.
+    return serverNoteDraft(matchID) || {id:crypto.randomUUID(), matchID, body:'', frame:-1};
   }
   function persistNoteDraft() {
     if (!noteDraft || !$('note-body')) return false;
     noteDraft.body = $('note-body').value; noteDraft.frame = Number($('note-frame').value);
-    try { localStorage.setItem(draftKey(noteDraft.matchID), JSON.stringify(noteDraft)); return true; } catch (_) { return false; }
+    const mirrored = mirrorNoteDraft(noteDraft);
+    try { localStorage.setItem(draftKey(noteDraft.matchID), JSON.stringify(noteDraft)); return true; } catch (_) { return mirrored; }
   }
   function noteStatus(message, tone = '') {
     const el = $('note-status'); if (el) { el.textContent = message; el.className = 'note-status ' + tone; }
@@ -1762,6 +1883,7 @@
         const nextDraft = newer ? {...retained,id:crypto.randomUUID()} : {id:crypto.randomUUID(),matchID:captured.matchID,body:'',frame:-1};
         if (sameDraft) noteDraft = nextDraft;
         try { if (newer) localStorage.setItem(storageKey, JSON.stringify(nextDraft)); else localStorage.removeItem(storageKey); } catch (_) {}
+        mirrorNoteDraft(newer ? nextDraft : {matchID:captured.matchID, body:''});
         if (editor && !newer) { $('note-body').value = ''; $('note-frame').value = '-1'; }
       }
       if (request === investigationRequest && editor) {
@@ -1811,7 +1933,7 @@
       '<details class="sub"><summary>Throw log · '+fmtInt((d.throws||[]).length)+' reconstructed throws</summary><div class="throw-scroll table-scroll" tabindex="0" role="region" aria-label="Scrollable throw log"><table><thead><tr><th>Time</th><th>Player</th><th>Sample speed</th><th>Replay</th></tr></thead><tbody>'+(d.throws||[]).map(t => '<tr><td>'+esc(t.clock||fmtClock(t.time))+'</td><td>'+esc(t.player||t.player_id)+'</td><td>'+fmtNum(t.speed,2)+' m/s</td><td><button class="btn btn-sm" data-replay-match="'+esc(activeInvestigationMatch)+'" data-replay-frame="'+t.frame_index+'">Open throw</button></td></tr>').join('')+'</tbody></table></div><p class="help">Sample speed is not an independently validated violation. Review contact and attribution.</p></details>'+
       '<details class="sub"><summary>All replay clip anchors · '+fmtInt(activePlaylist.length)+'</summary><div class="playlist" tabindex="0" role="region" aria-label="Replay clip playlist"><table><thead><tr><th>#</th><th>Kind</th><th>Player</th><th>Signal</th><th>Frame</th><th>Replay</th></tr></thead><tbody>'+playlist+'</tbody></table></div></details></section>'+
       '<aside class="review-details" aria-label="Finding explanation and limitations">'+selectedIncidentDetails(d,incident)+'<h3>Evidence limitations</h3><ul class="health-list">'+(d.limits||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul><p class="help">Build rules and contact geometry must be verified before enforcement. No automatic action is enabled.</p></aside></div>'+
-      '<section class="note-editor"><h3>Reviewer notes &amp; bookmarks</h3><p class="help">Drafts are retained in this browser when local storage is available. Click Save note to add evidence. This local desktop has no reviewer accounts or shared editing locks.</p><details class="sub"><summary>Saved notes · <span id="saved-note-count">'+fmtInt((d.notes||[]).length)+'</span></summary><ul class="health-list" id="investigation-notes">'+renderNotes(d.notes)+'</ul></details><div class="form-row"><label class="form-field">Frame (−1 = whole match)<input id="note-frame" type="number" value="'+(Number.isInteger(noteDraft.frame)?noteDraft.frame:-1)+'" min="-1"></label><label class="form-field path">Review note<textarea id="note-body" maxlength="8000" rows="3" placeholder="What did you verify? What remains uncertain?">'+esc(noteDraft.body)+'</textarea></label></div><p id="note-status" class="note-status" role="status" aria-live="polite">'+(noteSavePending?'Another note save is awaiting confirmation. Save controls unlock when it finishes.':noteDraft.body?'Recovered local draft · not yet saved to evidence.':'No unsaved draft.')+'</p></section>'+
+      '<section class="note-editor"><h3>Reviewer notes &amp; bookmarks</h3><p class="help">Unsent drafts are retained on this PC when the preference store or browser storage is available. Click Save note to add evidence. This local desktop has no reviewer accounts or shared editing locks.</p><details class="sub"><summary>Saved notes · <span id="saved-note-count">'+fmtInt((d.notes||[]).length)+'</span></summary><ul class="health-list" id="investigation-notes">'+renderNotes(d.notes)+'</ul></details><div class="form-row"><label class="form-field">Frame (−1 = whole match)<input id="note-frame" type="number" value="'+(Number.isInteger(noteDraft.frame)?noteDraft.frame:-1)+'" min="-1"></label><label class="form-field path">Review note<textarea id="note-body" maxlength="8000" rows="3" placeholder="What did you verify? What remains uncertain?">'+esc(noteDraft.body)+'</textarea></label></div><p id="note-status" class="note-status" role="status" aria-live="polite">'+(noteSavePending?'Another note save is awaiting confirmation. Save controls unlock when it finishes.':noteDraft.body?'Recovered local draft · not yet saved to evidence.':'No unsaved draft.')+'</p></section>'+
       '<details class="sub"><summary>Advanced provenance &amp; legal-action context</summary><p>'+Object.entries(d.legal_context_counts||{}).map(([k,v])=>esc(k)+': '+fmtInt(v)).join(' · ')+'</p><div class="table-scroll"><table><thead><tr><th>Source</th><th>Version / config</th><th>Profile</th><th>Analyzed</th></tr></thead><tbody>'+(d.analysis_runs||[]).map(run=>'<tr><td>'+esc(run.source)+'</td><td>v'+esc(run.app_version)+' / '+esc(run.config_fingerprint)+'</td><td>'+esc(run.profile_name||'default')+'</td><td>'+timeAgo(run.created_at)+'</td></tr>').join('')+'</tbody></table></div></details></div>';
   }
   function selectIncident(index, focus = false) {
@@ -1840,6 +1962,7 @@
   }
 
   async function loadStudio() {
+    if (deferUntilOpen('advanced-tools')) return;
     const el = $('studio');
     try {
       const [v,p,f,q,s,b,synth] = await Promise.all([getJSON('api/lab/validation'),getJSON('api/profiles'),getJSON('api/filters'),getJSON('api/queue'),getJSON('api/setup'),getJSON('api/maintenance/backups'),getJSON('api/lab/synthetic')]);
@@ -1867,10 +1990,6 @@
       </div>`;
       el.dataset.validation=JSON.stringify(v);el.dataset.setup=JSON.stringify(s);
       if ($('compare-b') && players.length>1) $('compare-b').selectedIndex=1;
-      if (!prefs.v05SetupSeen && !$('lab-dialog').open) {
-        prefs.v05SetupSeen = true; savePrefs();
-        if (!s.stored_matches && !prefs.lastMatch) showSetup();
-      }
     } catch(e){ panelError(el,'the investigation studio',e); }
   }
 
@@ -1884,6 +2003,7 @@
   }
 
   async function loadRegression() {
+    if (deferUntilOpen('advanced-calibration')) return;
     const el = $('regression');
     try {
       const r = await getJSON('api/lab/regression');
@@ -2077,15 +2197,15 @@
   function renderPhysics(p) {
     const event = p.event ? `<div><span>Detector</span><b class="mono">${esc(p.event.detector_id)} v${esc(p.event.detector_version)}</b></div>` : '<div><span>Incident</span><b>Throw / selected frame</b></div>';
     const health = p.telemetry_health ? `<span class="tag ${p.telemetry_health.status === 'healthy' ? 'ok' : p.telemetry_health.status === 'warning' ? 'warn' : 'bad'}">${esc(p.telemetry_health.status)}</span>` : '<span class="tag warn">raw unavailable</span>';
-    const rows = (p.frames || []).map((f) => { const d = f.derived || {}, a = f.independent_audit || {}, src = f.source || {}, disc = src.disc || {}; return `<tr class="${f.focus ? 'focus' : ''}">
+    const rows = (p.frames || []).map((f) => { const d = f.derived || {}, a = f.independent_audit || {}, src = f.source || {}, disc = src.disc || {}; const signals = (f.signals || []).filter(Boolean); return `<tr class="${f.focus ? 'focus' : ''}${signals.length ? ' has-signals' : ''}">
       <td class="num mono">${fmtInt(f.frame_index)}</td><td class="num mono">${fmtClock(f.timestamp)}</td><td>${esc(f.contact_classification)}</td>
       <td class="num">${fmtNum(d.speed, 2)}</td><td class="num">${d.has_reported_velocity ? fmtNum(d.reported_speed, 2) : '—'}</td><td class="num">${d.playspace_valid ? fmtNum(d.playspace_speed, 2) : '—'}</td>
       <td class="num">${fmtNum(d.acceleration_magnitude, 1)}</td><td class="num">${fmtNum(d.left_hand_relative_speed, 2)} / ${fmtNum(d.right_hand_relative_speed, 2)}</td><td class="num">${a.valid ? fmtNum(a.extractor_velocity_delta, 6) : '—'}</td>
-      <td class="num">${disc.speed !== undefined ? fmtNum(disc.speed, 2) : '—'}</td><td class="mono">${esc(d.movement_origin || 'unavailable')}</td><td class="signal-list">${(f.signals || []).map(esc).join('<br>')}</td></tr>`; }).join('');
+      <td class="num">${disc.speed !== undefined ? fmtNum(disc.speed, 2) : '—'}</td><td class="mono">${esc(d.movement_origin || 'unavailable')}</td></tr>${signals.length ? `<tr class="signal-row${f.focus ? ' focus' : ''}"><td></td><td colspan="10"><span class="signal-label">Signals</span>${signals.map(esc).join(' · ')}</td></tr>` : ''}`; }).join('');
     const raw = p.raw_tick_present ? `<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Original focus tick</h3></summary><pre>${esc(JSON.stringify(p.raw_focus_tick, null, 2))}</pre></details>` : '<p class="notice bad">The original raw focus tick is not active. Normalized values remain available; restore the match archive for full raw inspection.</p>';
     const evidence = p.event ? `<dl class="kv"><dt>Observed</dt><dd>${esc(p.event.observed_value || '—')}</dd><dt>Expected</dt><dd>${esc(p.event.expected_range || '—')}</dd><dt>Confidence</dt><dd>${fmtNum(p.event.confidence, 2)}</dd></dl><details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Detector evidence</h3></summary><pre>${esc(JSON.stringify(p.event.evidence || {}, null, 2))}</pre></details>` : '';
     return `<div class="inspector-grid"><div><span>Match</span><b class="mono">${esc(p.match_id)}</b></div><div><span>Player</span><b>${esc(p.player_name || p.player_id)}</b></div><div><span>Focus frame</span><b class="mono">${fmtInt(p.focus_frame)}</b></div>${event}<div><span>Telemetry</span><b>${health}</b></div><div><span>Disc cap</span><b>${fmtNum(p.disc_speed_cap, 1)} m/s</b></div></div>
-      ${evidence}${p.event && p.event.detector_id === 'STATE_008' ? renderCatchTrajectory(p.event.evidence) : ''}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th><th>Signals</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${evidence}${p.event && p.event.detector_id === 'STATE_008' ? renderCatchTrajectory(p.event.evidence) : ''}<h3>Raw inputs vs derived physics<span class="count">±${fmtInt(8)} frames</span></h3><div class="physics-table"><table><thead><tr><th>Frame</th><th>Time</th><th>Contact assessment</th><th class="num">Pose m/s</th><th class="num">Game m/s</th><th class="num">Playspace m/s</th><th class="num">Accel</th><th class="num">Hands rel. L/R</th><th class="num">Audit Δ</th><th class="num">Disc m/s</th><th>Origin</th></tr></thead><tbody>${rows}</tbody></table></div>
       ${raw}<details class="sub"><summary><span class="tog" aria-hidden="true"></span><h3>Interpretation limits</h3></summary><ul class="health-list">${(p.limitations || []).map((x) => `<li class="info">${esc(x)}</li>`).join('')}</ul></details>`;
   }
 
@@ -2147,7 +2267,7 @@
     if (nav && nav.getAttribute('href').length > 1) {
       const target = document.getElementById(nav.getAttribute('href').slice(1));
       if (target) { for (let parent=target; parent; parent=parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; }
-      if (nav.closest('.workspace-nav')) { document.querySelectorAll('.workspace-nav a').forEach(a=>a.removeAttribute('aria-current')); nav.setAttribute('aria-current','location'); }
+      if (nav.closest('.workspace-nav')) pinCurrentNav(nav);
     }
     if (e.target.closest('#quick-setup, #retry-setup')) { await showSetup(); return; }
     if (e.target.closest('[data-setup-done]')) { $('lab-dialog').close(); $('drop').focus(); $('drop').scrollIntoView({block:'center',behavior:reduced?'auto':'smooth'}); return; }
@@ -2677,7 +2797,7 @@
     document.querySelector(`button[data-playlist-index="${activePlaylistIndex}"]`)?.focus();
   });
   document.addEventListener('input', e => {
-    if (e.target.id === 'note-body' || e.target.id === 'note-frame') { const stored = persistNoteDraft(); noteStatus(stored ? 'Draft retained in this browser · not yet saved to evidence.' : 'Draft is only in this open editor. Browser storage is unavailable; save or copy it before closing.', stored?'':'err'); }
+    if (e.target.id === 'note-body' || e.target.id === 'note-frame') { const stored = persistNoteDraft(); noteStatus(stored ? 'Draft retained on this PC · not yet saved to evidence.' : 'Draft is only in this open editor. Browser storage is unavailable; save or copy it before closing.', stored?'':'err'); }
     if (e.target.id === 'case-search') { prefs.caseSearch=e.target.value; savePrefs(); renderFlagged(); }
   });
   document.addEventListener('change', e => {
@@ -2704,9 +2824,107 @@
     if ($('matrix-values') && Number.isFinite(value)) $('matrix-values').value = [value * .9, value, value * 1.1].map((x) => Number(x.toPrecision(6))).join(', ');
   });
 
-  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); loadHealth(); loadStudio(); }
+  // Storage measurements walk the database (seconds on a large one), so a
+  // refresh asks for them at most once a minute; a request inside that minute
+  // is deferred to its end. The panel's own button always measures immediately.
+  const HEALTH_MIN_INTERVAL = 60000;
+  let healthRequestedAt = 0, healthTimer = 0;
+  function refreshHealth() {
+    clearTimeout(healthTimer);
+    const wait = HEALTH_MIN_INTERVAL - (Date.now() - healthRequestedAt);
+    if (wait > 0) { healthTimer = setTimeout(refreshHealth, wait); return; }
+    healthRequestedAt = Date.now(); loadHealth();
+  }
+  // loadCalibration, loadRegression and loadStudio return at once while their
+  // advanced section is closed and run when it is opened.
+  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); refreshHealth(); loadStudio(); }
+  for (const [id, loaders] of [['advanced-calibration', [loadCalibration, loadRegression]], ['advanced-tools', [loadStudio]]]) {
+    $(id).addEventListener('toggle', (e) => {
+      if (!e.target.open || !lazyStale[id]) return;
+      lazyStale[id] = false; loaders.forEach((load) => load());
+    });
+  }
+  async function firstRunSetup() {
+    if (prefs.v05SetupSeen || $('lab-dialog').open) return;
+    prefs.v05SetupSeen = true; savePrefs();
+    if (prefs.lastMatch) return;
+    try { const s = await getJSON('api/setup'); if (!s.stored_matches && !$('lab-dialog').open) showSetup(); } catch (_) {}
+  }
+
+  // ---- navigation follows the section being read ------------------------------
+  const navLinks = [...document.querySelectorAll('.workspace-nav a[href^="#"]')];
+  let pinnedNav = null, pinnedNavAt = 0, navSpy = null, navSpyTimer = 0;
+  function setCurrentNav(link) {
+    navLinks.forEach((a) => { if (a === link) a.setAttribute('aria-current', 'location'); else a.removeAttribute('aria-current'); });
+  }
+  function pinCurrentNav(link) { pinnedNav = link; pinnedNavAt = Date.now(); setCurrentNav(link); }
+  function navOwners() {
+    // Every top-level block of <main> belongs to the nearest navigation entry at or before it.
+    const owned = new Map();
+    for (const link of navLinks) {
+      const target = document.getElementById(link.getAttribute('href').slice(1));
+      if (!target) continue;
+      let block = target.id === 'workspace' ? target.firstElementChild : target;
+      while (block && block.parentElement && block.parentElement.id !== 'workspace') block = block.parentElement;
+      if (block) owned.set(block, link);
+    }
+    const owners = new Map();
+    let current = navLinks[0];
+    for (const block of $('workspace').children) { current = owned.get(block) || current; owners.set(block, current); }
+    return owners;
+  }
+  function watchNavigation() {
+    if (typeof IntersectionObserver === 'undefined' || !navLinks.length) return;
+    if (navSpy) navSpy.disconnect();
+    const owners = navOwners(), crossing = new Set();
+    // The root is reduced to a thin band just under the sticky header: the block crossing it is the one being read.
+    const header = Math.ceil(document.querySelector('.top').getBoundingClientRect().height) + 24;
+    navSpy = new IntersectionObserver((entries) => {
+      for (const entry of entries) { if (entry.isIntersecting) crossing.add(entry.target); else crossing.delete(entry.target); }
+      if (pinnedNav) {
+        const atEnd = innerHeight + scrollY >= document.documentElement.scrollHeight - 2;
+        if (Date.now() - pinnedNavAt < 1200 || atEnd) return; // a clicked entry holds while its scroll settles, and when its section cannot reach the band
+        pinnedNav = null;
+      }
+      // Margins between blocks can leave the band on no block at all: then the last block that started above it is current.
+      const blocks = [...owners.keys()];
+      const block = blocks.find((candidate) => crossing.has(candidate)) || blocks.filter((candidate) => { const r = candidate.getBoundingClientRect(); return r.height > 0 && r.top <= header; }).pop();
+      setCurrentNav(block ? owners.get(block) : navLinks[0]);
+    }, { rootMargin: `-${header}px 0px -${Math.max(0, innerHeight - header - 2)}px 0px`, threshold: 0 });
+    owners.forEach((_link, block) => navSpy.observe(block));
+  }
+  function scheduleNavigationWatch() { clearTimeout(navSpyTimer); navSpyTimer = setTimeout(watchNavigation, 150); }
+  addEventListener('resize', scheduleNavigationWatch);
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(scheduleNavigationWatch).observe(document.querySelector('.top'));
+  watchNavigation();
+
+  // ---- window lifecycle ---------------------------------------------------------
+  // The app window tells the local engine it is still open, so the engine can exit
+  // once the window is gone. An engine without the route answers 404: that is
+  // ignored and asked again only once a minute.
+  let heartbeatEvery = 5000;
+  async function heartbeat() {
+    if (intentionallyStopped) return;
+    try {
+      const r = await fetch('api/heartbeat', { method: 'POST', cache: 'no-store' });
+      heartbeatEvery = r.status === 404 || r.status === 405 ? 60000 : 5000;
+    } catch (_) { heartbeatEvery = 5000; }
+    setTimeout(heartbeat, heartbeatEvery);
+  }
+  addEventListener('pagehide', () => {
+    if (intentionallyStopped) return;
+    pushUIPrefs(true);
+    try { navigator.sendBeacon('api/heartbeat?leaving=1'); } catch (_) {}
+  });
+
   probeConnection();
-  refreshPanels();
+  heartbeat();
+  // Panels render from preferences (filters, blinded review), so they wait for the stored copy; the wait is bounded.
+  loadUIPrefs().then((replaced) => {
+    if (!replaced) return;
+    applyAppearance(); applyPrefControls();
+    historyPage = Number.isInteger(prefs.historyPage) && prefs.historyPage >= 0 ? prefs.historyPage : 0;
+  }).finally(() => { refreshPanels(); firstRunSetup(); });
   setInterval(probeConnection, 5000);
   setInterval(updateOperatorStatus, 1000);
 })();
