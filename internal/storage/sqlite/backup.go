@@ -68,7 +68,7 @@ func (s *Store) Backup(ctx context.Context, destination string) (err error) {
 // VerifyDatabase opens path read-only and runs SQLite's quick integrity
 // check. It is shared by backup creation and the desktop restore wizard.
 func VerifyDatabase(ctx context.Context, path string) error {
-	dsn := "file:" + filepath.ToSlash(path) + "?mode=ro&_busy_timeout=5000"
+	dsn := sqliteFileURI(path) + "?mode=ro&_busy_timeout=5000"
 	copyDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return fmt.Errorf("sqlite: opening backup for verification: %w", err)
@@ -83,6 +83,19 @@ func VerifyDatabase(ctx context.Context, path string) error {
 	}
 	return nil
 }
+
+// sqliteFileURI renders a filesystem path as the path part of a SQLite file:
+// URI. SQLite decodes %HH escapes and ends the path at '?' (query) or '#'
+// (fragment), so a literal path containing them would open a different file:
+// a data folder named "100%25 data" verified ".../100% data", which does not
+// exist, and Backup then removed a snapshot VACUUM INTO had written correctly.
+// Only those three bytes are significant inside the path; everything else,
+// including spaces and non-ASCII names, is taken literally.
+func sqliteFileURI(path string) string {
+	return "file:" + sqliteURIPathEscaper.Replace(filepath.ToSlash(path))
+}
+
+var sqliteURIPathEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
 
 // CheckAndCheckpoint verifies the live database and then requests a TRUNCATE
 // checkpoint. It is intentionally separate from VACUUM: checkpointing is a
