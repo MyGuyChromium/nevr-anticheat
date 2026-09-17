@@ -192,7 +192,13 @@ func safeClipName(value string) string {
 
 // replayViewerCandidates includes Spark's own install target first. The env
 // override supports portable/custom installations without hard-coding them.
-func replayViewerCandidates(goos string, getenv func(string) string, executableDir string) []string {
+//
+// The folder nevr-desktop.exe runs from is deliberately not a candidate. The
+// portable build is saved wherever the moderator likes, typically Desktop or
+// Downloads, where any web page can drop a file named "Replay Viewer.exe"
+// without a prompt; "Open in Spark" would then run it. A viewer kept in an
+// unusual place is named with NEVR_REPLAY_VIEWER, which only the user can set.
+func replayViewerCandidates(goos string, getenv func(string) string) []string {
 	var out []string
 	add := func(path string) {
 		path = strings.Trim(strings.TrimSpace(path), `"`)
@@ -215,10 +221,6 @@ func replayViewerCandidates(goos string, getenv func(string) string, executableD
 				add(filepath.Join(root, "Documents", "Replay Viewer", "Replay Viewer.exe"))
 			}
 		}
-		if executableDir != "" {
-			add(filepath.Join(executableDir, "Replay Viewer", "Replay Viewer.exe"))
-			add(filepath.Join(executableDir, "Replay Viewer.exe"))
-		}
 		if root := getenv("ProgramFiles"); root != "" {
 			add(filepath.Join(root, "Oculus", "Software", "Software", "franzco-echodata", "Replay Viewer.exe"))
 		}
@@ -234,12 +236,25 @@ func replayViewerCandidates(goos string, getenv func(string) string, executableD
 }
 
 func resolvedReplayViewers() []string {
-	executableDir := ""
+	var untrusted []string
 	if executable, err := os.Executable(); err == nil {
-		executableDir = filepath.Dir(executable)
+		untrusted = append(untrusted, filepath.Dir(executable))
 	}
+	if cwd, err := os.Getwd(); err == nil {
+		untrusted = append(untrusted, cwd)
+	}
+	return resolveReplayViewers(replayViewerCandidates(runtime.GOOS, os.Getenv), os.Getenv("NEVR_REPLAY_VIEWER"), untrusted, exec.LookPath)
+}
+
+// resolveReplayViewers keeps the candidates that exist. A name found through
+// PATH is refused when it resolves into one of the untrusted folders (the
+// app's own folder and the working directory, which the app sets to its own
+// folder): PATH must not bring the planted-binary problem back. The explicit
+// override is the user's own choice and is exempt.
+func resolveReplayViewers(candidates []string, override string, untrustedDirs []string, lookPath func(string) (string, error)) []string {
+	override = strings.Trim(strings.TrimSpace(override), `"`)
 	var out []string
-	for _, candidate := range replayViewerCandidates(runtime.GOOS, os.Getenv, executableDir) {
+	for _, candidate := range candidates {
 		command := candidate
 		if filepath.IsAbs(candidate) {
 			info, err := os.Stat(candidate)
@@ -247,15 +262,35 @@ func resolvedReplayViewers() []string {
 				continue
 			}
 		} else {
-			resolved, err := exec.LookPath(candidate)
+			resolved, err := lookPath(candidate)
 			if err != nil {
 				continue
 			}
+			if absolute, err := filepath.Abs(resolved); err == nil {
+				resolved = absolute
+			}
 			command = resolved
+		}
+		if candidate != override && insideAnyDir(command, untrustedDirs) {
+			continue
 		}
 		out = append(out, command)
 	}
 	return out
+}
+
+func insideAnyDir(path string, dirs []string) bool {
+	path = strings.ToLower(filepath.Clean(path))
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		dir = strings.ToLower(filepath.Clean(dir))
+		if path == dir || strings.HasPrefix(path, strings.TrimRight(dir, `\/`)+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // findSparkReplayViewer resolves the preferred viewer without launching it.
