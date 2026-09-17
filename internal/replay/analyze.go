@@ -920,7 +920,18 @@ func (a *fileAnalysis) storedSourceRelation(run *matchRun) (SourceRelation, stri
 		// validateNativeSource is the authority for native captures. It has
 		// either passed already (Force) or is not run for a refused match.
 		if run.compareOnly {
-			return SourceUnverified, "native captures are verified only when a re-analysis is requested", nil
+			var next rawTickNext
+			if run.rawSpool != nil {
+				if next, err = run.rawSpool.iterator(); err != nil {
+					return "", "", err
+				}
+			}
+			if err := validateNativeSource(a.ctx, a.store, mc, next); err != nil {
+				if strings.Contains(err.Error(), "source conflict:") {
+					return SourceDifferent, err.Error(), nil
+				}
+				return "", "", err
+			}
 		}
 		return SourceSameCapture, "the native capture id and its stored records match", nil
 	}

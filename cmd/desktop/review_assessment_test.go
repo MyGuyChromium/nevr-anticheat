@@ -130,9 +130,9 @@ func TestDesktopReviewAssessmentPersistsAcrossViewsAndExports(t *testing.T) {
 		}
 	}
 
-	// The replay's default analysis has no observations. Re-uploading replaces
-	// the seeded findings and the cached summary must not keep their status.
-	resp, uploaded = upload(t, ts, false, map[string]string{"fixture.echoreplay": fixturePath})
+	// The replay's default analysis has no observations. An explicit re-analysis
+	// replaces the seeded findings and the cached summary must not keep their status.
+	resp, uploaded = upload(t, ts, true, map[string]string{"fixture.echoreplay": fixturePath})
 	if resp.StatusCode != http.StatusOK || len(uploaded.Results) != 1 || !uploaded.Results[0].OK {
 		t.Fatalf("re-upload status=%d out=%+v", resp.StatusCode, uploaded)
 	}

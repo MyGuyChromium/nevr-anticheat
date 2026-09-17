@@ -56,6 +56,7 @@ type desktopRuntime struct {
 	updateReady  func() (bool, string)
 	launchUpdate func(updateLaunchRequest) error
 	analyzeMu    *sync.Mutex
+	sources      *sourceIndex
 	stopped      chan struct{}
 	resume       chan struct{}
 	queue        []analysisQueueItem
@@ -102,6 +103,7 @@ func newDesktopRuntime(engine *replay.Engine, done <-chan struct{}) *desktopRunt
 		updateReady: updateInstallSupport, launchUpdate: launchUpdateHelper,
 		settings:    desktopSettings{AutomaticUpdates: true, SeenFiles: make(map[string]string)},
 		watchStatus: "idle", analyzeMu: &sync.Mutex{}, stopped: make(chan struct{}), resume: make(chan struct{}, 1),
+		sources: &sourceIndex{path: filepath.Join(base, sourceIndexFileName)},
 	}
 	_ = os.MkdirAll(rt.pendingDir, 0o700)
 	cleanupOldUpdateArtifacts(rt.updateDir)
@@ -203,7 +205,8 @@ func (rt *desktopRuntime) loop(done <-chan struct{}) {
 		}
 	}()
 	// Give the HTTP server time to start, then recover files that had already
-	// completed upload when a previous process exited.
+	// completed upload when a previous process exited. An upload that was still
+	// being written carries the .part suffix and is deleted, never analyzed.
 	timer := time.NewTimer(750 * time.Millisecond)
 	select {
 	case <-ctx.Done():
@@ -325,10 +328,16 @@ func (rt *desktopRuntime) scanWatchFolder(ctx context.Context) (int, error) {
 		}
 		queueID := rt.queueStart(path, "watch folder")
 		started := time.Now()
-		results, analyzeErr := rt.engine.AnalyzeFileAll(ctx, path, true)
+		// The watch folder never asks for a replacement: a second recording of
+		// a stored match is reported and the stored analysis is kept.
+		outcome := rt.analyzeRecording(ctx, path, "", intakeRequest{})
+		results, analyzeErr := outcome.Results, outcome.Err
 		recordAnalysisResults(ctx, rt.engine, results, "watch", time.Since(started))
 		failure := analyzeErr
-		ok := analyzeErr == nil && len(results) > 0
+		if failure == nil {
+			failure = outcome.conflictError()
+		}
+		ok := failure == nil && len(results) > 0
 		persistFailed := false
 		for _, result := range results {
 			if result.PersistError() != nil {
@@ -413,16 +422,29 @@ func (rt *desktopRuntime) resumePending(ctx context.Context) {
 			rt.checkpointAfterAnalysis()
 		}
 	}()
+	if removed := removePartialSpools(rt.pendingDir); removed > 0 {
+		rt.engine.Logger().Warn("discarded uploads that were interrupted before they were complete", "files", removed)
+	}
 	for _, path := range rt.pendingFiles() {
 		if ctx.Err() != nil {
 			return
 		}
 		queueID := rt.queueStart(path, "crash recovery")
 		started := time.Now()
-		results, err := rt.engine.AnalyzeFileAll(ctx, path, true)
+		// Recovery finishes what an upload started, with the upload's default
+		// policy: it never replaces a stored match with a different recording.
+		outcome := rt.analyzeRecording(ctx, path, "", intakeRequest{})
+		results, err := outcome.Results, outcome.Err
 		recordAnalysisResults(ctx, rt.engine, results, "recovery", time.Since(started))
 		stored += len(results)
-		if analysisFailureIsPermanent(ctx, results, err) {
+		conflict := error(nil)
+		if err == nil {
+			conflict = outcome.conflictError()
+		}
+		if conflict != nil || analysisFailureIsPermanent(ctx, results, err) {
+			if err == nil {
+				err = conflict
+			}
 			// The copy can never be analyzed: report it once and drop it rather
 			// than failing the same way at every launch.
 			if err == nil {

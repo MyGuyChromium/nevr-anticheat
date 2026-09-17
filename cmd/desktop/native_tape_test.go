@@ -40,7 +40,9 @@ func TestDesktopNativeTapeImportDuplicateReopenAndClip(t *testing.T) {
 	path := nativeDesktopFixture(t)
 	var matchID string
 	for pass := 0; pass < 2; pass++ {
-		resp, out := upload(t, ts, false, map[string]string{"synthetic-native.TAPE": path})
+		// The second pass asks for the re-analysis: an unforced duplicate is
+		// recognised as already analyzed and changes nothing.
+		resp, out := upload(t, ts, pass == 1, map[string]string{"synthetic-native.TAPE": path})
 		if resp.StatusCode != http.StatusOK || len(out.Results) != 1 || !out.Results[0].OK {
 			t.Fatalf("native upload %d: HTTP %d %+v", pass, resp.StatusCode, out)
 		}
