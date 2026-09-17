@@ -637,6 +637,56 @@
     .throw-tools { align-items: flex-start; flex-direction: column; }
     .screen-state { padding: 16px; }
   }
+  /* Match timeline. Colour only where it carries meaning: team on goals and lane
+     groups, severity on signals, --bad on over-cap releases. Everything else is ink. */
+  .tl { position: relative; margin: 20px 0 8px; padding: 0; }
+  .tl-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 24px; flex-wrap: wrap; margin-bottom: 6px; }
+  .tl-head h3 { margin: 0; }
+  .tl-sum { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+  .tl-plot { max-width: 100%; overflow-x: auto; overflow-y: hidden; border-block: 1px solid var(--line); padding-block: 6px; }
+  .tl-svg { display: block; overflow: visible; }
+  .tl-svg text { font: 500 11px/1 var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .tl-svg .tl-cap { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; fill: var(--ink-2); }
+  .tl-svg .tl-name { font-size: 12px; fill: var(--ink); }
+  .tl-svg .tl-num { font-family: var(--mono); font-size: 10.5px; }
+  .tl-svg .tl-quiet { font-size: 12px; }
+  .tl-svg .tl-score { font: 700 11.5px/1 var(--sans); }
+  .tl-svg .tl-dash { fill: var(--muted); font-weight: 400; }
+  .tl svg .tl-blue { fill: var(--blue); } .tl svg .tl-orange { fill: var(--orange); } .tl svg .tl-none { fill: var(--ink-2); }
+  .tl-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 1 5; }
+  .tl-axis { stroke: var(--line-2); stroke-width: 1; }
+  .tl-caprule { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 1 4; opacity: .7; }
+  .tl-absent { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+  .tl-base { stroke: var(--line-2); stroke-width: 1.5; }
+  .tl-tick { fill: var(--ink); }
+  .tl-over .tl-tick { fill: var(--bad); }
+  .tl-linked { stroke: var(--bg); stroke-width: 1; }
+  .tl-goal circle { stroke: var(--bg); stroke-width: 1.5; }
+  .tl-sev-low { color: var(--muted); } .tl-sev-medium { color: var(--warn); } .tl-sev-high { color: var(--hot); } .tl-sev-critical { color: var(--bad); }
+  .tl-concealed { color: var(--muted); }
+  .tl-signal .tl-glyph { fill: currentColor; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+  .tl-signal.tl-shadow .tl-glyph, .tl-signal.tl-concealed .tl-glyph { fill: var(--bg); }
+  .tl-signal .tl-more { fill: var(--bg); stroke: currentColor; stroke-width: 1.2; opacity: .75; }
+  .tl-svg .tl-casetext { font-size: 11px; fill: var(--muted); }
+  .tl-lvl-suspicious .tl-casetext { fill: var(--warn); } .tl-lvl-high_risk .tl-casetext { fill: var(--hot); }
+  .tl-lvl-critical .tl-casetext, .tl-lvl-action_worthy .tl-casetext { fill: var(--bad); }
+  .tl-hit { fill: transparent; stroke: none; }
+  .tl-mark { cursor: pointer; outline: none; }
+  .tl-mark:hover .tl-hit { fill: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .tl-mark:focus-visible .tl-hit { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--focus); stroke-width: 2; }
+  .tl-tip { position: absolute; z-index: 5; width: max-content; max-width: min(380px, 100%); padding: 10px 12px; background: var(--panel-solid); border: 1px solid var(--line-2); border-radius: var(--radius-sm); box-shadow: var(--shadow); font-size: var(--text-xs); pointer-events: none; }
+  .tl-tip-head { display: block; margin-bottom: 6px; font-size: var(--text-sm); }
+  .tl-tip dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 0; }
+  .tl-tip dt { color: var(--muted); } .tl-tip dd { margin: 0; overflow-wrap: anywhere; }
+  .tl-tip p { margin: 8px 0 0; color: var(--ink-2); max-width: 44ch; }
+  .tl-tip .tl-tip-go { color: var(--muted); }
+  .tl-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 10px 0 0; padding: 0; list-style: none; color: var(--ink-2); font-size: var(--text-xs); }
+  .tl-legend li { display: inline-flex; align-items: center; gap: 6px; }
+  .tl-legend svg { flex: none; overflow: visible; }
+  .tl figcaption { margin-top: 8px; color: var(--muted); font-size: var(--text-xs); }
+  .tl-target > td, tbody.tl-target td, li.tl-target { background: var(--accent-bg) !important; }
+  .tl-target > td:first-child, tbody.tl-target > tr:first-child > td:first-child, li.tl-target { box-shadow: inset 3px 0 0 var(--accent); }
+  .tl-target:focus { outline: none; }
   html[data-motion="reduced"] *, html[data-motion="reduced"] ::before, html[data-motion="reduced"] ::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   html[data-motion="reduced"] .bar.wait > i { width: 100%; opacity: .45; }
   @media (prefers-reduced-motion: reduce) {
@@ -1293,7 +1343,7 @@
     const goals = s.goals || [];
     if (!goals.length) return '<p class="empty">No score change was observed in the recording.</p>';
     return `<div class="events"><table><thead><tr><th>Clock</th><th>Score</th><th>Team</th><th>Scorer</th><th>Assist</th><th>Shot</th><th class="num">Distance</th><th class="num">Disc speed</th></tr></thead><tbody>` +
-      goals.map((g) => `<tr class="${g.described && discSpeedCap > 0 && g.disc_speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(g.clock || fmtClock(g.time))}</td><td><strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong></td>
+      goals.map((g, i) => `<tr data-tl-goal="${i}" class="${g.described && discSpeedCap > 0 && g.disc_speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(g.clock || fmtClock(g.time))}</td><td><strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong></td>
         <td><span class="goal-dot ${esc(g.team)}"></span>${team(g.team)} <span class="muted">+${fmtInt(g.points)}</span></td><td>${person(g.scorer, g.scorer_id)}</td><td>${person(g.assist, g.assist_id)}</td>
         <td>${g.described ? esc(g.goal_type) || '<span class="muted">—</span>' : '<span class="muted">Details unavailable</span>'}</td>
         <td class="num">${g.described ? `${fmtNum(g.distance, 2)} m` : '—'}</td><td class="num">${g.described ? speedCell(g.disc_speed, discSpeedCap) : '—'}</td></tr>`).join('') +
@@ -1309,13 +1359,497 @@
     return `<div class="throw-log"><div class="throw-tools"><span class="scroll-label">Scrollable throw log · ${fmtInt(throws.length)} releases</span><span class="scroll-actions">
       <button class="btn btn-sm" data-throw-scroll="top">First throw</button><button class="btn btn-sm" data-throw-scroll="bottom">Last throw</button></span></div>
       <div class="throw-table" tabindex="0" aria-label="Scrollable throw log"><table><thead><tr><th>Clock</th><th>Player</th><th>Team</th><th class="num">Speed</th><th>Result</th><th class="num">Frame</th><th>Investigation / Spark replay</th></tr></thead><tbody>` +
-      throws.map((th) => `<tr class="${discSpeedCap > 0 && th.speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
+      throws.map((th, i) => `<tr data-tl-throw="${i}" class="${discSpeedCap > 0 && th.speed > discSpeedCap ? 'cap-breach-row' : ''}"><td class="mono">${esc(th.clock || fmtClock(th.time))}</td><td>${person(th.player, th.player_id)}</td><td>${team(th.team)}</td>
         <td class="num">${speedCell(th.speed, discSpeedCap)}</td><td>${th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'}</td><td class="num dim">${fmtInt(th.frame_index)}</td>
         <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}">Open throw</button>
         <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}" data-physics-player="${esc(th.player_id)}">Inspect physics</button>
         <a class="btn btn-sm" href="api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(th.frame_index) ? th.frame_index : 0}?player=${encodeURIComponent(th.player_id || '')}">Diagnostic ZIP</a></span></td></tr>`).join('') +
       `</tbody></table></div></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}. Speeds above the ${fmtNum(discSpeedCap, 1)} m/s engine cap are marked for review; the player-relative breakdown is stored with THROW_001 evidence. A throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
   }
+
+  // ---- match timeline --------------------------------------------------------
+  // TIMELINE-LAYOUT-BEGIN
+  // Pure layout: match data in, positioned marks out. No DOM, no globals, no
+  // formatting helpers, so scripts/timeline-layout.test.cjs can run exactly this
+  // block in a bare vm context. Every number that reaches the SVG comes from
+  // here. Recordings are untrusted: non-finite or negative times never produce a
+  // coordinate, arrays may be null, and the lane count is bounded.
+  const TL = {
+    label: 184, labelNarrow: 124, right: 14, caseGutter: 104, minPlot: 260,
+    top: 6, scoreLane: 46, groupHead: 22, axis: 28,
+    maxLanes: 32, throwJoin: 4, signalJoin: 12, goalLabelGap: 38, tickGap: 72,
+    steps: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600],
+  };
+  const tlFinite = (v) => typeof v === 'number' && Number.isFinite(v);
+  const tlSevRank = { low: 1, medium: 2, high: 3, critical: 4 };
+  function tlClock(sec) {
+    const total = Math.max(0, Math.round(tlFinite(sec) ? sec : 0));
+    const s = total % 60;
+    return `${Math.floor(total / 60)}:${s < 10 ? '0' : ''}${s}`;
+  }
+  function tlAxisStep(duration, plotWidth) {
+    for (const step of TL.steps) if (plotWidth * step / duration >= TL.tickGap) return step;
+    return Math.max(TL.steps[TL.steps.length - 1], Math.ceil(duration / 4 / 3600) * 3600);
+  }
+  function timelineLayout(data, containerWidth) {
+    const d = data || {};
+    const list = (v) => (Array.isArray(v) ? v : []);
+    const cap = tlFinite(d.cap) && d.cap > 0 ? d.cap : 0;
+    const blind = !!d.blind;
+    const cases = blind ? [] : list(d.cases);
+    // A time far beyond the stated duration would squash the whole match into the
+    // left edge, so it is counted as unusable instead of being drawn.
+    const stated = tlFinite(d.duration) && d.duration > 0 ? d.duration : 0;
+    const limit = stated > 0 ? stated * 1.5 + 60 : Infinity;
+    const time = (v) => (tlFinite(v) && v >= 0 && v <= limit ? v : null);
+
+    // Lanes: rostered players first, then anyone a mark names who is not rostered.
+    const laneByID = new Map();
+    const lanes = [];
+    let lanesDropped = 0;
+    const lane = (id, name, team, seen) => {
+      const key = String(id ?? '');
+      if (laneByID.has(key)) return laneByID.get(key);
+      if (lanes.length >= TL.maxLanes) { lanesDropped++; laneByID.set(key, null); return null; }
+      const side = team === 'blue' || team === 'orange' ? team : 'none';
+      const l = { id: key, name: String(name || key || 'Unknown player'), team: side, order: lanes.length,
+        firstSeen: seen ? time(seen.first_seen) : null, lastSeen: seen ? time(seen.last_seen) : null, throws: 0, signals: 0, caseLevel: '', caseID: '' };
+      laneByID.set(key, l); lanes.push(l);
+      return l;
+    };
+    for (const p of list(d.players)) if (p) lane(p.player_id, p.name, p.team, p);
+    const throwsIn = list(d.throws), eventsIn = list(d.events), goalsIn = list(d.goals);
+    for (const th of throwsIn) if (th && time(th.time) !== null) lane(th.player_id, th.player, th.team);
+    for (const e of eventsIn) if (e && time(e.timestamp) !== null) lane(e.player_id, e.player_name, '');
+    const teamRank = { blue: 0, orange: 1, none: 2 };
+    lanes.sort((a, b) => teamRank[a.team] - teamRank[b.team] || a.order - b.order);
+
+    // Time domain: the stated duration, stretched to cover any later mark.
+    let undated = 0, duration = stated;
+    const see = (t) => { if (t === null) undated++; else if (t > duration) duration = t; };
+    for (const g of goalsIn) see(g ? time(g.time) : null);
+    for (const th of throwsIn) see(th ? time(th.time) : null);
+    for (const e of eventsIn) see(e ? time(e.timestamp) : null);
+    const hasTime = duration > 0;
+    if (!hasTime) duration = 1;
+
+    // Geometry.
+    const width = Math.max(320, Math.floor(tlFinite(containerWidth) ? containerWidth : 0));
+    const hasCases = cases.some((c) => c && laneByID.get(String(c.player_id ?? '')));
+    const right = hasCases ? TL.caseGutter : TL.right;
+    let label = width >= 900 ? TL.label : TL.labelNarrow;
+    let plotWidth = width - label - right;
+    if (plotWidth < TL.minPlot) plotWidth = TL.minPlot;
+    const x0 = label, x1 = label + plotWidth;
+    const xOf = (t) => x0 + Math.min(1, Math.max(0, t / duration)) * plotWidth;
+    const round = (v) => Math.round(v * 10) / 10;
+    const laneHeight = lanes.length <= 8 ? 36 : lanes.length <= 12 ? 32 : 28;
+    const tickZone = laneHeight - 15; // throws rise through this; signals sit in the strip below the baseline
+
+    const scoreY = TL.top + TL.scoreLane - 14;
+    let y = TL.top + TL.scoreLane;
+    const groups = [];
+    for (const l of lanes) {
+      let group = groups[groups.length - 1];
+      if (!group || group.team !== l.team) {
+        group = { team: l.team, y, y0: y + TL.groupHead, y1: 0, players: 0 };
+        groups.push(group); y += TL.groupHead;
+      }
+      l.y = y; l.h = laneHeight; l.capY = y + 3; l.baseY = y + 3 + tickZone; l.signalY = l.baseY + 6.5;
+      const from = l.firstSeen === null ? 0 : l.firstSeen, to = l.lastSeen === null ? duration : l.lastSeen;
+      l.seenX0 = round(xOf(Math.min(from, to))); l.seenX1 = round(xOf(Math.max(from, to)));
+      y += laneHeight; group.y1 = y; group.players++;
+    }
+    const lanesBottom = y;
+    const height = lanesBottom + TL.axis;
+    for (const c of cases) { const l = c && laneByID.get(String(c.player_id ?? '')); if (l && !l.caseID) { l.caseLevel = String(c.level || ''); l.caseID = String(c.case_id || ''); } }
+
+    const step = tlAxisStep(duration, plotWidth);
+    const ticks = [];
+    if (hasTime) for (let t = 0; t <= duration + 1e-9 && ticks.length < 400; t += step) ticks.push({ t, x: round(xOf(t)), label: tlClock(t) });
+
+    const marks = [];
+    // Goals: every goal keeps its mark; only a label that would collide is dropped.
+    let lastLabelX = -Infinity;
+    goalsIn.forEach((g, i) => {
+      const t = g ? time(g.time) : null;
+      if (t === null) return;
+      const x = round(xOf(t));
+      const showLabel = x - lastLabelX >= TL.goalLabelGap;
+      if (showLabel) lastLabelX = x;
+      marks.push({ kind: 'goal', lane: -1, t, x, y: scoreY, team: g.team === 'blue' || g.team === 'orange' ? g.team : 'none',
+        blue: g.blue_score, orange: g.orange_score, showLabel, count: 1, refs: [i], primary: i });
+    });
+
+    // Throws: releases closer than TL.throwJoin px in one lane share a mark. The
+    // mark takes the fastest member, and an over-cap member is never hidden.
+    let maxSpeed = 0;
+    for (const th of throwsIn) if (th && tlFinite(th.speed) && th.speed > maxSpeed) maxSpeed = th.speed;
+    const scale = cap || maxSpeed || 1;
+    const perLane = new Map();
+    throwsIn.forEach((th, i) => {
+      const t = th ? time(th.time) : null, l = t === null ? null : laneByID.get(String(th.player_id ?? ''));
+      if (!l) return;
+      l.throws++;
+      if (!perLane.has(l)) perLane.set(l, []);
+      perLane.get(l).push({ i, t, x: xOf(t), speed: tlFinite(th.speed) && th.speed > 0 ? th.speed : 0, goal: !!th.goal });
+    });
+    for (const [l, items] of perLane) {
+      items.sort((a, b) => a.t - b.t || a.i - b.i);
+      let run = null;
+      const flush = () => {
+        if (!run) return;
+        const best = run.reduce((a, b) => (b.speed > a.speed ? b : a));
+        const over = cap > 0 && best.speed > cap;
+        const ratio = Math.min(1, best.speed / scale);
+        const xa = run[0].x, xb = run[run.length - 1].x;
+        marks.push({ kind: 'throw', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round((xa + xb) / 2), w: round(Math.max(2, xb - xa + 2)),
+          y: l.baseY, h: round(over ? tickZone + 4 : Math.max(0.25, ratio) * tickZone), shade: Math.round((0.5 + 0.5 * ratio * ratio) * 100) / 100,
+          over, goal: run.some((r) => r.goal), speed: best.speed, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+        run = null;
+      };
+      for (const item of items) {
+        if (run && item.x - run[0].x >= TL.throwJoin) flush();
+        (run = run || []).push(item);
+      }
+      flush();
+    }
+
+    // Signals: clustered per lane. The representative is the one the detections
+    // table ranks first (scoring before observation-only, then severity); under
+    // blinded review it is simply the earliest, so the glyph leaks nothing.
+    const sigLane = new Map();
+    eventsIn.forEach((e, i) => {
+      const t = e ? time(e.timestamp) : null, l = t === null ? null : laneByID.get(String(e.player_id ?? ''));
+      if (!l) return;
+      l.signals++;
+      if (!sigLane.has(l)) sigLane.set(l, []);
+      sigLane.get(l).push({ i, t, x: xOf(t), shadow: !!e.is_shadow, sev: Object.hasOwn(tlSevRank, e.severity_label) ? e.severity_label : 'low', severity: tlFinite(e.severity) ? e.severity : 0 });
+    });
+    for (const [l, items] of sigLane) {
+      items.sort((a, b) => a.t - b.t || a.i - b.i);
+      let run = null;
+      const flush = () => {
+        if (!run) return;
+        const best = blind ? run[0] : run.reduce((a, b) => ((a.shadow - b.shadow) || (tlSevRank[b.sev] - tlSevRank[a.sev]) || (b.severity - a.severity)) > 0 ? b : a);
+        marks.push({ kind: 'signal', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round(run[0].x), y: l.signalY,
+          shadow: blind ? true : best.shadow, sev: blind ? '' : best.sev, concealed: blind, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+        run = null;
+      };
+      for (const item of items) {
+        if (run && item.x - run[0].x >= TL.signalJoin) flush();
+        (run = run || []).push(item);
+      }
+      flush();
+    }
+
+    // Keyboard order is match time, then top to bottom; review cases carry no time and come last.
+    const kindRank = { goal: 0, throw: 1, signal: 2, case: 3 };
+    marks.sort((a, b) => a.t - b.t || a.lane - b.lane || kindRank[a.kind] - kindRank[b.kind]);
+    lanes.forEach((l, i) => { if (l.caseID) marks.push({ kind: 'case', lane: i, t: Infinity, x: x1 + 10, y: l.baseY, level: l.caseLevel, caseID: l.caseID, count: 1, refs: [], primary: -1 }); });
+    marks.forEach((mark, i) => { mark.i = i; });
+
+    return { width: x1 + right, height, x0, x1, label, duration, hasTime, cap, scale, scoreY, scoreTop: TL.top, lanesTop: TL.top + TL.scoreLane, lanesBottom,
+      laneHeight, tickZone, groups, lanes, ticks, step, marks, undated, lanesDropped, blind,
+      counts: { goals: goalsIn.length, throws: throwsIn.length, signals: eventsIn.length } };
+  }
+  // Keyboard neighbour of mark i: Left/Right walk time order, Up/Down go to the
+  // nearest mark of the next lane (the score lane is -1) that has any, Home/End jump.
+  function timelineNeighbor(L, i, key) {
+    const marks = L.marks, mark = marks[i];
+    if (!mark) return null;
+    if (key === 'ArrowRight') return i + 1 < marks.length ? i + 1 : null;
+    if (key === 'ArrowLeft') return i > 0 ? i - 1 : null;
+    if (key === 'Home') return 0;
+    if (key === 'End') return marks.length - 1;
+    if (key !== 'ArrowUp' && key !== 'ArrowDown') return null;
+    const dir = key === 'ArrowUp' ? -1 : 1;
+    for (let lane = mark.lane + dir; lane >= -1 && lane < L.lanes.length; lane += dir) {
+      let best = null;
+      for (const other of marks) if (other.lane === lane && (!best || Math.abs(other.x - mark.x) < Math.abs(best.x - mark.x))) best = other;
+      if (best) return best.i;
+    }
+    return null;
+  }
+  // TIMELINE-LAYOUT-END
+
+  // Rendering: everything below turns a layout into one inline SVG per match and
+  // wires the tooltip, the keyboard and the jump to the matching table row.
+  const timelineLayouts = [];
+  function timelineData(m) {
+    const s = m.summary || {};
+    const seen = new Map((s.players || []).map((p) => [p.player_id, p]));
+    return {
+      duration: m.duration_seconds, cap: m.disc_speed_cap, blind: blindReview,
+      players: (m.players || []).map((p) => ({ player_id: p.player_id, name: p.name, team: p.team, first_seen: seen.get(p.player_id)?.first_seen, last_seen: seen.get(p.player_id)?.last_seen })),
+      goals: s.goals, throws: s.throws, events: m.events, cases: m.cases,
+    };
+  }
+  const tlTeamName = (t) => (t === 'blue' ? 'Blue' : t === 'orange' ? 'Orange' : 'No team');
+  const tlClip = (text, max) => { const chars = Array.from(String(text)); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
+  const tlSpan = (mark) => (mark.count > 1 && mark.t1 > mark.t ? `${tlClock(mark.t)}–${tlClock(mark.t1)}` : tlClock(mark.t));
+
+  // One sentence per mark for assistive technology; the visible tooltip carries the table labels.
+  function timelineLabel(m, L, mark) {
+    const s = m.summary || {};
+    if (mark.kind === 'goal') {
+      const g = s.goals[mark.primary];
+      return `Goal, ${tlTeamName(g.team)} team, ${g.scorer || 'scorer unknown'}, score ${fmtInt(g.blue_score)} to ${fmtInt(g.orange_score)}, ${tlClock(mark.t)} into the recording`;
+    }
+    if (mark.kind === 'throw') {
+      const th = s.throws[mark.primary];
+      const over = mark.over ? `, over the ${fmtNum(L.cap, 1)} metres per second engine cap, marked for review` : '';
+      return `${mark.count > 1 ? `${mark.count} throws, fastest` : 'Throw,'} ${fmtNum(th.speed, 2)} metres per second${over}, ${th.player || th.player_id || 'unknown player'}, ${tlSpan(mark)} into the recording${mark.goal ? ', linked to a goal' : ''}`;
+    }
+    if (mark.kind === 'signal') {
+      const e = m.events[mark.primary];
+      const many = mark.count > 1 ? `${mark.count} signals, ` : '';
+      if (mark.concealed) return `${many}Detector signal, conclusion hidden for blinded review, ${e.player_name || e.player_id}, ${tlSpan(mark)} into the recording`;
+      return `${many}${e.detector_id} ${e.detector_name || ''}, ${e.is_shadow ? 'observation-only shadow signal' : 'scoring signal'}, severity ${e.severity_label}, ${e.player_name || e.player_id}, ${tlSpan(mark)} into the recording`;
+    }
+    const c = (m.cases || []).find((x) => x.case_id === mark.caseID) || {};
+    return `Review case, ${lvlName(c.level)}, ${c.player_name || c.player_id}. Not a verdict.`;
+  }
+
+  // Tooltip rows reuse the column labels and cell formatters of the tables below.
+  function timelineTip(m, L, mark) {
+    const s = m.summary || {};
+    const rows = [];
+    let head = '', note = '';
+    if (mark.kind === 'goal') {
+      const g = s.goals[mark.primary];
+      head = `Goal <span class="muted">· Scoring timeline</span>`;
+      rows.push(['Clock', `<span class="mono">${esc(g.clock || fmtClock(g.time))}</span> <span class="muted">game clock · ${tlClock(mark.t)} into the recording</span>`],
+        ['Score', `<strong style="color:var(--blue)">${fmtInt(g.blue_score)}</strong><span class="muted"> – </span><strong style="color:var(--orange)">${fmtInt(g.orange_score)}</strong>`],
+        ['Team', `${team(g.team)} <span class="muted">+${fmtInt(g.points)}</span>`], ['Scorer', g.scorer || g.scorer_id ? esc(g.scorer || g.scorer_id) : '<span class="muted">—</span>']);
+      if (g.assist || g.assist_id) rows.push(['Assist', esc(g.assist || g.assist_id)]);
+      if (g.described) rows.push(['Shot', esc(g.goal_type) || '<span class="muted">—</span>'], ['Distance', `${fmtNum(g.distance, 2)} m`], ['Disc speed', speedCell(g.disc_speed, L.cap)]);
+      else rows.push(['Shot', '<span class="muted">Details unavailable</span>']);
+    } else if (mark.kind === 'throw') {
+      const th = s.throws[mark.primary];
+      head = mark.count > 1 ? `${fmtInt(mark.count)} throws <span class="muted">· fastest shown · Throw log</span>` : 'Throw <span class="muted">· Throw log</span>';
+      rows.push(['Clock', `<span class="mono">${esc(th.clock || fmtClock(th.time))}</span> <span class="muted">game clock · ${tlSpan(mark)} into the recording</span>`],
+        ['Player', esc(th.player || th.player_id || '—')], ['Team', team(th.team)], ['Speed', speedCell(th.speed, L.cap)],
+        ['Result', th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'], ['Frame', fmtInt(th.frame_index)]);
+      if (mark.over) note = `Sampled above the ${fmtNum(L.cap, 1)} m/s engine cap and marked for review. A sample speed is not an independently validated violation.`;
+    } else if (mark.kind === 'signal') {
+      const e = m.events[mark.primary];
+      const when = `<span class="mono">${fmtClock(e.timestamp)}</span> <span class="muted">${e.frame_range_start === e.frame_range_end ? `frame ${fmtInt(e.frame_range_start)}` : `frames ${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</span>`;
+      head = mark.count > 1 ? `${fmtInt(mark.count)} signals <span class="muted">· ${mark.concealed ? 'earliest' : 'strongest'} shown · Detections</span>` : 'Signal <span class="muted">· Detections</span>';
+      if (mark.concealed) {
+        rows.push(['Detector', '<span class="blind-mask">Detector hidden</span>'], ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ['Severity', '<span class="blind-mask">hidden</span>']);
+        note = 'Blinded review is enabled. Record your observation before revealing the detector.';
+      } else {
+        rows.push(['Detector', `<span class="mono">${esc(e.detector_id)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''} <span class="muted">${esc(e.detector_name || '')}</span>`],
+          ['Player', esc(e.player_name || e.player_id)], ['Match time', when],
+          ['Severity · confidence', `${sevBadge(e.severity_label)} <span class="muted">${fmtNum(e.severity, 2)} · ${fmtNum(e.confidence, 2)} confidence</span>`]);
+        if (e.observed_value) rows.push(['Observed', esc(tlClip(e.observed_value, 120))]);
+        note = e.is_shadow ? 'Observation-only (shadow): adds zero score. A detector observation, not a cheating verdict.' : 'A detector observation, not a cheating verdict.';
+      }
+    } else {
+      const c = (m.cases || []).find((x) => x.case_id === mark.caseID) || {};
+      head = 'Review case';
+      rows.push(['Level', badge(c.level)], ['Player', esc(c.player_name || c.player_id)], ['Score', fmtNum(c.suspicion_score)], ['Action', `${esc(lvlName(c.recommended_action))} · ${esc(c.status)}`]);
+      note = 'A case is a request for human review, not a verdict.';
+    }
+    return `<b class="tl-tip-head">${head}</b><dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>${note ? `<p>${esc(note)}</p>` : ''}<p class="tl-tip-go">Click or press Enter to open the row.</p>`;
+  }
+
+  function timelineSVG(m, L) {
+    const n = (v) => Math.round(v * 10) / 10;
+    const parts = [];
+    // Grid and axis.
+    for (const tick of L.ticks) parts.push(`<line class="tl-grid" x1="${tick.x}" x2="${tick.x}" y1="${L.scoreTop + 6}" y2="${L.lanesBottom}"/>`);
+    parts.push(`<line class="tl-axis" x1="${L.x0}" x2="${L.x1}" y1="${L.lanesBottom}" y2="${L.lanesBottom}"/>`);
+    L.ticks.forEach((tick, i) => parts.push(`<line class="tl-axis" x1="${tick.x}" x2="${tick.x}" y1="${L.lanesBottom}" y2="${L.lanesBottom + 4}"/><text class="tl-num" x="${tick.x}" y="${L.lanesBottom + 18}" text-anchor="${i === 0 ? 'start' : tick.x > L.x1 - 16 ? 'end' : 'middle'}">${tick.label}</text>`));
+    parts.push(`<text class="tl-cap" x="12" y="${L.lanesBottom + 18}">Recording time</text>`);
+    // Score lane.
+    parts.push(`<text class="tl-cap" x="12" y="${L.scoreY + 4}">Score</text><line class="tl-base" x1="${L.x0}" x2="${L.x1}" y1="${L.scoreY}" y2="${L.scoreY}"/>`);
+    if (!L.counts.goals) parts.push(`<text class="tl-quiet" x="${L.x0 + 8}" y="${L.scoreY - 8}">No score change was observed in the recording.</text>`);
+    // Team groups and lanes.
+    for (const g of L.groups) {
+      parts.push(`<rect class="tl-team tl-${g.team}" x="0" y="${g.y0}" width="3" height="${g.y1 - g.y0}"/><text class="tl-cap tl-${g.team}" x="12" y="${g.y + 15}">${tlTeamName(g.team)} · ${g.players} player${g.players === 1 ? '' : 's'}</text>`);
+    }
+    const nameChars = L.label >= 180 ? 24 : 15;
+    for (const l of L.lanes) {
+      parts.push(`<line class="tl-caprule" x1="${L.x0}" x2="${L.x1}" y1="${l.capY}" y2="${l.capY}"/><line class="tl-absent" x1="${L.x0}" x2="${L.x1}" y1="${l.baseY}" y2="${l.baseY}"/><line class="tl-base" x1="${l.seenX0}" x2="${l.seenX1}" y1="${l.baseY}" y2="${l.baseY}"/>
+        <text class="tl-name" x="12" y="${n(l.baseY + 1)}"><title>${esc(l.name)} · ${esc(l.id)}</title>${esc(tlClip(l.name, nameChars))}</text>`);
+    }
+    if (!L.lanes.length) parts.push(`<text class="tl-quiet" x="${L.x0 + 8}" y="${L.lanesBottom - 8}">The replay carried no players on the blue or orange team.</text>`);
+    // Marks, in keyboard order. Each is a focusable group with a generous hit area.
+    for (const mark of L.marks) {
+      const lane = L.lanes[mark.lane];
+      let cls = `tl-mark tl-${mark.kind}`, body = '', hit = '';
+      if (mark.kind === 'goal') {
+        cls += ` tl-${mark.team}`;
+        body = `<circle cx="${mark.x}" cy="${mark.y}" r="5"/>` + (mark.showLabel ? `<text class="tl-score" x="${mark.x}" y="${mark.y - 11}" text-anchor="middle"><tspan class="tl-blue">${fmtInt(mark.blue)}</tspan><tspan class="tl-dash" dx="2">–</tspan><tspan class="tl-orange" dx="2">${fmtInt(mark.orange)}</tspan></text>` : '');
+        hit = `<rect class="tl-hit" x="${n(mark.x - 9)}" y="${mark.y - 24}" width="18" height="33"/>`;
+      } else if (mark.kind === 'throw') {
+        if (mark.over) cls += ' tl-over';
+        const top = n(mark.y - mark.h), w = mark.over ? Math.max(mark.w, 2.4) : mark.w;
+        body = `<rect class="tl-tick" x="${n(mark.x - w / 2)}" y="${top}" width="${n(w)}" height="${mark.h}"${mark.over ? '' : ` fill-opacity="${mark.shade}"`}/>` +
+          (mark.over ? `<rect class="tl-tick" x="${n(mark.x - 4)}" y="${top}" width="8" height="2.4"/>` : '') +
+          (mark.goal ? `<circle class="tl-linked tl-${lane.team}" cx="${mark.x}" cy="${n(top - 3.5)}" r="2.4"/>` : '');
+        const hw = Math.max(7, mark.w + 3);
+        hit = `<rect class="tl-hit" x="${n(mark.x - hw / 2)}" y="${lane.y - 3}" width="${n(hw)}" height="${L.tickZone + 5}"/>`;
+      } else if (mark.kind === 'signal') {
+        cls += mark.concealed ? ' tl-concealed' : ` tl-sev-${mark.sev}${mark.shadow ? ' tl-shadow' : ''}`;
+        const r = 4.6, diamond = (x) => `M${n(x)} ${n(mark.y - r)}L${n(x + r)} ${mark.y}L${n(x)} ${n(mark.y + r)}L${n(x - r)} ${mark.y}Z`;
+        body = (mark.count > 1 ? `<path class="tl-more" d="${diamond(mark.x + 4.5)}"/>` : '') + (mark.concealed ? `<circle class="tl-glyph" cx="${mark.x}" cy="${mark.y}" r="3.6"/>` : `<path class="tl-glyph" d="${diamond(mark.x)}"/>`);
+        hit = `<rect class="tl-hit" x="${n(mark.x - 6)}" y="${n(mark.y - 6)}" width="${mark.count > 1 ? 16 : 12}" height="12"/>`;
+      } else {
+        cls += ` tl-lvl-${esc(mark.level)}`;
+        body = `<text class="tl-casetext" x="${mark.x}" y="${n(lane.baseY + 1)}">case · ${esc(tlClip(lvlName(mark.level) || 'open', 12))}</text>`;
+        hit = `<rect class="tl-hit" x="${mark.x - 4}" y="${lane.y + 2}" width="${L.width - mark.x + 2}" height="${lane.h - 4}"/>`;
+      }
+      parts.push(`<g class="${cls}" data-tl-mark="${mark.i}" tabindex="${mark.i === 0 ? 0 : -1}" role="button" aria-label="${esc(timelineLabel(m, L, mark))}">${hit}${body}</g>`);
+    }
+    return `<svg class="tl-svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" role="group" aria-label="Match timeline: ${fmtInt(L.marks.length)} marks in time order. Arrow keys move between marks, Enter opens the matching table row.">${parts.join('')}</svg>`;
+  }
+
+  function timelineLegend(m, L) {
+    const sw = (inner, w = 18) => `<svg width="${w}" height="16" viewBox="0 0 ${w} 16" aria-hidden="true" focusable="false">${inner}</svg>`;
+    const diamond = (x, cls) => `<g class="${cls}"><path class="tl-glyph" d="M${x} 3.4L${x + 4.6} 8L${x} 12.6L${x - 4.6} 8Z"/></g>`;
+    const items = [
+      `${sw('<g class="tl-goal tl-blue"><circle cx="5" cy="8" r="4.5"/></g><g class="tl-goal tl-orange"><circle cx="16" cy="8" r="4.5"/></g>', 22)}Goal, with the running score`,
+      `${sw('<g class="tl-throw"><rect class="tl-tick" x="2" y="9" width="1.8" height="5" fill-opacity=".5"/><rect class="tl-tick" x="7" y="6" width="1.8" height="8" fill-opacity=".72"/><rect class="tl-tick" x="12" y="3" width="1.8" height="11" fill-opacity="1"/></g>')}Throw: taller and stronger is faster${L.cap ? `; the dotted rule is the ${fmtNum(L.cap, 1)} m/s engine cap` : ', relative to the fastest release here'}`,
+      L.cap ? `${sw('<g class="tl-throw tl-over"><rect class="tl-tick" x="7.8" y="1" width="2.4" height="13"/><rect class="tl-tick" x="5" y="1" width="8" height="2.4"/></g>')}Sampled over the cap, marked for review` : '',
+      `${sw('<g class="tl-throw"><rect class="tl-tick" x="8" y="6" width="1.8" height="8" fill-opacity=".8"/><circle class="tl-linked tl-blue" cx="8.9" cy="3" r="2.4"/></g>')}Throw linked to a goal`,
+      L.blind ? `${sw('<g class="tl-signal tl-concealed"><circle class="tl-glyph" cx="9" cy="8" r="3.6"/></g>')}Detector signal, conclusion hidden for blinded review`
+        : `${sw(diamond(6, 'tl-signal tl-sev-low') + diamond(17, 'tl-signal tl-sev-medium') + diamond(28, 'tl-signal tl-sev-high') + diamond(39, 'tl-signal tl-sev-critical'), 46)}Scoring signal: low, medium, high, critical`,
+      L.blind ? '' : `${sw(diamond(9, 'tl-signal tl-sev-medium tl-shadow'))}Hollow: observation-only (shadow), adds zero score`,
+      `${sw('<g class="tl-signal tl-sev-low tl-shadow"><path class="tl-more" d="M13.5 3.4L18.1 8L13.5 12.6L8.9 8Z"/><path class="tl-glyph" d="M9 3.4L13.6 8L9 12.6L4.4 8Z"/></g>', 22)}Several marks too close to separate`,
+      `${sw('<line class="tl-base" x1="1" x2="10" y1="8" y2="8"/><line class="tl-absent" x1="10" x2="18" y1="8" y2="8"/>')}Player present in the recording`,
+    ].filter(Boolean);
+    return `<ul class="tl-legend">${items.map((item) => `<li>${item}</li>`).join('')}</ul>`;
+  }
+
+  function timelineFigure(m, idx) {
+    return `<figure class="tl" data-timeline="${idx}"><div class="tl-head"><h3>Match timeline</h3><p class="tl-sum" data-tl-sum></p></div>
+      <div class="tl-plot" data-tl-plot><p class="empty">Drawing the timeline…</p></div><div class="tl-tip" data-tl-tip hidden aria-hidden="true"></div><div data-tl-legend></div>
+      <figcaption>Reconstructed from recorded samples. The axis is time into the recording; the tables below also show the game clock. Marks are sampled release speeds and detector observations for review, not verdicts, and an empty lane is not proof of fair play.</figcaption></figure>`;
+  }
+
+  function renderTimeline(fig, force) {
+    const idx = +fig.dataset.timeline, m = views[idx], plot = fig.querySelector('[data-tl-plot]');
+    if (!m || !plot) return;
+    const width = Math.floor(plot.clientWidth);
+    if (!width || (!force && fig.tlWidth === width)) return;
+    fig.tlWidth = width;
+    const L = timelineLayouts[idx] = timelineLayout(timelineData(m), width);
+    const active = document.activeElement, focused = active && fig.contains(active) ? active.getAttribute('data-tl-mark') : null;
+    const s = m.summary;
+    const clustered = L.marks.filter((mark) => mark.count > 1).length;
+    fig.querySelector('[data-tl-sum]').innerHTML = [
+      `${fmtInt(L.counts.goals)} goal${L.counts.goals === 1 ? '' : 's'}`, `${fmtInt(L.counts.throws)} throw${L.counts.throws === 1 ? '' : 's'}`,
+      `${fmtInt(L.counts.signals)} signal${L.counts.signals === 1 ? '' : 's'}`, `${fmtInt(L.lanes.length)} player${L.lanes.length === 1 ? '' : 's'}`, L.hasTime ? esc(fmtDur(L.duration)) : '',
+    ].filter(Boolean).join(sep);
+    if (!L.hasTime && !L.marks.length) {
+      plot.innerHTML = '<p class="empty">This recording carried no timed goals, throws or detector signals to place on a timeline. That is not proof of fair play.</p>';
+      fig.querySelector('[data-tl-legend]').innerHTML = '';
+      return;
+    }
+    const notes = [
+      s ? (L.counts.throws ? '' : (s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.')) : 'Goals and throws are unavailable for this stored match; only detector signals are drawn.',
+      clustered ? `${fmtInt(clustered)} mark${clustered === 1 ? ' stands' : 's stand'} for several events too close to separate at this width; every event stays in the tables.` : '',
+      L.undated ? `${fmtInt(L.undated)} event${L.undated === 1 ? '' : 's'} had no usable time and appear only in the tables.` : '',
+      L.lanesDropped ? `${fmtInt(L.lanesDropped)} further player${L.lanesDropped === 1 ? ' is' : 's are'} not drawn; the tables list everyone.` : '',
+    ].filter(Boolean);
+    plot.innerHTML = timelineSVG(m, L);
+    fig.querySelector('[data-tl-legend]').innerHTML = timelineLegend(m, L) + notes.map((note) => `<p class="summary-note">${esc(note)}</p>`).join('');
+    if (focused !== null) timelineFocus(fig, +focused, false);
+  }
+
+  let timelineResize = null;
+  function mountTimelines(root) {
+    if (!timelineResize && typeof ResizeObserver !== 'undefined') timelineResize = new ResizeObserver((entries) => { for (const entry of entries) renderTimeline(entry.target.closest('.tl')); });
+    root.querySelectorAll('figure[data-timeline]').forEach((fig) => {
+      renderTimeline(fig, true);
+      if (timelineResize) timelineResize.observe(fig.querySelector('[data-tl-plot]'));
+    });
+  }
+
+  function timelineFocus(fig, i, show = true) {
+    const marks = fig.querySelectorAll('[data-tl-mark]');
+    if (!marks.length) return;
+    const target = fig.querySelector(`[data-tl-mark="${Math.min(marks.length - 1, Math.max(0, i))}"]`);
+    marks.forEach((el) => el.setAttribute('tabindex', el === target ? '0' : '-1'));
+    if (show) target.focus({ preventScroll: true }); else if (document.activeElement === document.body) target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+
+  function timelineShowTip(el) {
+    const fig = el.closest('.tl'), idx = +fig.dataset.timeline, L = timelineLayouts[idx], mark = L && L.marks[+el.dataset.tlMark], tip = fig.querySelector('[data-tl-tip]');
+    if (!mark) return;
+    tip.innerHTML = timelineTip(views[idx], L, mark);
+    tip.hidden = false;
+    const box = fig.getBoundingClientRect(), at = el.getBoundingClientRect();
+    const left = Math.min(Math.max(0, at.left + at.width / 2 - box.left - tip.offsetWidth / 2), Math.max(0, fig.clientWidth - tip.offsetWidth));
+    // Above the mark when that clears the sticky header, otherwise below it.
+    const ceiling = document.querySelector('.top')?.getBoundingClientRect().bottom || 0;
+    const fitsAbove = at.top - tip.offsetHeight - 8 >= ceiling;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(fitsAbove ? at.top - box.top - tip.offsetHeight - 8 : at.bottom - box.top + 8)}px`;
+  }
+  const timelineHideTip = (fig) => { const tip = fig && fig.querySelector('[data-tl-tip]'); if (tip) tip.hidden = true; };
+
+  // Opens whatever hides the row, scrolls it into view and marks it. The mark is a
+  // static background, so it still shows when motion is reduced.
+  let timelineTarget = null, timelineTargetTimer = 0;
+  function timelineJump(fig, mark) {
+    const idx = +fig.dataset.timeline, m = views[idx], section = fig.closest('details.match');
+    if (!m || !section) return;
+    let row = null;
+    if (mark.kind === 'goal') row = section.querySelector(`[data-tl-goal="${mark.primary}"]`);
+    else if (mark.kind === 'throw') row = section.querySelector(`[data-tl-throw="${mark.primary}"]`);
+    else if (mark.kind === 'case') row = [...section.querySelectorAll('[data-tl-case]')].find((el) => el.dataset.tlCase === mark.caseID);
+    else {
+      const id = m.events[mark.primary].event_id, find = () => [...section.querySelectorAll('[data-event-row]')].find((el) => el.dataset.eventRow === id);
+      row = find();
+      if (!row) { // Hidden by the detector filter or by the "strongest 50" limit: show every detection.
+        const root = section.querySelector('[data-assessment]'), state = viewState[idx], select = root && root.querySelector('select[data-cheat-filter]');
+        if (root && state) {
+          if (state.detector && select) { select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); }
+          if (!find()) { state.all = true; root.querySelector('.events').innerHTML = eventsTable(m, idx, true, state.detector); }
+          row = find();
+        }
+      }
+      row = row && (row.closest('tbody.incident') || row);
+    }
+    if (!row) { setStatus('That timeline mark has no matching row in this report.', 'err'); return; }
+    for (let parent = row.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+    if (timelineTarget) timelineTarget.classList.remove('tl-target');
+    clearTimeout(timelineTargetTimer);
+    timelineTarget = row;
+    row.classList.add('tl-target');
+    row.setAttribute('tabindex', '-1');
+    row.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    timelineTargetTimer = setTimeout(() => { row.classList.remove('tl-target'); if (timelineTarget === row) timelineTarget = null; }, 4000);
+  }
+
+  document.addEventListener('pointerover', (e) => { const el = e.target.closest?.('[data-tl-mark]'); if (el) timelineShowTip(el); });
+  document.addEventListener('pointerout', (e) => { const el = e.target.closest?.('[data-tl-mark]'); if (el && !el.contains(e.relatedTarget) && document.activeElement !== el) timelineHideTip(el.closest('.tl')); });
+  document.addEventListener('focusin', (e) => { const el = e.target.closest?.('[data-tl-mark]'); if (el) timelineShowTip(el); });
+  document.addEventListener('focusout', (e) => { const el = e.target.closest?.('[data-tl-mark]'); if (el) timelineHideTip(el.closest('.tl')); });
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest?.('[data-tl-mark]');
+    if (!el) return;
+    const fig = el.closest('.tl'), L = timelineLayouts[+fig.dataset.timeline], mark = L && L.marks[+el.dataset.tlMark];
+    if (mark) { timelineHideTip(fig); timelineJump(fig, mark); }
+  });
+  document.addEventListener('keydown', (e) => {
+    const el = e.target.closest?.('[data-tl-mark]');
+    if (!el || e.altKey || e.ctrlKey || e.metaKey) return;
+    const fig = el.closest('.tl'), L = timelineLayouts[+fig.dataset.timeline], i = +el.dataset.tlMark, mark = L && L.marks[i];
+    if (!mark) return;
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); timelineHideTip(fig); timelineJump(fig, mark); return; }
+    if (e.key === 'Escape') { timelineHideTip(fig); return; }
+    const next = timelineNeighbor(L, i, e.key);
+    if (next === null) return;
+    e.preventDefault();
+    timelineFocus(fig, next);
+  });
 
   function matchReport(m) {
     const s = m.summary;
@@ -1367,7 +1901,7 @@
 
   function casesList(m) {
     if (!m.cases.length) return '<p class="empty">No review case was created: no player reached the review threshold.</p>';
-    return '<ul class="cases">' + m.cases.map((c) => `<li>${badge(c.level)}<span>${who(c.player_name, c.player_id)}</span>
+    return '<ul class="cases">' + m.cases.map((c) => `<li data-tl-case="${esc(c.case_id)}">${badge(c.level)}<span>${who(c.player_name, c.player_id)}</span>
       <span class="num">score ${fmtNum(c.suspicion_score)}</span><span class="act">${esc(lvlName(c.recommended_action))} · ${esc(c.status)}</span>
       <span class="case mono">${esc(c.case_id)}</span>${replayButton(m, strongestPlayerEvent(m, c.player_id), 'Open strongest clip')}</li>`).join('') + '</ul>';
   }
@@ -1448,6 +1982,7 @@
       </summary>
       ${notices}
       ${nativeCaptureBlock(m)}
+      ${timelineFigure(m, idx)}
       <div data-review-overview="${idx}">${reviewOverview(m)}</div>
       ${calibrationControls(m)}
       ${matchReport(m)}
@@ -1498,6 +2033,7 @@
     $('results').prepend(el);
     $('results-block').hidden = false; $('nav-results').hidden = false;
     $('clear').hidden = false;
+    mountTimelines(el);
     return el;
   }
   function reveal(el) {
@@ -2233,6 +2769,7 @@
     if (e.target.id === 'blind-review') {
       blindReview = e.target.checked; prefs.blindReview = blindReview; savePrefs();
       if (!blindReview) revealedEvents.clear();
+      document.querySelectorAll('figure[data-timeline]').forEach((fig) => renderTimeline(fig, true));
       document.querySelectorAll('[data-assessment]').forEach((root) => {
         const idx=+root.dataset.assessment, m=views[idx], state=viewState[idx];
         if (m && state) {
