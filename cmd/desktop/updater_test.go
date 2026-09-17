@@ -169,8 +169,8 @@ type updateFixture struct {
 	refRaw      []byte // served verbatim when set
 	release     func(apiURL string, valid githubRelease) githubRelease
 
-	refRequests, releaseRequests, assetRequests int
-	api                                         *httptest.Server
+	refRequests, releaseRequests, assetRequests, installerRequests int
+	api                                                            *httptest.Server
 }
 
 func newUpdateFixture(t *testing.T) *updateFixture {
@@ -178,7 +178,7 @@ func newUpdateFixture(t *testing.T) *updateFixture {
 	f := &updateFixture{commit: strings.Repeat("a", 40), installer: []byte("integrity-checked setup fixture")}
 	f.served = append([]byte(nil), f.installer...)
 	sum := sha256.Sum256(f.installer)
-	f.manifest = updateManifest{SchemaVersion: 1, Tag: updateTag, Commit: f.commit, Version: "0.10.0"}
+	f.manifest = updateManifest{SchemaVersion: 1, Tag: updateTag, Commit: f.commit, CommitTime: publishedCommitTime, Version: "0.10.0"}
 	f.manifest.Installer.Name = updateInstallerName
 	f.manifest.Installer.SHA256 = hex.EncodeToString(sum[:])
 	f.manifest.Installer.Size = int64(len(f.installer))
@@ -219,6 +219,7 @@ func (f *updateFixture) start(t *testing.T) *desktopRuntime {
 			_ = json.NewEncoder(w).Encode(release)
 		case "/assets/installer":
 			f.assetRequests++
+			f.installerRequests++
 			_, _ = w.Write(f.served)
 		case "/assets/checksum":
 			f.assetRequests++
@@ -243,12 +244,22 @@ func (f *updateFixture) start(t *testing.T) *desktopRuntime {
 	}
 }
 
-// setInstalledBuild pretends the running binary is a packaged build of commit.
+// The fixture release was committed one day after the fixture installed build.
+const (
+	installedCommitTime = "2026-03-01T10:00:00Z"
+	publishedCommitTime = "2026-03-02T10:00:00Z"
+)
+
+// setInstalledBuild pretends the running binary is a packaged build of commit,
+// committed at installedCommitTime. Test binaries carry no VCS stamp and
+// buildTime is "unknown", so buildCommitTime alone decides the installed moment.
 func setInstalledBuild(t *testing.T, commit string) {
 	t.Helper()
-	previous := buildCommit
-	buildCommit = commit
-	t.Cleanup(func() { buildCommit = previous })
+	previousCommit, previousTime, previousOverride := buildCommit, buildCommitTime, *allowUpdateDowngrade
+	buildCommit, buildCommitTime, *allowUpdateDowngrade = commit, installedCommitTime, false
+	t.Cleanup(func() {
+		buildCommit, buildCommitTime, *allowUpdateDowngrade = previousCommit, previousTime, previousOverride
+	})
 }
 
 func assertNothingStaged(t *testing.T, dir string) {
@@ -288,6 +299,115 @@ func TestDownloadVerifiedUpdate(t *testing.T) {
 	}
 }
 
+// The override exists so that a deliberate downgrade stays possible without
+// deleting the check; it must skip only the ordering rule and nothing else.
+func TestDownloadVerifiedUpdateDowngradeOverride(t *testing.T) {
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	*allowUpdateDowngrade = true
+	f := newUpdateFixture(t)
+	f.manifest.CommitTime = "2026-02-27T09:00:00Z"
+	rt := f.start(t)
+	path, _, err := rt.downloadVerifiedUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("explicit --%s did not permit an older release: %v", allowDowngradeFlag, err)
+	}
+	if stagedHash, err := stagedInstallerSHA256(path); err != nil || stagedHash != f.digest() {
+		t.Fatalf("staged digest = %q, %v", stagedHash, err)
+	}
+
+	tampered := newUpdateFixture(t)
+	tampered.manifest.CommitTime = "2026-02-27T09:00:00Z"
+	tampered.served[0] ^= 0xff
+	rt = tampered.start(t)
+	if _, _, err := rt.downloadVerifiedUpdate(context.Background()); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("the downgrade override also skipped integrity checking: %v", err)
+	}
+}
+
+func TestRefuseUpdateDowngrade(t *testing.T) {
+	at := func(value string) time.Time {
+		parsed, ok := parseUpdateTime(value)
+		if !ok {
+			t.Fatalf("bad test time %q", value)
+		}
+		return parsed
+	}
+	manifest := func(commitTime string) updateManifest {
+		return updateManifest{Commit: strings.Repeat("a", 40), CommitTime: commitTime}
+	}
+	installed := buildMoment{Commit: strings.Repeat("b", 40), Time: at("2026-03-01T10:00:00Z"), Exact: true}
+	for _, tt := range []struct {
+		name      string
+		published string
+		installed buildMoment
+		override  bool
+		want      string // empty: accepted
+	}{
+		{"newer", "2026-03-01T10:00:01Z", installed, false, ""},
+		{"newer in another zone", "2026-03-01T12:30:00+02:00", installed, false, ""},
+		{"older", "2026-03-01T09:59:59Z", installed, false, "refusing to downgrade"},
+		{"older in another zone", "2026-03-01T11:30:00+02:00", installed, false, "refusing to downgrade"},
+		{"equal", "2026-03-01T10:00:00Z", installed, false, "refusing to downgrade"},
+		{"older with override", "2020-01-01T00:00:00Z", installed, true, ""},
+		{"missing with override", "", installed, true, ""},
+		{"missing", "", installed, false, "does not state"},
+		{"unknown installed moment", "2026-03-02T10:00:00Z", buildMoment{Commit: "b"}, false, "does not record"},
+		// A build that only knows its build clock names that basis honestly.
+		{"older than a build-clock moment", "2026-03-01T09:00:00Z", buildMoment{Commit: "b", Time: at("2026-03-01T10:00:00Z")}, false, "built 2026-03-01T10:00:00Z"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := refuseUpdateDowngrade(manifest(tt.published), tt.installed, tt.override)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("newer release refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "--"+allowDowngradeFlag) {
+				t.Fatalf("refusal does not name the manual override: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveBuildMoment(t *testing.T) {
+	commit := strings.Repeat("b", 40)
+	const embedded, stamped, built = "2026-03-01T10:00:00Z", "2026-03-01T11:00:00Z", "2026-03-01T12:00:00Z"
+	for _, tt := range []struct {
+		name                                  string
+		embedded, vcsRevision, vcsTime, built string
+		want                                  string
+		exact                                 bool
+	}{
+		{"workflow commit time wins", embedded, commit, stamped, built, embedded, true},
+		{"toolchain stamp for the same commit", "", commit, stamped, built, stamped, true},
+		// A stamp describing another commit says nothing about this build.
+		{"toolchain stamp for another commit is ignored", "", strings.Repeat("c", 40), stamped, built, built, false},
+		{"build clock is the last resort", "", "", "", built, built, false},
+		{"nothing known", "", "", "", "unknown", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveBuildMoment(commit, tt.embedded, tt.vcsRevision, tt.vcsTime, tt.built)
+			want, _ := parseUpdateTime(tt.want)
+			if !got.Time.Equal(want) || got.Exact != tt.exact || got.Commit != commit {
+				t.Fatalf("moment = %+v, want time %s exact %v", got, tt.want, tt.exact)
+			}
+		})
+	}
+}
+
+func TestStripUpdateOverrideArgs(t *testing.T) {
+	got := stripUpdateOverrideArgs([]string{"--config", `C:\x\installed.toml`, "--allow-update-downgrade", "-allow-update-downgrade=true",
+		"--no-browser", "--", "--allow-update-downgrade"})
+	want := []string{"--config", `C:\x\installed.toml`, "--no-browser", "--", "--allow-update-downgrade"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("relaunch arguments = %q, want %q", got, want)
+	}
+}
+
 // Each case below breaks exactly one property of an otherwise valid release.
 // The "guard" comment names the statement in updater.go whose removal makes
 // that case fail; every one of them was checked by mutation.
@@ -307,7 +427,42 @@ func TestDownloadVerifiedUpdateRefusals(t *testing.T) {
 		want    string
 		// wantNoAssets asserts the refusal happened before any asset download.
 		wantNoAssets bool
+		// wantNoInstaller asserts the installer itself was never requested.
+		wantNoInstaller bool
 	}{
+		{
+			// guard: the refuseUpdateDowngrade call in downloadVerifiedUpdate, and
+			// published.After(installed.Time) inside it. This is the rolling tag
+			// moved BACKWARDS by an out-of-order or re-run publish.
+			name:    "release older than the installed build",
+			arrange: func(_ *testing.T, f *updateFixture) { f.manifest.CommitTime = "2026-02-27T09:00:00Z" },
+			want:    "refusing to downgrade", wantNoInstaller: true,
+		},
+		{
+			// guard: After is strict. Mutating it to !Before accepts this case.
+			name:    "release committed at the same instant as the installed build",
+			arrange: func(_ *testing.T, f *updateFixture) { f.manifest.CommitTime = installedCommitTime },
+			want:    "refusing to downgrade", wantNoInstaller: true,
+		},
+		{
+			// guard: the !ok branch for an absent commit_time. A release published
+			// before this field existed is by definition older than this build.
+			name:    "release without a commit time",
+			arrange: func(_ *testing.T, f *updateFixture) { f.manifest.CommitTime = "" },
+			want:    "does not state when its source was committed", wantNoInstaller: true,
+		},
+		{
+			name:    "release with an unparseable commit time",
+			arrange: func(_ *testing.T, f *updateFixture) { f.manifest.CommitTime = "yesterday" },
+			want:    "does not state when its source was committed", wantNoInstaller: true,
+		},
+		{
+			// guard: installed.Time.IsZero(). Without it a build that knows nothing
+			// about its own age would accept every release.
+			name:    "installed build with no recorded time",
+			arrange: func(_ *testing.T, _ *updateFixture) { buildCommitTime = "" },
+			want:    "does not record when it was built", wantNoInstaller: true,
+		},
 		{
 			// guard: actualHash != publishedHash
 			name:    "tampered download",
@@ -423,6 +578,9 @@ func TestDownloadVerifiedUpdateRefusals(t *testing.T) {
 			}
 			if tt.wantNoAssets && f.assetRequests != 0 {
 				t.Errorf("%d asset requests were made before the refusal", f.assetRequests)
+			}
+			if tt.wantNoInstaller && f.installerRequests != 0 {
+				t.Errorf("the installer was downloaded %d times before the refusal", f.installerRequests)
 			}
 			assertNothingStaged(t, rt.updateDir)
 		})

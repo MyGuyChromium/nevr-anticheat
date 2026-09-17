@@ -96,7 +96,7 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	if err := validateUpdateHelperPaths(installer, currentExe, updateDir, expectedHash); err != nil {
 		return err
 	}
-	relaunchJSON, err := json.Marshal(os.Args[1:])
+	relaunchJSON, err := json.Marshal(stripUpdateOverrideArgs(os.Args[1:]))
 	if err != nil {
 		return err
 	}
