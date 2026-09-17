@@ -90,6 +90,10 @@ func (fe *FeatureExtractor) confirmRelease(ps *model.PlayerState, frame *model.P
 		reason = "release_attachment_unknown"
 	case !ps.DiscAttachment.Free():
 		reason = "release_reattachment_or_transfer"
+	case frame.IsStunned:
+		// The stun flag can lag the knock-out by one sample; a holder who is
+		// stunned by the confirming sample did not author this release.
+		reason = releaseForcedDropReason
 	}
 	if reason != "" {
 		fe.rejectRelease(ps.PlayerID, reason)
