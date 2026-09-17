@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -124,6 +125,16 @@ func (e *Engine) AnalyzeFileAll(ctx context.Context, path string, force bool) ([
 	return AnalyzeFileAll(ctx, e.store, path, e.analyzeOptions(force))
 }
 
+// AnalyzeFileAllWith is AnalyzeFileAll with explicit intake choices: Force
+// re-analyzes a stored match from the same recording, ReplaceSource also lets
+// a different recording take over a stored match id. The engine supplies the
+// pipeline, physics and analysis options.
+func (e *Engine) AnalyzeFileAllWith(ctx context.Context, path string, force, replaceSource bool) ([]*AnalyzeResult, error) {
+	opts := e.analyzeOptions(force)
+	opts.ReplaceSource = replaceSource
+	return AnalyzeFileAll(ctx, e.store, path, opts)
+}
+
 func (e *Engine) analyzeOptions(force bool) AnalyzeOptions {
 	return AnalyzeOptions{
 		Force:       force,
@@ -164,7 +175,20 @@ type AnalyzeOptions struct {
 	// corrupt replay never destroys the analysis it was meant to replace.
 	// Without it a stored match is refused before anything is written
 	// (AnalyzeResult.AlreadyStored; ErrMatchAlreadyStored from AnalyzeFile).
+	//
+	// Force alone never lets a different recording take over a stored match
+	// id. A session id names a match, not a recording: another observer, a
+	// late joiner or a clip carries the same id. Such a file is refused like
+	// an unforced one (AlreadyStored, StoredSource SourceDifferent) and the
+	// stored analysis is left exactly as it was.
 	Force bool
+	// ReplaceSource, with Force, lets a different recording replace a stored
+	// legacy match: its raw ticks are deleted first so the match never holds
+	// ticks of one recording and frames of another. Moderator labels on the
+	// previous recording's findings are kept in the store but are not carried
+	// over to the new recording's findings. Native captures keep their own
+	// stricter guard (validateNativeSource) and are never replaced this way.
+	ReplaceSource bool
 	// Physics is stamped on the parsed match context (zero = model.DefaultPhysics).
 	Physics model.PhysicsConstants
 	// NewPipeline builds the pipeline each match is processed with (required).
@@ -204,6 +228,21 @@ type AnalyzeResult struct {
 	// written, and only Path, MatchCtx and Diagnostics are set. (AnalyzeFile
 	// reports this for its single match as ErrMatchAlreadyStored instead.)
 	AlreadyStored bool
+	// StoredSource says how this file relates to the recording already stored
+	// under the match id ("" when the match was not stored before). It is set
+	// for refused matches too, so a caller can tell "this exact recording is
+	// already analyzed" from "another recording of this match is stored".
+	StoredSource SourceRelation
+	// SourceDetail explains StoredSource in one sentence (what differed, or
+	// why the comparison could not be made).
+	SourceDetail string
+	// SourceReplaced is true when ReplaceSource let this recording take over a
+	// match id that held a different recording (its raw ticks were deleted).
+	SourceReplaced bool
+	// EventIDsKept counts the findings of a re-analysis that are identical to
+	// a previous finding and kept its event id, so moderator labels, which are
+	// keyed by event id, stay attached.
+	EventIDsKept int
 	// Frames is the number of player-frames parsed for the match.
 	Frames int
 	// Diagnostics is the adapter's mapping report for the whole file (it is
@@ -272,6 +311,14 @@ func (r *AnalyzeResult) Warnings() []string {
 	}
 	if r.TelemetryHealthErr != nil {
 		out = append(out, "failed to store telemetry health (it will be rebuilt when the match is next opened): "+r.TelemetryHealthErr.Error())
+	}
+	if !r.AlreadyStored && r.Result != nil {
+		switch {
+		case r.SourceReplaced:
+			out = append(out, "this recording replaced a different recording stored under the same match id: "+r.SourceDetail)
+		case r.StoredSource == SourceUnverified:
+			out = append(out, "re-analyzed without verifying that this is the stored recording: "+r.SourceDetail)
+		}
 	}
 	return out
 }
@@ -553,8 +600,13 @@ type matchRun struct {
 	rawSpool *rawTickSpool
 	source   string // "initial", or "reprocess" when replacing a stored match
 	replace  bool
-	summary  *SummaryBuilder
-	start    time.Time // first sample time, the zero of the summary's clock
+	// compareOnly marks a stored match met without Force: nothing of it is
+	// analyzed or written, but its raw ticks are staged so finish can say
+	// whether this file is the stored recording or a different one.
+	compareOnly bool
+	rawTicks    int // distinct raw ticks staged so far
+	summary     *SummaryBuilder
+	start       time.Time // first sample time, the zero of the summary's clock
 }
 
 // begin starts a match once its id is known: a stored match is refused
@@ -577,6 +629,8 @@ func (a *fileAnalysis) begin(mc *model.MatchContext) (*matchRun, error) {
 	case a.opts.Force:
 		run.source, run.replace = "reprocess", true
 	default:
+		run.compareOnly = true
+		run.summary = nil
 		run.res.AlreadyStored = true
 		a.results = append(a.results, run.res)
 	}
@@ -590,11 +644,22 @@ func (r *matchRun) add(a *fileAnalysis, tick *adapter.ParsedTick) error {
 	if err := a.ctx.Err(); err != nil {
 		return err
 	}
-	if r.res.AlreadyStored {
+	if r.res.AlreadyStored && !r.compareOnly {
 		return nil
 	}
 	if _, seen := r.pending[tick.FrameIndex]; !seen {
 		r.pending[tick.FrameIndex] = tick.RawJSON
+		if tick.RawJSON != "" {
+			r.rawTicks++
+		}
+	}
+	if r.compareOnly {
+		// A refused match keeps no frames; only the staged raw ticks, which
+		// finish compares with the stored recording and then discards.
+		if len(r.pending) >= rawTickFlushEvery {
+			return r.flush(a)
+		}
+		return nil
 	}
 	r.frames = append(r.frames, tick.Frames...)
 	if tick.Session != nil && r.summary != nil {
@@ -673,6 +738,10 @@ func (r *matchRun) abortRaw() {
 // returned; storage failures are reported on the result, which counts as
 // decided once the pipeline ran.
 func (a *fileAnalysis) finish(run *matchRun) error {
+	if run.compareOnly {
+		a.compareRefused(run)
+		return nil
+	}
 	if run.res.AlreadyStored {
 		return nil
 	}
@@ -694,15 +763,47 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		run.abortRaw()
 		return err
 	}
+	var result *pipeline.MatchResult
+	if run.replace {
+		rel, detail, err := a.storedSourceRelation(run)
+		if err != nil {
+			run.abortRaw()
+			return fmt.Errorf("comparing with the stored recording of match %s: %w", res.MatchCtx.MatchID, err)
+		}
+		res.StoredSource, res.SourceDetail = rel, detail
+		if rel == SourceDifferent {
+			if !a.opts.ReplaceSource {
+				// Never overwrite or mix: the stored analysis stays as it is
+				// and the caller is told why this file was not analyzed.
+				run.abortRaw()
+				res.AlreadyStored = true
+				a.results = append(a.results, res)
+				return nil
+			}
+			// Run the pipeline before anything stored is deleted, so a
+			// pipeline failure leaves the stored recording untouched.
+			if result, err = a.opts.NewPipeline().ProcessMatch(a.ctx, res.MatchCtx, run.frames); err != nil {
+				run.abortRaw()
+				return err
+			}
+			if _, err := a.store.DeleteMatchRawTicks(a.ctx, res.MatchCtx.MatchID); err != nil {
+				run.abortRaw()
+				return fmt.Errorf("replacing the stored recording of match %s: %w", res.MatchCtx.MatchID, err)
+			}
+			res.SourceReplaced = true
+		}
+	}
 	if err := run.finishRaw(a); err != nil {
 		res.RawTickErr = err
 	}
 	res.Frames = len(run.frames)
 	res.Summary = summarizeFrames(run.frames)
 
-	result, err := a.opts.NewPipeline().ProcessMatch(a.ctx, res.MatchCtx, run.frames)
-	if err != nil {
-		return err
+	if result == nil {
+		var err error
+		if result, err = a.opts.NewPipeline().ProcessMatch(a.ctx, res.MatchCtx, run.frames); err != nil {
+			return err
+		}
 	}
 	res.Result = result
 	a.results = append(a.results, res)
@@ -755,6 +856,9 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		return nil
 	}
 	if run.replace {
+		if !res.SourceReplaced {
+			res.EventIDsKept = keepEventIdentities(ctx, store, res.MatchCtx.MatchID, result)
+		}
 		res.Stored, res.AnalysisErr = ReplaceMatchAnalysis(ctx, store, res.MatchCtx, result, run.source, a.opts.Analysis)
 		if res.AnalysisErr == nil {
 			res.Replaced = true
@@ -778,6 +882,183 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 		}
 	}
 	return nil
+}
+
+// SourceRelation says how an incoming recording relates to the recording
+// already stored under its match id.
+type SourceRelation string
+
+const (
+	// SourceIdentical: every stored raw tick is byte-identical in the incoming
+	// file and the file holds no further ticks. It is the stored recording.
+	SourceIdentical SourceRelation = "identical"
+	// SourceExtends: every stored raw tick is byte-identical in the incoming
+	// file, which holds more ticks: the stored copy was cut short.
+	SourceExtends SourceRelation = "extends"
+	// SourceSameCapture: a native capture that passed validateNativeSource.
+	SourceSameCapture SourceRelation = "same_capture"
+	// SourceDifferent: a different recording of the same match id (another
+	// observer, a late joiner, a clip), or a shorter copy of the stored one.
+	SourceDifferent SourceRelation = "different"
+	// SourceUnverified: the store holds no raw ticks to compare (they were
+	// archived, or the source was a legacy JSON replay) and the match start
+	// and recorded span agree. Nothing contradicts it being the same recording.
+	SourceUnverified SourceRelation = "unverified"
+)
+
+// storedSourceRelation compares the staged raw ticks of run with the raw ticks
+// stored under its match id. The raw ticks are the immutable evidence, so this
+// is the comparison that matters: normalized frames and contexts change with
+// mapper fixes, the recorded payloads never do.
+func (a *fileAnalysis) storedSourceRelation(run *matchRun) (SourceRelation, string, error) {
+	mc := run.res.MatchCtx
+	stored, err := a.store.GetMatchContext(a.ctx, mc.MatchID)
+	if err != nil && !errors.Is(err, sqlite.ErrNotFound) {
+		return "", "", fmt.Errorf("load stored context: %w", err)
+	}
+	if mc.Source == "tape" || mc.NativeCapture != nil || (stored != nil && (stored.Source == "tape" || stored.NativeCapture != nil)) {
+		// validateNativeSource is the authority for native captures. It has
+		// either passed already (Force) or is not run for a refused match.
+		if run.compareOnly {
+			return SourceUnverified, "native captures are verified only when a re-analysis is requested", nil
+		}
+		return SourceSameCapture, "the native capture id and its stored records match", nil
+	}
+	var next rawTickNext
+	if run.rawSpool != nil {
+		if next, err = run.rawSpool.iterator(); err != nil {
+			return "", "", err
+		}
+	} else {
+		next = rawMapIterator(run.pending)
+	}
+	position, candidate := -1, ""
+	var differ string
+	errDiffer := errors.New("recordings differ")
+	n, err := a.store.ForEachMatchTick(a.ctx, mc.MatchID, func(idx int, raw string) error {
+		if err := a.ctx.Err(); err != nil {
+			return err
+		}
+		for position < idx {
+			var nextErr error
+			position, candidate, nextErr = next()
+			if errors.Is(nextErr, io.EOF) {
+				differ = fmt.Sprintf("this file ends before stored tick %d; it is a shorter copy or a clip of the stored recording", idx)
+				return errDiffer
+			}
+			if nextErr != nil {
+				return nextErr
+			}
+		}
+		if position != idx {
+			differ = fmt.Sprintf("this file has no tick %d, which the stored recording holds", idx)
+			return errDiffer
+		}
+		if candidate != raw {
+			differ = fmt.Sprintf("tick %d differs from the stored recording (another observer, a late joiner or a clip of the same match)", idx)
+			return errDiffer
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errDiffer):
+		return SourceDifferent, differ, nil
+	case err != nil:
+		return "", "", err
+	case n == 0:
+		return contextSourceRelation(stored, mc)
+	case run.rawTicks > n:
+		return SourceExtends, fmt.Sprintf("all %d stored ticks match and this file holds %d more", n, run.rawTicks-n), nil
+	default:
+		return SourceIdentical, fmt.Sprintf("all %d stored ticks match", n), nil
+	}
+}
+
+// contextSourceRelation is the fallback when no raw tick is stored: the match
+// start and recorded span are what is left to compare.
+func contextSourceRelation(stored, incoming *model.MatchContext) (SourceRelation, string, error) {
+	if stored == nil {
+		return SourceUnverified, "the stored match has no raw ticks and no match context to compare", nil
+	}
+	if !stored.StartTime.Equal(incoming.StartTime) {
+		return SourceDifferent, fmt.Sprintf("the stored recording starts at %s, this file at %s",
+			stored.StartTime.UTC().Format(time.RFC3339Nano), incoming.StartTime.UTC().Format(time.RFC3339Nano)), nil
+	}
+	if stored.Duration != incoming.Duration {
+		return SourceDifferent, fmt.Sprintf("the stored recording spans %s, this file %s", stored.Duration, incoming.Duration), nil
+	}
+	return SourceUnverified, "the stored match has no raw ticks to compare (archived, or a legacy JSON replay); its start time and recorded span match this file", nil
+}
+
+// compareRefused fills StoredSource for a match refused without Force. A
+// comparison failure never fails the file: the match was refused either way.
+func (a *fileAnalysis) compareRefused(run *matchRun) {
+	defer run.abortRaw()
+	if err := run.flush(a); err != nil {
+		run.res.StoredSource, run.res.SourceDetail = SourceUnverified, "could not stage this file for comparison: "+err.Error()
+		return
+	}
+	rel, detail, err := a.storedSourceRelation(run)
+	if err != nil {
+		rel, detail = SourceUnverified, "could not compare with the stored recording: "+err.Error()
+	}
+	run.res.StoredSource, run.res.SourceDetail = rel, detail
+}
+
+// keepEventIdentities gives a regenerated finding the event id of the stored
+// finding it is identical to. Detectors mint a random id per emission, so
+// without this every re-analysis would orphan the moderator labels keyed by
+// event id (event_reviews) and a second label on the same finding would be
+// counted twice by calibration. Identical means the same player, detector
+// and detector version, frame and frame range, and observed value and
+// expected range; a fingerprint shared by two findings on either side is left
+// alone rather than guessed. Returns how many ids were kept.
+func keepEventIdentities(ctx context.Context, store *sqlite.Store, matchID string, result *pipeline.MatchResult) int {
+	if result == nil || len(result.DetectionEvents) == 0 {
+		return 0
+	}
+	previous, err := store.GetMatchEvents(ctx, matchID)
+	if err != nil || len(previous) == 0 {
+		return 0
+	}
+	fingerprint := func(e *model.DetectionEvent) string {
+		return fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%s", e.PlayerID, e.DetectorID, e.DetectorVersion,
+			e.FrameIndex, e.FrameRangeStart, e.FrameRangeEnd, e.ObservedValue, e.ExpectedRange)
+	}
+	oldIDs := make(map[string]string, len(previous))
+	ambiguous := make(map[string]bool)
+	for i := range previous {
+		fp := fingerprint(&previous[i])
+		if _, dup := oldIDs[fp]; dup {
+			ambiguous[fp] = true
+		}
+		oldIDs[fp] = previous[i].EventID
+	}
+	seen := make(map[string]int, len(result.DetectionEvents))
+	for i := range result.DetectionEvents {
+		seen[fingerprint(&result.DetectionEvents[i])]++
+	}
+	renamed := make(map[string]string)
+	for i := range result.DetectionEvents {
+		ev := &result.DetectionEvents[i]
+		fp := fingerprint(ev)
+		old, ok := oldIDs[fp]
+		if !ok || old == "" || ambiguous[fp] || seen[fp] != 1 {
+			continue
+		}
+		if ev.EventID != old {
+			renamed[ev.EventID] = old
+			ev.EventID = old
+		}
+	}
+	for i := range result.ReviewCases {
+		for j := range result.ReviewCases[i].DetectorsTriggered {
+			if old, ok := renamed[result.ReviewCases[i].DetectorsTriggered[j].EventID]; ok {
+				result.ReviewCases[i].DetectorsTriggered[j].EventID = old
+			}
+		}
+	}
+	return len(renamed)
 }
 
 // parseReplayMatches streams the .echoreplay at path through parser and
