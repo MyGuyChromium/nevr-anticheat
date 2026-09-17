@@ -291,6 +291,128 @@ test('the Re-analyze switch forces every file of a queue; a result card can forc
   assert.doesNotMatch(markup, /id="reanalyze"[^>]*checked/, 'off by default');
 });
 
+test('the update card decides before the click: a refused downgrade is not "up to date", a blocked install says why', () => {
+  const { updateView } = run(section('  function updateView(', '  async function loadAutomation('));
+  const text = view => view.notes.map(note => `${note.strong || ''} ${note.text}`).join(' | ');
+  const current = updateView({ available: false, downgrade: false, install_supported: true });
+  assert.deepEqual([current.tag, current.tone, current.button, current.canInstall, current.notes.length], ['up to date', 'ok', 'Up to date', false, 0]);
+  const ready = updateView({ available: true, downgrade: false, install_supported: true });
+  assert.deepEqual([ready.tag, ready.button, ready.canInstall], ['update available', 'Install update', true]);
+
+  const reason = 'The published Windows release (aaaaaaaaaaaa, committed 2026-02-27T09:00:00Z) is not newer than this build (bbbbbbbbbbbb, committed 2026-03-01T10:00:00Z); refusing to downgrade.';
+  const older = updateView({ available: false, downgrade: true, downgrade_reason: reason, install_supported: true });
+  assert.notEqual(older.tag, 'up to date');
+  assert.notEqual(older.tone, 'ok');
+  assert.deepEqual([older.button, older.canInstall], ['Nothing to install', false]);
+  assert.match(text(older), /not newer than this build, so nothing will be installed/);
+  assert.ok(text(older).includes(reason), 'the engine\'s sentence is shown as written');
+  assert.match(text(older), /installing it by hand would replace this build with one that is not newer/);
+  // Contract: downgrade implies available=false. If an engine ever sent both, the page still must not offer the install.
+  assert.equal(updateView({ available: true, downgrade: true, install_supported: true }).canInstall, false);
+  assert.equal(updateView({ available: true, downgrade: true, install_supported: true }).button, 'Nothing to install');
+
+  const portable = updateView({ available: true, install_supported: false, install_unsupported_reason: 'This is a portable copy.', install_reason: 'legacy text' });
+  assert.deepEqual([portable.tag, portable.button, portable.canInstall], ['update available', 'One-click install unavailable', false]);
+  assert.match(text(portable), /One-click install is not available on this copy\. This is a portable copy\. The verified installer can still be downloaded and run manually\./);
+  assert.doesNotMatch(text(portable), /legacy text/);
+  assert.match(text(updateView({ available: true, install_supported: false, install_reason: 'Older engine reason.' })), /Older engine reason\./, 'an engine without the new field still explains itself');
+  assert.match(text(updateView({ available: true, install_supported: false })), /The engine gave no reason\./);
+  const dev = updateView({ available: false, install_supported: false, install_unsupported_reason: 'This is a development build.' });
+  assert.deepEqual([dev.tag, dev.canInstall], ['up to date', false]);
+  assert.match(text(dev), /One-click install is not available on this copy: This is a development build\./);
+
+  const failed = updateView({ available: false, downgrade: false, install_supported: true, error: 'could not confirm that the published Windows release is newer than this build: timeout' });
+  assert.deepEqual([failed.tag, failed.tone, failed.button, failed.canInstall], ['check unavailable', 'bad', 'Unavailable', false]);
+  assert.match(text(failed), /could not confirm/);
+  // An engine from before this wave (no downgrade, no install_supported) and no engine at all.
+  assert.equal(updateView({ available: true, install_supported: true }).canInstall, true);
+  assert.equal(updateView({ available: true }).canInstall, false, "install support must be stated, never assumed");
+  assert.deepEqual([updateView(undefined).tag, updateView(null).canInstall], ['up to date', false]);
+  // Everything the card prints from the engine goes through esc.
+  const card = section('  async function loadAutomation(', '  let historyMatches');
+  assert.match(card, /\$\{esc\(uv\.tag\)\}/);
+  assert.match(card, /\$\{esc\(note\.strong\)\}/);
+  assert.match(card, /\$\{esc\(note\.text\)\}/);
+  assert.match(card, /\$\{uv\.canInstall \? '' : 'disabled'\}>\$\{esc\(uv\.button\)\}/);
+});
+
+test('library import reports rows this PC kept as "kept local", not as rejected or failed', () => {
+  const { libraryImportView } = run(section('  function libraryImportView(', '  async function loadStudio('), { fmtInt: String });
+  const clean = libraryImportView({ ok: true, imported: { labels: 2, reviews: 3, opportunities: 0, notes: 1, filters: 0 }, rejected: { labels: 0, reviews: 0 }, kept_local: { labels: 0, reviews: 0, opportunities: 0 }, kept_local_examples: null });
+  assert.deepEqual([clean.imported, clean.keptLocal, clean.rejected, clean.tone, clean.status], [6, 0, 0, 'ok', 'Imported 6 evidence records.']);
+  assert.doesNotMatch(clean.html, /<details/);
+
+  const kept = libraryImportView({ ok: true, imported: { labels: 1 }, rejected: { labels: 0, reviews: 0 }, first_error: '',
+    kept_newer_local: { labels: 1, reviews: 1 }, kept_local: { labels: 2, reviews: 1, opportunities: 1 },
+    kept_local_examples: ['match SYN-1: kept "clean" from 2026-03-02T10:00:00Z over imported "<b>cheat</b>" from 2026-03-01T10:00:00Z'] });
+  assert.deepEqual([kept.imported, kept.keptLocal, kept.rejected, kept.tone], [1, 4, 0, 'ok'], 'kept rows never turn the import into a failure');
+  assert.equal(kept.status, 'Imported 1 evidence record · 4 kept local (newer label on this PC).');
+  assert.doesNotMatch(kept.status, /reject/i);
+  assert.match(kept.html, /Kept local \(newer label on this PC\)/);
+  assert.match(kept.html, /This is not an error\./);
+  assert.match(kept.html, /2 newer on this PC; 2 where the imported row is equally old but different, or carries no review time/);
+  assert.match(kept.html, /<dt>Rejected<\/dt><dd>0<\/dd>/);
+  assert.match(kept.html, /Rows kept local · first 1 of 4/);
+  assert.match(kept.html, /&lt;b&gt;cheat&lt;\/b&gt;/);
+  assert.doesNotMatch(kept.html, /<b>cheat/);
+
+  const mixed = libraryImportView({ ok: false, imported: { labels: 1 }, rejected: { labels: 0, reviews: 2 }, first_error: 'review <x>: overlapping', kept_local: { labels: 1 } });
+  assert.deepEqual([mixed.keptLocal, mixed.rejected, mixed.tone], [1, 2, 'err']);
+  assert.equal(mixed.status, 'Imported 1 evidence record · 1 kept local (newer label on this PC) · rejected 2. review <x>: overlapping', 'setStatus writes textContent, so the status stays raw');
+  assert.match(mixed.html, /review &lt;x&gt;: overlapping/);
+  // An engine from before kept_local only reports the newer-local subset; one from before both reports neither.
+  const older = libraryImportView({ ok: true, imported: { labels: 1 }, rejected: {}, kept_newer_local: { labels: 2, reviews: 0 }, kept_newer_local_examples: ['match SYN-2: kept'] });
+  assert.deepEqual([older.keptLocal, older.tone], [2, 'ok']);
+  assert.match(older.html, /match SYN-2: kept/);
+  assert.deepEqual([libraryImportView({ ok: true, imported: { labels: 1 } }).keptLocal, libraryImportView(undefined).imported], [0, 0]);
+  assert.equal(libraryImportView({ ok: true, imported: { labels: 'many', reviews: NaN } }).imported, 0, 'non-numeric counts are ignored, never concatenated');
+  assert.equal(libraryImportView({ ok: true, kept_local: { labels: 1 }, kept_local_examples: Array.from({ length: 50 }, (_, i) => `row ${i}`) }).html.match(/<li>/g).length, 20);
+  // The import handler shows this view and keeps it across the panel refresh it triggers.
+  assert.match(script, /lastLibraryImport=result;const view=libraryImportView\(result\);setStatus\(view\.status,view\.tone\);refreshPanels\(\)/);
+  assert.match(script, /\$\{lastLibraryImport \? libraryImportView\(lastLibraryImport\)\.html : ''\}/);
+});
+
+test('the Regression Lab keeps "no current analysis for this match" apart from "detector stayed quiet"', () => {
+  const { regressionHTML } = run(section('  function regressionHTML(', '  async function loadRegression('), { fmtInt: String, fmtNum: (n, d) => Number(n).toFixed(d), who: (name, id) => `who(${name || id})` });
+  const item = (extra) => ({ match_id: 'SYN-1', player_id: 'p1', player_name: 'Synthetic', detector_id: 'SYN_001', frame_index: 120, expectation: 'signal remains present', passed: false, analysis_state: 'analyzed', reviewed_at: '2026-03-01T10:00:00Z', ...extra });
+  const report = {
+    total: 3, passed: 1, failed: 2, excluded_unsure: 1, notice: 'Labels are expectations.', superseded_labels: 2,
+    items: [item({ passed: true, current: { severity: 0.5, confidence: 0.9 } }), item({ frame_index: 300 }), item({ frame_index: 400, expectation: 'legal play stays clear', current: { severity: 0.72, confidence: 0.8, observed_value: '<b>21 m/s</b>' } })],
+    no_current_analysis: 2, no_current_analysis_matches: 2,
+    no_current_analysis_items: [item({ match_id: 'SYN-AWAY', analysis_state: 'match_not_stored', analysis_note: 'This match is not stored on this PC. <Analyze> its recording here first.' }), item({ match_id: 'SYN-STALE', analysis_state: 'not_analyzed', analysis_note: 'Analyze its recording again.' })],
+  };
+  const html = regressionHTML(report);
+  const attention = html.slice(html.indexOf('Needs attention'), html.indexOf('data-regression-untested'));
+  const untested = html.slice(html.indexOf('data-regression-untested'));
+  assert.match(attention, /Needs attention<span class="count">2</);
+  assert.match(attention, /Detector stayed quiet<span class="explain">The match was analyzed here/);
+  assert.match(attention, /Detector fires here<span class="explain">severity 0\.72 · confidence 0\.80 · &lt;b&gt;21 m\/s&lt;\/b&gt;/);
+  assert.doesNotMatch(attention, /SYN-AWAY|SYN-STALE|No current analysis/, 'an untested label is never listed as a failing one');
+  assert.match(untested, /No current analysis for this match<span class="count">2</);
+  assert.match(untested, /neither passing nor failing\. This is not the detector staying quiet/);
+  assert.doesNotMatch(untested, /Detector stayed quiet</);
+  assert.match(untested, /Match not stored on this PC<span class="explain">This match is not stored on this PC\. &lt;Analyze&gt; its recording here first\./);
+  assert.match(untested, /Stored, never analyzed here<span class="explain">Analyze its recording again\./);
+  assert.doesNotMatch(untested, /data-open="SYN-AWAY"/, 'a match that is not stored cannot be opened');
+  assert.match(untested, /data-open="SYN-STALE"/);
+  assert.match(html, /<span>Not tested<\/span><b>2<\/b><small class="muted">no current analysis for 2 matches/);
+  assert.match(html, /2 older labels of a re-analyzed observation were folded into the newest one/);
+  assert.doesNotMatch(untested, /<details class="sub" open/, 'failures stay the open section');
+
+  // Only untested labels: the lab must not claim "No expectations yet" or "every expectation passes".
+  const only = regressionHTML({ total: 0, passed: 0, failed: 0, excluded_unsure: 0, notice: 'n', items: [], no_current_analysis: 1, no_current_analysis_matches: 1, no_current_analysis_items: [report.no_current_analysis_items[0]] });
+  assert.doesNotMatch(only, /No expectations yet|currently passes/);
+  assert.match(only, /No label could be tested yet/);
+  assert.match(only, /<details class="sub" open data-regression-untested>/);
+  assert.match(only, /no current analysis for 1 match</);
+  // An engine from before this wave: no new fields at all.
+  const legacy = regressionHTML({ total: 1, passed: 1, failed: 0, excluded_unsure: 0, notice: 'n', items: [item({ passed: true })] });
+  assert.match(legacy, /Every tested expectation currently passes/);
+  assert.doesNotMatch(legacy, /Not tested|data-regression-untested|folded/);
+  assert.match(regressionHTML({ total: 0, items: null }), /No expectations yet/);
+  assert.match(regressionHTML({ total: 0, no_current_analysis_items: [item({ analysis_state: 'match_not_stored' })] }), /Not tested<\/span><b>1</, 'the count falls back to the listed items');
+});
+
 test('a scheduled or failed restore is announced with its cancel action; an older engine shows nothing', () => {
   const ui = run(section('  function restoreBannerHTML(', '  async function loadRestoreState('), { fmtAbs: t => `abs(${t.toISOString()})` });
   assert.equal(ui.restoreBannerHTML({}), null);

@@ -442,6 +442,10 @@
   .notice.bad { background: var(--bad-bg); }
   .notice.info { background: var(--neutral-bg); border-left-color: var(--line-2); }
   .notice.info .btn { margin-left: 6px; }
+  .import-result { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .import-result h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .import-result .explain { display: block; color: var(--ink-2); font-size: var(--text-xs); margin-top: 2px; }
+  .bad-text { color: var(--bad); font-weight: 600; }
   .conflict-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 48px; margin-top: 16px; }
   .conflict-grid h4, .conflict-confirm h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
   .conflict-confirm { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--bad); border-radius: var(--radius-sm); background: var(--bad-bg); }
@@ -2735,6 +2739,30 @@
     } finally { if (request === investigationRequest) $('lab-dialog-content').removeAttribute('aria-busy'); }
   }
 
+  // Result of the last portable-library import (POST api/library). Rows this PC
+  // kept are the merge working as designed, so they are reported as "kept
+  // local", never as rejected, and never turn the import into a failure.
+  let lastLibraryImport = null;
+  function libraryImportView(result) {
+    const r = result || {};
+    const sum = (o) => Object.values(o && typeof o === 'object' ? o : {}).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+    const kinds = (o) => Object.entries(o && typeof o === 'object' ? o : {}).filter(([, n]) => Number.isFinite(n) && n > 0).map(([kind, n]) => `${fmtInt(n)} ${esc(kind)}`).join(', ');
+    const imported = sum(r.imported), rejected = sum(r.rejected);
+    // kept_local is the superset; an engine from before it only reports the newer-local subset.
+    const keptAll = r.kept_local ? sum(r.kept_local) : sum(r.kept_newer_local), newer = Math.min(keptAll, sum(r.kept_newer_local));
+    const examples = (Array.isArray(r.kept_local_examples) ? r.kept_local_examples : Array.isArray(r.kept_newer_local_examples) ? r.kept_newer_local_examples : []).slice(0, 20);
+    const parts = [`Imported ${fmtInt(imported)} evidence record${imported === 1 ? '' : 's'}`];
+    if (keptAll) parts.push(`${fmtInt(keptAll)} kept local (newer label on this PC)`);
+    if (rejected) parts.push(`rejected ${fmtInt(rejected)}`);
+    const status = `${parts.join(' · ')}.${rejected ? ` ${r.first_error || 'Inspect the library for invalid or overlapping records.'}` : ''}`;
+    const tone = rejected || r.ok === false ? 'err' : 'ok';
+    const keptDetail = keptAll > newer ? ` <span class="muted">${fmtInt(newer)} newer on this PC; ${fmtInt(keptAll - newer)} where the imported row is equally old but different, or carries no review time.</span>` : '';
+    const html = `<div class="import-result" data-library-result><h4>Last import</h4><dl class="kv"><dt>Imported</dt><dd>${fmtInt(imported)}${kinds(r.imported) ? ` <span class="muted">${kinds(r.imported)}</span>` : ''}</dd>
+      <dt>Kept local</dt><dd>${keptAll ? `${fmtInt(keptAll)} <span class="muted">${kinds(r.kept_local || r.kept_newer_local)}</span><span class="explain">Kept local (newer label on this PC): this PC's own label or review stayed and the imported row was not applied. This is not an error.${keptDetail}</span>` : '0'}</dd>
+      <dt>Rejected</dt><dd>${rejected ? `<span class="bad-text">${fmtInt(rejected)}</span> <span class="muted">${kinds(r.rejected)}</span>${r.first_error ? `<span class="explain">${esc(r.first_error)}</span>` : ''}` : '0'}</dd></dl>
+      ${examples.length ? `<details class="sub"><summary>Rows kept local${keptAll > examples.length ? ` · first ${fmtInt(examples.length)} of ${fmtInt(keptAll)}` : ''}</summary><ul class="health-list">${examples.map((text) => `<li>${esc(text)}</li>`).join('')}</ul></details>` : ''}</div>`;
+    return { imported, keptLocal: keptAll, rejected, status, tone, html };
+  }
   async function loadStudio() {
     if (deferUntilOpen('advanced-tools')) return;
     const el = $('studio');
@@ -2757,7 +2785,7 @@
         <div class="studio-card"><h3>Side-by-side players</h3><div class="form-row"><label class="form-field">Player A<select id="compare-a">${playerOptions}</select></label><label class="form-field">Player B<select id="compare-b">${playerOptions}</select></label></div><div class="studio-actions"><button class="btn" id="compare-players" ${players.length<2?'disabled':''}>Compare</button></div></div>
         <div class="studio-card wide"><h3>Queue &amp; performance</h3><div class="health-grid"><div class="health-card"><span>Running</span><b>${fmtInt(q.running)}</b></div><div class="health-card"><span>Failed</span><b>${fmtInt(q.failed)}</b></div><div class="health-card"><span>Average duration</span><b>${fmtInt(q.average_duration_ms)} ms</b></div></div><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Duration</th></tr></thead><tbody>${queueRows || '<tr><td colspan="4" class="muted">No queue jobs yet.</td></tr>'}</tbody></table></div>
         <div class="studio-card"><h3>First-run readiness</h3><p><span class="tag ${s.ready?'ok':'warn'}">${s.ready?'ready':'attention needed'}</span></p><p>Evidence folder ${s.writable?'writable':'not writable'} · Spark ${s.spark_installed?'ready':'not found'} · ${fmtInt(s.stored_matches)} matches</p><div class="studio-actions"><button class="btn" id="show-setup">Setup guide</button></div></div>
-        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports match labels, blinded event reviews, ground-truth opportunities, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div></div>
+        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports match labels, blinded event reviews, ground-truth opportunities, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div>${lastLibraryImport ? libraryImportView(lastLibraryImport).html : ''}</div>
         <div class="studio-card"><h3>Saved investigation views</h3><div class="studio-actions">${filters.map(x=>`<button class="btn btn-sm" data-load-filter="${esc(x.filter_json)}">${esc(x.name)}</button>`).join('') || '<span class="muted">No saved filters.</span>'}</div><div class="studio-actions"><button class="btn" id="save-filter">Save current History filter</button></div></div>
         <div class="studio-card"><h3>Backup &amp; restore</h3><label class="form-field">Verified backup<select id="restore-backup">${backups.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} · ${fmtBytes(x.bytes)}</option>`).join('')}</select></label><div class="studio-actions"><button class="btn" id="backup-db-studio">Create backup</button><button class="btn" id="restore-db" ${backups.length?'':'disabled'}>Restore on restart</button></div><p class="metric-note">Restore first creates a safety backup and preserves the replaced database.</p></div>
         <div class="studio-card"><h3>Adversarial probes</h3><p>${(synth.probes||[]).map(x=>`<span class="tag" title="${esc(x.expected)}">${esc(x.id)}</span>`).join(' ')}</p><p class="metric-note">Deterministic synthetic scenarios cover legal motion, contact ambiguity, tracking loss, clock corruption, and disc-cap breaches.</p></div>
@@ -2776,20 +2804,34 @@
     }).join('')}</tbody></table></div>`;
   }
 
+  // The Regression Lab keeps two different absences apart. A tested label whose
+  // detector no longer fires is detector behaviour ("stayed quiet"). A label whose
+  // match has no current analysis on this PC was never tested: it is neither a
+  // pass nor a failure, and it is listed on its own with what to do about it.
+  function regressionHTML(r) {
+    const items = Array.isArray(r.items) ? r.items : [], untested = Array.isArray(r.no_current_analysis_items) ? r.no_current_analysis_items : [];
+    const untestedCount = Number.isFinite(r.no_current_analysis) ? r.no_current_analysis : untested.length;
+    if (!r.total && !untestedCount) return '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
+    const failed = items.filter((x) => !x.passed);
+    const label = (x) => `${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}`;
+    const where = (x, stored = true) => (stored ? `<button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button>` : `<span class="mono">${esc(x.match_id)}</span> · ${fmtInt(x.frame_index)}`);
+    const now = (x) => (x.current
+      ? `Detector fires here<span class="explain">severity ${fmtNum(x.current.severity, 2)} · confidence ${fmtNum(x.current.confidence, 2)}${x.current.observed_value ? ` · ${esc(x.current.observed_value)}` : ''}</span>`
+      : 'Detector stayed quiet<span class="explain">The match was analyzed here and no signal was raised near this frame.</span>');
+    const matchesCount = Number.isFinite(r.no_current_analysis_matches) ? r.no_current_analysis_matches : new Set(untested.map((x) => x.match_id)).size;
+    const state = (x) => (x.analysis_state === 'match_not_stored' ? 'Match not stored on this PC' : x.analysis_state === 'not_analyzed' ? 'Stored, never analyzed here' : 'No current analysis');
+    return `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div>${untestedCount ? `<div class="health-card"><span>Not tested</span><b>${fmtInt(untestedCount)}</b><small class="muted">no current analysis for ${fmtInt(matchesCount)} match${matchesCount === 1 ? '' : 'es'}</small></div>` : ''}</div>
+      ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Current analysis</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x)}</td><td>${now(x)}</td><td>${where(x)}</td></tr>`).join('')}</tbody></table></details>` : (r.total ? '<p class="summary-note regression-pass">Every tested expectation currently passes.</p>' : '<p class="summary-note">No label could be tested yet.</p>')}
+      ${untestedCount ? `<details class="sub" ${failed.length ? '' : 'open'} data-regression-untested><summary><span class="tog"></span><h3>No current analysis for this match<span class="count">${fmtInt(untestedCount)}</span></h3></summary><p class="summary-note">These labels were not tested, so they are neither passing nor failing. This is not the detector staying quiet: there is no analysis on this PC to compare them with.</p>${untested.length ? `<table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Why it was not tested</th><th>Match / frame</th></tr></thead><tbody>${untested.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${label(x)}</td><td>${esc(state(x))}${x.analysis_note ? `<span class="explain">${esc(x.analysis_note)}</span>` : ''}</td><td>${where(x, x.analysis_state !== 'match_not_stored')}</td></tr>`).join('')}</tbody></table>` : ''}</details>` : ''}
+      <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.${r.superseded_labels > 0 ? ` ${fmtInt(r.superseded_labels)} older label${r.superseded_labels === 1 ? '' : 's'} of a re-analyzed observation ${r.superseded_labels === 1 ? 'was' : 'were'} folded into the newest one, so each observation counts once.` : ''}</p>`;
+  }
   async function loadRegression() {
     if (deferUntilOpen('advanced-calibration')) return;
     const el = $('regression');
     try {
       const r = await getJSON('api/lab/regression');
       el.className = '';
-      if (!r.total) {
-        el.innerHTML = '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
-        return;
-      }
-      const failed = (r.items || []).filter((x) => !x.passed);
-      el.innerHTML = `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div></div>
-        ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}</td><td><button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button></td></tr>`).join('')}</tbody></table></details>` : '<p class="summary-note regression-pass">Every reviewed expectation currently passes.</p>'}
-        <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.</p>`;
+      el.innerHTML = regressionHTML(r);
     } catch (e) { panelError(el, 'the replay regression suite', e); }
   }
 
@@ -2825,6 +2867,24 @@
     } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
   }
 
+  // What the update card says and whether its button works, from GET api/update.
+  // Decided before the click: a refused downgrade is not "up to date", and a copy
+  // that cannot install in one click says why instead of failing afterwards.
+  function updateView(update) {
+    const u = update || {};
+    const blocked = u.install_supported === false;
+    const why = u.install_unsupported_reason || u.install_reason || '';
+    const notes = [];
+    let tag = 'up to date', tone = 'ok', button = 'Up to date';
+    if (u.error) { tag = 'check unavailable'; tone = 'bad'; button = 'Unavailable'; notes.push({ text: u.error }); }
+    else if (u.downgrade) {
+      tag = 'published release is not newer'; tone = ''; button = 'Nothing to install';
+      notes.push({ strong: 'The published Windows release is not newer than this build, so nothing will be installed.', text: u.downgrade_reason || '' });
+      notes.push({ text: 'Manual download opens that release; installing it by hand would replace this build with one that is not newer.' });
+    } else if (u.available) { tag = 'update available'; tone = 'warn'; button = blocked ? 'One-click install unavailable' : 'Install update'; }
+    if (blocked && !u.downgrade) notes.push({ strong: u.available ? 'One-click install is not available on this copy.' : '', text: `${u.available ? '' : 'One-click install is not available on this copy: '}${why || 'The engine gave no reason.'}${u.available ? ' The verified installer can still be downloaded and run manually.' : ''}` });
+    return { tag, tone, button, notes, canInstall: !!(u.available && !u.downgrade && u.install_supported === true && !u.error) };
+  }
   async function loadAutomation(forceUpdate = false) {
     const el = $('automation');
     try {
@@ -2834,14 +2894,13 @@
       let update = { error: 'Automatic checks are off.', available: false, current_version: '—' };
       if (settings.automatic_update_checks || forceUpdate) update = await getJSON('api/update');
       const suggestions = settings.suggested_watch_folders || [];
-      const canInstall = !!(update.available && update.install_supported && !update.error);
-      const installNote = update.install_reason || (update.available ? 'The verified installer can still be downloaded and run manually.' : '');
+      const uv = updateView(update);
       el.className = ''; el.removeAttribute('aria-busy');
       el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay and native .tape files are detected recursively and reanalyzed once. Native captures must be complete. The folder and file fingerprints stay on this PC.</p>
         <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
         <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
         <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>
-        <div class="lab-card"><h3>Windows updates</h3><p class="help">NEVR checks the last successfully packaged Windows release. One click downloads the installer, verifies its revision, size, and SHA-256, closes NEVR cleanly, updates all five tools, and reopens the app. Your database, evidence, labels, and settings stay in place.</p><p><span class="tag ${update.available ? 'warn' : update.error ? 'bad' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}${update.last_install_error ? `<p class="status err">Last install failed safely: ${esc(update.last_install_error)}</p>` : ''}${installNote ? `<p class="summary-note">${esc(installNote)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="install-update" class="btn" ${canInstall ? '' : 'disabled'}>${update.available ? 'Install update' : update.error ? 'Unavailable' : 'Up to date'}</button><button id="open-update" class="btn btn-text">Manual download</button></div></div>
+        <div class="lab-card"><h3>Windows updates</h3><p class="help">NEVR checks the last successfully packaged Windows release. One click downloads the installer, verifies its revision, size, and SHA-256, closes NEVR cleanly, updates all five tools, and reopens the app. Your database, evidence, labels, and settings stay in place.</p><p><span class="tag ${uv.tone}">${esc(uv.tag)}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.last_install_error ? `<p class="status err">Last install failed safely: ${esc(update.last_install_error)}</p>` : ''}${uv.notes.map((note) => `<p class="summary-note" data-update-note>${note.strong ? `<strong>${esc(note.strong)}</strong> ` : ''}${esc(note.text)}</p>`).join('')}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="install-update" class="btn" ${uv.canInstall ? '' : 'disabled'}>${esc(uv.button)}</button><button id="open-update" class="btn btn-text">Manual download</button></div></div>
         <div class="lab-card"><h3>Support bundle</h3><p class="help">Creates a ZIP with app health and pseudonymized aggregate diagnostics. It excludes raw ticks, frames, the database, player identities, and your watch-folder path.</p><button id="support-bundle" class="btn">Create support bundle</button></div></div>`;
     } catch (e) { panelError(el, 'automation and recovery settings', e); }
   }
@@ -3243,7 +3302,7 @@
     if(e.target.closest('#compare-players')){try{const result=await getJSON(`api/players/compare?a=${encodeURIComponent($('compare-a').value)}&b=${encodeURIComponent($('compare-b').value)}`);openLabDialog('Player comparison',`<div class="team-grid">${result.players.map(p=>`<div class="team-card"><div class="team-title"><strong>${esc(p.name||p.player_id)}</strong></div><div class="team-stats"><div><span>Matches</span><b>${fmtInt(p.matches)}</b></div><div><span>Signals</span><b>${fmtInt(p.events)}</b></div><div><span>Throws</span><b>${fmtInt(p.throws)}</b></div><div><span>Fastest</span><b>${fmtNum(p.max_throw_speed,2)} m/s</b></div></div></div>`).join('')}</div><p class="metric-note">${esc(result.notice)}</p>`)}catch(err){setStatus(`Comparison failed: ${err.message}`,'err')}return}
     if(e.target.closest('#save-filter')){const name=prompt('Name this History filter preset:');if(!name)return;const filter={search:$('history-search').value,detector:$('history-detector').value,label:$('history-label').value,sort:$('history-sort').value,flagged:$('history-flagged').checked};try{await postJSON('api/filters',{name,filter_json:JSON.stringify(filter)});setStatus('Saved History filter preset.','ok');await loadStudio()}catch(err){setStatus(`Could not save filter: ${err.message}`,'err')}return}
     const loadFilter=e.target.closest('button[data-load-filter]');if(loadFilter){try{const f=JSON.parse(loadFilter.dataset.loadFilter);$('history-search').value=f.search||'';$('history-detector').value=f.detector||'';$('history-label').value=f.label||'';$('history-sort').value=f.sort||'newest';$('history-flagged').checked=!!f.flagged;renderHistory();$('h-history').scrollIntoView({behavior:reduced?'auto':'smooth'})}catch(err){setStatus('Saved filter is invalid.','err')}return}
-    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text())),imported=Object.values(result.imported||{}).reduce((a,b)=>a+b,0),rejected=Object.values(result.rejected||{}).reduce((a,b)=>a+b,0);setStatus(result.ok?`Imported ${imported} evidence records.`:`Imported ${imported}; rejected ${rejected}. ${result.first_error||'Inspect the library for invalid or overlapping records.'}`,result.ok?'ok':'err');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text()));lastLibraryImport=result;const view=libraryImportView(result);setStatus(view.status,view.tone);refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
     if(e.target.closest('#backup-db-studio')){try{const result=await postJSON('api/maintenance/backup');setStatus(`Backup created: ${result.path}`,'ok');await loadStudio()}catch(err){setStatus(`Backup failed: ${err.message}`,'err')}return}
     if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok');loadRestoreState()}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
     if (e.target.closest('#run-regression')) { await loadRegression(); return; }
