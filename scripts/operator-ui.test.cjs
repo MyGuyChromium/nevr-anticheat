@@ -1424,6 +1424,9 @@ function blindMatch() {
 }
 function blindUI(blind) {
   const context = run(section('  function assessmentFilter(', '  function diagBlock('), {
+    // The sliced region may carry blocks that register page-level listeners at load (the match timeline does);
+    // a no-op document keeps this slice loadable whichever order the UI pull requests merge in.
+    document: { addEventListener() {}, querySelectorAll: () => [], activeElement: null },
     blindReview: blind, revealedEvents: new Set(), EVENT_LIMIT: 50, fmtInt: String, fmtNum: String, fmtClock: String, fmtBytes: String,
     who: (name, id) => `${escape(name)} <code>${escape(id)}</code>`, team: escape, lvlName: escape,
     meter: (value, tone) => `<meter data-tone="${tone || ''}">${value}</meter>`, sevBadge: label => `<b>${escape(label)}</b>`, badge: level => `<b>${escape(level)}</b>`,
@@ -1630,6 +1633,7 @@ test('switching blinded review on or off re-renders every identity surface and k
   const context = run(source, {
     blindReview: false, prefs: {}, savePrefs: () => calls.push('savePrefs'), revealedEvents: new Set(['ev-mid']), views: [m], viewState: [state], fmtInt: String,
     document: { querySelectorAll: () => [root], querySelector: selector => selector === '[data-review-overview="0"]' ? slots.overview : selector === '[data-match-cases="0"]' ? slots.cases : null },
+    renderTimeline: () => {}, // present once the match timeline is merged; the blind toggle redraws it
     noteMatchRendered: match => rendered.push({ id: match.match_id, blindAtCall: context.blindReview }),
     eventsTable: (_m, _idx, all, detector) => `events(${detector})`, playersTable: (_m, detector) => `players(${detector})`, reviewOverview: (_m, detector) => `overview(${detector})`,
     assessmentFilter: () => `filter(blind=${context.blindReview})`, casesBlock: () => `cases(blind=${context.blindReview})`,
