@@ -286,3 +286,40 @@ func TestAnalyzeStoresPhasesAndOlderSummariesAreRebuilt(t *testing.T) {
 		t.Fatalf("stored document was not kept: version %d phases %d map %q", loaded.Version, len(loaded.Phases), loaded.Map)
 	}
 }
+
+// A stored older summary whose rebuild fails for a reason other than missing
+// raw ticks is still served, and the failed rebuild is not attempted again by
+// this engine (it would re-read every raw tick on each reopen of the match).
+func TestOlderSummaryIsServedWhenItsRebuildFails(t *testing.T) {
+	ctx := context.Background()
+	engine := newTestEngine(t)
+	result, err := engine.AnalyzeFile(ctx, syntheticReplay, false)
+	if err != nil || result.PersistError() != nil {
+		t.Fatalf("analysis failed: %v / %v", err, result.PersistError())
+	}
+	old := *result.MatchSummary
+	old.Version, old.Phases = 1, nil
+	oldDoc, err := json.Marshal(&old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Store().StoreMatchSummaryJSON(ctx, old.Meta(), oldDoc); err != nil {
+		t.Fatal(err)
+	}
+	// RebuildSummary refuses legacy ticks for a context that claims a native
+	// capture: a rebuild failure that has nothing to do with missing ticks.
+	claimsTape := *result.MatchCtx
+	claimsTape.Source = "tape"
+	if _, err := RebuildSummary(ctx, engine.Store(), &claimsTape); err == nil {
+		t.Fatal("setup: the rebuild was expected to fail for this context")
+	}
+	loaded, err := engine.LoadMatchSummary(ctx, &claimsTape, nil, nil)
+	if err != nil || loaded.Version != 1 || len(loaded.Players) != len(old.Players) {
+		t.Fatalf("stored summary was not served after a failed rebuild: %+v, %v", loaded, err)
+	}
+	// Remembered: even the context that could be rebuilt is not retried.
+	loaded, err = engine.LoadMatchSummary(ctx, result.MatchCtx, nil, nil)
+	if err != nil || loaded.Version != 1 || loaded.Phases != nil {
+		t.Fatalf("failed rebuild was retried: version %d, %d phases, %v", loaded.Version, len(loaded.Phases), err)
+	}
+}
