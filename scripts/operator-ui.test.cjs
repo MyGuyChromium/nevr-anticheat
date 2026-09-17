@@ -389,7 +389,9 @@ test('the Regression Lab keeps "no current analysis for this match" apart from "
   assert.match(attention, /Needs attention<span class="count">2</);
   assert.match(attention, /<b>Detector stayed quiet\.<\/b> The match was analyzed here/);
   assert.match(attention, /<b>Detector fires here\.<\/b> Severity 0\.72 · confidence 0\.80 · &lt;b&gt;21 m\/s&lt;\/b&gt;/);
-  assert.equal((attention.match(/<th>/g) || []).length, 4, 'the lab card is half-width: four columns, as before');
+  assert.doesNotMatch(html, /<table|<th>/, 'the lab card is half-width: entries are a list, so the match button is never pushed out of the card');
+  assert.equal((attention.match(/<li>/g) || []).length, 2);
+  assert.match(attention, /data-open="SYN-1">SYN-1 · 300</);
   assert.doesNotMatch(attention, /SYN-AWAY|SYN-STALE|No current analysis/, 'an untested label is never listed as a failing one');
   assert.match(untested, /No current analysis for this match<span class="count">2</);
   assert.match(untested, /neither passing nor failing\. This is not the detector staying quiet/);

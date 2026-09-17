@@ -11,6 +11,8 @@
 //   - no visible report-table row is taller than its per-table budget,
 //   - the first column of the wide report tables stays pinned while scrolling,
 //   - the physics inspector's per-frame rows stay compact,
+//   - with the "Larger" text size the match timeline's player names still end
+//     before the plot begins and the page still does not overflow,
 //   - the top navigation follows the section being read.
 // It runs at 1280 and 1440 px wide, in the light and the dark theme, plus one
 // 1024 px pass where the wide tables must scroll inside their container, which
@@ -282,6 +284,21 @@ async function main() {
       await shot(`stats-${tag}`, '#results details.match .stat-tables');
       await shot(`signals-${tag}`, '#results details.match .assessment');
       await shot(`detections-${tag}`, '#results details.match .events');
+
+      // Larger text: SVG text is sized in rem, so the timeline layout must make room for it.
+      const setTextSize = (value) => evaluate(`(() => { const s = document.getElementById('pref-text-size'); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      await setTextSize('large');
+      await sleep(400);
+      const large = await evaluate(`(() => { const f = document.querySelector('#results details.match figure.tl'), svg = f && f.querySelector('svg.tl-svg'); if (!svg) return null; const names = [...svg.querySelectorAll('.tl-name')], base = svg.querySelector('.tl-absent'); return { names: names.length, fontPx: names.length ? parseFloat(getComputedStyle(names[0]).fontSize) : 0, widestName: Math.ceil(Math.max(0, ...names.map((n) => { const b = n.getBBox(); return b.x + b.width; }))), plotStart: base ? +base.getAttribute('x1') : 0, overflow: document.documentElement.scrollWidth - window.innerWidth }; })()`);
+      await setTextSize('normal');
+      await sleep(200);
+      console.log('  larger text ' + JSON.stringify(large));
+      if (!large || !large.names) violations.push(`[${tag}] no match timeline with player lanes was rendered, so larger text was not measured`);
+      else {
+        if (large.fontPx <= 12) violations.push(`[${tag}] timeline player names stay ${large.fontPx} px with the Larger text size (expected them to grow)`);
+        if (large.widestName > large.plotStart - 4) violations.push(`[${tag}] with larger text a timeline player name ends at ${large.widestName} px but the plot starts at ${large.plotStart} px`);
+        if (large.overflow > 1) violations.push(`[${tag}] with larger text the page overflows horizontally by ${large.overflow} px`);
+      }
 
       // Scroll-spy: reading the results must mark a navigation entry other than Overview.
       await evaluate(`document.getElementById('results-block').scrollIntoView({ block: 'start' })`);
