@@ -403,7 +403,7 @@ test('appearance accepts only supported preferences and honors system reduced mo
 
 test('notifications coalesce identical messages, escape text and stay bounded', () => {
   const get = nodes(), notices = [];
-  const context = run(section('  function recordNotice(', "  $('history-search').value"), {
+  const context = run(section('  function recordNotice(', '  let blindReview = false;'), {
     $: get, notices, fmtAbs: () => 'time',
   });
   context.recordNotice('<img src=x onerror=alert(1)>', 'err');
@@ -690,7 +690,7 @@ test('empty timeline provides an intentional state, not an empty SVG', () => {
 });
 
 function noteUI(options = {}) {
-  const get = nodes(), storage = new Map(), writes = [], notices = [], buttons = [{ disabled: false }, { disabled: false }];
+  const get = nodes(), storage = new Map(), writes = [], notices = [], mirrored = [], buttons = [{ disabled: false }, { disabled: false }];
   let nextID = 0;
   get('note-body').value = 'A synthetic note awaiting confirmation';
   get('note-frame').value = '-1';
@@ -699,6 +699,9 @@ function noteUI(options = {}) {
     activeInvestigationMatch: 'm1', activeInvestigationData: { notes: [] },
     operatorState: { health: { database_path: 'synthetic-evidence-store' } }, location: { pathname: '/synthetic-session/' },
     crypto: { randomUUID: () => `new-draft-${++nextID}` }, fmtInt: String,
+    // The api/ui-prefs mirror is covered by its own tests; here it is absent (404 fallback).
+    serverNoteDraft: matchID => options.serverDraft?.(matchID) ?? null,
+    mirrorNoteDraft: draft => { mirrored.push({ ...draft }); return options.mirrorStores === true; },
     document: { querySelectorAll: () => buttons },
     localStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -709,7 +712,7 @@ function noteUI(options = {}) {
     getJSON: async () => options.load ? options.load() : { notes: [] },
     recordNotice: (message, tone) => notices.push({ message, tone }),
   });
-  return { context, get, storage, writes, notices, buttons };
+  return { context, get, storage, writes, notices, mirrored, buttons };
 }
 
 test('note save guards duplicate clicks and waits for matching backend confirmation', async () => {
@@ -1109,4 +1112,166 @@ test('playlist keyboard navigation focuses a real control without launching it',
   assert.match(ui.focused.at(-1), /data-playlist-index="1"/);
   assert.equal(ui.clicks(), 0);
   assert.equal(ui.selected.length, 0);
+});
+
+// ---- report formatting, window lifecycle and stored preferences -------------
+
+test('match duration rounds the total before splitting so seconds never read 60', () => {
+  const { fmtDur } = run(section('  const fmtDur =', '  const fmtClock =') + '\nthis.fmtDur = fmtDur;');
+  assert.equal(fmtDur(1199.97), '20 min');
+  assert.equal(fmtDur(1199.4), '19 min 59 s');
+  assert.equal(fmtDur(59.6), '1 min');
+  assert.equal(fmtDur(61.2), '1 min 1 s');
+  assert.equal(fmtDur(24), '24 s');
+  assert.equal(fmtDur(0), '—');
+  for (let sec = 0.25; sec < 7300; sec += 0.37) assert.doesNotMatch(fmtDur(sec), /\b60 s/);
+});
+
+function prefsStore(options = {}) {
+  const requests = [], timers = [], storage = new Map(Object.entries(options.storage || {}));
+  const context = run(section('  const uiStore =', '  const savePrefs =') + '\nthis.uiStore = uiStore;', {
+    prefs: options.prefs || {}, prefKey: 'nevr-desktop-preferences-v1', TextEncoder, AbortSignal, Date: { now: () => 5000 },
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    fetch: async (url, init = {}) => { requests.push({ url, method: init.method || 'GET', body: init.body, keepalive: init.keepalive }); return options.respond(url, init); },
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; }, clearTimeout: () => {},
+  });
+  return { context, requests, timers, storage };
+}
+
+test('an engine without api/ui-prefs leaves preferences in localStorage and is never written to', async () => {
+  const ui = prefsStore({ prefs: { theme: 'light' }, respond: () => ({ ok: false, status: 404, json: async () => ({}) }) });
+  assert.equal(await ui.context.loadUIPrefs(), false);
+  assert.equal(ui.context.uiStore.available, false);
+  ui.context.queuePrefsSave();
+  assert.equal(ui.context.mirrorNoteDraft({ id: 'd1', matchID: 'm1', body: 'kept locally', frame: 4 }), false);
+  await ui.context.pushUIPrefs(true);
+  assert.deepEqual(ui.requests.map(r => r.method), ['GET']);
+  assert.equal(ui.timers.length, 0);
+  assert.equal(ui.context.prefs.theme, 'light');
+});
+
+test('stored preferences and unsent drafts survive a new origin; an unreadable store is never overwritten', async () => {
+  const stored = { schema: 'nevr-ui-prefs/v1', updated_at: 9000, prefs: { theme: 'light', blindReview: true, updatedAt: 9000 },
+    note_drafts: { m1: { id: 'draft-1', matchID: 'm1', body: 'x'.repeat(9000), frame: 12, at: 1 }, wrong: { id: 'draft-2', matchID: 'other', body: 'mismatched key', frame: 1 }, broken: 'not an object' } };
+  const ui = prefsStore({ respond: () => ({ ok: true, status: 200, json: async () => stored }) });
+  assert.equal(await ui.context.loadUIPrefs(), true);
+  assert.equal(ui.context.prefs.theme, 'light');
+  assert.equal(ui.context.prefs.blindReview, true);
+  assert.equal(JSON.parse(ui.storage.get('nevr-desktop-preferences-v1')).theme, 'light');
+  const draft = ui.context.serverNoteDraft('m1');
+  assert.equal(draft.id, 'draft-1');
+  assert.equal(draft.body.length, 8000);
+  assert.equal(draft.frame, 12);
+  assert.equal(ui.context.serverNoteDraft('wrong'), null);
+  assert.equal(ui.context.serverNoteDraft('broken'), null);
+  assert.equal(ui.requests.length, 1, 'reading the newer stored copy writes nothing back');
+
+  const failing = prefsStore({ prefs: { theme: 'dark' }, respond: () => ({ ok: false, status: 503, json: async () => ({}) }) });
+  assert.equal(await failing.context.loadUIPrefs(), false);
+  failing.context.queuePrefsSave();
+  await failing.context.pushUIPrefs();
+  assert.deepEqual(failing.requests.map(r => r.method), ['GET']);
+});
+
+test('newer local preferences seed the store, and the payload stays under the 64 KiB contract', async () => {
+  const ui = prefsStore({ prefs: { theme: 'system', updatedAt: 9000 }, respond: (_url, init) => init.method === 'PUT' ? { ok: true, status: 204 } : { ok: true, status: 200, json: async () => ({ updated_at: 10, prefs: { theme: 'dark' } }) } });
+  assert.equal(await ui.context.loadUIPrefs(), false);
+  assert.equal(ui.context.prefs.theme, 'system');
+  assert.equal(ui.timers.at(-1).delay, 400);
+  for (let i = 0; i < 9; i++) assert.equal(ui.context.mirrorNoteDraft({ id: `d${i}`, matchID: `m${i}`, body: 'é'.repeat(8000), frame: i }), true);
+  assert.equal(ui.context.mirrorNoteDraft({ matchID: 'm8', body: '   ' }), true, 'an emptied draft is removed from the store');
+  await ui.timers.at(-1).callback();
+  const put = ui.requests.at(-1);
+  assert.equal(put.method, 'PUT');
+  assert.equal(put.url, 'api/ui-prefs');
+  assert.ok(Buffer.byteLength(put.body) <= 64 * 1024, `payload ${Buffer.byteLength(put.body)} bytes`);
+  const body = JSON.parse(put.body);
+  assert.equal(body.schema, 'nevr-ui-prefs/v1');
+  assert.equal(body.prefs.theme, 'system');
+  assert.ok(Object.keys(body.note_drafts).length >= 1 && !('m8' in body.note_drafts));
+  assert.equal(ui.context.uiStore.dirty, false);
+});
+
+test('note drafts fall back to the stored copy and report retention honestly', () => {
+  const ui = noteUI({ serverDraft: id => id === 'm9' ? { id: 'stored-draft', matchID: 'm9', body: 'typed before the restart', frame: 3 } : null });
+  assert.equal(ui.context.readNoteDraft('m9').id, 'stored-draft');
+  assert.equal(ui.context.readNoteDraft('m2').body, '');
+  assert.equal(ui.context.persistNoteDraft(), true);
+  assert.equal(ui.mirrored.at(-1).matchID, 'm1');
+  const storeOnly = noteUI({ storageFails: true, mirrorStores: true });
+  assert.equal(storeOnly.context.persistNoteDraft(), true, 'the stored copy alone still retains the draft');
+});
+
+function lifecycle(respond, stopped = false) {
+  const requests = [], timers = [], beacons = [], listeners = {}, flushed = [];
+  const context = run(section('  let heartbeatEvery = 5000;', '  probeConnection();'), {
+    intentionallyStopped: stopped,
+    fetch: async (url, init) => { requests.push({ url, method: init.method }); return respond(); },
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
+    addEventListener: (type, handler) => { listeners[type] = handler; },
+    navigator: { sendBeacon: url => { beacons.push(url); return true; } },
+    pushUIPrefs: keepalive => flushed.push(keepalive),
+  });
+  return { context, requests, timers, beacons, listeners, flushed };
+}
+
+test('heartbeat posts every five seconds, tolerates an engine without the route and signals leaving', async () => {
+  const ok = lifecycle(() => ({ status: 204 }));
+  await ok.context.heartbeat();
+  assert.deepEqual(ok.requests, [{ url: 'api/heartbeat', method: 'POST' }]);
+  assert.equal(ok.timers.at(-1).delay, 5000);
+  ok.listeners.pagehide();
+  assert.deepEqual(ok.beacons, ['api/heartbeat?leaving=1']);
+  assert.deepEqual(ok.flushed, [true]);
+
+  const missing = lifecycle(() => ({ status: 404 }));
+  await missing.context.heartbeat();
+  assert.equal(missing.timers.at(-1).delay, 60000, 'a 404 is ignored and only re-asked once a minute');
+
+  const offline = lifecycle(() => { throw new Error('connection refused'); });
+  await offline.context.heartbeat();
+  assert.equal(offline.timers.at(-1).delay, 5000);
+
+  const stopped = lifecycle(() => ({ status: 204 }), true);
+  await stopped.context.heartbeat();
+  stopped.listeners.pagehide();
+  assert.equal(stopped.requests.length + stopped.beacons.length + stopped.timers.length, 0, 'Quit already stopped the engine');
+});
+
+test('closed advanced sections fetch nothing and load once opened', () => {
+  const sections = { 'advanced-tools': { open: false }, 'advanced-calibration': { open: true } };
+  const context = run(section('  const lazyStale =', '  async function loadCalibration(') + '\nthis.lazyStale = lazyStale;', { $: id => sections[id] });
+  context.lazyStale['advanced-tools'] = false;
+  assert.equal(context.deferUntilOpen('advanced-tools'), true);
+  assert.equal(context.lazyStale['advanced-tools'], true, 'a refresh while closed marks the section stale');
+  assert.equal(context.deferUntilOpen('advanced-calibration'), false);
+  assert.match(script, /async function loadStudio\(\) \{\s*if \(deferUntilOpen\('advanced-tools'\)\) return;/);
+  assert.match(script, /async function loadCalibration\(\) \{\s*if \(deferUntilOpen\('advanced-calibration'\)\) return;/);
+  assert.match(script, /async function loadRegression\(\) \{\s*if \(deferUntilOpen\('advanced-calibration'\)\) return;/);
+  assert.match(script, /addEventListener\('toggle'/);
+});
+
+test('storage measurements are requested at most once a minute by panel refreshes', () => {
+  let now = 1000000, loads = 0;
+  const timers = [];
+  const context = run(section('  const HEALTH_MIN_INTERVAL =', '  // loadCalibration, loadRegression'), {
+    Date: { now: () => now }, loadHealth: () => { loads++; },
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; }, clearTimeout: () => {},
+  });
+  context.refreshHealth();
+  assert.equal(loads, 1);
+  now += 20000; context.refreshHealth();
+  assert.equal(loads, 1);
+  assert.equal(timers.at(-1).delay, 40000);
+  now += 40000; timers.at(-1).callback();
+  assert.equal(loads, 2);
+});
+
+test('navigation offers a Results entry only while results exist and follows the scroll position', () => {
+  const markup = page.slice(page.indexOf('<body>'), page.indexOf('<script>'));
+  assert.match(markup, /<a href="#h-results" id="nav-results" hidden>Results<\/a>/);
+  assert.equal((markup.match(/aria-current="location"/g) || []).length, 1);
+  assert.match(script, /new IntersectionObserver\(/);
+  assert.match(script, /\$\('nav-results'\)\.hidden = false/);
+  assert.match(script, /\$\('nav-results'\)\.hidden = true/);
 });
