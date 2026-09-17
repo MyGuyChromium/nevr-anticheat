@@ -10,6 +10,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/pipeline"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
 )
 
 type auditPrevious struct {
@@ -129,6 +130,12 @@ func writePhysicsAudit(replayPath, outputPath string) (rows int, err error) {
 				ff(ps.LeftHandSpeed), ff(ps.RightHandSpeed), ff(ps.LeftHandRelativeSpeed), ff(ps.RightHandRelativeSpeed),
 				ff(ps.LeftWristAngularRate), ff(ps.RightWristAngularRate), fb(frame.HasPossession), ff(discSpeed), fb(discHeld), discPossessor,
 				fb(releaseDetected), releaseHand, ff(releaseSpeed), ff(engineThrowSpeed), ff(frame.EstimatedPingMs), frame.GamePhase,
+			}
+			// The match id, player id, team, possessor and game phase come
+			// from the recording, which is untrusted: neutralise spreadsheet
+			// formulas in every cell (plain numbers pass through unchanged).
+			for i := range record {
+				record[i] = replay.CSVSafeCell(record[i])
 			}
 			if err := cw.Write(record); err != nil {
 				return err
