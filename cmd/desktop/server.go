@@ -68,6 +68,8 @@ type server struct {
 	healthBackfills healthBackfills
 	storageMu       sync.Mutex
 	storageStats    map[string]matchStorageEntry
+	heartbeat       *heartbeatWatchdog
+	uiPrefs         *uiPrefsStore
 }
 
 func newServer(engine *replay.Engine, token string) *server {
@@ -86,10 +88,15 @@ func newServer(engine *replay.Engine, token string) *server {
 	}
 	s.runtime = newDesktopRuntime(engine, s.quit)
 	s.runtime.analyzeMu = &s.analyzeMu
+	s.heartbeat = newHeartbeatWatchdog(defaultHeartbeatTimings, nil, s.backgroundWorkActive)
+	s.uiPrefs = &uiPrefsStore{path: filepath.Join(filepath.Dir(engine.Store().Path()), uiPrefsFileName)}
 	p := "/" + token
 	s.mux.HandleFunc("GET "+p+"/{$}", s.handleIndex)
 	s.mux.HandleFunc("POST "+p+"/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("POST "+p+"/api/analyze/cancel", s.handleCancelAnalyze)
+	s.mux.HandleFunc("POST "+p+"/api/heartbeat", s.handleHeartbeat)
+	s.mux.HandleFunc("GET "+p+"/api/ui-prefs", s.handleGetUIPrefs)
+	s.mux.HandleFunc("PUT "+p+"/api/ui-prefs", s.handlePutUIPrefs)
 	s.mux.HandleFunc("GET "+p+"/api/status", s.handleStatus)
 	s.mux.HandleFunc("GET "+p+"/api/health", s.handleHealth)
 	s.mux.HandleFunc("GET "+p+"/api/calibration", s.handleCalibration)
@@ -176,7 +183,13 @@ func newServer(engine *replay.Engine, token string) *server {
 }
 
 // Handler is the routed handler.
-func (s *server) Handler() http.Handler { return desktopSafety(s.requests.wrap(s.mux)) }
+func (s *server) Handler() http.Handler {
+	routed := http.Handler(s.mux)
+	if s.heartbeat != nil {
+		routed = s.heartbeat.track(routed)
+	}
+	return desktopSafety(s.requests.wrap(routed))
+}
 
 // Done is closed when /quit was requested.
 func (s *server) Done() <-chan struct{} { return s.quit }
