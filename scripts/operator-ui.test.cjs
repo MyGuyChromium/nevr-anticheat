@@ -357,7 +357,7 @@ test('failed queue fetch does not advertise zero pending cases', async () => {
   assert.equal(errors, 1);
 });
 
-function historyUI(matches, historyPage = 0) {
+function historyUI(matches, historyPage = 0, globals = {}) {
   const get = nodes(), preferences = { lastMatch: 'match-16' };
   get('history-sort').value = 'oldest';
   const source = section('  function renderHistory(', '  async function loadHistory(');
@@ -365,6 +365,7 @@ function historyUI(matches, historyPage = 0) {
     $: get, historyMatches: matches, historyPage, HISTORY_PAGE_SIZE: 15, prefs: preferences,
     savePrefs: () => {}, fmtInt: String, fmtStart: String, fmtDur: String, timeAgo: escape, labelName: escape,
     screenState: (title, message, actions) => `${escape(title)} ${escape(message)} ${actions}`,
+    blindReview: false, views: [], activeInvestigationData: null, exposeMatch: () => {}, ...globals,
   });
   return { context, get, preferences };
 }
@@ -1017,7 +1018,7 @@ test('new investigation controls stay disabled with reason during an earlier not
     selectedIncidentIndex: 0, noteSavePending: true, noteDraft: null, prefs: {}, blindReview: false,
     readNoteDraft: matchID => ({ matchID, body: 'Current draft', frame: -1 }),
     savePrefs: () => {}, fmtInt: String, fmtNum: String, who: escape, timeAgo: escape,
-    speedChart: () => '', selectedIncidentDetails: () => '', renderNotes: () => 'Saved rows',
+    speedChart: () => '', selectedIncidentDetails: () => '', renderNotes: () => 'Saved rows', noteMatchRendered: () => {},
   });
   const html = context.renderInvestigation({ match: { match_id: 'new-match' }, incidents: [], notes: [{}, {}] });
   assert.match(html, /data-add-note="new-match" disabled aria-describedby="note-status"/);
@@ -1405,4 +1406,250 @@ test('navigation offers a Results entry only while results exist and follows the
   assert.match(script, /new IntersectionObserver\(/);
   assert.match(script, /\$\('nav-results'\)\.hidden = false/);
   assert.match(script, /\$\('nav-results'\)\.hidden = true/);
+});
+
+// ---- blinded review ---------------------------------------------------------
+// Synthetic identifiers only. Every string below that must stay hidden is unique,
+// so a single leak anywhere in the rendered markup is caught by name.
+const HIDDEN = ['THROW_001', 'ZZ_SECRET_777', 'Hidden detector name', '9.9.9-secret', 'observed-secret', 'explanation-secret', 'expected-secret',
+  'critical', 'shadow', 'action_worthy', 'score 91', 'Ban recommended', 'strongest', 'data-replay-event', 'data-physics-event', 'diagnostic/event'];
+function blindMatch() {
+  const event = (id, frame, detector, extra = {}) => ({ event_id: id, detector_id: detector, detector_name: 'Hidden detector name', detector_version: '9.9.9-secret',
+    player_id: 'player-a', player_name: 'Synthetic Player', frame_index: frame, frame_range_start: frame, frame_range_end: frame + 2, timestamp: frame / 30,
+    severity: 0.2, severity_label: 'low', confidence: 0.5, observed_value: 'observed-secret', explanation: 'explanation-secret', expected_range: 'expected-secret',
+    is_shadow: false, merged_count: 3, ...extra });
+  return { match_id: 'synthetic-match', players: [{ player_id: 'player-a', coverage: { version: 1, detectors: [{ detector_id: 'ZZ_SECRET_777', enabled: true }] } }],
+    events: [event('ev-late', 900, 'THROW_001', { severity: 0.99, severity_label: 'critical' }), event('ev-early', 30, 'ZZ_SECRET_777', { is_shadow: true }), event('ev-mid', 400, 'THROW_001')],
+    cases: [{ case_id: 'case-1', player_id: 'player-a', player_name: 'Synthetic Player', level: 'action_worthy', suspicion_score: 91, recommended_action: 'Ban recommended', status: 'pending' }] };
+}
+function blindUI(blind) {
+  const context = run(section('  function assessmentFilter(', '  function diagBlock('), {
+    blindReview: blind, revealedEvents: new Set(), EVENT_LIMIT: 50, fmtInt: String, fmtNum: String, fmtClock: String, fmtBytes: String,
+    who: (name, id) => `${escape(name)} <code>${escape(id)}</code>`, team: escape, lvlName: escape,
+    meter: (value, tone) => `<meter data-tone="${tone || ''}">${value}</meter>`, sevBadge: label => `<b>${escape(label)}</b>`, badge: level => `<b>${escape(level)}</b>`,
+    strongestPlayerEvent: m => m.events[0], replayButton: (m, e, label) => `<button data-replay-event="${escape(e.event_id)}">${escape(label)}</button>`,
+  });
+  const render = (m, detectorID = '') => context.assessmentFilter(m, 0) + context.eventsTable(m, 0, false, detectorID) + context.casesBlock(m);
+  return { context, render };
+}
+
+test('blinded match view names no detector, severity, ranking or case conclusion anywhere', () => {
+  const m = blindMatch();
+  const open = blindUI(false).render(m);
+  for (const secret of HIDDEN) assert.ok(open.includes(secret), `the unblinded view shows "${secret}", so the blinded assertion below has power`);
+  assert.match(open, /<select id="cheat-filter-0"/);
+
+  for (const detectorID of ['', 'THROW_001', 'ZZ_SECRET_777']) {
+    const html = blindUI(true).render(m, detectorID);
+    for (const secret of HIDDEN) assert.ok(!html.includes(secret), `blinded view leaks "${secret}" (filter "${detectorID}")`);
+    assert.doesNotMatch(html, /<select|<option/);
+    assert.match(html, /Detector filter concealed during blinded review · 3 observations/);
+    // A stale or forged detector filter cannot narrow concealed rows to one detector.
+    assert.equal((html.match(/data-event-row=/g) || []).length, 3);
+    // Match order, not "strongest first".
+    assert.ok(html.indexOf('data-event-row="ev-early"') < html.indexOf('data-event-row="ev-mid"'));
+    assert.ok(html.indexOf('data-event-row="ev-mid"') < html.indexOf('data-event-row="ev-late"'));
+    // The clip is requested by frame: the engine names event clips after the detector.
+    assert.match(html, /data-replay-match="synthetic-match" data-replay-frame="30"/);
+    assert.match(html, /Review cases, levels, scores and recommended actions are concealed/);
+    assert.doesNotMatch(html, /case-1/);
+  }
+});
+
+test('revealing one observation unblinds that row only', () => {
+  const ui = blindUI(true), m = blindMatch();
+  ui.context.revealedEvents.add('ev-mid');
+  const html = ui.context.eventsTable(m, 0, false);
+  const rows = html.split('<tbody class="incident">').slice(1).map(row => row.split('</tbody>')[0]);
+  assert.equal(rows.length, 3);
+  assert.match(rows[1], /data-event-row="ev-mid"/);
+  assert.match(rows[1], /THROW_001/);
+  assert.match(rows[1], /data-replay-event="ev-mid"/);
+  assert.doesNotMatch(rows[1], /recorded as blinded/);
+  for (const row of [rows[0], rows[2]]) {
+    for (const secret of HIDDEN) assert.ok(!row.includes(secret), `concealed row leaks ${secret}`);
+    assert.match(row, /Decision will be recorded as blinded\./);
+  }
+});
+
+test('a label is recorded as blind only if this session never showed that match unblinded', () => {
+  const m = blindMatch();
+  const fresh = blindUI(true);
+  fresh.context.noteMatchRendered(m);
+  assert.equal(fresh.context.blindEligible('ev-early'), true);
+  fresh.context.revealedEvents.add('ev-early');
+  assert.equal(fresh.context.blindEligible('ev-early'), false);
+  assert.equal(fresh.context.blindEligible('ev-mid'), true);
+
+  // Seen unblinded first, then blinded review switched on: rows are concealed again, labels are not blind.
+  const seen = blindUI(false);
+  seen.context.noteMatchRendered(m);
+  seen.context.blindReview = true;
+  seen.context.revealedEvents.clear();
+  for (const e of m.events) assert.equal(seen.context.blindEligible(e.event_id), false);
+  const html = seen.context.eventsTable(m, 0, false);
+  for (const secret of HIDDEN) assert.ok(!html.includes(secret), `re-concealed view leaks ${secret}`);
+  assert.equal((html.match(/will not be recorded as blinded/g) || []).length, 3);
+  assert.doesNotMatch(html, /Decision will be recorded as blinded\./);
+
+  // Exposed by match id before the match payload was loaded (case queue, History filter, report tool).
+  const early = blindUI(true);
+  early.context.exposeMatch('synthetic-match', []);
+  early.context.noteMatchRendered(m);
+  assert.equal(early.context.blindEligible('ev-late'), false);
+  early.context.noteMatchRendered({ match_id: 'other-match', events: [{ event_id: 'other-event' }] });
+  assert.equal(early.context.blindEligible('other-event'), true);
+
+  // Exposed while already loaded (a report tool opened from a blinded match).
+  const tool = blindUI(true);
+  tool.context.noteMatchRendered(m);
+  tool.context.exposeMatch('synthetic-match', [null, m]);
+  assert.equal(tool.context.blindEligible('ev-mid'), false);
+
+  // Blinded review off never yields a blind label.
+  assert.equal(blindUI(false).context.blindEligible('never-rendered'), false);
+});
+
+function reviewClick(globals) {
+  const posts = [], messages = [];
+  const source = 'async function clickReview(e) {\n' + section("    const reviewButton = e.target.closest('button[data-review-event]');", "    const replay = e.target.closest('button[data-replay-event]');") + '\n}';
+  const context = run(source, {
+    activeInvestigationData: null, views: [blindMatch()], revealedEvents: new Set(), prompt: () => null,
+    postJSON: async (url, payload) => { posts.push({ url, payload }); return { verdict: payload.verdict, comment: '', reviewed_at: 'now', blind_review: payload.blind_review }; },
+    document: { querySelectorAll: () => [], querySelector: () => null }, $: () => ({ open: false }),
+    reviewControls: () => '', selectIncident: () => {}, selectedIncidentIndex: 0,
+    setStatus: (text, tone) => messages.push({ text, tone }), loadHealth: () => {}, loadRegression: () => {}, ...globals,
+  });
+  const button = { dataset: { reviewEvent: 'ev-mid', verdict: 'no' }, disabled: false };
+  return { posts, messages, click: () => context.clickReview({ target: { closest: selector => selector === 'button[data-review-event]' ? button : null } }) };
+}
+
+test('the review request carries blind_review only when the observation is still blind-eligible', async () => {
+  const eligible = reviewClick({ blindReview: true, blindEligible: () => true });
+  await eligible.click();
+  assert.equal(eligible.posts[0].payload.blind_review, true);
+  assert.doesNotMatch(eligible.messages.at(-1).text, /THROW_001/);
+
+  // Concealed on screen, but already exposed this session: not a blind sample, and the status line still names nothing.
+  const exposed = reviewClick({ blindReview: true, blindEligible: () => false });
+  await exposed.click();
+  assert.equal(exposed.posts[0].payload.blind_review, false);
+  assert.doesNotMatch(exposed.messages.at(-1).text, /THROW_001/);
+
+  const open = reviewClick({ blindReview: false, blindEligible: () => false });
+  await open.click();
+  assert.equal(open.posts[0].payload.blind_review, false);
+  assert.match(open.messages.at(-1).text, /Saved THROW_001 as a false positive/);
+});
+
+test('blinded History hides signal counts and the per-detector filter; an unblinded detector filter ends blind recording for the listed matches', () => {
+  const matches = [
+    { match_id: 'with-signal', source: 'replay', analyzed_at: new Date(1000).toISOString(), players: [], event_count: 4, flagged: true, detector_ids: ['THROW_001'] },
+    { match_id: 'without-signal', source: 'replay', analyzed_at: new Date(2000).toISOString(), players: [], event_count: 0, detector_ids: [] },
+  ];
+  const blind = historyUI(matches, 0, { blindReview: true, exposeMatch: () => assert.fail('a blinded list exposes nothing') });
+  blind.get('history-detector').value = 'THROW_001';
+  blind.context.renderHistory();
+  const hidden = blind.get('history').innerHTML;
+  assert.equal(blind.get('history-detector').disabled, true);
+  assert.match(hidden, /with-signal/);
+  assert.match(hidden, /without-signal/, 'the detector filter is ignored while blinded');
+  assert.equal((hidden.match(/Signals hidden/g) || []).length, 2);
+  assert.doesNotMatch(hidden, /Review case|observations<|No recorded observations/);
+
+  const exposedIDs = [];
+  const open = historyUI(matches, 0, { exposeMatch: id => exposedIDs.push(id) });
+  open.context.renderHistory();
+  assert.deepEqual(exposedIDs, [], 'an unfiltered list does not say which detector fired');
+  assert.match(open.get('history').innerHTML, /Review case/);
+  open.get('history-detector').value = 'THROW_001';
+  open.context.renderHistory();
+  assert.equal(open.get('history-detector').disabled, false);
+  assert.deepEqual(exposedIDs, ['with-signal']);
+});
+
+test('blinded case queue hides scores and finding context and cannot be searched by detector', () => {
+  const snapshot = { single_match: [{ case_id: 'case-1', player_id: 'p1', player_name: 'Synthetic Player', match_id: 'queued-match', status: 'pending', suspicion_score: 91.5, explanation: 'THROW_001 explanation-secret', detectors: { ZZ_SECRET_777: 2 } }],
+    cross_match: [{ case_id: 'case-2', player_id: 'p2', player_name: 'Other Player', status: 'pending', decayed_score: 77.25, match_ids: ['queued-match'] }] };
+  const ui = blind => {
+    const get = nodes(), exposedIDs = [];
+    const context = run(section('  function renderFlagged(', '  async function loadFlagged('), {
+      $: get, caseSnapshot: snapshot, blindReview: blind, views: [], activeInvestigationData: null, exposeMatch: id => exposedIDs.push(id),
+      fmtInt: String, fmtNum: String, who: (name, id) => `${escape(name)} ${escape(id)}`,
+      screenState: (title, message) => `${escape(title)} ${escape(message)}`,
+    });
+    return { context, get, exposedIDs };
+  };
+  const blind = ui(true);
+  blind.context.renderFlagged();
+  const hidden = blind.get('flagged').innerHTML;
+  for (const secret of ['THROW_001', 'explanation-secret', 'ZZ_SECRET_777', '91.5', '77.25']) assert.ok(!hidden.includes(secret), `blinded queue leaks ${secret}`);
+  assert.match(hidden, /Finding context hidden/);
+  assert.match(hidden, /Synthetic Player/);
+  assert.deepEqual(blind.exposedIDs, []);
+  for (const query of ['THROW_001', 'zz_secret_777', 'explanation-secret']) {
+    blind.get('case-search').value = query;
+    blind.context.renderFlagged();
+    assert.match(blind.get('flagged').innerHTML, /No cases match these filters/, `a blinded queue must not confirm "${query}"`);
+  }
+
+  const open = ui(false);
+  open.context.renderFlagged();
+  assert.match(open.get('flagged').innerHTML, /THROW_001 explanation-secret/);
+  assert.match(open.get('flagged').innerHTML, /91\.5/);
+  assert.deepEqual(open.exposedIDs, ['queued-match'], 'showing the finding context ends blind recording for that match');
+});
+
+test('blinded review workspace conceals the shadow/scored tag, and match tools that cannot be blinded are marked', () => {
+  const event = blindMatch().events[1];
+  const render = (blind, revealed = []) => run(section('  function selectedIncidentDetails(', '  function renderInvestigation('), {
+    blindReview: blind, revealedEvents: new Set(revealed), fmtInt: String, fmtNum: String, who: escape, screenState: () => '',
+    reviewControls: (_e, concealed, recordedBlind) => `[concealed=${concealed} blind=${recordedBlind}]`, blindEligible: id => blind && !revealed.includes(id),
+  }).selectedIncidentDetails({ match: { events: [event] } }, { id: 'INC-001', player_id: 'player-a', event_ids: ['ev-early'], start_frame: 30, end_frame: 32, start_time: 1 });
+  const hidden = render(true);
+  for (const secret of [...HIDDEN, 'Observation only', 'Scored review signal']) assert.ok(!hidden.includes(secret), `blinded workspace leaks ${secret}`);
+  assert.match(hidden, /\[concealed=true blind=true\]/);
+  assert.match(render(true, ['ev-early']), /Observation only/);
+  assert.match(render(false), /Observation only/);
+
+  const tools = run(section('  function calibrationControls(', '  function telemetryHealthBlock('), { fmtInt: String, fmtBytes: String, labelName: escape })
+    .calibrationControls({ match_id: 'synthetic-match' });
+  for (const tool of [/href="api\/match\/synthetic-match\/report"/, /data-compare-match=/, /data-sandbox-match=/]) {
+    const tag = tools.match(/<(?:a|button)[^>]*>/g).find(markup => tool.test(markup));
+    assert.match(tag, /data-unblinds-match="synthetic-match"/);
+  }
+  assert.match(script, /closest\('\[data-unblinds-match\]'\)[\s\S]{0,200}exposeMatch\(tool\.dataset\.unblindsMatch/);
+});
+
+test('switching blinded review on or off re-renders every identity surface and keeps the exposure record', () => {
+  const source = 'function changeBlind(e) {\n' + section("    if (e.target.id === 'blind-review') {", "    const select = e.target.closest('select[data-cheat-filter]');") + '\n}';
+  const m = blindMatch(), state = { detector: 'THROW_001', all: false };
+  const slots = { events: { innerHTML: '' }, players: { innerHTML: '' }, controls: { outerHTML: '' }, total: { textContent: '' }, overview: { innerHTML: '' }, cases: { innerHTML: '' } };
+  const root = { dataset: { assessment: '0' }, querySelector: selector => ({ '.events': slots.events, '[data-assessment-players]': slots.players, '.assessment-controls': slots.controls, '[data-detection-count]': slots.total })[selector] };
+  const calls = [], rendered = [];
+  const context = run(source, {
+    blindReview: false, prefs: {}, savePrefs: () => calls.push('savePrefs'), revealedEvents: new Set(['ev-mid']), views: [m], viewState: [state], fmtInt: String,
+    document: { querySelectorAll: () => [root], querySelector: selector => selector === '[data-review-overview="0"]' ? slots.overview : selector === '[data-match-cases="0"]' ? slots.cases : null },
+    noteMatchRendered: match => rendered.push({ id: match.match_id, blindAtCall: context.blindReview }),
+    eventsTable: (_m, _idx, all, detector) => `events(${detector})`, playersTable: (_m, detector) => `players(${detector})`, reviewOverview: (_m, detector) => `overview(${detector})`,
+    assessmentFilter: () => `filter(blind=${context.blindReview})`, casesBlock: () => `cases(blind=${context.blindReview})`,
+    renderHistory: () => calls.push('renderHistory'), renderFlagged: () => calls.push('renderFlagged'), setStatus: text => calls.push(text),
+  });
+  context.changeBlind({ target: { id: 'blind-review', checked: true } });
+  assert.equal(context.blindReview, true);
+  assert.equal(state.detector, '', 'an active detector filter is cleared, not silently kept behind concealed rows');
+  assert.deepEqual(slots, { events: { innerHTML: 'events()' }, players: { innerHTML: 'players()' }, controls: { outerHTML: 'filter(blind=true)' }, total: { textContent: '3' }, overview: { innerHTML: 'overview()' }, cases: { innerHTML: 'cases(blind=true)' } });
+  assert.ok(calls.includes('renderHistory') && calls.includes('renderFlagged'));
+  assert.match(calls.at(-1), /already showed stay concealed, but their labels are not recorded as blinded/);
+
+  rendered.length = 0;
+  context.changeBlind({ target: { id: 'blind-review', checked: false } });
+  assert.deepEqual(rendered, [{ id: 'synthetic-match', blindAtCall: false }], 'the view about to be shown unblinded is put on the exposure record');
+  assert.equal(slots.controls.outerHTML, 'filter(blind=false)');
+  assert.equal(slots.cases.innerHTML, 'cases(blind=false)');
+
+  // The match section itself records an unblinded render, and offers the cases block for re-rendering.
+  assert.match(script, /function matchSection\(m, source\) \{[\s\S]{0,200}noteMatchRendered\(m\);/);
+  assert.match(script, /<div data-match-cases="\$\{idx\}">\$\{casesBlock\(m\)\}<\/div>/);
+  assert.match(script, /activeInvestigationData = d;[^\n]*\n\s*noteMatchRendered\(d\.match\);/);
 });
