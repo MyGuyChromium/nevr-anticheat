@@ -1950,7 +1950,8 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-players.csv"))
 	w.WriteHeader(http.StatusOK)
-	// #nosec G705 -- csv.Writer produced an attachment, not executable HTML.
+	// #nosec G705 -- an attachment, not HTML; PlayersCSV neutralises spreadsheet
+	// formulas in every cell (replay.CSVSafeCell), since names are untrusted.
 	_, _ = w.Write(sum.PlayersCSV())
 }
 
