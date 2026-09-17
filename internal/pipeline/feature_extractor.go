@@ -42,6 +42,13 @@ const (
 	headContactDistanceM    = 0.42
 	headContactCloserMargin = 0.08
 
+	// releaseForcedDropReason is reported (and no ThrowEvent is published) when
+	// the holder is stunned on the last held, the first free or the confirming
+	// sample of a held-to-free transition. A disc knocked out of a stunned
+	// holder's hand is not that player's throw, so no throw detector, throw
+	// count or signature may consume it.
+	releaseForcedDropReason = "release_forced_drop"
+
 	// goalDirectedMaxDeviationDeg: a throw deviating more than this from the
 	// chosen goal is not goal-directed (ThrowEvent.TargetPosition stays nil).
 	goalDirectedMaxDeviationDeg = 30.0
@@ -190,6 +197,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	}
 	// Capture PREVIOUS state before overwriting — critical for delta computations.
 	prevPos := ps.Position
+	// The head-contact envelope is measured from the tracked head. Body
+	// position is only the fallback for sources that report no separate head.
+	prevHead := ps.Position
+	if ps.HeadPosition != nil {
+		prevHead = *ps.HeadPosition
+	}
 	prevVel := ps.Velocity
 	prevLeftHand := ps.LeftHand
 	prevRightHand := ps.RightHand
@@ -285,8 +298,15 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// (respawn teleport). Continuous immune movement (god mode) still computes
 	// kinematics so STATE_004 can see active play during immunity.
 	immuneRespawnJump := false
-	if dtKnown && frame.IsImmune && !prevPos.IsZero() {
-		immuneRespawnJump = frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+	// positionJump is the same displacement test without the immunity
+	// condition. It does not gate kinematics (MOV detectors must still see an
+	// unexplained jump); it only stops a held-to-free transition across a
+	// teleport from being read as a throw.
+	positionJump := false
+	if dtKnown && !prevPos.IsZero() {
+		jump := frame.Position.Sub(prevPos).Magnitude()/dt > matchCtx.Physics.MaxPlayerSpeed*2.0
+		immuneRespawnJump = jump && frame.IsImmune
+		positionJump = jump && matchCtx.Physics.MaxPlayerSpeed > 0
 	}
 
 	kinematicsValid := dtKnown && !prevPos.IsZero() && !largeGap && !immuneRespawnJump
@@ -468,18 +488,29 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 			immediateReason = "release_observation_gap"
 		} else if !matchCtx.IsActivePhase(frame.GamePhase) {
 			immediateReason = "release_inactive_phase"
+		} else if wasStunned || frame.IsStunned {
+			// The holder was stunned on the last held or the first free sample:
+			// the disc was knocked out of the hand. The free disc's velocity is
+			// then the opponent's contact, not a release this player authored.
+			immediateReason = releaseForcedDropReason
+		} else if positionJump {
+			// The holder was moved (respawn, reset) inside the release interval:
+			// the disc was taken away rather than thrown, and the interval's
+			// hand and player velocities are teleport artifacts (hundreds of m/s).
+			immediateReason = "release_player_discontinuity"
 		}
 		if possessionFrames >= 2 && immediateReason == "" {
 			pending.unavailableReason = "release_motion_unavailable"
-			pending.event = fe.detectThrow(ps, frame, matchCtx, prevPos, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot,
+			pending.event = fe.detectThrow(ps, frame, matchCtx, prevHead, prevLeftHand, prevRightHand, prevLeftHandRot, prevRightHandRot,
 				prevLeftHandRotationValid, prevRightHandRotationValid, prevAttachment)
 			if pending.event != nil {
 				pending.event.ReleaseWindow = observation.Clone()
 			}
 		}
 		if immediateReason != "" {
-			// A known sampled state change across this broad interval is not
-			// a confirmed release or a valid release-analysis opportunity.
+			// A known sampled state change across a gap, outside active play
+			// or out of a stunned holder's hand is not a confirmed release or
+			// a valid release-analysis opportunity.
 			if fe.releaseObserver != nil {
 				fe.releaseObserver(ps.PlayerID, *observation.Clone(), immediateReason)
 			}
@@ -918,7 +949,13 @@ func (fe *FeatureExtractor) detectThrow(
 		}
 	}
 	releaseHandDist := nearestTrackedHandDistance(releasePos, frame.LeftHandPosition, frame.RightHandPosition)
-	headDist := releasePos.Distance(ps.Position)
+	// ps.HeadPosition is the explicitly tracked head (never a body-position
+	// substitute); sources without one fall back to the body position.
+	head := ps.Position
+	if ps.HeadPosition != nil {
+		head = *ps.HeadPosition
+	}
+	headDist := releasePos.Distance(head)
 	if !prevHead.IsZero() {
 		headDist = math.Min(headDist, releasePos.Distance(prevHead))
 	}

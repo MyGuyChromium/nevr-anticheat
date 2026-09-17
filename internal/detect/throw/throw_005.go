@@ -39,7 +39,7 @@ type Throw005 struct {
 }
 
 func NewThrow005(_ map[string]any) *Throw005 {
-	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.0.0",
+	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.1.0",
 		DetectorName: "Shot Targeting Review", DetectorCategory: "throw", Inputs: []string{"throw_event"}, Warmup: 0, Weight: 0}}
 	d.Reset()
 	return d
@@ -68,10 +68,13 @@ func (d *Throw005) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			d.histories[pid] = h
 		}
 		sameSource := (h.source == nil && ps.Observation == nil) || h.source.SameSource(ps.Observation)
+		// Every supporting release is an independent event the extractor already
+		// continuity-checked, so the bounded window spans dispatch gaps: the
+		// pipeline does not call detectors outside active play, and tying the
+		// window to frame continuity emptied it after every goal, round start
+		// and pause. Only a source/session change or a rewind starts over.
 		if h.lastFrame >= 0 && (frame < h.lastFrame || !sameSource || ps.LastTimestamp < h.lastTimestamp) {
 			*h = shotSupportHistory{lastFrame: -1, lastRelease: -1}
-		} else if h.lastFrame >= 0 && (frame > h.lastFrame+1 || ps.LastTimestamp-h.lastTimestamp > .2) {
-			h.samples = nil // engineering continuity reset, not a human-accuracy rule
 		}
 		h.lastFrame, h.lastTimestamp, h.source = frame, ps.LastTimestamp, ps.Observation.Clone()
 		t := throwAt(ps, frame)
@@ -154,8 +157,10 @@ func (d *Throw005) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			d.observer(d.ID(), pid, r.Clone())
 		}
 	}
+	// A player who misses a sample keeps the window; one who left the roster
+	// the pipeline passes in does not (the roster bounds this map).
 	for pid := range d.histories {
-		if !present[pid] {
+		if _, known := players[pid]; !known && !present[pid] {
 			delete(d.histories, pid)
 		}
 	}

@@ -49,7 +49,7 @@ type Throw001 struct {
 func NewThrow001(params map[string]any) *Throw001 {
 	d := &Throw001{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_001", DetectorVersion: "1.5.1",
+			DetectorID: "THROW_001", DetectorVersion: "1.6.0",
 			TraceBranches: true,
 			DetectorName:  "Impossible Release Velocity", DetectorCategory: "throw",
 			Inputs: []string{"throw_event", "disc_state"}, Warmup: 5,
@@ -107,13 +107,22 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		pingTolerance := (ps.EstimatedPingMs / 1000.0) * d.pingToleranceScalar
 		effectiveCap := matchCtx.Physics.DiscSpeedCap + d.baseTolerance + pingTolerance
 		speedExcess := t.ReleaseSpeed - effectiveCap
-		playerSpeed := t.PlayerVelocity.Magnitude()
+		// Player movement context comes from the engine-reported velocity on
+		// the release interval when the source carries one. The extractor's
+		// PlayerVelocity is a one-interval position difference: it misreads a
+		// boost, push-off or physical head motion inside the interval, which is
+		// exactly when this context matters.
+		playerVelocity, playerVelocitySource := releasePlayerVelocity(t)
+		if playerVelocitySource == playerVelocityPositionDifference {
+			d.TraceDecision(pid, frameIdx, "engine_player_velocity_unavailable")
+		}
+		playerSpeed := playerVelocity.Magnitude()
 		// Project onto the sampled direction, not ReleaseSpeed: the latter
 		// may be a larger independent engine last_throw scalar. Mixing those
 		// measurements scales the projection incorrectly. This is context
 		// only; it is not added to or subtracted from the configured cap.
-		alignedMovementSpeed := t.PlayerVelocity.Dot(t.ReleaseVelocity.Normalized())
-		playerRelativeVelocity := t.ReleaseVelocity.Sub(t.PlayerVelocity)
+		alignedMovementSpeed := playerVelocity.Dot(t.ReleaseVelocity.Normalized())
+		playerRelativeVelocity := t.ReleaseVelocity.Sub(playerVelocity)
 		playerRelativeSpeed := playerRelativeVelocity.Magnitude()
 		handSpeed := t.HandSpeed
 		if t.HandKinematicsValid {
@@ -130,7 +139,7 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			ReleaseVelocity: t.ReleaseVelocity, ReleaseSpeed: t.ReleaseSpeed,
 			SampledDiscSpeed: sampledDiscSpeed, GameLastThrow: t.GameLastThrow,
 			ReleasePosition: t.ReleasePosition,
-			PlayerVelocity:  t.PlayerVelocity, PlayerSpeed: playerSpeed,
+			PlayerVelocity:  playerVelocity, PlayerSpeed: playerSpeed,
 			AlignedMovementSpeed:   alignedMovementSpeed,
 			PlayerRelativeVelocity: playerRelativeVelocity, PlayerRelativeSpeed: playerRelativeSpeed,
 			HandVelocity: t.HandVelocity,
@@ -182,17 +191,18 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			continue
 		}
 
-		// Over the effective cap. The hand-speed ratio is only meaningful
-		// here: a slow throw with a tiny wrist flick has a huge but legitimate
-		// ratio.
+		// Over the effective cap. Severity follows the over-cap margin only.
+		// The disc/hand-speed ratio is evidence context and never raises it: the
+		// hand speed is a one-interval world-frame controller difference, so a
+		// wrist flick legitimately reads as a huge ratio, and a barely-over-cap
+		// flick must not rank as a near-certain finding.
 		d.TraceDecision(pid, frameIdx, "release_above_cap")
 		speedRatio := 0.0
 		severity := model.SigmoidConfidence(t.ReleaseSpeed, effectiveCap, d.sigmoidSteepness)
 		if t.HandKinematicsValid {
 			speedRatio = t.ReleaseSpeed / handSpeed
 			if speedRatio > d.maxSpeedRatio {
-				ratioSev := model.SigmoidConfidence(speedRatio, d.maxSpeedRatio, 1.0)
-				severity = math.Max(severity, ratioSev)
+				d.TraceDecision(pid, frameIdx, "hand_ratio_above_context_limit")
 			}
 		}
 		confidence := severity
@@ -201,12 +211,20 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		evidence.SpeedRatio = speedRatio
 
-		observed := fmt.Sprintf("disc_speed: %.2f m/s (player-relative %.2f; aligned movement %+.2f; hand ratio unavailable)",
-			t.ReleaseSpeed, playerRelativeSpeed, alignedMovementSpeed)
-		if t.HandKinematicsValid {
-			observed = fmt.Sprintf("disc_speed: %.2f m/s (player-relative %.2f; aligned movement %+.2f; hand ratio %.1f)",
-				t.ReleaseSpeed, playerRelativeSpeed, alignedMovementSpeed, speedRatio)
+		movement := fmt.Sprintf("player-relative %.2f; aligned movement %+.2f; %s",
+			playerRelativeSpeed, alignedMovementSpeed, playerVelocitySource)
+		if playerVelocitySource == playerVelocityPositionDifference {
+			// Without an engine-reported velocity there is no reference-frame
+			// corrected figure to show; the position-difference estimate is
+			// labelled as such and not presented as "player-relative".
+			movement = fmt.Sprintf("player-relative unavailable: no engine-reported player velocity; position-difference estimate %.2f, aligned %+.2f",
+				playerRelativeSpeed, alignedMovementSpeed)
 		}
+		handRatio := "hand ratio unavailable"
+		if t.HandKinematicsValid {
+			handRatio = fmt.Sprintf("hand ratio %.1f", speedRatio)
+		}
+		observed := fmt.Sprintf("disc_speed: %.2f m/s (%s; %s)", t.ReleaseSpeed, movement, handRatio)
 		if t.GameLastThrow != nil {
 			observed += fmt.Sprintf("; engine last_throw: arm %.2f, movement %.2f, wrist %.2f m/s (sampled disc %.2f)",
 				t.GameLastThrow.SpeedFromArm, t.GameLastThrow.SpeedFromMovement,
@@ -226,4 +244,31 @@ func (d *Throw001) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		events = append(events, ev)
 	}
 	return events
+}
+
+const (
+	playerVelocityEngineFirstFree    = "engine-reported player velocity, first free sample"
+	playerVelocityEngineLastHeld     = "engine-reported player velocity, last held sample"
+	playerVelocityPositionDifference = "position-difference player velocity"
+)
+
+// releasePlayerVelocity returns the player velocity used as movement context
+// for a release, and which measurement it is. The engine-reported velocity on
+// the first free sample (the sample the disc velocity comes from) is
+// preferred, then the one on the last held sample; the extractor's
+// one-interval position difference is only the labelled fallback.
+func releasePlayerVelocity(t *model.ThrowEvent) (model.Vec3, string) {
+	if w := t.ReleaseWindow; w != nil {
+		for _, pick := range []struct {
+			frame int
+			label string
+		}{{w.EndFrame, playerVelocityEngineFirstFree}, {w.StartFrame, playerVelocityEngineLastHeld}} {
+			for _, sample := range w.PlayerMovement {
+				if v := sample.ReportedVelocity; sample.FrameIndex == pick.frame && v != nil && !v.HasNaN() && !v.HasInf() {
+					return *v, pick.label
+				}
+			}
+		}
+	}
+	return t.PlayerVelocity, playerVelocityPositionDifference
 }

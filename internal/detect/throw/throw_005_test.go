@@ -100,8 +100,10 @@ func TestThrow005IndependentIdentityGapSourceAndUnknown(t *testing.T) {
 	}
 	ps = mechanicsThrowState(3, 12, 0)
 	d.Evaluate(testCtx(), map[string]*model.PlayerState{"p1": ps}, 3)
-	if (*records)[1].Metrics["observed_release_count"] != 1 {
-		t.Fatal("history crossed gap")
+	if (*records)[1].Metrics["observed_release_count"] != 2 {
+		// Detectors are not dispatched outside active play; an index gap is
+		// not a reason to discard independent, extractor-confirmed releases.
+		t.Fatal("dispatch gap wiped the supporting window")
 	}
 	ps = mechanicsThrowState(4, 12, 0)
 	ps.Observation.SourceID = "other"
