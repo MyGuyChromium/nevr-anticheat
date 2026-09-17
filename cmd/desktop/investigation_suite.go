@@ -867,7 +867,7 @@ func (s *server) handleScheduleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source := filepath.Join(s.backupDirectory(), name)
-	if err := sqlite.VerifyDatabase(r.Context(), source); err != nil {
+	if err := sqlite.VerifyEvidenceDatabase(r.Context(), source); err != nil {
 		writeError(w, 422, "backup verification failed: %v", err)
 		return
 	}

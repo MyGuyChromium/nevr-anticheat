@@ -197,14 +197,11 @@ func TestTeethPendingRestoreRefusesACorruptSource(t *testing.T) {
 	}
 }
 
-// VerifyDatabase runs an integrity check, and a zero-byte file is a perfectly
-// consistent EMPTY SQLite database. Restoring one silently replaces the whole
-// evidence library with nothing (the original survives only in the
-// pre-restore folder).
+// An integrity check alone is not enough: a zero-byte file is a perfectly
+// consistent EMPTY SQLite database. Restoring one silently replaced the whole
+// evidence library with nothing (the original survived only in the
+// pre-restore folder). Restore verification now also requires the NEVR schema.
 func TestTeethPendingRestoreRefusesAnEmptySource(t *testing.T) {
-	t.Skip("REAL BUG in code this workstream does not own (internal/storage/sqlite/backup.go VerifyDatabase, cmd/desktop/restore_startup.go): " +
-		"a zero-byte backups/*.db passes PRAGMA quick_check, so the restore is applied and the evidence database becomes an empty file. " +
-		"Remove this Skip once restore verification also requires a NEVR schema (for example a non-zero schema version).")
 	lib := teethNewRestoreLibrary(t)
 	empty := filepath.Join(lib.backupDir, "empty.db")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
@@ -212,6 +209,58 @@ func TestTeethPendingRestoreRefusesAnEmptySource(t *testing.T) {
 	}
 	teethWriteRestoreRequest(t, lib, restoreRequest{Source: empty, Target: lib.target})
 	teethRequireRestoreRefused(t, lib, "verifying restore source")
+}
+
+// teethForeignDatabase writes a healthy SQLite database that belongs to some
+// other program: it passes PRAGMA quick_check and holds no NEVR schema.
+func teethForeignDatabase(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE bookmarks (url TEXT); INSERT INTO bookmarks VALUES ('x')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlite.VerifyDatabase(context.Background(), path); err != nil {
+		t.Fatalf("test setup: the foreign database must pass the plain integrity check: %v", err)
+	}
+}
+
+func TestTeethPendingRestoreRefusesADatabaseThatIsNotNEVRs(t *testing.T) {
+	lib := teethNewRestoreLibrary(t)
+	foreign := filepath.Join(lib.backupDir, "foreign.db")
+	teethForeignDatabase(t, foreign)
+	teethWriteRestoreRequest(t, lib, restoreRequest{Source: foreign, Target: lib.target})
+	teethRequireRestoreRefused(t, lib, "not a NEVR-Anticheat evidence database")
+}
+
+// The wizard must refuse the same files before anything is scheduled, so the
+// moderator hears about it now and not at the next launch.
+func TestTeethScheduleRestoreRejectsEmptyAndForeignDatabases(t *testing.T) {
+	x := teethNewRestoreServer(t)
+	if err := os.WriteFile(filepath.Join(x.backupDir, "empty.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	teethForeignDatabase(t, filepath.Join(x.backupDir, "foreign.db"))
+	for _, name := range []string{"empty.db", "foreign.db"} {
+		t.Run(name, func(t *testing.T) {
+			var failure struct {
+				Error string `json:"error"`
+			}
+			resp := postJSONTest(t, x.url, map[string]string{"name": name}, &failure)
+			if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(failure.Error, "not a NEVR-Anticheat evidence database") {
+				t.Fatalf("status=%d error=%q, want 422 naming the missing NEVR schema", resp.StatusCode, failure.Error)
+			}
+			x.requireNothingScheduled(t)
+			if safety, _ := filepath.Glob(filepath.Join(x.backupDir, "pre-restore-*.db")); len(safety) != 0 {
+				t.Fatalf("a refused restore still wrote a safety backup: %v", safety)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
