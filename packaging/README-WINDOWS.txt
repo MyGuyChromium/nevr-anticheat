@@ -33,41 +33,103 @@ Installed mode keeps the database under LocalAppData\NEVR-Anticheat. Portable
 mode stores it beside nevr-desktop.exe. Windows Firewall does not need to expose
 it: the desktop app listens only on 127.0.0.1 (this computer).
 
-UPDATES AND ROLLBACK
+UPDATES
 
 Use Windows updates > Check for updates > Install update in the app. Installed
-copies verify and run the update package, preserve local evidence and restart.
-Portable copies use the manual-download fallback.
+copies download the update package, check it against the size, SHA-256 and
+release tag in the release manifest, run it, preserve local evidence and
+restart. The package is integrity-checked only: that detects a damaged or
+mismatched download, it does not prove who published it. Portable copies use
+the manual-download fallback.
 
-The current release feed is in a private GitHub repository. Downloads require
-repository access; in-app updates additionally need a read-only token through
-NEVR_GITHUB_TOKEN. Signing into a browser does not authenticate the app. The
-installer itself runs offline if shared directly, but public distribution and
-token-free updates require a publicly readable release channel. Never share a
-maintainer token with recipients.
+NEVR installs a release only when it is newer than the build already installed.
+Every rolling release states when its source was committed; a release that is
+older, the same, or does not state it is refused with an explanation. To go
+back to an older release on purpose, either run that release's
+NEVR-Anticheat-Setup.exe by hand, or start NEVR once with
+
+  nevr-desktop.exe --allow-update-downgrade
+
+The flag applies to that one run only, cannot be switched on from inside the
+app, and skips only the "must be newer" rule; every integrity check still runs.
+
+One-click update also refuses, before downloading anything, while
+nevr-server.exe, nevr-bridge.exe, nevr-ac.exe, nevr-compat.exe or a second
+desktop copy runs from the installation folder (quit them first; nothing is
+closed for you), and on an installation whose database was moved out of
+LocalAppData\NEVR-Anticheat (download and run Setup instead).
+
+When the release feed is publicly readable, updates need no sign-in. If the
+repository is private, downloads require repository access and in-app updates
+additionally need a read-only token in NEVR_GITHUB_TOKEN; signing into a
+browser does not authenticate the app. The installer itself runs offline if
+shared directly. Never share a maintainer token with recipients.
+
+ROLLBACK
 
 Installing a newer package snapshots the previous program files without
 copying or changing the evidence database. If an update has a problem, run
 Rollback-NEVR.cmd from LocalAppData\Programs\NEVR-Anticheat to restore the
-newest program snapshot. Database backup/restore is a separate, verified action
-inside the desktop app's Investigation & reliability studio.
+newest program snapshot that passes checksum verification. A snapshot that
+fails verification (for example one that was interrupted half-way) is skipped
+and reported, never restored. Database backup/restore is a separate, verified
+action inside the desktop app's Investigation & reliability studio.
+
+Snapshots live in LocalAppData\NEVR-Anticheat\program-rollbacks. Folder names
+start with the UTC date and time the snapshot was taken; Setup writes names
+such as 20260917-184502Z-1, where the Z means UTC. "Newest" therefore means
+the same thing whichever tool wrote the folder. Older folders named in local
+time are still understood. Only the newest 3 verified snapshots are kept
+(about 40 MB each); older verified ones are removed automatically. A folder
+that does not verify is never restored, never counted and never deleted
+automatically: remove it by hand if you need the space.
+
+UNINSTALL
+
+Installed with Setup: use Windows Settings > Apps > Installed apps.
+Installed from the ZIP with Install-NEVR.cmd: quit NEVR, then run
+Uninstall-NEVR.cmd from LocalAppData\Programs\NEVR-Anticheat. The uninstaller
+copies itself to a temporary folder and continues from there in a second
+window, because Windows cannot delete a folder that a running script sits in
+(earlier copies failed with "in use" for that reason and left the program
+behind). The shortcuts are removed only after the program folder is gone.
+
+Both ways keep your evidence (database, recordings, settings) in
+LocalAppData\NEVR-Anticheat. To delete that as well with the ZIP uninstaller,
+open a Command Prompt in the program folder and run
+
+  Uninstall-NEVR.cmd -RemoveEvidence
+
+This cannot be undone. Make a database backup first if in doubt.
 
 WINDOW, LOGS AND QUITTING
 
-Once the app page sends heartbeats, packaged builds start without a console
-window: only the NEVR app window opens. Closing that window quits NEVR a few
-seconds later, after any running analysis, recovery, backup, restore or update
-has finished. Start nevr-desktop.exe with --no-auto-exit to keep it running
-until the in-app Quit button is used.
+nevr-desktop.exe is a windowed program: starting it opens only the NEVR app
+window, never a console window. The command-line tools (nevr-ac.exe,
+nevr-server.exe, nevr-bridge.exe, nevr-compat.exe) remain console programs.
+
+Closing the app window quits NEVR about 8 seconds later; reloading the page
+within that time cancels the exit. If the window goes away without saying so
+(a browser crash, for example), NEVR quits after 90 seconds of silence. A
+minimized window still reports in often enough to keep NEVR running. NEVR
+never quits while an analysis, recovery, watch-folder import, backup, restore,
+update or any other request is still running; the countdown restarts when that
+work ends. Auto-exit only begins once an app window has connected, so a copy
+started with --no-browser and never opened keeps running. Start
+nevr-desktop.exe with --no-auto-exit to keep it running until the in-app Quit
+button is used.
 
 Without a console, everything NEVR would have printed is written to
 
   <data folder>\logs\nevr-desktop.log      (rotated at 5 MB, 3 older files kept)
   <data folder>\logs\nevr-desktop-crash.log (only written if NEVR crashes)
 
-The data folder is the one that holds the database (Health & maintenance >
-Open data folder). If NEVR cannot start, it shows the reason in a dialog and in
-that log. From a terminal, nevr-desktop.exe --console prints there instead.
+The data folder is the one that holds the database: LocalAppData\NEVR-Anticheat
+for an installed copy, the folder beside nevr-desktop.exe for a portable one
+(Health & maintenance > Open data folder). The log never contains the app's
+per-run access address. If NEVR cannot start, it shows the reason in a dialog
+and in that log. From a terminal, nevr-desktop.exe --console prints there
+instead of to the log file.
 
 A database that a newer NEVR has already upgraded is refused by an older copy
 with "needs an update" rather than opened: install the latest version. The

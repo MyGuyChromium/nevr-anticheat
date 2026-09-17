@@ -12,6 +12,24 @@ also performs a real silent install/uninstall smoke test and scans the final
 artifacts with Microsoft Defender when Defender is available on the hosted
 runner.
 
+## What the update manifest does and does not establish
+
+`NEVR-Anticheat-Update.json` carries the release tag, commit, `commit_time`
+(committer time of that commit, UTC), version, `desktop_subsystem` (measured
+from the shipped `nevr-desktop.exe`; `windows` for a released build) and the
+installer's name, size and SHA-256. The in-app updater uses it to check that
+the download is the file the release describes and that the release is newer
+than the installed build. That makes an update integrity-checked. It does not
+identify the publisher: the manifest and the installer come from the same
+release, so anyone who can replace one can replace the other. Only a publisher
+signature, described below, adds identity. `--allow-update-downgrade` skips the
+"newer" rule for one run and nothing else.
+
+The publish job runs one at a time per release and moves the rolling
+`windows-latest` tag only forwards (to the published commit or a descendant).
+`scripts/release-gate.test.cjs` executes that guard against scratch
+repositories and fails if a publish step escapes it.
+
 ## Publisher signing
 
 Windows publisher identity and SmartScreen reputation require a trusted
