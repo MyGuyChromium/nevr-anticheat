@@ -42,6 +42,20 @@ func (s *Store) queryStorageStats(ctx context.Context, matchID string, scoped bo
 	return out, nil
 }
 
+// GetMatchStorageCounts returns how many raw ticks and normalized frames a
+// match holds. Unlike GetMatchStorageStats it never reads the payloads (both
+// counts are answered from indexes), so a viewer can tell cheaply whether a
+// byte measurement it already has is still current.
+func (s *Store) GetMatchStorageCounts(ctx context.Context, matchID string) (rawTicks, normalizedFrames int, err error) {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM match_ticks WHERE match_id = ?`, matchID).Scan(&rawTicks); err != nil {
+		return 0, 0, fmt.Errorf("counting raw ticks: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM telemetry_frames WHERE match_id = ?`, matchID).Scan(&normalizedFrames); err != nil {
+		return 0, 0, fmt.Errorf("counting normalized frames: %w", err)
+	}
+	return rawTicks, normalizedFrames, nil
+}
+
 // DeleteMatchRawTicks removes only the original raw payloads for one exact
 // match. Callers must first create and verify a restorable archive. Normalized
 // frames, labels, events, summaries and cases remain available.
