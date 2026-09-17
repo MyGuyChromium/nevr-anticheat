@@ -93,6 +93,29 @@ test('core CI still requires coverage, race, UI, workflow, and explicitly discov
   for (const name of ['FuzzEchoReplayNDJSON', 'FuzzEchoReplayZIP', 'FuzzEchoSessionMapping', 'FuzzLegacyJSONReplay', 'FuzzRegressionManifest']) assert.ok(security.includes(name));
 });
 
+test('scheduled fuzzing stays deterministic: bounded minimisation on a Go release with the fuzz deadline fix', () => {
+  // The default -fuzzminimizetime (60s) exceeds the 20s run, so workers that
+  // start minimising a large input idle at 0 execs/sec until the deadline.
+  const fuzzRuns = security.split('\n').filter((line) => /^\s*run:/.test(line) && line.includes('-fuzz '));
+  assert.ok(fuzzRuns.length >= 7, 'every parser fuzz target still runs');
+  for (const line of fuzzRuns) {
+    assert.match(line, /-fuzztime \d+s\b/, line.trim());
+    assert.match(line, /-fuzzminimizetime \d+s\b/, `unbounded minimisation: ${line.trim()}`);
+  }
+  // All fuzz steps live in the fuzz job, which pins its own Go toolchain:
+  // releases before 1.27 can fail a clean run with "context deadline exceeded"
+  // (go.dev/issue/75804). go.mod is deliberately not consulted there.
+  const fuzz = job(security, 'fuzz');
+  for (const line of fuzzRuns) assert.ok(fuzz.includes(line), `fuzz step outside the fuzz job: ${line.trim()}`);
+  assert.doesNotMatch(fuzz, /go-version-file:/);
+  assert.doesNotMatch(fuzz, /^    if:|continue-on-error:/m);
+  const version = fuzz.match(/^          go-version: ["']?(\d+)\.(\d+)(?:\.(?:x|\d+))?["']?$/m);
+  assert.ok(version, 'fuzz job pins an explicit Go version');
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  assert.ok(major > 1 || (major === 1 && minor >= 27), `fuzz job Go ${major}.${minor} lacks the fuzz deadline fix`);
+  assert.ok(fuzz.indexOf('go-version:') < fuzz.indexOf('-fuzz '), 'toolchain is installed before the first fuzz step');
+});
+
 test('workflow and helper edits trigger Windows integration and upload names cannot collide', () => {
   assert.match(windows, /- "\.github\/workflows\/\*\*"/);
   assert.match(windows, /- "scripts\/\*\*"/);

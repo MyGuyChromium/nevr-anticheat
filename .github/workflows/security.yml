@@ -30,27 +30,6 @@ jobs:
       - name: Security static analysis
         run: go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -severity medium -exclude G201,G202,G204,G304 -nosec-require-justification -nosec-require-rules ./...
 
-      - name: Fuzz NDJSON replay boundary
-        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayNDJSON$' -fuzztime 20s
-
-      - name: Fuzz ZIP replay boundary
-        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayZIP$' -fuzztime 20s
-
-      - name: Fuzz Echo session mapping
-        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoSessionMapping$' -fuzztime 20s
-
-      - name: Fuzz retained native protobuf records
-        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeRaw$' -fuzztime 20s
-
-      - name: Fuzz native capture container boundary
-        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeContainer$' -fuzztime 20s
-
-      - name: Fuzz legacy JSON replay boundary
-        run: go test ./internal/replay -run '^$' -fuzz '^FuzzLegacyJSONReplay$' -fuzztime 20s
-
-      - name: Fuzz private regression manifest
-        run: go test ./internal/regression -run '^$' -fuzz '^FuzzRegressionManifest$' -fuzztime 20s
-
       - name: Generate CycloneDX SBOM
         run: go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0 mod -json -output nevr-sbom.cdx.json
 
@@ -60,6 +39,45 @@ jobs:
           name: nevr-cyclonedx-sbom
           path: nevr-sbom.cdx.json
           if-no-files-found: error
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fuzzing deliberately runs on Go 1.27 or newer instead of the go.mod
+      # toolchain: earlier releases can report a clean run as "context deadline
+      # exceeded" when the -fuzztime deadline lands during coordinator shutdown
+      # (go.dev/issue/75804). The module's language version is unchanged.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+          cache: true
+
+      # Every fuzz step carries -fuzzminimizetime 1s. The default 60s budget is
+      # three times the 20s run, so once all workers start minimising a large
+      # interesting input the run idles at 0 execs/sec until the deadline.
+      - name: Fuzz NDJSON replay boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayNDJSON$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz ZIP replay boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoReplayZIP$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz Echo session mapping
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzEchoSessionMapping$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz retained native protobuf records
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeRaw$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz native capture container boundary
+        run: go test ./internal/adapter -run '^$' -fuzz '^FuzzNativeTapeContainer$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz legacy JSON replay boundary
+        run: go test ./internal/replay -run '^$' -fuzz '^FuzzLegacyJSONReplay$' -fuzztime 20s -fuzzminimizetime 1s
+
+      - name: Fuzz private regression manifest
+        run: go test ./internal/regression -run '^$' -fuzz '^FuzzRegressionManifest$' -fuzztime 20s -fuzzminimizetime 1s
 
   dependency-review:
     if: ${{ github.event_name == 'pull_request' && !github.event.repository.private }}
