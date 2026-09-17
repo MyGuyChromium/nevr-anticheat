@@ -28,6 +28,15 @@ const (
 // game-reported disc velocity magnitude for local-client throws, otherwise
 // the disc magnitude alone. Neither speed calculation uses a position delta;
 // sampling gaps can still obscure the true release/contact or attribution.
+//
+// Threat model (docs/threat_model.md; Windows build 34.4.631547 only; Quest
+// not checked). The native server does not simulate the disc and applies no
+// speed cap: its validation of an incoming physics state is a NaN/Inf check.
+// This detector is therefore the only speed check there is, not a second
+// opinion. The engine's last_throw values are written by the throwing
+// player's own client, so engine values that agree with each other are not
+// proof of legitimacy and must never clear a release; that is why the higher
+// of the engine value and the sampled disc speed is used.
 type Throw001 struct {
 	detect.BaseDetector
 	baseTolerance       float64
