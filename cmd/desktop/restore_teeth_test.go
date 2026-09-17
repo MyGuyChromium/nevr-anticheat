@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -260,10 +261,16 @@ func TestTeethScheduleRestoreRejectsNamesThatAreNotPlainBackupFiles(t *testing.T
 	teethCopyFile(t, good, filepath.Join(x.backupDir, "known-good.txt"))
 	teethCopyFile(t, good, filepath.Join(x.backupDir, "sub", "nested.db"))
 	teethCopyFile(t, good, filepath.Join(x.backupDir, "no-extension"))
-	for _, name := range []string{
-		"../outside.db", `..\outside.db`, "sub/nested.db", `sub\nested.db`, outside, good,
+	names := []string{
+		"../outside.db", "sub/nested.db", outside, good,
 		"known-good.txt", "no-extension", "", "known-good.db/", "./known-good.db",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		// A backslash separates path elements only on Windows; elsewhere it is
+		// an ordinary file-name character and the name stays inside backups.
+		names = append(names, `..\outside.db`, `sub\nested.db`)
+	}
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			var failure struct {
 				Error string `json:"error"`
