@@ -357,14 +357,16 @@ func refuseUpdateDowngrade(manifest updateManifest, installed buildMoment, allow
 	if allowDowngrade {
 		return nil
 	}
-	override := "To install it anyway, quit NEVR and start nevr-desktop.exe once with --" + allowDowngradeFlag +
-		", or run NEVR-Anticheat-Setup.exe yourself"
+	refusal := &updateDowngradeRefusal{Override: "To install it anyway, quit NEVR and start nevr-desktop.exe once with --" + allowDowngradeFlag +
+		", or run NEVR-Anticheat-Setup.exe yourself"}
 	published, ok := parseUpdateTime(manifest.CommitTime)
 	if !ok {
-		return errors.New("the published Windows release does not state when its source was committed, so NEVR cannot tell whether it is newer than this build; refusing a possible downgrade. " + override)
+		refusal.Reason = "the published Windows release does not state when its source was committed, so NEVR cannot tell whether it is newer than this build; refusing a possible downgrade"
+		return refusal
 	}
 	if installed.Time.IsZero() {
-		return errors.New("this build does not record when it was built, so NEVR cannot tell whether the published Windows release is newer; refusing a possible downgrade. " + override)
+		refusal.Reason = "this build does not record when it was built, so NEVR cannot tell whether the published Windows release is newer; refusing a possible downgrade"
+		return refusal
 	}
 	if published.After(installed.Time) {
 		return nil
@@ -373,9 +375,21 @@ func refuseUpdateDowngrade(manifest updateManifest, installed buildMoment, allow
 	if !installed.Exact {
 		basis = "built"
 	}
-	return fmt.Errorf("the published Windows release (%s, committed %s) is not newer than this build (%s, %s %s); refusing to downgrade. %s",
-		shortCommit(manifest.Commit), published.Format(time.RFC3339), shortCommit(installed.Commit), basis, installed.Time.Format(time.RFC3339), override)
+	refusal.Reason = fmt.Sprintf("the published Windows release (%s, committed %s) is not newer than this build (%s, %s %s); refusing to downgrade",
+		shortCommit(manifest.Commit), published.Format(time.RFC3339), shortCommit(installed.Commit), basis, installed.Time.Format(time.RFC3339))
+	return refusal
 }
+
+// updateDowngradeRefusal is the error refuseUpdateDowngrade returns. The update
+// CHECK reports Reason on its own, so the page can say why no update is offered
+// without the check and the install path each keeping a copy of the rule. The
+// install path prints the whole error, which also names the manual override.
+type updateDowngradeRefusal struct {
+	Reason   string
+	Override string
+}
+
+func (r *updateDowngradeRefusal) Error() string { return r.Reason + ". " + r.Override }
 
 // stripUpdateOverrideArgs removes the downgrade override from the arguments the
 // update helper uses to reopen NEVR, so one deliberate downgrade does not turn
@@ -395,6 +409,38 @@ func stripUpdateOverrideArgs(args []string) []string {
 		kept = append(kept, arg)
 	}
 	return kept
+}
+
+// verifiedReleaseManifest reads the rolling release's manifest and published
+// checksum and checks them against each other and against releaseCommit. It
+// downloads no installer. The update check and the install path both use it, so
+// "is this release newer?" is always asked of a manifest that is bound to the
+// revision the tag names.
+func (rt *desktopRuntime) verifiedReleaseManifest(ctx context.Context, releaseCommit string) (updateManifest, map[string]githubReleaseAsset, string, error) {
+	var manifest updateManifest
+	assets, err := rt.releaseAssets(ctx)
+	if err != nil {
+		return manifest, nil, "", err
+	}
+	manifestRaw, err := rt.readAsset(ctx, assets[updateManifestName], maxUpdateMetadataSize)
+	if err != nil {
+		return manifest, nil, "", fmt.Errorf("download update manifest: %w", err)
+	}
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		return manifest, nil, "", fmt.Errorf("decode update manifest: %w", err)
+	}
+	checksumRaw, err := rt.readAsset(ctx, assets[updateChecksumName], maxUpdateMetadataSize)
+	if err != nil {
+		return manifest, nil, "", fmt.Errorf("download published checksum: %w", err)
+	}
+	publishedHash, err := parsePublishedChecksum(checksumRaw)
+	if err != nil {
+		return manifest, nil, "", err
+	}
+	if err := validateUpdateManifest(manifest, releaseCommit, publishedHash, assets[updateInstallerName]); err != nil {
+		return manifest, nil, "", err
+	}
+	return manifest, assets, publishedHash, nil
 }
 
 func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, string, error) {
@@ -417,27 +463,8 @@ func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, s
 	if sameCommit(buildCommit, releaseCommit) {
 		return "", "", errors.New("NEVR is already on the latest packaged revision")
 	}
-	assets, err := rt.releaseAssets(ctx)
+	manifest, assets, publishedHash, err := rt.verifiedReleaseManifest(ctx, releaseCommit)
 	if err != nil {
-		return "", "", err
-	}
-	manifestRaw, err := rt.readAsset(ctx, assets[updateManifestName], maxUpdateMetadataSize)
-	if err != nil {
-		return "", "", fmt.Errorf("download update manifest: %w", err)
-	}
-	var manifest updateManifest
-	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
-		return "", "", fmt.Errorf("decode update manifest: %w", err)
-	}
-	checksumRaw, err := rt.readAsset(ctx, assets[updateChecksumName], maxUpdateMetadataSize)
-	if err != nil {
-		return "", "", fmt.Errorf("download published checksum: %w", err)
-	}
-	publishedHash, err := parsePublishedChecksum(checksumRaw)
-	if err != nil {
-		return "", "", err
-	}
-	if err := validateUpdateManifest(manifest, releaseCommit, publishedHash, assets[updateInstallerName]); err != nil {
 		return "", "", err
 	}
 	if err := refuseUpdateDowngrade(manifest, installedBuildMoment(), *allowUpdateDowngrade); err != nil {

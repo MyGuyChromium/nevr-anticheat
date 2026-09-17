@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"context"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,22 +157,12 @@ func TestDesktopRegressionComparisonSandboxHistoryRuntimeAndSupport(t *testing.T
 }
 
 func TestDesktopUpdateCheckUsesEmbeddedRevision(t *testing.T) {
-	newCommit := strings.Repeat("a", 40)
-	oldCommit := strings.Repeat("b", 40)
-	s, ts := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/git/ref/tags/windows-latest" {
-			t.Fatalf("update request path = %q", r.URL.Path)
-		}
-		_, _ = io.WriteString(w, `{"object":{"sha":"`+newCommit+`"}}`)
-	}))
-	defer api.Close()
-	s.runtime.updateURL = api.URL
-	old := buildCommit
-	buildCommit = oldCommit
-	defer func() { buildCommit = old }()
+	// The check now also reads the release manifest (a different revision is
+	// only an update when it is newer), so it needs the whole fake release.
+	setInstalledBuild(t, strings.Repeat("b", 40))
+	f := newUpdateFixture(t)
 	var status updateStatus
-	if resp := getJSON(t, ts.URL+"/"+testToken+"/api/update", &status); resp.StatusCode != 200 || !status.Available || status.LatestCommit != newCommit {
+	if resp := getJSON(t, updateCheckServer(t, f), &status); resp.StatusCode != 200 || !status.Available || status.LatestCommit != f.commit {
 		t.Fatalf("update=%d %+v", resp.StatusCode, status)
 	}
 }
