@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,12 +36,20 @@ type BatchResult struct {
 	// or locked database, cancelled context). They are included in Errors
 	// and excluded from Processed so a run that stored nothing never reports
 	// success.
-	PersistFailed  int           `json:"persist_failed"`
-	FlaggedPlayers []string      `json:"flagged_players"`
-	FramesInserted int           `json:"frames_inserted"`
-	FramesIgnored  int           `json:"frames_ignored"`
-	EventsStored   int           `json:"events_stored"`
-	Duration       time.Duration `json:"duration"`
+	PersistFailed int `json:"persist_failed"`
+	// SourceConflicts counts matches refused under --force because the file is a
+	// DIFFERENT recording of a stored match (another observer, a late joiner, a
+	// clip). Replacing would silently mix or destroy evidence, so the stored
+	// recording is kept; they are included in Skipped. Use analyze
+	// --replace-source on the single file to replace deliberately.
+	SourceConflicts int `json:"source_conflicts"`
+	// ConflictDetails says, per refused file, how it differs from what is stored.
+	ConflictDetails []string      `json:"conflict_details,omitempty"`
+	FlaggedPlayers  []string      `json:"flagged_players"`
+	FramesInserted  int           `json:"frames_inserted"`
+	FramesIgnored   int           `json:"frames_ignored"`
+	EventsStored    int           `json:"events_stored"`
+	Duration        time.Duration `json:"duration"`
 }
 
 // BatchAnalyzer processes directories of replay files.
@@ -61,6 +70,8 @@ type BatchAnalyzer struct {
 	opts            AnalysisOptions
 	physics         model.PhysicsConstants
 	pipelineMu      sync.Mutex
+	conflictMu      sync.Mutex
+	conflicts       []string // per run: "<file>: <how it differs>"
 }
 
 // SetAnalysisOptions sets the level table and detector names used when the
@@ -119,13 +130,17 @@ type parsedMatch struct {
 	frames     []model.PlayerTelemetryFrame
 	rawByFrame map[int]string
 	result     *pipeline.MatchResult
-	replaced   bool // an existing match was cleared because force is set
+	replaced   bool   // an existing match was cleared because force is set
+	conflict   string // non-empty: refused under force, a different recording is stored
 }
 
 // AnalyzeDirectory processes all replay files in a directory.
 func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*BatchResult, error) {
 	start := time.Now()
 	result := &BatchResult{}
+	ba.conflictMu.Lock()
+	ba.conflicts = nil
+	ba.conflictMu.Unlock()
 
 	files, ignored, err := ba.findReplayFiles(dir)
 	if err != nil {
@@ -200,6 +215,11 @@ func (ba *BatchAnalyzer) AnalyzeDirectory(ctx context.Context, dir string) (*Bat
 	writerWg.Wait()
 
 	sort.Strings(result.FlaggedPlayers)
+	ba.conflictMu.Lock()
+	result.ConflictDetails = append([]string(nil), ba.conflicts...)
+	ba.conflictMu.Unlock()
+	sort.Strings(result.ConflictDetails)
+	result.SourceConflicts = len(result.ConflictDetails)
 	result.Duration = time.Since(start)
 	return result, nil
 }
@@ -342,6 +362,30 @@ func (ba *BatchAnalyzer) prepareMatch(ctx context.Context, p *pipeline.Pipeline,
 			ba.logger.Info("skipping match already in store (use --force to re-analyze)",
 				"match_id", pm.matchCtx.MatchID, "file", pm.path)
 			return true, nil
+		}
+		// --force re-analyzes the SAME recording. A different recording of a
+		// stored match must never replace it implicitly (native captures are
+		// guarded separately by validateNativeSource in persist).
+		if pm.matchCtx.Source != "tape" && pm.matchCtx.NativeCapture == nil {
+			storedCtx, err := ba.store.GetMatchContext(ctx, pm.matchCtx.MatchID)
+			if err != nil && !errors.Is(err, sqlite.ErrNotFound) {
+				return false, fmt.Errorf("loading stored context: %w", err)
+			}
+			if storedCtx == nil || (storedCtx.Source != "tape" && storedCtx.NativeCapture == nil) {
+				rel, detail, err := compareStoredTicks(ctx, ba.store, storedCtx, pm.matchCtx, rawMapIterator(pm.rawByFrame), len(pm.rawByFrame))
+				if err != nil {
+					return false, fmt.Errorf("comparing with the stored recording: %w", err)
+				}
+				if rel == SourceDifferent {
+					ba.logger.Warn("kept the stored recording: this file is a different recording of the same match",
+						"match_id", pm.matchCtx.MatchID, "file", pm.path, "difference", detail)
+					pm.conflict = detail
+					ba.conflictMu.Lock()
+					ba.conflicts = append(ba.conflicts, filepath.Base(pm.path)+": "+detail)
+					ba.conflictMu.Unlock()
+					return true, nil
+				}
+			}
 		}
 		pm.replaced = true
 	}
