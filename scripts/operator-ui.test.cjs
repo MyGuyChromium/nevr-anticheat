@@ -11,7 +11,42 @@ const { test } = require('node:test');
 const page = fs.readFileSync(path.join(__dirname, '../cmd/desktop/index.html'), 'utf8');
 const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
-const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+// Every "escapes untrusted ..." assertion below runs against the page's OWN esc,
+// sliced out of index.html like the other helpers. A test-local copy would keep
+// passing after the shipped function lost a mapping.
+const escDefinition = script.match(/^  const esc = (.+);$/m);
+assert.ok(escDefinition, 'index.html defines esc as a single-line const');
+const escape = vm.runInNewContext('(' + escDefinition[1] + ')');
+
+test('the page\'s own esc neutralises markup, both quote styles and non-string input', () => {
+  assert.equal(escape(`<img src=x onerror=1>&"'`), '&lt;img src=x onerror=1&gt;&amp;&quot;&#39;');
+  assert.equal(escape('&lt;'), '&amp;lt;', 'already-escaped text is escaped again, never trusted');
+  assert.equal(escape(null), '');
+  assert.equal(escape(undefined), '');
+  assert.equal(escape(0), '0');
+  assert.equal(escape(12.5), '12.5');
+  assert.equal(escape(false), 'false');
+  assert.equal(escape({ toString: () => '<b>' }), '&lt;b&gt;');
+  // Attribute contexts such as data-replay-match="..." and title='...' depend on both quotes.
+  const attribute = `<i data-x="${escape('" onmouseover="alert(1)')}" title='${escape("' onfocus='alert(1)")}'>`;
+  assert.equal((attribute.match(/"/g) || []).length, 2);
+  assert.equal((attribute.match(/'/g) || []).length, 2);
+});
+
+test('test-local esc copies in sibling suites stay equivalent to the page\'s own esc', () => {
+  // desktop-review and autopocket-review inject their own one-line copy. Pin each
+  // copy to the shipped function so their escaping assertions cannot drift from it.
+  const corpus = [`<img src=x onerror=1>&"'`, '&amp;', '', null, undefined, 0, 7.25, true, '</script><script>', 'a\'b"c', '<<>>&&""\'\''];
+  for (const name of ['desktop-review.test.cjs', 'autopocket-review.test.cjs']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    const copies = [...source.matchAll(/^\s*const escape = (.+);$/gm)];
+    if (!copies.length) { assert.doesNotMatch(source, /esc:\s*escape\b/, `${name} injects an esc this test cannot find`); continue; }
+    for (const copy of copies) {
+      const local = vm.runInNewContext('(' + copy[1] + ')');
+      for (const value of corpus) assert.equal(local(value), escape(value), `${name} copy differs for ${JSON.stringify(value)}`);
+    }
+  }
+});
 
 test('native tape is accepted consistently by pickers, drop and folder intake', () => {
   assert.match(page, /id="files"[^>]*accept="\.echoreplay,\.tape,\.json"/);
