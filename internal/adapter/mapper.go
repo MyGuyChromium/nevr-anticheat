@@ -136,6 +136,11 @@ type Mapper struct {
 
 	// Track which fields have been warned about (warn once per field)
 	warnedFields map[string]bool
+
+	// phases resolves unnamed game_status samples from the statuses this
+	// recording has already shown. It restarts itself on a session-id change
+	// or a time-base restart, so NewMatch needs no extra reset.
+	phases model.PhaseNormalizer
 }
 
 // NewMapper creates a new Echo VR telemetry mapper.
@@ -764,8 +769,11 @@ func (m *Mapper) mapPlayer(
 		warnings = m.appendWarningOnce(warnings, "player_velocity_unavailable", "player velocity is absent/null/incomplete; reported velocity omitted rather than manufacturing stationary motion")
 	}
 
-	// Map game phase
-	gamePhase := mapGamePhase(session.GameStatus)
+	// Map game phase through the normaliser shared with the tape path and
+	// the match summary (model.PhaseNormalizer): an unnamed status inside a
+	// goal cycle is a non-play gap, not the active fallback. Repeating the
+	// call for every player of a tick is idempotent.
+	gamePhase := m.phases.Normalize(session.SessionID, session.GameStatus, timestamp)
 
 	// CONFIRMED: team scores
 	blueScore := session.BluePoints
@@ -898,28 +906,6 @@ func playerID(p EchoVRPlayer) string {
 // isZeroVec checks if a raw [3]float64 is all zeros.
 func isZeroVec(v [3]float64) bool {
 	return v[0] == 0 && v[1] == 0 && v[2] == 0
-}
-
-// mapGamePhase converts Echo VR game_status to our internal game phase string.
-func mapGamePhase(status string) string {
-	switch strings.ToLower(status) {
-	case "playing":
-		return "playing"
-	case "round_start":
-		return "round_start"
-	case "round_over":
-		return "round_over"
-	case "pre_match":
-		return "pre_match"
-	case "post_match":
-		return "post_match"
-	case "score":
-		return "round_over" // "score" phase maps to round_over (non-active)
-	case "":
-		return "playing" // default to active if unknown
-	default:
-		return status // pass through unknown values
-	}
 }
 
 // FieldMapping documents a single field mapping for audit purposes.

@@ -236,6 +236,11 @@ type SummaryBuilder struct {
 	pendingSpeed int
 	graceLeft    int
 	lastTime     float64
+	// phases/phase: the tick's game phase from the normaliser shared with
+	// both ingest paths, so the summary and the detectors agree on what is
+	// live play (an unnamed status inside a goal cycle is not).
+	phases model.PhaseNormalizer
+	phase  string
 }
 
 // NewSummaryBuilder starts a summary for the match mc describes.
@@ -259,14 +264,11 @@ func NewSummaryBuilder(mc *model.MatchContext) *SummaryBuilder {
 	}
 }
 
-// activeStatus reports whether a game_status is live play, the only time a
-// release is a throw (between rounds the disc is teleported).
-func activeStatus(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "playing", "round", "overtime", "sudden_death", "":
-		return true
-	}
-	return false
+// activeStatus reports whether the current tick's normalised game phase is
+// live play, the only time a release is a throw (between rounds, and in the
+// unnamed gap after a goal, the disc is teleported).
+func (b *SummaryBuilder) activeStatus() bool {
+	return model.IsActiveGamePhase(b.phase)
 }
 
 // lastScoreKey identifies a last_score payload by the shot facts, not the
@@ -302,6 +304,7 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 	s := b.s
 	s.Ticks++
 	b.lastTime = t
+	b.phase = b.phases.Normalize(session.SessionID, session.GameStatus, t)
 	if s.Ticks == 1 {
 		b.lastScoreKey = lastScoreKey(session.LastScore)
 	}
@@ -421,7 +424,7 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 }
 
 func (b *SummaryBuilder) release(pid string, session *adapter.EchoVRSessionResponse, frameIndex int, t, speed float64) {
-	if !activeStatus(session.GameStatus) {
+	if !b.activeStatus() {
 		return
 	}
 	ps := b.player(pid)
