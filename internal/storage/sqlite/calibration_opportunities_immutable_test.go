@@ -57,3 +57,30 @@ func TestHashBoundOpportunityCannotBeDeletedAndRevoted(t *testing.T) {
 		t.Fatalf("missing delete = %t, %v", ok, err)
 	}
 }
+
+// Re-importing a library that contains a hash-bound annotation is refused (the
+// portable text cannot prove the ballots), but a refused import adds no
+// information and therefore must not quarantine the held-out match.
+func TestRefusedImportOfBoundOpportunityDoesNotQuarantineItsMatch(t *testing.T) {
+	s, x, candidate := blindFixture(t)
+	ctx := t.Context()
+	held := []StoredMatch{splitMatch("M", "P")}
+	if _, err := s.ReconcileCalibrationSplits(ctx, held, map[string]string{"M": "holdout"}); err != nil {
+		t.Fatal(err)
+	}
+	ballotPair(t, s, x, candidate, GroundTruthNegative, GroundTruthNegative)
+	if _, err := s.RevealBlindReview(ctx, x.SessionID, candidate); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListCalibrationOpportunities(ctx, "M", "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("fixture: %+v %v", items, err)
+	}
+	if err := s.ImportCalibrationOpportunity(ctx, items[0]); !errors.Is(err, ErrBoundOpportunityImmutable) {
+		t.Fatalf("bound import error = %v", err)
+	}
+	got, err := s.ReconcileCalibrationSplits(ctx, held, nil)
+	if err != nil || got["M"].Split != "holdout" || got["M"].Quarantined {
+		t.Fatalf("refused import spent the holdout: %+v %v", got["M"], err)
+	}
+}
