@@ -322,7 +322,7 @@ async function main() {
     if (grouped.size > 60) console.log(`  ... and ${grouped.size - 60} more kinds`);
     return flag('--report-only') ? 0 : 1;
   }
-  console.log('\nAll rendered layout metrics are within budget (synthetic fixture data; layout only).');
+  console.log(`\nAll rendered layout metrics are within budget (${option('--url') ? 'page at --url' : 'synthetic fixture data'}; layout only).`);
   return 0;
 }
 
