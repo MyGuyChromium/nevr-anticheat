@@ -914,6 +914,11 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 	if err != nil {
 		return calibrationDashboard{}, err
 	}
+	// Every re-analysis gives an unchanged observation a new event id while the
+	// earlier label row is kept. A moderator who labels it again must not add a
+	// second gate sample. The rule is the storage layer's, shared with
+	// ComputeCalibration: one observation counts once, with its newest verdict.
+	reviews = sqlite.LatestEventReviewPerObservation(reviews)
 	opportunities, err := store.ListCalibrationOpportunities(ctx, "", "")
 	if err != nil {
 		return calibrationDashboard{}, err

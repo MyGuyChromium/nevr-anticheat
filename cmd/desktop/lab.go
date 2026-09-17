@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,6 +142,50 @@ type regressionItem struct {
 	Current     *eventDigest `json:"current,omitempty"`
 	Comment     string       `json:"comment,omitempty"`
 	ReviewedAt  string       `json:"reviewed_at"`
+	// AnalysisState says whether the expectation could be tested at all; see
+	// the labAnalysis* constants. AnalysisNote is set when it could not.
+	AnalysisState string `json:"analysis_state"`
+	AnalysisNote  string `json:"analysis_note,omitempty"`
+}
+
+// A label can only be tested against an analysis that exists. "No event near
+// this frame" means "the detector stayed quiet" only when the match was
+// actually analysed here; for a label that arrived through a portable library
+// ahead of its recording, or a match that was never analysed, it means nothing.
+// Reading that absence as detector behaviour reported every such "False
+// positive" label as fixed and every "Correct" label as a regression.
+const (
+	labAnalysisCurrent    = "analyzed"
+	labAnalysisNotStored  = "match_not_stored"
+	labAnalysisNeverRun   = "not_analyzed"
+	labNoteMatchNotStored = "This match is not stored on this PC, so there is no analysis to test the label against. Analyze its recording here first."
+	labNoteNeverAnalyzed  = "This match is stored but has no recorded analysis run and no detector events, so there is nothing to test the label against. Analyze its recording again."
+)
+
+// matchAnalysisState classifies one match for the Regression Lab. Stored
+// detector events are themselves the current analysis (matches analysed before
+// analysis runs were recorded have events and no run). Without events, a
+// recorded run means the detectors ran and stayed quiet.
+func (s *server) matchAnalysisState(ctx context.Context, matchID string, events []model.DetectionEvent) (string, error) {
+	if len(events) > 0 {
+		return labAnalysisCurrent, nil
+	}
+	store := s.engine.Store()
+	runs, err := store.ListAnalysisRuns(ctx, matchID, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(runs) > 0 {
+		return labAnalysisCurrent, nil
+	}
+	stored, err := store.HasMatch(ctx, matchID)
+	if err != nil {
+		return "", err
+	}
+	if !stored {
+		return labAnalysisNotStored, nil
+	}
+	return labAnalysisNeverRun, nil
 }
 
 func findReviewedEvent(review sqlite.EventReview, events []model.DetectionEvent) *model.DetectionEvent {
@@ -169,9 +214,17 @@ func (s *server) handleRegressionLab(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "loading regression labels: %v", err)
 		return
 	}
+	// Every re-analysis gives an unchanged observation a new event id and keeps
+	// the earlier label, so one observation labelled across re-analyses is one
+	// expectation, carrying its newest verdict, not one per re-analysis.
+	labels := len(reviews)
+	reviews = sqlite.LatestEventReviewPerObservation(reviews)
 	byMatch := make(map[string][]model.DetectionEvent)
 	contexts := make(map[string]*model.MatchContext)
+	states := make(map[string]string)
 	items := make([]regressionItem, 0, len(reviews))
+	untested := make([]regressionItem, 0)
+	untestedMatches := make(map[string]bool)
 	passed, failed, excluded := 0, 0, 0
 	for _, review := range reviews {
 		if review.Verdict == "uncertain" {
@@ -187,24 +240,41 @@ func (s *server) handleRegressionLab(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 500, "loading current detector events for %s: %v", review.MatchID, eventErr)
 				return
 			}
-			byMatch[review.MatchID] = events
+			state, stateErr := s.matchAnalysisState(ctx, review.MatchID, events)
+			if stateErr != nil {
+				writeError(w, 500, "checking whether %s has a current analysis: %v", review.MatchID, stateErr)
+				return
+			}
+			byMatch[review.MatchID], states[review.MatchID] = events, state
 			contexts[review.MatchID], _ = store.GetMatchContext(ctx, review.MatchID)
 		}
-		current := findReviewedEvent(review, byMatch[review.MatchID])
 		expectation := "signal remains present"
-		ok := current != nil
 		if review.Verdict == "no" {
-			expectation, ok = "legal play stays clear", current == nil
+			expectation = "legal play stays clear"
 		}
 		item := regressionItem{MatchID: review.MatchID, PlayerID: review.PlayerID,
 			PlayerName: nameOf(contexts[review.MatchID], review.PlayerID), DetectorID: review.DetectorID,
-			FrameIndex: review.FrameIndex, Expectation: expectation, Passed: ok,
+			FrameIndex: review.FrameIndex, Expectation: expectation, AnalysisState: states[review.MatchID],
 			Comment: review.Comment, ReviewedAt: fmtTime(review.ReviewedAt)}
+		if item.AnalysisState != labAnalysisCurrent {
+			item.AnalysisNote = labNoteNeverAnalyzed
+			if item.AnalysisState == labAnalysisNotStored {
+				item.AnalysisNote = labNoteMatchNotStored
+			}
+			untested = append(untested, item)
+			untestedMatches[review.MatchID] = true
+			continue
+		}
+		current := findReviewedEvent(review, byMatch[review.MatchID])
+		item.Passed = current != nil
+		if review.Verdict == "no" {
+			item.Passed = current == nil
+		}
 		if current != nil {
 			d := digestEvent(*current, contexts[review.MatchID])
 			item.Current = &d
 		}
-		if ok {
+		if item.Passed {
 			passed++
 		} else {
 			failed++
@@ -213,7 +283,13 @@ func (s *server) handleRegressionLab(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "passed": passed, "failed": failed,
 		"excluded_unsure": excluded, "items": items,
-		"notice": "Regression expectations come from your Correct and False positive detector labels. No player is punished by this test."})
+		// Labels whose match has no current analysis are neither passed nor
+		// failed and are not part of total or items.
+		"no_current_analysis": len(untested), "no_current_analysis_matches": len(untestedMatches),
+		"no_current_analysis_items": untested,
+		// Labels folded into a newer label of the same observation.
+		"superseded_labels": labels - len(reviews),
+		"notice":            "Regression expectations come from your Correct and False positive detector labels. No player is punished by this test."})
 }
 
 type thresholdPreviewRequest struct {
@@ -395,6 +471,8 @@ func (s *server) handlePlayerHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reviews, _ := store.ListEventReviews(ctx, time.Time{})
+	// One observation labelled again after a re-analysis is one review here too.
+	reviews = sqlite.LatestEventReviewPerObservation(reviews)
 	reviewByMatch := make(map[string][]sqlite.EventReview)
 	for _, rev := range reviews {
 		if rev.PlayerID == pid {
