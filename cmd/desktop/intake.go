@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -371,20 +372,31 @@ const partialSpoolSuffix = ".part"
 // killed or the machine lost power mid-upload). The caller holds analyzeMu, so
 // no upload is being written while this runs.
 func removePartialSpools(pendingDir string) (removed int) {
-	_ = filepath.WalkDir(pendingDir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), partialSpoolSuffix) {
-			return nil
-		}
-		if os.Remove(path) == nil {
-			removed++
-			if dir := filepath.Dir(path); filepath.Clean(dir) != filepath.Clean(pendingDir) {
-				_ = os.Remove(dir) // only when empty
-				if parent := filepath.Dir(dir); filepath.Clean(parent) != filepath.Clean(pendingDir) {
-					_ = os.Remove(parent)
-				}
-			}
+	// Root-scoped: nothing outside the pending directory can be removed, even
+	// through a symlink planted inside it.
+	root, err := os.OpenRoot(pendingDir)
+	if err != nil {
+		return 0
+	}
+	defer root.Close()
+	var partial []string
+	_ = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), partialSpoolSuffix) {
+			partial = append(partial, path)
 		}
 		return nil
 	})
+	for _, path := range partial {
+		if root.Remove(path) != nil {
+			continue
+		}
+		removed++
+		// Drop the job directories the upload created, only when empty.
+		for dir := filepath.ToSlash(filepath.Dir(path)); dir != "." && dir != "/" && dir != ""; dir = filepath.ToSlash(filepath.Dir(dir)) {
+			if root.Remove(dir) != nil {
+				break
+			}
+		}
+	}
 	return removed
 }
