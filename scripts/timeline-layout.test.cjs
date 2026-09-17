@@ -199,3 +199,30 @@ test('a narrow container keeps a usable plot and lets its own box scroll', () =>
   assert.equal(L.label, TL.labelNarrow);
   assert.equal(timelineLayout({ duration: 300, players: roster(2) }, 1370).label, TL.label);
 });
+
+// The renderer is not pure (it uses the page's formatters), but what it writes
+// into the document must be inert whatever an untrusted recording calls a player.
+test('the rendered SVG escapes recording-supplied text and exposes every mark to the keyboard', () => {
+  const from = page.indexOf('// TIMELINE-LAYOUT-BEGIN'), to = page.indexOf('  function timelineLegend(');
+  assert.ok(to > from);
+  const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const render = vm.createContext({ esc: escapeHTML, fmtInt: (n) => (typeof n === 'number' ? String(n) : '—'), fmtNum: (n, d = 1) => (typeof n === 'number' ? n.toFixed(d) : '—'), lvlName: (l) => String(l || '').replace(/_/g, ' ') });
+  vm.runInContext(page.slice(from, to) + '\nthis.api = { timelineLayout, timelineSVG };', render);
+  const hostile = '"><img src=x onerror=alert(1)>';
+  const m = {
+    summary: { goals: [{ time: 20, team: 'blue', scorer: hostile, blue_score: 2, orange_score: 0, points: 2 }], throws: [throwAt(10, hostile, 19.5, { player: hostile }), throwAt(40, hostile, 9, { player: hostile })] },
+    events: [{ ...signalAt(30, hostile, 'high', false), detector_id: hostile, detector_name: hostile, player_name: hostile }],
+    cases: [{ case_id: hostile, player_id: hostile, player_name: hostile, level: hostile }],
+  };
+  const L = render.api.timelineLayout({ duration: 60, cap: 18.9, players: [{ player_id: hostile, name: hostile, team: hostile }], goals: m.summary.goals, throws: m.summary.throws, events: m.events, cases: m.cases }, 1157);
+  const svg = render.api.timelineSVG(m, L);
+  assert.doesNotMatch(svg, /<img|onerror=alert\(1\)>/, 'hostile text never becomes markup');
+  assert.match(svg, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  const groups = svg.match(/<g class="tl-mark[^>]*>/g) || [];
+  assert.equal(groups.length, L.marks.length);
+  assert.equal(L.marks.length, 5);
+  for (const tag of groups) assert.match(tag, /data-tl-mark="\d+" tabindex="(0|-1)" role="button" aria-label="[^"]+"/);
+  assert.equal(groups.filter((tag) => tag.includes('tabindex="0"')).length, 1, 'one tab stop; arrow keys reach the rest');
+  assert.match(groups.find((tag) => tag.includes('tl-over')), /over the 18\.9 metres per second engine cap, marked for review/);
+  assert.equal(groups.filter((tag) => tag.includes('tl-over')).length, 1, 'only the over-cap release is drawn as over the cap');
+});

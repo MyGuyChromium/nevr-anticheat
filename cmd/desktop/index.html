@@ -1662,7 +1662,7 @@
     for (const tick of L.ticks) parts.push(`<line class="tl-grid" x1="${tick.x}" x2="${tick.x}" y1="${L.scoreTop + 6}" y2="${L.lanesBottom}"/>`);
     parts.push(`<line class="tl-axis" x1="${L.x0}" x2="${L.x1}" y1="${L.lanesBottom}" y2="${L.lanesBottom}"/>`);
     L.ticks.forEach((tick, i) => parts.push(`<line class="tl-axis" x1="${tick.x}" x2="${tick.x}" y1="${L.lanesBottom}" y2="${L.lanesBottom + 4}"/><text class="tl-num" x="${tick.x}" y="${L.lanesBottom + 18}" text-anchor="${i === 0 ? 'start' : tick.x > L.x1 - 16 ? 'end' : 'middle'}">${tick.label}</text>`));
-    parts.push(`<text class="tl-cap" x="12" y="${L.lanesBottom + 18}">Recording time</text>`);
+    parts.push(`<text class="tl-cap" x="12" y="${L.lanesBottom + 18}">${L.label >= 180 ? 'Recording time' : 'Time'}</text>`);
     // Score lane.
     parts.push(`<text class="tl-cap" x="12" y="${L.scoreY + 4}">Score</text><line class="tl-base" x1="${L.x0}" x2="${L.x1}" y1="${L.scoreY}" y2="${L.scoreY}"/>`);
     if (!L.counts.goals) parts.push(`<text class="tl-quiet" x="${L.x0 + 8}" y="${L.scoreY - 8}">No score change was observed in the recording.</text>`);
@@ -1695,7 +1695,7 @@
       } else if (mark.kind === 'signal') {
         cls += mark.concealed ? ' tl-concealed' : ` tl-sev-${mark.sev}${mark.shadow ? ' tl-shadow' : ''}`;
         const r = 4.6, diamond = (x) => `M${n(x)} ${n(mark.y - r)}L${n(x + r)} ${mark.y}L${n(x)} ${n(mark.y + r)}L${n(x - r)} ${mark.y}Z`;
-        body = (mark.count > 1 ? `<path class="tl-more" d="${diamond(mark.x + 4.5)}"/>` : '') + (mark.concealed ? `<circle class="tl-glyph" cx="${mark.x}" cy="${mark.y}" r="3.6"/>` : `<path class="tl-glyph" d="${diamond(mark.x)}"/>`);
+        body = (mark.count > 1 ? (mark.concealed ? `<circle class="tl-more" cx="${n(mark.x + 4.5)}" cy="${mark.y}" r="3.6"/>` : `<path class="tl-more" d="${diamond(mark.x + 4.5)}"/>`) : '') + (mark.concealed ? `<circle class="tl-glyph" cx="${mark.x}" cy="${mark.y}" r="3.6"/>` : `<path class="tl-glyph" d="${diamond(mark.x)}"/>`);
         hit = `<rect class="tl-hit" x="${n(mark.x - 6)}" y="${n(mark.y - 6)}" width="${mark.count > 1 ? 16 : 12}" height="12"/>`;
       } else {
         cls += ` tl-lvl-${esc(mark.level)}`;
@@ -1710,16 +1710,20 @@
   function timelineLegend(m, L) {
     const sw = (inner, w = 18) => `<svg width="${w}" height="16" viewBox="0 0 ${w} 16" aria-hidden="true" focusable="false">${inner}</svg>`;
     const diamond = (x, cls) => `<g class="${cls}"><path class="tl-glyph" d="M${x} 3.4L${x + 4.6} 8L${x} 12.6L${x - 4.6} 8Z"/></g>`;
+    // Only what this match actually shows, so a quiet match gets a quiet legend.
+    const has = (test) => L.marks.some(test);
+    const throwsDrawn = has((mark) => mark.kind === 'throw'), signalsDrawn = has((mark) => mark.kind === 'signal');
     const items = [
-      `${sw('<g class="tl-goal tl-blue"><circle cx="5" cy="8" r="4.5"/></g><g class="tl-goal tl-orange"><circle cx="16" cy="8" r="4.5"/></g>', 22)}Goal, with the running score`,
-      `${sw('<g class="tl-throw"><rect class="tl-tick" x="2" y="9" width="1.8" height="5" fill-opacity=".5"/><rect class="tl-tick" x="7" y="6" width="1.8" height="8" fill-opacity=".72"/><rect class="tl-tick" x="12" y="3" width="1.8" height="11" fill-opacity="1"/></g>')}Throw: taller and stronger is faster${L.cap ? `; the dotted rule is the ${fmtNum(L.cap, 1)} m/s engine cap` : ', relative to the fastest release here'}`,
-      L.cap ? `${sw('<g class="tl-throw tl-over"><rect class="tl-tick" x="7.8" y="1" width="2.4" height="13"/><rect class="tl-tick" x="5" y="1" width="8" height="2.4"/></g>')}Sampled over the cap, marked for review` : '',
-      `${sw('<g class="tl-throw"><rect class="tl-tick" x="8" y="6" width="1.8" height="8" fill-opacity=".8"/><circle class="tl-linked tl-blue" cx="8.9" cy="3" r="2.4"/></g>')}Throw linked to a goal`,
-      L.blind ? `${sw('<g class="tl-signal tl-concealed"><circle class="tl-glyph" cx="9" cy="8" r="3.6"/></g>')}Detector signal, conclusion hidden for blinded review`
-        : `${sw(diamond(6, 'tl-signal tl-sev-low') + diamond(17, 'tl-signal tl-sev-medium') + diamond(28, 'tl-signal tl-sev-high') + diamond(39, 'tl-signal tl-sev-critical'), 46)}Scoring signal: low, medium, high, critical`,
-      L.blind ? '' : `${sw(diamond(9, 'tl-signal tl-sev-medium tl-shadow'))}Hollow: observation-only (shadow), adds zero score`,
-      `${sw('<g class="tl-signal tl-sev-low tl-shadow"><path class="tl-more" d="M13.5 3.4L18.1 8L13.5 12.6L8.9 8Z"/><path class="tl-glyph" d="M9 3.4L13.6 8L9 12.6L4.4 8Z"/></g>', 22)}Several marks too close to separate`,
-      `${sw('<line class="tl-base" x1="1" x2="10" y1="8" y2="8"/><line class="tl-absent" x1="10" x2="18" y1="8" y2="8"/>')}Player present in the recording`,
+      has((mark) => mark.kind === 'goal') ? `${sw('<g class="tl-goal tl-blue"><circle cx="5" cy="8" r="4.5"/></g><g class="tl-goal tl-orange"><circle cx="16" cy="8" r="4.5"/></g>', 22)}Goal, with the running score` : '',
+      throwsDrawn ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="2" y="9" width="2" height="5" fill-opacity=".55"/><rect class="tl-tick" x="7" y="6" width="2" height="8" fill-opacity=".75"/><rect class="tl-tick" x="12" y="3" width="2" height="11"/></g>')}Throw: taller and stronger is faster${L.cap ? `; the dotted rule is the ${fmtNum(L.cap, 1)} m/s engine cap` : ', relative to the fastest release here'}` : '',
+      has((mark) => mark.over) ? `${sw('<g class="tl-throw tl-over"><rect class="tl-tick" x="7.8" y="1" width="2.4" height="13"/><rect class="tl-tick" x="5" y="1" width="8" height="2.4"/></g>')}Sampled over the cap, marked for review` : '',
+      has((mark) => mark.kind === 'throw' && mark.goal) ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="8" y="6" width="2" height="8" fill-opacity=".8"/><circle class="tl-linked tl-blue" cx="9" cy="3" r="2.4"/></g>')}Throw linked to a goal` : '',
+      signalsDrawn && L.blind ? `${sw('<g class="tl-signal tl-concealed"><circle class="tl-glyph" cx="9" cy="8" r="3.6"/></g>')}Detector signal, conclusion hidden for blinded review` : '',
+      signalsDrawn && !L.blind ? `${sw(diamond(6, 'tl-signal tl-sev-low') + diamond(17, 'tl-signal tl-sev-medium') + diamond(28, 'tl-signal tl-sev-high') + diamond(39, 'tl-signal tl-sev-critical'), 46)}Detector signal by severity: low, medium, high, critical` : '',
+      has((mark) => mark.kind === 'signal' && !mark.concealed && mark.shadow) ? `${sw(diamond(9, 'tl-signal tl-sev-medium tl-shadow'))}Hollow: observation-only (shadow), adds zero score` : '',
+      has((mark) => mark.kind === 'signal' && !mark.concealed && !mark.shadow) ? `${sw(diamond(9, 'tl-signal tl-sev-medium'))}Filled: scoring signal` : '',
+      has((mark) => mark.count > 1) ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="1" y="5" width="6" height="9" fill-opacity=".8"/></g><g class="tl-signal tl-sev-low tl-shadow"><path class="tl-more" d="M21.5 3.4L26.1 8L21.5 12.6L16.9 8Z"/><path class="tl-glyph" d="M17 3.4L21.6 8L17 12.6L12.4 8Z"/></g>', 28)}Widened or doubled: several events too close to separate` : '',
+      L.lanes.length ? `${sw('<line class="tl-base" x1="1" x2="10" y1="8" y2="8"/><line class="tl-absent" x1="10" x2="18" y1="8" y2="8"/>')}Player present in the recording` : '',
     ].filter(Boolean);
     return `<ul class="tl-legend">${items.map((item) => `<li>${item}</li>`).join('')}</ul>`;
   }
@@ -1727,7 +1731,7 @@
   function timelineFigure(m, idx) {
     return `<figure class="tl" data-timeline="${idx}"><div class="tl-head"><h3>Match timeline</h3><p class="tl-sum" data-tl-sum></p></div>
       <div class="tl-plot" data-tl-plot><p class="empty">Drawing the timeline…</p></div><div class="tl-tip" data-tl-tip hidden aria-hidden="true"></div><div data-tl-legend></div>
-      <figcaption>Reconstructed from recorded samples. The axis is time into the recording; the tables below also show the game clock. Marks are sampled release speeds and detector observations for review, not verdicts, and an empty lane is not proof of fair play.</figcaption></figure>`;
+      <figcaption>Reconstructed from recorded samples. The axis is time into the recording; the tables below also show the game clock. Marks are sampled release speeds and detector observations for review, not verdicts, and an empty lane is not proof of fair play. Arrow keys move between marks; Enter or a click opens the matching table row.</figcaption></figure>`;
   }
 
   function renderTimeline(fig, force) {
