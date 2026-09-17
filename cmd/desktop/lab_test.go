@@ -103,7 +103,7 @@ func TestDesktopRegressionComparisonSandboxHistoryRuntimeAndSupport(t *testing.T
 	}
 
 	// A replay already durably uploaded at shutdown is resumed on the next
-	// launch (called directly here to keep the test deterministic).
+	// launch. resumeAndWait tolerates the background loop racing this call.
 	recoveryDir := filepath.Join(s.runtime.pendingDir, "upload-recovery")
 	if err := os.MkdirAll(recoveryDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestDesktopRegressionComparisonSandboxHistoryRuntimeAndSupport(t *testing.T
 	if err := os.WriteFile(recoveryFile, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s.runtime.resumePending(context.Background())
+	resumeAndWait(t, s)
 	if _, err := os.Stat(recoveryFile); !os.IsNotExist(err) {
 		t.Fatalf("recovered upload still exists: %v", err)
 	}

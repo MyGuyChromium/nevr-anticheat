@@ -177,7 +177,7 @@ func TestDesktopNativeTapeWatchAndRecovery(t *testing.T) {
 	if err := testutil.WriteNativeTapeFixture(pending); err != nil {
 		t.Fatal(err)
 	}
-	s.runtime.resumePending(context.Background())
+	resumeAndWait(t, s)
 	if s.runtime.recovered != 1 || s.runtime.recoveryErr != "" {
 		t.Fatalf("native recovery: count=%d error=%s", s.runtime.recovered, s.runtime.recoveryErr)
 	}

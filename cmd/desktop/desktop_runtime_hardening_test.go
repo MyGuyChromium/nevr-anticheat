@@ -100,7 +100,7 @@ func TestRecoveryReportsPersistenceFailureAndRetainsReplay(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'summary storage unavailable'); END`); err != nil {
 		t.Fatal(err)
 	}
-	s.runtime.resumePending(context.Background())
+	resumeAndWait(t, s)
 	if !strings.Contains(s.runtime.recoveryErr, "summary storage unavailable") || s.runtime.recovered != 0 {
 		t.Fatalf("failure hidden from recovery status: %q, recovered=%d", s.runtime.recoveryErr, s.runtime.recovered)
 	}
@@ -110,7 +110,7 @@ func TestRecoveryReportsPersistenceFailureAndRetainsReplay(t *testing.T) {
 	if _, err := s.engine.Store().DB().Exec(`DROP TRIGGER reject_summary`); err != nil {
 		t.Fatal(err)
 	}
-	s.runtime.resumePending(context.Background())
+	resumeAndWait(t, s)
 	if s.runtime.recoveryErr != "" || s.runtime.recovered != 1 {
 		t.Fatalf("recovery retry failed: %q, recovered=%d", s.runtime.recoveryErr, s.runtime.recovered)
 	}
