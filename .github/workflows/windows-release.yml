@@ -73,7 +73,22 @@ jobs:
             -DNEVR_VERSION_PATCH="$version_patch" \
             packaging/nevr-version.rc -O coff -o cmd/desktop/resource_windows_amd64.syso
 
-          go build -trimpath -ldflags "-s -w -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time} -X main.buildCommitTime=${commit_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
+          # nevr-desktop.exe is released as a GUI-subsystem program, exactly as
+          # scripts/package-windows.ps1 links it: double-clicking it opens only
+          # the app window, never a console. Such a process can only quit by
+          # itself because the embedded page sends api/heartbeat (the server
+          # exits once the window has closed). Without that a windowed build
+          # would be an invisible process nobody can close, so a checkout whose
+          # page stopped sending heartbeats is refused here rather than shipped
+          # windowed or silently switched back to a console build.
+          # guiSubsystem=true makes the app log to <data dir>\logs\nevr-desktop.log.
+          # scripts/release-gate.test.cjs keeps these flags and this marker
+          # identical to the packaging script. The other programs stay console.
+          if ! grep -q "api/heartbeat" cmd/desktop/index.html; then
+            echo "::error::cmd/desktop/index.html does not send api/heartbeat; a windowed nevr-desktop.exe could never quit. Refusing to build the release."
+            exit 1
+          fi
+          go build -trimpath -ldflags "-s -w -H=windowsgui -X main.guiSubsystem=true -X main.buildCommit=${GITHUB_SHA} -X main.buildTime=${build_time} -X main.buildCommitTime=${commit_time}" -o "$package/nevr-desktop.exe" ./cmd/desktop
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-ac.exe" ./cmd/anticheat
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-server.exe" ./cmd/server
           go build -trimpath -ldflags "-s -w" -o "$package/nevr-bridge.exe" ./cmd/bridge
@@ -312,11 +327,36 @@ jobs:
             throw "nevr-desktop.exe does not embed the manifest commit_time $commitTime"
           }
           $desktopBytes = $null
+          # Read the subsystem from the shipped (already signed) files instead
+          # of trusting the build line: IMAGE_OPTIONAL_HEADER.Subsystem is 2
+          # for a windowed program and 3 for a console program. The manifest
+          # records what was measured, like desktop_subsystem in the local
+          # package's NEVR-Anticheat-Build.json.
+          function Get-PESubsystem([string]$Path) {
+            $bytes = [IO.File]::ReadAllBytes($Path)
+            if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw "Not a Windows executable: $Path" }
+            $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+            if ($pe -lt 0 -or $pe + 0x5E -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) { throw "Invalid PE header: $Path" }
+            switch ([BitConverter]::ToUInt16($bytes, $pe + 0x5C)) {
+              2 { return "windows" }
+              3 { return "console" }
+              default { throw "Unexpected PE subsystem $_ in $Path" }
+            }
+          }
+          $desktopSubsystem = Get-PESubsystem (Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64\nevr-desktop.exe")
+          if ($desktopSubsystem -ne "windows") {
+            throw "nevr-desktop.exe is a $desktopSubsystem program; the release must be windowed (-H=windowsgui)."
+          }
+          foreach ($name in @("nevr-ac.exe", "nevr-server.exe", "nevr-bridge.exe", "nevr-compat.exe")) {
+            $subsystem = Get-PESubsystem (Join-Path $PWD "dist\NEVR-Anticheat-Windows-x64\$name")
+            if ($subsystem -ne "console") { throw "$name is a $subsystem program; command-line tools must stay console programs." }
+          }
           $manifest = [ordered]@{
             schema_version = 1
             tag = $releaseTag
             commit = $env:GITHUB_SHA
             commit_time = $commitTime
+            desktop_subsystem = $desktopSubsystem
             version = $version
             installer = [ordered]@{
               name = "NEVR-Anticheat-Setup.exe"
@@ -399,6 +439,18 @@ jobs:
           # The installer must create the data directory, and the installed
           # executable must complete its first boot before fixtures are written.
           & .\scripts\test-installed-startup.ps1 -InstallRoot $installRoot
+
+          # A windowed build has no console, so it must log to a file. This
+          # also proves -X main.guiSubsystem=true took effect: the linker
+          # silently ignores -X for a variable that was renamed or removed,
+          # and the launches above do not pass --log-file.
+          $appLog = Join-Path $dataRoot "logs\nevr-desktop.log"
+          if (-not (Test-Path -LiteralPath $appLog -PathType Leaf) -or (Get-Item -LiteralPath $appLog).Length -le 0) {
+            throw "The installed windowed desktop did not write $appLog"
+          }
+          if ((Get-Content -Raw -LiteralPath $appLog) -match 'http://127\.0\.0\.1:\d+/[a-f0-9]{32}') {
+            throw "The app log contains the per-run access URL."
+          }
 
           $evidenceMarker = Join-Path $dataRoot "installer-preservation-test.txt"
           Set-Content -LiteralPath $evidenceMarker -Value "preserve"
