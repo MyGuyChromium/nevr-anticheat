@@ -645,12 +645,16 @@
   .tl-sum { margin: 0; color: var(--muted); font-size: var(--text-xs); }
   .tl-plot { max-width: 100%; overflow-x: auto; overflow-y: hidden; border-block: 1px solid var(--line); padding-block: 6px; }
   .tl-svg { display: block; overflow: visible; }
-  .tl-svg text { font: 500 11px/1 var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
-  .tl-svg .tl-cap { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; fill: var(--ink-2); }
-  .tl-svg .tl-name { font-size: 12px; fill: var(--ink); }
-  .tl-svg .tl-num { font-family: var(--mono); font-size: 10.5px; }
-  .tl-svg .tl-quiet { font-size: 12px; }
-  .tl-svg .tl-score { font: 700 11.5px/1 var(--sans); }
+  /* rem, not px: the text follows the text-size preference; timelineLayout gets the same scale to make room. */
+  .tl-svg text { font: 500 .6875rem/1 var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .tl-svg .tl-cap { font-size: .65625rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; fill: var(--ink-2); }
+  .tl-svg .tl-name { font-size: .75rem; fill: var(--ink); }
+  .tl-svg .tl-num { font-family: var(--mono); font-size: .65625rem; }
+  .tl-svg .tl-quiet { font-size: .75rem; }
+  .tl-svg .tl-score { font: 700 .71875rem/1 var(--sans); }
+  .tl-svg .tl-phase { font-size: .65625rem; fill: var(--muted); }
+  .tl-band { fill: var(--ink); fill-opacity: .055; }
+  .tl-play { stroke: var(--ink-2); stroke-width: 3; }
   .tl-svg .tl-dash { fill: var(--muted); font-weight: 400; }
   .tl svg .tl-blue { fill: var(--blue); } .tl svg .tl-orange { fill: var(--orange); } .tl svg .tl-none { fill: var(--ink-2); }
   .tl-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 1 5; }
@@ -667,7 +671,7 @@
   .tl-signal .tl-glyph { fill: currentColor; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
   .tl-signal.tl-shadow .tl-glyph, .tl-signal.tl-concealed .tl-glyph { fill: var(--bg); }
   .tl-signal .tl-more { fill: var(--bg); stroke: currentColor; stroke-width: 1.2; opacity: .75; }
-  .tl-svg .tl-casetext { font-size: 11px; fill: var(--muted); }
+  .tl-svg .tl-casetext { font-size: .6875rem; fill: var(--muted); }
   .tl-lvl-suspicious .tl-casetext { fill: var(--warn); } .tl-lvl-high_risk .tl-casetext { fill: var(--hot); }
   .tl-lvl-critical .tl-casetext, .tl-lvl-action_worthy .tl-casetext { fill: var(--bad); }
   .tl-hit { fill: transparent; stroke: none; }
@@ -1394,8 +1398,9 @@
   // coordinate, arrays may be null, and the lane count is bounded.
   const TL = {
     label: 184, labelNarrow: 124, right: 14, caseGutter: 104, minPlot: 260,
-    top: 6, scoreLane: 46, groupHead: 22, axis: 28,
+    top: 6, scoreLane: 46, phaseLane: 20, groupHead: 22, axis: 28,
     maxLanes: 32, throwJoin: 4, signalJoin: 12, goalLabelGap: 38, tickGap: 72,
+    maxPhases: 1000, phaseJoin: 0.05, phaseChar: 6, phasePad: 12,
     steps: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600],
   };
   const tlFinite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -1405,8 +1410,17 @@
     const s = total % 60;
     return `${Math.floor(total / 60)}:${s < 10 ? '0' : ''}${s}`;
   }
-  function tlAxisStep(duration, plotWidth) {
-    for (const step of TL.steps) if (plotWidth * step / duration >= TL.tickGap) return step;
+  // Reader-facing name of a normalised game status. Unknown names (a recording
+  // may use any) pass through with their underscores opened up; the renderer
+  // escapes them.
+  const tlPhaseNames = { playing: 'live play', round: 'live play', overtime: 'overtime', sudden_death: 'overtime', round_over: 'after goal', post_score_gap: 'after goal',
+    pre_round_gap: 'round start', round_start: 'round start', pre_match: 'pre-match', post_match: 'post-match', pre_sudden_death: 'before overtime', post_sudden_death: 'after overtime' };
+  function tlPhaseName(status) {
+    const key = String(status ?? '');
+    return Object.hasOwn(tlPhaseNames, key) ? tlPhaseNames[key] : (key.replace(/_/g, ' ').trim().slice(0, 40) || 'unnamed status');
+  }
+  function tlAxisStep(duration, plotWidth, tickGap) {
+    for (const step of TL.steps) if (plotWidth * step / duration >= (tickGap || TL.tickGap)) return step;
     return Math.max(TL.steps[TL.steps.length - 1], Math.ceil(duration / 4 / 3600) * 3600);
   }
   function timelineLayout(data, containerWidth) {
@@ -1415,6 +1429,9 @@
     const cap = tlFinite(d.cap) && d.cap > 0 ? d.cap : 0;
     const blind = !!d.blind;
     const cases = blind ? [] : list(d.cases);
+    // Text inside the SVG follows the page's text-size preference; the widths
+    // that make room for text scale with it, lane heights do not need to.
+    const textScale = tlFinite(d.textScale) && d.textScale >= 1 && d.textScale <= 2 ? d.textScale : 1;
     // A time far beyond the stated duration would squash the whole match into the
     // left edge, so it is counted as unusable instead of being drawn.
     const stated = tlFinite(d.duration) && d.duration > 0 ? d.duration : 0;
@@ -1448,14 +1465,26 @@
     for (const g of goalsIn) see(g ? time(g.time) : null);
     for (const th of throwsIn) see(th ? time(th.time) : null);
     for (const e of eventsIn) see(e ? time(e.timestamp) : null);
+    // Phase runs: same clock as the marks. A run with an unusable or empty span
+    // is skipped, an overlap is clipped, and a hole between runs stays a hole:
+    // "the recording named no status here" is never drawn as live play.
+    const runs = [];
+    let phasesSkipped = Math.max(0, list(d.phases).length - TL.maxPhases);
+    for (const p of list(d.phases).slice(0, TL.maxPhases)) {
+      const start = p ? time(p.start) : null, end = p ? time(p.end) : null;
+      if (start === null || end === null || end <= start || typeof p.playing !== 'boolean') { phasesSkipped++; continue; }
+      runs.push({ start, end, status: String(p.status ?? '').slice(0, 40), playing: p.playing });
+    }
+    runs.sort((a, b) => a.start - b.start || a.end - b.end);
+    for (const run of runs) if (run.end > duration) duration = run.end;
     const hasTime = duration > 0;
     if (!hasTime) duration = 1;
 
     // Geometry.
     const width = Math.max(320, Math.floor(tlFinite(containerWidth) ? containerWidth : 0));
     const hasCases = cases.some((c) => c && laneByID.get(String(c.player_id ?? '')));
-    const right = hasCases ? TL.caseGutter : TL.right;
-    let label = width >= 900 ? TL.label : TL.labelNarrow;
+    const right = hasCases ? Math.round(TL.caseGutter * textScale) : TL.right;
+    let label = Math.round((width >= 900 ? TL.label : TL.labelNarrow) * textScale);
     let plotWidth = width - label - right;
     if (plotWidth < TL.minPlot) plotWidth = TL.minPlot;
     const x0 = label, x1 = label + plotWidth;
@@ -1464,8 +1493,35 @@
     const laneHeight = lanes.length <= 8 ? 36 : lanes.length <= 12 ? 32 : 28;
     const tickZone = laneHeight - 15; // throws rise through this; signals sit in the strip below the baseline
 
+    // Bands: neighbouring runs with the same playing flag join into one band. A
+    // band is named after the status that fills most of it (the earliest on a
+    // tie), and the name is only drawn when the band is wide enough to hold it.
+    const bands = [];
+    let cursor = -Infinity;
+    for (const run of runs) {
+      const start = Math.max(run.start, cursor);
+      if (run.end <= start) { phasesSkipped++; continue; }
+      cursor = run.end;
+      let band = bands[bands.length - 1];
+      if (!band || band.playing !== run.playing || start - band.t1 > TL.phaseJoin) { band = { playing: run.playing, t0: start, t1: start, parts: [] }; bands.push(band); }
+      band.t1 = run.end;
+      const name = tlPhaseName(run.status), part = band.parts.find((candidate) => candidate.name === name);
+      if (part) part.seconds += run.end - start; else band.parts.push({ name, seconds: run.end - start });
+    }
+    const phaseSeconds = { playing: 0, other: 0 };
+    for (const band of bands) {
+      const main = band.parts.reduce((a, b) => (b.seconds > a.seconds ? b : a));
+      band.name = main.name;
+      band.x0 = round(xOf(band.t0)); band.x1 = round(xOf(band.t1));
+      band.label = !band.playing && band.x1 - band.x0 >= band.name.length * TL.phaseChar * textScale + TL.phasePad ? band.name : '';
+      phaseSeconds[band.playing ? 'playing' : 'other'] += band.t1 - band.t0;
+    }
+    const hasPhases = hasTime && bands.length > 0;
+
     const scoreY = TL.top + TL.scoreLane - 14;
-    let y = TL.top + TL.scoreLane;
+    const phaseTop = TL.top + TL.scoreLane, phaseY = phaseTop + 9;
+    const lanesTop = phaseTop + (hasPhases ? TL.phaseLane : 0);
+    let y = lanesTop;
     const groups = [];
     for (const l of lanes) {
       let group = groups[groups.length - 1];
@@ -1482,18 +1538,21 @@
     const height = lanesBottom + TL.axis;
     for (const c of cases) { const l = c && laneByID.get(String(c.player_id ?? '')); if (l && !l.caseID) { l.caseLevel = String(c.level || ''); l.caseID = String(c.case_id || ''); } }
 
-    const step = tlAxisStep(duration, plotWidth);
+    const step = tlAxisStep(duration, plotWidth, TL.tickGap * textScale);
     const ticks = [];
     if (hasTime) for (let t = 0; t <= duration + 1e-9 && ticks.length < 400; t += step) ticks.push({ t, x: round(xOf(t)), label: tlClock(t) });
 
     const marks = [];
+    // What the game was doing when the throw or signal a mark opens happened.
+    // Null without phase data, or where the recording named no status.
+    const phaseOf = (t) => { const run = runs.find((candidate) => t >= candidate.start && t < candidate.end) || (runs.length && t === runs[runs.length - 1].end ? runs[runs.length - 1] : null); return run ? { name: tlPhaseName(run.status), playing: run.playing } : null; };
     // Goals: every goal keeps its mark; only a label that would collide is dropped.
     let lastLabelX = -Infinity;
     goalsIn.forEach((g, i) => {
       const t = g ? time(g.time) : null;
       if (t === null) return;
       const x = round(xOf(t));
-      const showLabel = x - lastLabelX >= TL.goalLabelGap;
+      const showLabel = x - lastLabelX >= TL.goalLabelGap * textScale;
       if (showLabel) lastLabelX = x;
       marks.push({ kind: 'goal', lane: -1, t, x, y: scoreY, team: g.team === 'blue' || g.team === 'orange' ? g.team : 'none',
         blue: g.blue_score, orange: g.orange_score, showLabel, count: 1, refs: [i], primary: i });
@@ -1523,7 +1582,7 @@
         const xa = run[0].x, xb = run[run.length - 1].x;
         marks.push({ kind: 'throw', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round((xa + xb) / 2), w: round(Math.max(2, xb - xa + 2)),
           y: l.baseY, h: round(over ? tickZone + 4 : Math.max(0.25, ratio) * tickZone), shade: Math.round((0.5 + 0.5 * ratio * ratio) * 100) / 100,
-          over, goal: run.some((r) => r.goal), speed: best.speed, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+          over, goal: run.some((r) => r.goal), speed: best.speed, count: run.length, refs: run.map((r) => r.i), primary: best.i, phase: phaseOf(best.t) });
         run = null;
       };
       for (const item of items) {
@@ -1551,7 +1610,7 @@
         if (!run) return;
         const best = blind ? run[0] : run.reduce((a, b) => ((a.shadow - b.shadow) || (tlSevRank[b.sev] - tlSevRank[a.sev]) || (b.severity - a.severity)) > 0 ? b : a);
         marks.push({ kind: 'signal', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round(run[0].x), y: l.signalY,
-          shadow: blind ? true : best.shadow, sev: blind ? '' : best.sev, concealed: blind, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+          shadow: blind ? true : best.shadow, sev: blind ? '' : best.sev, concealed: blind, count: run.length, refs: run.map((r) => r.i), primary: best.i, phase: phaseOf(best.t) });
         run = null;
       };
       for (const item of items) {
@@ -1567,8 +1626,9 @@
     lanes.forEach((l, i) => { if (l.caseID) marks.push({ kind: 'case', lane: i, t: Infinity, x: x1 + 10, y: l.baseY, level: l.caseLevel, caseID: l.caseID, count: 1, refs: [], primary: -1 }); });
     marks.forEach((mark, i) => { mark.i = i; });
 
-    return { width: x1 + right, height, x0, x1, label, duration, hasTime, cap, scale, scoreY, scoreTop: TL.top, lanesTop: TL.top + TL.scoreLane, lanesBottom,
-      laneHeight, tickZone, groups, lanes, ticks, step, marks, undated, lanesDropped, blind,
+    return { width: x1 + right, height, x0, x1, label, duration, hasTime, cap, scale, scoreY, scoreTop: TL.top, lanesTop, lanesBottom,
+      laneHeight, tickZone, groups, lanes, ticks, step, marks, undated, lanesDropped, blind, textScale,
+      hasPhases, bands: hasPhases ? bands : [], phaseTop, phaseY, phaseSeconds, phasesSkipped,
       counts: { goals: goalsIn.length, throws: throwsIn.length, signals: eventsIn.length } };
   }
   // Keyboard neighbour of mark i: Left/Right walk time order, Up/Down go to the
@@ -1600,9 +1660,11 @@
     return {
       duration: m.duration_seconds, cap: m.disc_speed_cap, blind: blindReview,
       players: (m.players || []).map((p) => ({ player_id: p.player_id, name: p.name, team: p.team, first_seen: seen.get(p.player_id)?.first_seen, last_seen: seen.get(p.player_id)?.last_seen })),
-      goals: s.goals, throws: s.throws, events: m.events, cases: m.cases,
+      goals: s.goals, throws: s.throws, events: m.events, cases: m.cases, phases: s.phases,
     };
   }
+  const tlSeconds = (sec) => (sec < 90 ? `${fmtNum(sec, sec < 10 ? 1 : 0)} s` : tlClock(sec));
+  const tlBandTitle = (band) => `${band.playing ? 'Live play' : 'Not live play'} · ${tlClock(band.t0)}–${tlClock(band.t1)} into the recording · ${band.parts.map((part) => `${part.name} ${tlSeconds(part.seconds)}`).join(', ')}`;
   const tlTeamName = (t) => (t === 'blue' ? 'Blue' : t === 'orange' ? 'Orange' : 'No team');
   const tlClip = (text, max) => { const chars = Array.from(String(text)); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
   const tlSpan = (mark) => (mark.count > 1 && mark.t1 > mark.t ? `${tlClock(mark.t)}–${tlClock(mark.t1)}` : tlClock(mark.t));
@@ -1629,6 +1691,7 @@
     return `Review case, ${lvlName(c.level)}, ${c.player_name || c.player_id}. Not a verdict.`;
   }
 
+  const tlPhaseCell = (phase) => `${esc(phase.name)}${phase.playing ? '' : ' <span class="muted">· not live play</span>'}`;
   // Tooltip rows reuse the column labels and cell formatters of the tables below.
   function timelineTip(m, L, mark) {
     const s = m.summary || {};
@@ -1649,17 +1712,19 @@
       rows.push(['Clock', `<span class="mono">${esc(th.clock || fmtClock(th.time))}</span> <span class="muted">game clock · ${tlSpan(mark)} into the recording</span>`],
         ['Player', esc(th.player || th.player_id || '—')], ['Team', team(th.team)], ['Speed', speedCell(th.speed, L.cap)],
         ['Result', th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'], ['Frame', fmtInt(th.frame_index)]);
+      if (mark.phase) rows.push(['Game phase', tlPhaseCell(mark.phase)]);
       if (mark.over) note = `Sampled above the ${fmtNum(L.cap, 1)} m/s engine cap and marked for review. A sample speed is not an independently validated violation.`;
     } else if (mark.kind === 'signal') {
       const e = m.events[mark.primary];
+      const phaseRow = mark.phase ? [['Game phase', tlPhaseCell(mark.phase)]] : [];
       const when = `<span class="mono">${fmtClock(e.timestamp)}</span> <span class="muted">${e.frame_range_start === e.frame_range_end ? `frame ${fmtInt(e.frame_range_start)}` : `frames ${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</span>`;
       head = mark.count > 1 ? `${fmtInt(mark.count)} signals <span class="muted">· ${mark.concealed ? 'earliest' : 'strongest'} shown · Detections</span>` : 'Signal <span class="muted">· Detections</span>';
       if (mark.concealed) {
-        rows.push(['Detector', '<span class="blind-mask">Detector hidden</span>'], ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ['Severity', '<span class="blind-mask">hidden</span>']);
+        rows.push(['Detector', '<span class="blind-mask">Detector hidden</span>'], ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ...phaseRow, ['Severity', '<span class="blind-mask">hidden</span>']);
         note = 'Blinded review is enabled. Record your observation before revealing the detector.';
       } else {
         rows.push(['Detector', `<span class="mono">${esc(e.detector_id)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''} <span class="muted">${esc(e.detector_name || '')}</span>`],
-          ['Player', esc(e.player_name || e.player_id)], ['Match time', when],
+          ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ...phaseRow,
           ['Severity · confidence', `${sevBadge(e.severity_label)} <span class="muted">${fmtNum(e.severity, 2)} · ${fmtNum(e.confidence, 2)} confidence</span>`]);
         if (e.observed_value) rows.push(['Observed', esc(tlClip(e.observed_value, 120))]);
         note = e.is_shadow ? 'Observation-only (shadow): adds zero score. A detector observation, not a cheating verdict.' : 'A detector observation, not a cheating verdict.';
@@ -1676,6 +1741,16 @@
   function timelineSVG(m, L) {
     const n = (v) => Math.round(v * 10) / 10;
     const parts = [];
+    // Game phases, behind everything: a quiet band wherever the game was not in
+    // live play, and a strip under the score lane that names the long breaks.
+    if (L.hasPhases) {
+      for (const band of L.bands) if (!band.playing) parts.push(`<rect class="tl-band" x="${band.x0}" y="${L.phaseTop}" width="${n(Math.max(0.5, band.x1 - band.x0))}" height="${L.lanesBottom - L.phaseTop}"><title>${esc(tlBandTitle(band))}</title></rect>`);
+      parts.push(`<text class="tl-cap" x="12" y="${L.phaseY + 4}">${L.label >= 180 ? 'Live play' : 'Play'}</text><line class="tl-absent" x1="${L.x0}" x2="${L.x1}" y1="${L.phaseY}" y2="${L.phaseY}"/>`);
+      for (const band of L.bands) {
+        if (band.playing) parts.push(`<line class="tl-play" x1="${band.x0}" x2="${band.x1}" y1="${L.phaseY}" y2="${L.phaseY}"><title>${esc(tlBandTitle(band))}</title></line>`);
+        else if (band.label) parts.push(`<text class="tl-phase" x="${n((band.x0 + band.x1) / 2)}" y="${L.phaseY + 3.5}" text-anchor="middle">${esc(band.label)}</text>`);
+      }
+    }
     // Grid and axis.
     for (const tick of L.ticks) parts.push(`<line class="tl-grid" x1="${tick.x}" x2="${tick.x}" y1="${L.scoreTop + 6}" y2="${L.lanesBottom}"/>`);
     parts.push(`<line class="tl-axis" x1="${L.x0}" x2="${L.x1}" y1="${L.lanesBottom}" y2="${L.lanesBottom}"/>`);
@@ -1742,6 +1817,8 @@
       has((mark) => mark.kind === 'signal' && !mark.concealed && !mark.shadow) ? `${sw(diamond(9, 'tl-signal tl-sev-medium'))}Filled: scoring signal` : '',
       has((mark) => mark.count > 1) ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="1" y="5" width="6" height="9" fill-opacity=".8"/></g><g class="tl-signal tl-sev-low tl-shadow"><path class="tl-more" d="M21.5 3.4L26.1 8L21.5 12.6L16.9 8Z"/><path class="tl-glyph" d="M17 3.4L21.6 8L17 12.6L12.4 8Z"/></g>', 28)}Widened or doubled: several events too close to separate` : '',
       L.lanes.length ? `${sw('<line class="tl-base" x1="1" x2="10" y1="8" y2="8"/><line class="tl-absent" x1="10" x2="18" y1="8" y2="8"/>')}Player present in the recording` : '',
+      L.hasPhases ? `${sw('<line class="tl-play" x1="1" x2="17" y1="8" y2="8"/>')}Live play` : '',
+      L.hasPhases ? `${sw('<rect class="tl-band" x="1" y="1" width="16" height="14"/>')}Shaded: the game was not in play (after a goal, round start, before or after the match)` : '',
     ].filter(Boolean);
     return `<ul class="tl-legend">${items.map((item) => `<li>${item}</li>`).join('')}</ul>`;
   }
@@ -1758,13 +1835,16 @@
     const width = Math.floor(plot.clientWidth);
     if (!width || (!force && fig.tlWidth === width)) return;
     fig.tlWidth = width;
-    const L = timelineLayouts[idx] = timelineLayout(timelineData(m), width);
+    // SVG text is sized in rem, so the layout needs the same scale to make room for it.
+    const textScale = Math.min(2, Math.max(1, (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16) / 16));
+    const L = timelineLayouts[idx] = timelineLayout({ ...timelineData(m), textScale }, width);
     const active = document.activeElement, focused = active && fig.contains(active) ? active.getAttribute('data-tl-mark') : null;
     const s = m.summary;
     const clustered = L.marks.filter((mark) => mark.count > 1).length;
     fig.querySelector('[data-tl-sum]').innerHTML = [
       `${fmtInt(L.counts.goals)} goal${L.counts.goals === 1 ? '' : 's'}`, `${fmtInt(L.counts.throws)} throw${L.counts.throws === 1 ? '' : 's'}`,
       `${fmtInt(L.counts.signals)} signal${L.counts.signals === 1 ? '' : 's'}`, `${fmtInt(L.lanes.length)} player${L.lanes.length === 1 ? '' : 's'}`, L.hasTime ? esc(fmtDur(L.duration)) : '',
+      L.hasPhases ? `${tlClock(L.phaseSeconds.playing)} live play` : '',
     ].filter(Boolean).join(sep);
     if (!L.hasTime && !L.marks.length) {
       plot.innerHTML = '<p class="empty">This recording carried no timed goals, throws or detector signals to place on a timeline. That is not proof of fair play.</p>';
@@ -1775,6 +1855,9 @@
       s ? (L.counts.throws ? '' : (s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.')) : 'Goals and throws are unavailable for this stored match; only detector signals are drawn.',
       clustered ? `${fmtInt(clustered)} mark${clustered === 1 ? ' stands' : 's stand'} for several events too close to separate at this width; every event stays in the tables.` : '',
       L.undated ? `${fmtInt(L.undated)} event${L.undated === 1 ? '' : 's'} had no usable time and appear only in the tables.` : '',
+      L.hasPhases ? '' : (s && L.hasTime ? 'Game phases are not drawn: this stored match carries no game-status runs (a legacy recording, or raw ticks archived before phases were recorded). An unshaded timeline is not a claim of continuous live play.' : ''),
+      L.hasPhases && s && s.phases_merged > 0 ? `Phase bands are approximate: ${fmtInt(s.phases_merged)} very short status run${s.phases_merged === 1 ? ' was' : 's were'} folded into a neighbour.` : '',
+      L.phasesSkipped ? `${fmtInt(L.phasesSkipped)} game-status run${L.phasesSkipped === 1 ? '' : 's'} had no usable span and ${L.phasesSkipped === 1 ? 'is' : 'are'} not drawn.` : '',
       L.lanesDropped ? `${fmtInt(L.lanesDropped)} further player${L.lanesDropped === 1 ? ' is' : 's are'} not drawn; the tables list everyone.` : '',
     ].filter(Boolean);
     plot.innerHTML = timelineSVG(m, L);
@@ -3429,7 +3512,7 @@
   document.addEventListener('change', e => {
     if (e.target.id === 'case-state') { prefs.caseState=e.target.value;savePrefs();renderFlagged(); }
     const key = {'pref-theme':'theme','pref-density':'density','pref-text-size':'textSize','pref-motion':'motion','pref-shortcuts':'shortcuts'}[e.target.id];
-    if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); }
+    if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); if (key === 'textSize') document.querySelectorAll('figure[data-timeline]').forEach((fig) => renderTimeline(fig, true)); }
   });
   $('lab-dialog').addEventListener('close', () => { persistNoteDraft(); investigationRequest++; });
   document.addEventListener('change', async (e) => {
