@@ -59,6 +59,60 @@ func updateInstallSupport() (bool, string) {
 	return true, ""
 }
 
+// trustedUpdateDir is the one directory NEVR stages an update into and
+// executes it from: %LOCALAPPDATA%\NEVR-Anticheat\updates. It is resolved from
+// the user profile and from nothing else. The evidence database may be
+// configured anywhere (installed.toml db_path can name a shared, synced or
+// network folder whose ACLs NEVR does not control), so "next to the database"
+// is not a place to run executables from.
+func trustedUpdateDir() (string, error) {
+	local := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if local == "" || !filepath.IsAbs(local) {
+		return "", errors.New("LOCALAPPDATA is unavailable, so NEVR has no private update directory")
+	}
+	return filepath.Join(filepath.Clean(local), "NEVR-Anticheat", "updates"), nil
+}
+
+func samePath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// verifyUpdateStagingDir accepts dir only when it IS the trusted update
+// directory and neither it nor its parent has been replaced by a junction or
+// symbolic link that would redirect staging somewhere else.
+//
+// This is a same-user control. It cannot stop another process running as the
+// same Windows user from racing the final hash check and the launch.
+func verifyUpdateStagingDir(dir string) error {
+	trusted, err := trustedUpdateDir()
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return errors.New("update staging directory is invalid")
+	}
+	if !samePath(abs, trusted) {
+		return fmt.Errorf("one-click updates are staged only in %s, but this installation keeps its data in %s; download and run NEVR-Anticheat-Setup.exe instead", trusted, filepath.Dir(abs))
+	}
+	for _, path := range []string{filepath.Dir(trusted), trusted} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect update staging directory: %w", err)
+		}
+		// A symbolic link is ModeSymlink. A junction is ModeSymlink or a
+		// non-directory ModeIrregular depending on the Go version's winsymlink
+		// setting; every spelling of "not a plain directory" is refused.
+		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !info.IsDir() {
+			return fmt.Errorf("refusing to stage an update through %s because it is a link or not a directory", path)
+		}
+	}
+	return nil
+}
+
 func launchUpdateHelper(req updateLaunchRequest) error {
 	installer, err := filepath.Abs(req.InstallerPath)
 	if err != nil {
@@ -67,10 +121,6 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	updateDir, err := filepath.Abs(req.UpdateDir)
 	if err != nil {
 		return err
-	}
-	rel, err := filepath.Rel(updateDir, installer)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("staged installer is outside the update directory")
 	}
 	currentExe, err := os.Executable()
 	if err != nil {
@@ -108,8 +158,11 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 	if err := copyUpdateHelper(currentExe, helperPath); err != nil {
 		return fmt.Errorf("stage update helper: %w", err)
 	}
-	// #nosec G702 -- helperPath is constructed from NEVR's private update directory
-	// and a validated hexadecimal release revision, then populated from this executable.
+	// #nosec G702 -- helperPath is %LOCALAPPDATA%\NEVR-Anticheat\updates (verified
+	// above to be exactly that directory and not a link) plus a validated
+	// hexadecimal release revision, and was just populated from this executable.
+	// The helper takes no directory argument: it derives the staging directory
+	// from its own location and re-verifies it, see runUpdateHelper.
 	cmd := exec.Command(helperPath,
 		updateHelperMode,
 		"--installer", installer,
@@ -117,7 +170,6 @@ func launchUpdateHelper(req updateLaunchRequest) error {
 		"--wait-pid", strconv.Itoa(os.Getpid()),
 		"--relaunch-exe", currentExe,
 		"--relaunch-args", relaunchArgs,
-		"--update-dir", updateDir,
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
@@ -154,6 +206,31 @@ func maybeRunUpdateHelper(args []string) (bool, error) {
 	if len(args) == 0 || args[0] != updateHelperMode {
 		return false, nil
 	}
+	helperExe, err := os.Executable()
+	if err != nil {
+		return true, errors.New("update helper could not locate itself")
+	}
+	return true, runUpdateHelper(args, helperExe, applyStagedUpdate)
+}
+
+// runUpdateHelper is the helper-mode entry point of the shipped binary. The
+// helper is a copy of nevr-desktop.exe placed INSIDE the staging directory, so
+// the staging directory is wherever the helper itself is running from. It used
+// to be a command-line argument validated only against the installer argument
+// beside it, which made "the installer is inside the staging directory" true
+// for any pair of paths a caller chose and let the shipped binary hidden-launch
+// an arbitrary correctly-named executable and write logs to any directory.
+func runUpdateHelper(args []string, helperExe string,
+	apply func(installer, expectedHash string, waitPID int, relaunchExe string, relaunchArgs []string, updateDir string) error,
+) error {
+	helperExe, err := filepath.Abs(helperExe)
+	if err != nil {
+		return errors.New("update helper could not locate itself")
+	}
+	updateDir := filepath.Dir(helperExe)
+	if name := strings.ToLower(filepath.Base(helperExe)); !strings.HasPrefix(name, "nevr-update-helper-") || !strings.HasSuffix(name, ".exe") {
+		return errors.New("update helper mode is only available to the staged update helper")
+	}
 	fs := flag.NewFlagSet("nevr-update-helper", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	installer := fs.String("installer", "", "")
@@ -161,28 +238,27 @@ func maybeRunUpdateHelper(args []string) (bool, error) {
 	waitPID := fs.Int("wait-pid", 0, "")
 	relaunchExe := fs.String("relaunch-exe", "", "")
 	relaunchEncoded := fs.String("relaunch-args", "", "")
-	updateDir := fs.String("update-dir", "", "")
 	if err := fs.Parse(args[1:]); err != nil {
-		return true, err
+		return err
 	}
-	if *installer == "" || *expectedHash == "" || *waitPID <= 0 || *relaunchExe == "" || *updateDir == "" {
-		return true, errors.New("update helper arguments are incomplete")
+	if *installer == "" || *expectedHash == "" || *waitPID <= 0 || *relaunchExe == "" {
+		return errors.New("update helper arguments are incomplete")
 	}
-	if err := validateUpdateHelperPaths(*installer, *relaunchExe, *updateDir, *expectedHash); err != nil {
-		return true, err
+	if err := validateUpdateHelperPaths(*installer, *relaunchExe, updateDir, *expectedHash); err != nil {
+		return err
 	}
 	if len(*relaunchEncoded) > 64<<10 {
-		return true, errors.New("update helper relaunch arguments are too large")
+		return errors.New("update helper relaunch arguments are too large")
 	}
 	rawArgs, err := base64.RawURLEncoding.DecodeString(*relaunchEncoded)
 	if err != nil {
-		return true, errors.New("update helper relaunch arguments are invalid")
+		return errors.New("update helper relaunch arguments are invalid")
 	}
 	var relaunchArgs []string
 	if err := json.Unmarshal(rawArgs, &relaunchArgs); err != nil {
-		return true, errors.New("update helper relaunch arguments are invalid")
+		return errors.New("update helper relaunch arguments are invalid")
 	}
-	return true, applyStagedUpdate(*installer, *expectedHash, *waitPID, *relaunchExe, relaunchArgs, *updateDir)
+	return apply(*installer, *expectedHash, *waitPID, *relaunchExe, relaunchArgs, updateDir)
 }
 
 func validateUpdateHelperPaths(installer, relaunchExe, updateDir, expectedHash string) error {
@@ -194,8 +270,13 @@ func validateUpdateHelperPaths(installer, relaunchExe, updateDir, expectedHash s
 	if err != nil {
 		return errors.New("update helper directory is invalid")
 	}
-	rel, err := filepath.Rel(updateDir, installer)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err := verifyUpdateStagingDir(updateDir); err != nil {
+		return err
+	}
+	// The installer must be a file directly inside the staging directory, not
+	// merely somewhere below it: downloadVerifiedUpdate never creates
+	// subdirectories, so anything deeper was not staged by NEVR.
+	if !samePath(filepath.Dir(installer), updateDir) {
 		return errors.New("update helper installer is outside its staging directory")
 	}
 	digest, err := stagedInstallerSHA256(installer)

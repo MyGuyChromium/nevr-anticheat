@@ -8,6 +8,10 @@ func updateInstallSupport() (bool, string) {
 	return false, "One-click installation is available in the packaged Windows app"
 }
 
+// verifyUpdateStagingDir has nothing to enforce where nothing is ever launched:
+// updateInstallSupport already reports one-click installation as unavailable.
+func verifyUpdateStagingDir(string) error { return nil }
+
 func launchUpdateHelper(updateLaunchRequest) error {
 	return errors.New("one-click installation is only supported on Windows")
 }

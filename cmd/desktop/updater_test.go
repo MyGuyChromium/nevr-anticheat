@@ -148,12 +148,6 @@ func TestParsePublishedChecksum(t *testing.T) {
 	}
 }
 
-// testUpdateDir returns a private staging directory for one test.
-func testUpdateDir(t *testing.T) string {
-	t.Helper()
-	return filepath.Join(t.TempDir(), "updates")
-}
-
 // updateFixture is a fake GitHub API origin serving one rolling release. Every
 // knob defaults to a fully valid release so that each refusal test changes
 // exactly one thing; a test that still passes after its guard is deleted would

@@ -398,6 +398,12 @@ func stripUpdateOverrideArgs(args []string) []string {
 }
 
 func (rt *desktopRuntime) downloadVerifiedUpdate(ctx context.Context) (string, string, error) {
+	// Decide where the installer may be staged before contacting the network:
+	// an installation whose data directory was moved is told so immediately
+	// instead of after a download it could never use.
+	if err := verifyUpdateStagingDir(rt.updateDir); err != nil {
+		return "", "", err
+	}
 	releaseCommit, err := rt.latestReleaseCommit(ctx)
 	if err != nil {
 		return "", "", err
