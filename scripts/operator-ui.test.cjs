@@ -188,7 +188,7 @@ test('match notices say what intake did: already analyzed, replaced, re-analyzed
   assert.match(replaced, /Stored recording replaced\./);
   assert.match(replaced, /12 events, 4 score snapshots/);
   assert.match(replaced, /not attached to the new findings/);
-  assert.match(replaced, /No backup was taken/);
+  assert.match(replaced, /Replacing takes no backup of its own/);
   const again = ui.intakeNotices({ replaced: true, cleared_events: 2, cleared_scores: 1, source_status: 'extends', source_detail: 'all 100 stored ticks match and this file holds 50 more' }, { token: '3' }).join('');
   assert.match(again, /Re-analyzed: the previous analysis of this match was cleared \(2 events, 1 score snapshots\)/);
   assert.match(again, /completes the stored copy/);

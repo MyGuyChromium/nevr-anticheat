@@ -2124,7 +2124,7 @@
   function intakeNotices(m, intake) {
     const again = intake && intake.token ? `<button class="btn btn-sm" data-reanalyze="${esc(intake.token)}">Re-analyze this recording</button>` : '';
     if (m.already_analyzed) return [`<p class="notice info" data-intake-note><strong>Already analyzed.</strong> ${esc(m.intake_note || 'This recording was already analyzed; the stored analysis is shown and nothing was changed.')}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}${again}</p>`];
-    if (intake && intake.replacedSource) return [`<p class="notice" data-intake-note><strong>Stored recording replaced.</strong> The previous recording's raw ticks, findings and scores for this match were deleted (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots) and this file was analyzed instead. Labels on the previous findings stay in the evidence library and are not attached to the new findings. No backup was taken by this step.</p>`];
+    if (intake && intake.replacedSource) return [`<p class="notice" data-intake-note><strong>Stored recording replaced.</strong> The previous recording's raw ticks, findings and scores for this match were deleted (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots) and this file was analyzed instead. Labels on the previous findings stay in the evidence library and are not attached to the new findings. Replacing takes no backup of its own.</p>`];
     if (m.replaced) return [`<p class="notice" data-intake-note>Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).${m.source_status === 'extends' ? ' This file completes the stored copy, which was cut short.' : ''}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}</p>`];
     return [];
   }
@@ -2317,8 +2317,10 @@
   function processQueueItem(item, i) {
     return new Promise((resolve) => {
       const fd = new FormData(); fd.append('files', item.file, item.file.name);
-      // replace_source implies force on the engine; it is only ever set by the confirmed Replace action.
-      if (item.replaceSource) fd.append('replace_source', '1'); else if (item.force) fd.append('force', '1');
+      // One intake flag at most. replace_source implies force on the engine and is
+      // only ever set by the confirmed Replace action, never by the Re-analyze switch.
+      const intakeFlag = item.replaceSource ? 'replace_source' : item.force ? 'force' : '';
+      if (intakeFlag) fd.append(intakeFlag, '1');
       const xhr = currentXHR = new XMLHttpRequest();
       xhr.open('POST', 'api/analyze'); xhr.responseType = 'json'; xhr.timeout = 30 * 60 * 1000;
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
