@@ -18,7 +18,7 @@ func TestCopyUpdateHelper(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.exe")
 	target := filepath.Join(dir, "helper.exe")
-	if err := os.WriteFile(source, []byte("signed desktop fixture"), 0o700); err != nil {
+	if err := os.WriteFile(source, []byte("desktop fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := copyUpdateHelper(source, target); err != nil {
@@ -28,7 +28,7 @@ func TestCopyUpdateHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "signed desktop fixture" {
+	if string(got) != "desktop fixture" {
 		t.Fatalf("helper contents = %q", got)
 	}
 }
