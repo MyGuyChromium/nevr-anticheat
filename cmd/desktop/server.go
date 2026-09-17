@@ -1259,6 +1259,7 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	defer s.finishAnalysis(analysisID)
 
 	resp := analyzeResponse{Force: force, Results: make([]analyzeEntry, 0, len(uploads))}
+	analyzed := false
 	for _, upload := range uploads {
 		entry, path := upload.entry, upload.path
 		if entry.Error != "" || path == "" {
@@ -1300,11 +1301,19 @@ func (s *server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 				entry.Diagnostic = diagnoseUpload(path)
 			}
 		}
-		if queueErr == nil {
+		// A fully stored upload is consumed. So is one that can never succeed
+		// (garbage, a truncated recording, a session JSON without a match id):
+		// keeping it would re-analyze and re-fail it on every launch. Anything
+		// else (cancel, shutdown, a storage or I/O failure) stays queued.
+		if queueErr == nil || analysisFailureIsPermanent(analysisCtx, results, err) {
 			_ = os.Remove(path)
 			_ = os.Remove(filepath.Dir(path))
 		}
+		analyzed = analyzed || len(results) > 0
 		resp.Results = append(resp.Results, entry)
+	}
+	if analyzed {
+		s.runtime.checkpointAfterAnalysis()
 	}
 	if entries, readErr := os.ReadDir(tmp); readErr == nil && len(entries) == 0 {
 		_ = os.Remove(tmp)
