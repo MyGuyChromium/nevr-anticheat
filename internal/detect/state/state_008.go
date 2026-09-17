@@ -19,6 +19,18 @@ const (
 // provisional sampling filters. In particular, ordinary held-disc attachment
 // is NEVER used to measure a correction. Missing contact/pose evidence causes
 // abstention, and every emitted event remains observation-only under any config.
+//
+// Threat model (docs/threat_model.md; Windows build 34.4.631547 only; Quest
+// not checked). Clients author disc physics and the server relays it; the
+// native server's only check on an incoming physics state is that its floats
+// are finite, and its ownership arbiter takes no position, distance, velocity
+// or line-of-sight input. Nothing upstream therefore rejects a disc that bends
+// into a hand or a catch taken from out of reach: the approach geometry
+// reviewed here is the only place an autopocket could be noticed. That raises
+// the value of this review, not its confidence: it remains provisional and
+// observation-only. Client-side ownership prediction can also show a brief
+// possession that is rolled back; the existing requirement that the same
+// holder persists on a second sample keeps such a blip from being evaluated.
 type State008 struct {
 	detect.BaseDetector
 	baselineSamples, minCorrectionSamples   int

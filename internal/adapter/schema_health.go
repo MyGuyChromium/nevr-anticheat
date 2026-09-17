@@ -117,6 +117,9 @@ func (dr *DiagnosticReport) HealthWarnings() []TelemetryWarning {
 	if dr.PossessionMultiplePlayers > 0 || dr.PossessionWithNoDisc > 0 {
 		out = append(out, TelemetryWarning{Level: "warning", Code: "possession_inconsistent", Count: dr.PossessionMultiplePlayers + dr.PossessionWithNoDisc, Message: "Disc possession was internally inconsistent in one or more snapshots."})
 	}
+	if warning, ok := dr.constantPingWarning(); ok {
+		out = append(out, warning)
+	}
 	if len(dr.UnknownFields) > 0 {
 		keys := make([]string, 0, len(dr.UnknownFields))
 		for key := range dr.UnknownFields {
@@ -135,4 +138,41 @@ func (dr *DiagnosticReport) HealthWarnings() []TelemetryWarning {
 		out = append(out, TelemetryWarning{Level: "info", Code: "unknown_fields", Count: len(keys), Message: message + "."})
 	}
 	return out
+}
+
+// constantPingMinSnapshots is the shortest recording (in snapshots) on which
+// an unchanging ping is called out: 900 snapshots is 30 s at 30 Hz and 60 s
+// at 15 Hz. A real round-trip time, reported in whole milliseconds for two
+// or more players, does not stay one identical number that long.
+const constantPingMinSnapshots = 900
+
+// constantPingWarning reports a recording in which every ping observation of
+// every player is one identical value. A game server that measures no
+// round-trip time can advertise a fixed figure for every entrant; ping-based
+// tolerances and high-ping guards then mean nothing for that recording.
+//
+// Diagnostic only: it changes no detector input, tolerance or score, and it
+// is not a statement about any player. Short clips and single-player
+// recordings are left alone because a constant value proves nothing there.
+// The caller holds dr.mu.
+func (dr *DiagnosticReport) constantPingWarning() (TelemetryWarning, bool) {
+	fd := dr.FieldPresence["ping"]
+	if fd == nil || fd.Invalid > 0 || dr.Snapshots < constantPingMinSnapshots || dr.PlayerCount < 2 {
+		return TelemetryWarning{}, false
+	}
+	observations := fd.Present + fd.Inactive
+	if observations < 2*constantPingMinSnapshots {
+		return TelemetryWarning{}, false // fewer than two players' worth of samples
+	}
+	var value float64
+	switch {
+	case fd.Present == 0:
+		value = 0 // every observation was zero
+	case fd.Inactive == 0 && fd.MinValue == fd.MaxValue:
+		value = fd.MinValue
+	default:
+		return TelemetryWarning{}, false
+	}
+	return TelemetryWarning{Level: "warning", Code: "ping_constant", Field: "ping", Count: observations,
+		Message: fmt.Sprintf("Ping appears constant: all %d observations across %d players were %g ms. Ping-based tolerances and high-ping guards are not meaningful for this recording. This is a telemetry-quality note, not a finding about any player.", observations, dr.PlayerCount, value)}, true
 }

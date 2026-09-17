@@ -584,6 +584,7 @@ func (a *fileAnalysis) finish(run *matchRun) error {
 	}
 	res.Frames = len(run.frames)
 	res.Summary = summarizeFrames(run.frames)
+	applyMeasuredTickRate(res.MatchCtx, run.frames)
 
 	result, err := a.opts.NewPipeline().ProcessMatch(a.ctx, res.MatchCtx, run.frames)
 	if err != nil {

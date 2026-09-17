@@ -532,6 +532,12 @@ func nativeBody(p *spatial.Pose) EchoVRBodyHead {
 func nativeHand(p *spatial.Pose) EchoVRHand {
 	return EchoVRHand(nativeBody(p))
 }
+// nativeGameStatus projects the native status enum onto the /session status
+// strings. UNSPECIFIED stays "unknown" in the retained projection, and
+// model.PhaseNormalizer (reached through the shared mapper call site) reads it
+// exactly like the /session API's empty game_status: the native enum has no
+// value for the unnamed state between "score" and "round_start" either, so
+// both ingest paths must resolve it with the same rule.
 func nativeGameStatus(s capture.GameStatus) string {
 	if s == capture.GameStatus_GAME_STATUS_UNSPECIFIED {
 		return "unknown"

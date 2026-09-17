@@ -21,6 +21,20 @@ const grabReviewPlayerLimit = 16
 // hand transfers are not treated as disc acquisitions.
 // Direct changes between different known holders are retained separately as
 // inconclusive transfers: no unobserved free-flight sample is invented.
+//
+// Threat model (docs/threat_model.md; Windows build 34.4.631547 only; Quest
+// not checked). The native server's ownership arbiter validates session,
+// sender handle, sequence, a per-team move permission, a per-player blocking
+// state and stale owner/stamp. It takes no hand or disc position and performs
+// no distance, velocity or line-of-sight check, so a geometry review on our
+// side is the only defence against a long-range grab. That makes this review
+// necessary; it does not make it verified, and it stays an unscored
+// diagnostic. Two native behaviours shape what it may conclude:
+//   - a direct holder-to-holder transfer is a native arbiter path, so it is
+//     not by itself evidence of tampering and stays inconclusive;
+//   - clients predict ownership locally before the server answers, so a
+//     recording can show a brief possession that was then rolled back. Such a
+//     blip must not be counted as two acquisitions.
 type State001 struct {
 	detect.BaseDetector
 	previous map[string]grabReviewSample

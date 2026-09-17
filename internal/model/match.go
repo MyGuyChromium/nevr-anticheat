@@ -30,19 +30,12 @@ type MatchContext struct {
 	ProjectRules ProjectRules     `json:"project_rules"`
 }
 
-// IsActivePhase returns true if the game phase is active gameplay.
-//
-// Echo VR reports overtime as "sudden_death" (with "pre_sudden_death" and
-// "post_sudden_death" transitions around it). Sudden death is live play and
-// must be covered by detectors; the pre/post transitions teleport players to
-// spawn exactly like round_start/round_over and stay inactive.
+// IsActivePhase returns true if the game phase is active gameplay. It is
+// IsActiveGamePhase (phase.go), the one rule every ingest path shares; an
+// unnamed status inside a goal cycle arrives here already normalised to
+// PhasePostScoreGap / PhasePreRoundGap and is inactive.
 func (mc *MatchContext) IsActivePhase(phase string) bool {
-	switch phase {
-	case "playing", "round", "overtime", "sudden_death", "":
-		return true
-	default:
-		return false
-	}
+	return IsActiveGamePhase(phase)
 }
 
 // PhysicsConstants holds the game physics parameters for a match.
