@@ -7,23 +7,32 @@ import (
 	"testing"
 )
 
-func TestDesktopSingleInstanceHandsOffExistingURL(t *testing.T) {
+func TestDesktopSingleInstanceAsksTheRunningAppToShowItsWindow(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "evidence.db")
-	first, existing := claimDesktopInstance(db)
-	if first == nil || existing != "" {
-		t.Fatalf("first claim = %#v, %q", first, existing)
+	first, running := claimDesktopInstance(db, true)
+	if first == nil || running {
+		t.Fatalf("first claim = %#v, %v", first, running)
 	}
 	defer first.close()
-	appURL := "http://127.0.0.1:54321/0123456789abcdef/"
-	first.publish(appURL)
+	shown := make(chan struct{}, 4)
+	first.publish(func() { shown <- struct{}{} })
 
-	second, existing := claimDesktopInstance(db)
-	if second != nil || existing != appURL {
-		t.Fatalf("second claim = %#v, %q; want existing URL", second, existing)
+	second, running := claimDesktopInstance(db, true)
+	if second != nil || !running {
+		t.Fatalf("second claim = %#v, %v; want the running instance", second, running)
 	}
-	other, otherURL := claimDesktopInstance(filepath.Join(t.TempDir(), "other.db"))
-	if other == nil || otherURL != "" {
-		t.Fatalf("separate database claim = %#v, %q", other, otherURL)
+	select {
+	case <-shown:
+	default:
+		t.Fatal("the running instance was not asked to show its window")
+	}
+	// --no-browser only finds out that the app runs; it opens nothing.
+	if third, running := claimDesktopInstance(db, false); third != nil || !running || len(shown) != 0 {
+		t.Fatalf("no-browser claim = %#v, %v, shown=%d", third, running, len(shown))
+	}
+	other, otherRunning := claimDesktopInstance(filepath.Join(t.TempDir(), "other.db"), true)
+	if other == nil || otherRunning {
+		t.Fatalf("separate database claim = %#v, %v", other, otherRunning)
 	}
 	_ = other.close()
 }
