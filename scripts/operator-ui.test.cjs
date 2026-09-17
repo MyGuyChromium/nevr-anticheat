@@ -542,6 +542,102 @@ test('timeout warns that a write may still run instead of reporting it cancelled
   assert.deepEqual(client.cleared, client.timers);
 });
 
+test('a call with its own time budget reports that the page gave up, not that the engine is down', async () => {
+  let client;
+  client = http(async (_url, options) => {
+    client.timers[0].callback();
+    assert.equal(options.signal.aborted, true);
+    throw new Error('AbortError');
+  });
+  await assert.rejects(client.request('POST', 'api/update/install', undefined, { timeoutMs: 720000, timeoutMessage: 'Stopped waiting; the download was cancelled.' }), error => {
+    assert.equal(error.timedOut, true);
+    assert.equal(error.message, 'Stopped waiting; the download was cancelled.');
+    assert.doesNotMatch(error.message, /may still be running|disconnected/);
+    return true;
+  });
+  assert.equal(client.timers[0].duration, 720000);
+  assert.deepEqual(client.states, [], 'a page-side timeout must not mark a healthy engine disconnected');
+  assert.deepEqual(client.cleared, client.timers);
+
+  // A real network failure during a long call is still a disconnection.
+  const dropped = http(async () => { throw new TypeError('Network failed'); });
+  await assert.rejects(dropped.request('POST', 'api/update/install', undefined, { timeoutMs: 720000 }), error => {
+    assert.equal(error.timedOut, undefined);
+    assert.match(error.message, /disconnected/);
+    return true;
+  });
+  assert.deepEqual(dropped.states, [false]);
+  // Nonsense budgets fall back to the default instead of disabling the timeout.
+  for (const timeoutMs of [0, -5, NaN, Infinity, '720000']) {
+    const fallback = http(async () => response(200, { ok: true }));
+    await fallback.request('POST', 'api/example', undefined, { timeoutMs });
+    assert.equal(fallback.timers[0].duration, 90000);
+  }
+});
+
+function updateInstall(post) {
+  const button = { disabled: false, textContent: 'Install update' };
+  const messages = [], intervals = [], stopped = [], posts = [];
+  const source = section('  const UPDATE_INSTALL_TIMEOUT_MS =', '  const getJSON =') +
+    '\nasync function clickInstall(e) {\n' + section("    if (e.target.closest('#install-update')) {", "    if (e.target.closest('#auto-updates')) {") + '\n}';
+  const context = run(source, {
+    intentionallyStopped: false, Date, Math, String,
+    $: id => id === 'install-update' ? button : null,
+    setStatus: (text, tone = '') => messages.push({ text, tone }),
+    setInterval: (callback, every) => { const timer = { callback, every }; intervals.push(timer); return timer; },
+    clearInterval: timer => stopped.push(timer),
+    setTimeout: () => 0, document: { querySelector: () => ({}) }, window: { close() {} },
+    postJSON: async (...args) => { posts.push(args); return post(...args); },
+  });
+  const click = () => context.clickInstall({ target: { closest: selector => selector === '#install-update' ? button : null } });
+  return { context, click, button, messages, intervals, stopped, posts };
+}
+
+test('one-click update waits longer than the engine download budget and shows elapsed time', async () => {
+  let during;
+  const ui = updateInstall(async () => { ui.intervals[0].callback(); during = { ...ui.button }; return { message: 'Update verified.' }; });
+  await ui.click();
+  assert.equal(ui.posts.length, 1);
+  const [url, payload, options] = ui.posts[0];
+  assert.equal(url, 'api/update/install');
+  assert.equal(payload, undefined);
+  // desktop_runtime.go gives the download 10 minutes; the default 90 s POST timeout cancelled it.
+  assert.ok(options.timeoutMs > 10 * 60 * 1000, 'the page must outwait the engine, not cancel it');
+  assert.equal(options.timeoutMs, vm.runInContext('UPDATE_INSTALL_TIMEOUT_MS', ui.context));
+  assert.match(options.timeoutMessage, /did not finish within 12 minutes/);
+  assert.equal(options.timeoutMs, 12 * 60 * 1000, 'the message names the same budget');
+  assert.equal(during.disabled, true);
+  assert.match(during.textContent, /^Downloading & verifying… \d+:\d\d$/);
+  assert.equal(vm.runInContext('updateInstallLabel(65000)', ui.context), 'Downloading & verifying… 1:05');
+  assert.match(ui.messages[0].text, /several minutes; keep this window open/);
+  assert.deepEqual(ui.stopped, ui.intervals, 'the elapsed-time ticker stops when the request settles');
+  assert.equal(ui.button.textContent, 'Restarting…');
+  assert.equal(ui.context.intentionallyStopped, true);
+  assert.deepEqual(ui.messages.at(-1), { text: 'Update verified.', tone: 'ok' });
+});
+
+test('an update the page stopped waiting for is reported as cancelled, with the engine still running', async () => {
+  const ui = updateInstall(async (_url, _payload, options) => { const error = new Error(options.timeoutMessage); error.timedOut = true; throw error; });
+  await ui.click();
+  const last = ui.messages.at(-1);
+  assert.equal(last.tone, 'err');
+  assert.match(last.text, /cancels the download/);
+  assert.match(last.text, /nothing was installed/);
+  assert.match(last.text, /still running this version/);
+  assert.match(last.text, /Manual download/);
+  assert.doesNotMatch(last.text, /may still be running|disconnected|did not respond/);
+  assert.match(last.text, /^The update did not finish within 12 minutes/, 'the page-side timeout is not dressed up as an engine failure');
+  assert.equal(ui.button.disabled, false);
+  assert.equal(ui.button.textContent, 'Install update');
+  assert.equal(ui.context.intentionallyStopped, false);
+  assert.deepEqual(ui.stopped, ui.intervals);
+
+  const refused = updateInstall(async () => { throw new Error('finish or cancel the active replay analysis before updating'); });
+  await refused.click();
+  assert.equal(refused.messages.at(-1).text, 'Update failed safely: finish or cancel the active replay analysis before updating');
+  assert.equal(refused.button.disabled, false);
+});
+
 test('unreadable success response remains a failed operation', async () => {
   const client = http(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } }));
   await assert.rejects(client.request('POST', 'api/example'), /unreadable response/);

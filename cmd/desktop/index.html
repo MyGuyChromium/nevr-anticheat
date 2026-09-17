@@ -1010,10 +1010,15 @@
     if ($('lab-dialog')?.open && modalStatus) { modalStatus.textContent = msg; modalStatus.className = 'status ' + cls; }
     recordNotice(msg, cls);
   };
-  async function requestJSON(method, url, payload) {
+  // options.timeoutMs gives one call its own budget (the update install outlives
+  // the default). When such a call runs out of time the page itself gave up: that
+  // is not evidence about the engine, so the connection state is left alone and the
+  // caller gets error.timedOut to explain what stopping the request really did.
+  async function requestJSON(method, url, payload, options = {}) {
     let r;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), method === 'GET' ? 20000 : 90000);
+    const ownBudget = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0;
+    const timeout = setTimeout(() => controller.abort(), ownBudget ? options.timeoutMs : method === 'GET' ? 20000 : 90000);
     try {
       r = await fetch(url, { method, cache: 'no-store', signal: controller.signal,
         headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -1028,12 +1033,23 @@
       return body;
     } catch (error) {
       if (r) throw error;
+      if (ownBudget && controller.signal.aborted) {
+        const gaveUp = new Error(options.timeoutMessage || 'This window stopped waiting for the operation.');
+        gaveUp.timedOut = true; throw gaveUp;
+      }
       setConnectionState(false);
       throw new Error(controller.signal.aborted ? 'The engine did not respond in time. The operation may still be running; check its results before retrying.' : 'The local engine is disconnected. Your open evidence stays visible. Reopen NEVR or retry the connection.');
     } finally { clearTimeout(timeout); }
   }
+  // The engine allows the installer download 10 minutes (updateClient in
+  // desktop_runtime.go). Wait a little longer than that, so a slow download ends
+  // with the engine's own answer instead of the page cancelling it: aborting the
+  // request cancels the download and the engine deletes the partial file.
+  const UPDATE_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
+  const UPDATE_INSTALL_TIMEOUT_MESSAGE = 'The update did not finish within 12 minutes, so this window stopped the request. That cancels the download: the partial file is discarded, nothing was installed, and NEVR is still running this version. Try again on a faster connection, or use Manual download.';
+  const updateInstallLabel = (elapsedMs) => { const t = Math.max(0, Math.floor(elapsedMs / 1000)); return `Downloading & verifying… ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
   const getJSON = url => requestJSON('GET', url);
-  const postJSON = (url, payload) => requestJSON('POST', url, payload);
+  const postJSON = (url, payload, options) => requestJSON('POST', url, payload, options);
   const deleteJSON = url => requestJSON('DELETE', url);
   async function probeConnection() {
     if (intentionallyStopped || statusProbePending) return;
@@ -2502,13 +2518,25 @@
     if (e.target.closest('#discard-recovery')) { if (!confirm('Discard only the pending uploaded copies? Stored matches, original replays, and the database are not affected.')) return; try { const r = await postJSON('api/recovery/discard'); setStatus(r.message, 'ok'); await loadAutomation(); } catch (err) { setStatus(`Could not discard pending uploads: ${err.message}`, 'err'); } return; }
     if (e.target.closest('#check-update')) { await loadAutomation(true); setStatus('Update check finished.', 'ok'); return; }
     if (e.target.closest('#install-update')) {
-      const button = e.target.closest('#install-update'); button.disabled = true; button.textContent = 'Downloading & verifying…';
+      const button = e.target.closest('#install-update');
+      // The engine downloads inside this one request and reports no byte progress,
+      // so the page shows elapsed time only. The card can be re-rendered meanwhile,
+      // hence the lookup by id on every tick.
+      const startedAt = Date.now();
+      const showElapsed = () => { const b = $('install-update'); if (b) { b.disabled = true; b.textContent = updateInstallLabel(Date.now() - startedAt); } };
+      showElapsed(); const ticker = setInterval(showElapsed, 1000);
+      setStatus('Downloading the installer and verifying its size and SHA-256. A slow connection can take several minutes; keep this window open.');
       try {
-        const result = await postJSON('api/update/install');
+        const result = await postJSON('api/update/install', undefined, { timeoutMs: UPDATE_INSTALL_TIMEOUT_MS, timeoutMessage: UPDATE_INSTALL_TIMEOUT_MESSAGE });
+        clearInterval(ticker);
         intentionallyStopped = true; button.textContent = 'Restarting…';
         setStatus(result.message, 'ok');
         setTimeout(() => { document.querySelector('main').innerHTML = '<section class="stopped"><h2>Installing the verified update…</h2><p class="muted">NEVR will reopen automatically with your evidence and settings intact. This old window can be closed.</p></section>'; try { window.close(); } catch (_) {} }, 500);
-      } catch (err) { setStatus(`Update failed safely: ${err.message}`, 'err'); button.disabled = false; button.textContent = 'Install update'; }
+      } catch (err) {
+        clearInterval(ticker);
+        setStatus(err.timedOut ? err.message : `Update failed safely: ${err.message}`, 'err');
+        const b = $('install-update') || button; b.disabled = false; b.textContent = 'Install update';
+      }
       return;
     }
     if (e.target.closest('#auto-updates')) {
