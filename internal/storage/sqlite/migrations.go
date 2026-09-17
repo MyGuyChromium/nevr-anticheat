@@ -142,7 +142,7 @@ var requiredTables = []string{
 	"calibration_split_assignments",
 	"match_analysis_coverage",
 	"blind_evidence_artifacts", "blind_review_sessions", "blind_review_ballots",
-	"match_telemetry_health",
+	"match_telemetry_health", "match_view_cache",
 }
 
 var migrations = []MigrationVersion{
@@ -600,12 +600,24 @@ var migrations = []MigrationVersion{
 		// re-read and re-parse every raw tick. source is 'analysis' (written by
 		// the run that parsed the recording) or 'backfill' (rebuilt once from
 		// stored raw ticks for a match analyzed before this table existed).
-		Version: 20, Description: "per-match telemetry health persisted at analysis time",
+		Version: 20, Description: "per-match telemetry health and derived view cache",
 		SQL: `CREATE TABLE IF NOT EXISTS match_telemetry_health (
 			match_id    TEXT PRIMARY KEY,
 			source      TEXT NOT NULL DEFAULT 'analysis',
 			health_json TEXT NOT NULL,
 			created_at  TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `
+		);
+		-- Derived view documents that are expensive to rebuild from telemetry
+		-- (kind names the document and its schema). cache_key records the state
+		-- they were built from; a reader that computes a different key rebuilds
+		-- and replaces the row. Never a source of truth: safe to delete.
+		CREATE TABLE IF NOT EXISTS match_view_cache (
+			match_id   TEXT NOT NULL,
+			kind       TEXT NOT NULL,
+			cache_key  TEXT NOT NULL,
+			doc_json   TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT ` + dbTimeSQLDefault + `,
+			PRIMARY KEY (match_id, kind)
 		);`,
 	},
 }
