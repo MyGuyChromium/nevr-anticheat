@@ -45,6 +45,10 @@ type DiagnosticReport struct {
 	PlayerEntriesSeen int `json:"player_entries_seen"`
 	// SpectatorEntriesDropped counts player objects on SPECTATORS/unknown teams.
 	SpectatorEntriesDropped int `json:"spectator_entries_dropped"`
+	// DuplicatePlayerEntries counts blue/orange player entries dropped because
+	// the same player id appeared earlier in the same snapshot (first entry
+	// wins; populated via RecordMappingResult).
+	DuplicatePlayerEntries int `json:"duplicate_player_entries"`
 
 	// FramesMapped counts PlayerTelemetryFrames the mapper produced
 	// (populated via RecordMappingResult).
@@ -386,6 +390,7 @@ func (dr *DiagnosticReport) RecordMappingResult(result *MappingResult) {
 		return
 	}
 	dr.FramesMapped += len(result.Frames)
+	dr.DuplicatePlayerEntries += result.DuplicatePlayersDropped
 	dr.PlayerFramesRejected += len(result.Errors)
 	for _, e := range result.Errors {
 		dr.RejectionsByField[e.Field]++
@@ -587,6 +592,9 @@ func (dr *DiagnosticReport) FormatReport() string {
 	}
 	b.WriteString(fmt.Sprintf("Player entries seen:           %d\n", dr.PlayerEntriesSeen))
 	b.WriteString(fmt.Sprintf("Spectator entries dropped:     %d\n", dr.SpectatorEntriesDropped))
+	if dr.DuplicatePlayerEntries > 0 {
+		b.WriteString(fmt.Sprintf("Duplicate player ids dropped:  %d (same id twice in one snapshot; first entry kept)\n", dr.DuplicatePlayerEntries))
+	}
 	b.WriteString(fmt.Sprintf("Player frames mapped:          %d\n", dr.FramesMapped))
 	b.WriteString(fmt.Sprintf("Player frames rejected:        %d", dr.PlayerFramesRejected))
 	if len(dr.RejectionsByField) > 0 {

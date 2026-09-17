@@ -26,7 +26,16 @@ const (
 	// line at a time. Real Spark recordings of a full Echo Arena match unpack
 	// to 0.5-1 GB, so the guard sits well above that.
 	DefaultMaxReplayBytes int64 = 8 * 1024 * 1024 * 1024
+	// MaxReplayNormalizedFrames bounds the per-player frames of ONE match in
+	// an .echoreplay, like maxTapeNormalizedFrames does for a native capture.
+	// The analysis holds a whole match in memory (about 2 KB per frame), and
+	// ten players at 60 Hz need more than 27 minutes to reach it.
+	MaxReplayNormalizedFrames = maxTapeNormalizedFrames
 )
+
+// ErrReplayTooManyFrames is returned (wrapped) when one match of a recording
+// exceeds MaxReplayNormalizedFrames.
+var ErrReplayTooManyFrames = errors.New("too many frames in one match")
 
 // replayLineLayouts are the accepted formats of the per-line timestamp prefix.
 var replayLineLayouts = []string{
@@ -107,6 +116,8 @@ type EchoReplayParser struct {
 
 	maxLineBytes   int
 	maxReplayBytes int64
+	// maxNormalizedFrames is MaxReplayNormalizedFrames unless a test lowers it.
+	maxNormalizedFrames int
 
 	// rawByFrame captures the original session JSON for each frame_index during
 	// ParseFile. This preserves per-player stats, goal events, and other profiler
@@ -128,11 +139,15 @@ var ErrMultipleSessions = errors.New("replay contains more than one session")
 func NewEchoReplayParser() *EchoReplayParser {
 	mapper := NewMapper()
 	mapper.SetObservationSource("echoreplay", "recorder_prefix", "")
+	// Recordings are untrusted uploads: bound the roster of every snapshot
+	// and of every match (see MaxSnapshotPlayers, MaxMatchPlayers).
+	mapper.EnforceRosterLimits()
 	return &EchoReplayParser{
-		mapper:         mapper,
-		maxLineBytes:   DefaultMaxLineBytes,
-		maxReplayBytes: DefaultMaxReplayBytes,
-		rawByFrame:     make(map[int]string),
+		mapper:              mapper,
+		maxLineBytes:        DefaultMaxLineBytes,
+		maxReplayBytes:      DefaultMaxReplayBytes,
+		maxNormalizedFrames: MaxReplayNormalizedFrames,
+		rawByFrame:          make(map[int]string),
 	}
 }
 
@@ -236,7 +251,12 @@ func (p *EchoReplayParser) parseZipReplay(path string, fn func(*ParsedTick) erro
 		return nil, nil, fmt.Errorf("opening zip: %w", err)
 	}
 	defer zr.Close()
+	return p.parseZipArchive(&zr.Reader, filepath.Base(path), fn)
+}
 
+// parseZipArchive parses the replay entry of an opened ZIP archive. The file
+// path and the in-memory fuzz target share it.
+func (p *EchoReplayParser) parseZipArchive(zr *zip.Reader, filename string, fn func(*ParsedTick) error) (*model.MatchContext, *DiagnosticReport, error) {
 	entry := selectZipEntry(zr.File)
 	if entry == nil {
 		return nil, nil, fmt.Errorf("zip archive contains no replay entry (%d entries)", len(zr.File))
@@ -255,7 +275,7 @@ func (p *EchoReplayParser) parseZipReplay(path string, fn func(*ParsedTick) erro
 	defer rc.Close()
 
 	limited := &boundedReader{r: rc, limit: p.maxReplayBytes}
-	matchCtx, diag, err := p.parseReader(limited, filepath.Base(path), fn)
+	matchCtx, diag, err := p.parseReader(limited, filename, fn)
 	if err != nil && errors.Is(err, errReplayTooLarge) {
 		return matchCtx, diag, fmt.Errorf("replay entry %s exceeds %d bytes uncompressed", entry.Name, p.maxReplayBytes)
 	}
@@ -351,6 +371,8 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 	// pendingNewMatch carries NewMatch over snapshots of a new match that
 	// produced no frames (duplicates, every player rejected).
 	pendingNewMatch := false
+	// matchFrames counts the per-player frames of the current match.
+	matchFrames := 0
 
 	scanner := bufio.NewScanner(r)
 	initial := 256 * 1024
@@ -458,7 +480,12 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		legacySeen = true
 
 		var session EchoVRSessionResponse
-		if err := json.Unmarshal(jsonBytes, &session); err != nil {
+		if err := decodeReplaySession(jsonBytes, &session); err != nil {
+			if errors.Is(err, ErrTooManySnapshotPlayers) {
+				// Not a line to skip: the recording is not a recording.
+				diag.RecordMapperStats(p.mapper.Stats())
+				return p.firstMatch(matchCtx), diag, fmt.Errorf("line %d: %w", lineNum, err)
+			}
 			diag.FramesRejected++
 			noteReject("line %d: JSON decode: %v", lineNum, err)
 			continue
@@ -469,6 +496,13 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 			diag.RecordSnapshotNoTeams()
 			noteReject("line %d: snapshot has no teams (lobby or empty session)", lineNum)
 			continue
+		}
+
+		// An absurd roster is refused before any per-player work (the key
+		// presence probe below builds a map per player entry).
+		if err := p.mapper.snapshotSizeError(&session); err != nil {
+			diag.RecordMapperStats(p.mapper.Stats())
+			return p.firstMatch(matchCtx), diag, fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
 		// Record diagnostics with key-presence tracking.
@@ -485,8 +519,21 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 		}
 
 		// Map session to internal frames at the line's real sample time.
+		if newMatch {
+			matchFrames = 0
+		}
 		result := p.mapper.MapSessionAt(&session, sampleTime)
+		if result.LimitError != nil {
+			diag.RecordMapperStats(p.mapper.Stats())
+			return p.firstMatch(matchCtx), diag, fmt.Errorf("line %d: %w", lineNum, result.LimitError)
+		}
 		diag.RecordMappingResult(result)
+		if len(result.Frames) > p.maxNormalizedFrames-matchFrames {
+			diag.RecordMapperStats(p.mapper.Stats())
+			return p.firstMatch(matchCtx), diag, fmt.Errorf("line %d: %w: this match holds more than %d player frames; no real match is that long (ten players at 60 Hz reach a million after 27 minutes), so it was not imported",
+				lineNum, ErrReplayTooManyFrames, p.maxNormalizedFrames)
+		}
+		matchFrames += len(result.Frames)
 		if result.MatchCtx != nil {
 			if newMatch {
 				matchCtx = result.MatchCtx
@@ -540,6 +587,118 @@ func (p *EchoReplayParser) parseReader(r io.Reader, filename string, fn func(*Pa
 	}
 
 	return p.firstMatch(matchCtx), diag, nil
+}
+
+// maxSnapshotTeams bounds the "teams" array of one snapshot while decoding
+// (a real snapshot has three: blue, orange, spectators).
+const maxSnapshotTeams = 16
+
+// decodeReplaySession decodes one line's session payload like
+// json.Unmarshal into EchoVRSessionResponse does, except that the rosters are
+// bounded WHILE decoding: at most maxSnapshotTeams teams of at most
+// MaxSnapshotPlayerEntries players each. Counting after a plain decode is too
+// late: every "{}," or "null," of an 8 MiB line became a ~1.3 KB EchoVRPlayer
+// (measured: 41 MB allocated for one 480 KB line). The exact per-snapshot
+// limits are then applied by Mapper.snapshotSizeError.
+// TestReplaySessionDecodeMatchesPlainDecode keeps the two decoders in step.
+func decodeReplaySession(data []byte, session *EchoVRSessionResponse) error {
+	var decoded sessionIntegralJSON
+	wire := struct {
+		*sessionIntegralJSON
+		BluePoints   integralInt        `json:"blue_points"`
+		OrangePoints integralInt        `json:"orange_points"`
+		Teams        boundedReplayTeams `json:"teams"` // shadows the embedded field
+	}{sessionIntegralJSON: &decoded}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	decoded.BluePoints, decoded.OrangePoints = int(wire.BluePoints), int(wire.OrangePoints)
+	decoded.Teams = wire.Teams
+	*session = EchoVRSessionResponse(decoded)
+	return nil
+}
+
+// boundedJSONArray walks a JSON array one element at a time so a limit applies
+// before an oversized array has been materialised. data is the complete JSON
+// value; isArray is false for null.
+func boundedJSONArray(data []byte, each func(dec *json.Decoder, n int) error) (isArray bool, err error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return false, err
+	}
+	if tok == nil {
+		return false, nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return false, fmt.Errorf("expected a JSON array, found %v", tok)
+	}
+	for n := 0; dec.More(); n++ {
+		if err := each(dec, n); err != nil {
+			return true, err
+		}
+	}
+	_, err = dec.Token() // closing bracket
+	return true, err
+}
+
+type boundedReplayTeams []EchoVRTeam
+
+func (bt *boundedReplayTeams) UnmarshalJSON(data []byte) error {
+	teams := []EchoVRTeam{}
+	isArray, err := boundedJSONArray(data, func(dec *json.Decoder, n int) error {
+		if n >= maxSnapshotTeams {
+			return fmt.Errorf("%w: more than %d teams; %s", ErrTooManySnapshotPlayers, maxSnapshotTeams, damagedRecordingHint)
+		}
+		// replayTeamFields has no methods, so the embedded pointer only
+		// contributes EchoVRTeam's fields and Players below shadows its own.
+		type replayTeamFields EchoVRTeam
+		var team replayTeamFields
+		wire := struct {
+			*replayTeamFields
+			Players boundedReplayPlayers `json:"players"`
+		}{replayTeamFields: &team}
+		if err := dec.Decode(&wire); err != nil {
+			return err
+		}
+		team.Players = wire.Players
+		teams = append(teams, EchoVRTeam(team))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	*bt = nil
+	if isArray {
+		*bt = teams
+	}
+	return nil
+}
+
+type boundedReplayPlayers []EchoVRPlayer
+
+func (bp *boundedReplayPlayers) UnmarshalJSON(data []byte) error {
+	players := []EchoVRPlayer{}
+	isArray, err := boundedJSONArray(data, func(dec *json.Decoder, n int) error {
+		if n >= MaxSnapshotPlayerEntries {
+			return fmt.Errorf("%w: more than %d player entries in one team (an Echo Arena match has at most ten players); %s",
+				ErrTooManySnapshotPlayers, MaxSnapshotPlayerEntries, damagedRecordingHint)
+		}
+		var player EchoVRPlayer
+		if err := dec.Decode(&player); err != nil {
+			return err
+		}
+		players = append(players, player)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	*bp = nil
+	if isArray {
+		*bp = players
+	}
+	return nil
 }
 
 // firstMatch returns the first match context of the current parse (fallback
