@@ -1202,21 +1202,32 @@
       if (!p.coverage || p.coverage.version !== 1) { unknown++; continue; }
       for (const d of (p.coverage.detectors || [])) {
         if (detectorID && d.detector_id !== detectorID) continue;
-        const a = detectors.get(d.detector_id) || { enabled: false, candidates: 0, inputs: 0, inputCheck: false, limitations: new Set() };
+        const a = detectors.get(d.detector_id) || { enabled: false, reviewOnly: false, candidates: 0, inputs: 0, inputCheck: false, limitations: new Set() };
+        a.reviewOnly ||= d.review_only_diagnostics === true;
         a.enabled ||= d.enabled; a.candidates += d.candidate_frames || 0; a.inputs += d.input_frames || 0; a.inputCheck ||= d.input_check;
         (d.limitations || []).forEach((note) => a.limitations.add(note));
         detectors.set(d.detector_id, a);
       }
     }
     const rows = [...detectors.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, d]) =>
-      `<tr><td class="mono">${esc(id)}</td><td>${!d.enabled ? 'Disabled' : !d.candidates || (d.inputCheck && !d.inputs) ? 'Insufficient data / opportunities' : 'Partial coverage'}</td><td class="num">${fmtInt(d.candidates)}</td><td class="num">${d.inputCheck ? fmtInt(d.inputs) : 'Not measured'}</td><td>${[...d.limitations].map(esc).join(' ')}</td></tr>`).join('');
+      `<tr><td class="mono">${esc(id)}</td><td>${!d.enabled ? (d.reviewOnly ? 'Scored check disabled · unscored review available' : 'Disabled') : !d.candidates || (d.inputCheck && !d.inputs) ? 'Insufficient data / opportunities' : 'Partial coverage'}</td><td class="num">${fmtInt(d.candidates)}</td><td class="num">${d.inputCheck ? fmtInt(d.inputs) : 'Not measured'}</td><td>${[...d.limitations].map(esc).join(' ')}</td></tr>`).join('');
     return `<details class="sub"><summary><span class="tog"></span><h3>What this replay can and cannot check</h3></summary><p class="notice">Data health at the last observed sample: ${fmtInt(health.healthy)} healthy · ${fmtInt(health.degraded)} degraded · ${fmtInt(health.blind)} blind · ${fmtInt(health.unknown)} not recorded. Healthy describes usable observations, not honest play or authoritative gameplay. Explain checks shows historical degraded/blind samples and affected detectors.</p><p class="summary-note">Candidate frames passed phase and warmup gates. Input checks are necessary conditions only, not counts of independently verified opportunities or proof that every internal detector guard passed. No detector is validated by these counts.${unknown ? ` Coverage was not recorded for ${fmtInt(unknown)} player(s); re-analyze to refresh it.` : ''}</p><div class="physics-table"><table><thead><tr><th>Detector</th><th>Coverage</th><th>Candidate frames</th><th>Input check frames</th><th>Limitations</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Coverage unknown. Re-analyze this replay.</td></tr>'}</tbody></table></div></details>`;
   }
 
   function capabilityDetails(d) {
     const c = d?.capability;
-    if (!c) return '<p class="summary-note">Capability contract not recorded; re-analyze with the current version.</p>';
-    return `<details class="sub"><summary>Evidence contract · ${esc(c.version)}</summary><p class="notice">Automatic enforcement disabled. Review scores are not cheating probabilities.</p><p><strong>Required observations:</strong> ${(c.required_inputs || []).map(esc).join(', ')}.</p><p>${esc(c.source_trust)}</p><p>${esc(c.timing)}</p><p>${esc(c.validity)}</p><p><strong>Applicable build:</strong> ${esc(c.applicable_build)}.</p><p><strong>Missing enforcement prerequisites:</strong> ${(c.enforcement_requires || []).map(esc).join('; ')}.</p><p>${esc(c.missing_behavior)}</p></details>`;
+    const b = d?.behavior;
+    const behavior = b ? `<section class="notice"><h4>${esc(b.label)}</h4><p>${esc(b.observes)}</p><p>${esc(b.does_not_establish)}</p></section>` : '';
+    const review = d?.review_only_diagnostics ? '<p class="notice">Separate unscored stun review: sampled onsets and counter associations only. The legacy punch-distance check remains disabled by default.</p>' : '';
+    if (!c) return behavior + review + '<p class="summary-note">Capability contract not recorded; re-analyze with the current version.</p>';
+    return `${behavior}${review}<details class="sub"><summary>Evidence contract · ${esc(c.version)}</summary><p class="notice">Automatic enforcement disabled. Review scores are not cheating probabilities.</p><p><strong>Required observations:</strong> ${(c.required_inputs || []).map(esc).join(', ')}.</p><p>${esc(c.source_trust)}</p><p>${esc(c.timing)}</p><p>${esc(c.validity)}</p><p><strong>Applicable build:</strong> ${esc(c.applicable_build)}.</p><p><strong>Missing enforcement prerequisites:</strong> ${(c.enforcement_requires || []).map(esc).join('; ')}.</p><p>${esc(c.missing_behavior)}</p></details>`;
+  }
+
+  function gameRuleProfileDetails(profile) {
+    if (!profile?.reference) return '<p class="notice">Default-file provenance was not recorded. Re-analyze to retain the reference; match settings remain unknown.</p>';
+    const facts = Array.isArray(profile.facts) ? profile.facts.slice(0,32) : [];
+    const limits = Array.isArray(profile.limitations) ? profile.limitations.slice(0,8) : [];
+    return `<details class="sub"><summary>Default game-file reference · not verified match settings</summary><p class="notice">These literal defaults are reference-only. They do not verify this recording’s game build, active configuration, legal setting range, or engine physics.</p><dl class="kv"><dt>Profile</dt><dd class="mono">${esc(profile.reference.profile_id)}</dd><dt>Source revision</dt><dd class="mono">${esc(profile.reference.source_revision)}</dd><dt>Source repository</dt><dd>${esc(profile.source_repository)}</dd><dt>Applicable build</dt><dd>${esc(profile.build_scope)}</dd><dt>Recording configuration</dt><dd>${esc(profile.recording_configuration)}</dd></dl><div class="physics-table" tabindex="0" aria-label="Scrollable default game configuration reference"><table><thead><tr><th>Default key</th><th>Literal value</th><th>Source file</th></tr></thead><tbody>${facts.map((f) => `<tr><td>${esc(f.key)}</td><td>${esc(f.value)} ${esc(f.unit || '')}</td><td class="mono">${esc(f.source_path)}</td></tr>`).join('')}</tbody></table></div>${limits.map((v) => `<p class="help">${esc(v)}</p>`).join('')}</details>`;
   }
 
   function dataHealthDetails(h) {
@@ -1257,7 +1268,7 @@
     if (!log || log.version !== 1) return '';
     const count = (v) => Number.isSafeInteger(v) && v >= 0 ? v : 0;
     const outcomes = { consistent: 'Consistent with this model', inconclusive: 'Inconclusive', anomaly: 'Reviewable anomaly', validated_violation: 'Verified-rule contradiction' };
-    const kinds = { grab_geometry_violation: 'Disc grab geometry (mags)', shot_targeting_anomaly: 'Shot / trajectory review', throw_physics_violation: 'Release physics', settings_integrity_violation: 'Setting integrity' };
+    const kinds = { grab_geometry_violation: 'Disc acquisition review (mags)', shot_targeting_anomaly: 'Shot / trajectory review', throw_physics_violation: 'Release physics', settings_integrity_violation: 'Setting integrity', stun_contact_review: 'Stun onset / candidate review' };
     const records = Array.isArray(log.records) ? log.records.slice(0,128) : [];
     const rows = records.map((r) => {
       if (!r || !Object.hasOwn(outcomes,r.result) || !Object.hasOwn(kinds,r.kind)) return '';
@@ -1265,10 +1276,10 @@
       const seconds = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n.toFixed(4) : 'unknown';
       const metrics = r.metrics && typeof r.metrics === 'object' && !Array.isArray(r.metrics) ? Object.entries(r.metrics).slice(0,24).filter(([,v]) => typeof v === 'number' && Number.isFinite(v)) : [];
       const limitations = Array.isArray(r.limitations) ? r.limitations.slice(0,8) : [];
-      const raw = { player_id: r.player_id || null, session_id: r.session_id || null, verified_engine_build: r.verified_engine_build || null, validation_reference: r.validation_reference || null, geometry_definition: r.geometry_definition || null, raw_samples: Array.isArray(r.raw_samples) ? r.raw_samples.slice(0,128) : [] };
+      const raw = { player_id: r.player_id || null, session_id: r.session_id || null, verified_engine_build: r.verified_engine_build || null, validation_reference: r.validation_reference || null, geometry_definition: r.geometry_definition || null, rule_reference: r.rule_reference || null, stun_candidates: Array.isArray(r.stun_candidates) ? r.stun_candidates.slice(0,16) : [], raw_samples: Array.isArray(r.raw_samples) ? r.raw_samples.slice(0,128) : [] };
       return `<tr><td>${esc(kinds[r.kind])}<span class="explain">${esc(outcomes[r.result])}</span><span class="mono explain">Frame ${frameOK ? r.frame_index : '—'} · ${seconds(r.interval_start)}–${seconds(r.interval_end)} s</span></td><td>${esc(r.reason_description || r.reason)}<details><summary>Reproducible evidence</summary><dl class="kv"><dt>Rule</dt><dd>${esc(r.rule_version)}</dd><dt>Event identity</dt><dd>${esc(r.event_id)}</dd><dt>Source / authority</dt><dd>${esc(r.source || 'unknown')} / ${esc(r.authority || 'unknown')}</dd><dt>Time basis</dt><dd>${esc(r.time_basis || 'unknown')}</dd><dt>Hand / object</dt><dd>${esc(r.hand || 'unknown')} / ${esc(r.object || 'unknown')}</dd><dt>Coordinates</dt><dd>${esc(r.coordinate_space || 'unknown')}</dd>${metrics.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${v.toFixed(5)}</dd>`).join('')}</dl>${limitations.map((v) => `<p class="notice">${esc(v)}</p>`).join('')}<pre class="mono">${esc(JSON.stringify(raw,null,2))}</pre></details></td><td>${frameOK ? `<span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(m.match_id)}" data-replay-frame="${r.frame_index}">Open in Spark</button><button class="btn btn-sm" data-physics-match="${esc(m.match_id)}" data-physics-frame="${r.frame_index}" data-physics-player="${esc(p.player_id)}">Inspect samples</button></span>` : '—'}</td></tr>`;
     }).join('');
-    return `<section class="catch-log"><h3>Mechanics assessments</h3><p class="notice">These diagnostics do not score or automatically punish players. “Consistent” is not a fair-play certificate. Related checks of one release share an event identity, not independent cheating incidents. An unknown engine build or error bound is not a verified rule.</p><p class="summary-note">${count(log.total)} assessed transitions · ${count(log.consistent)} consistent · ${count(log.inconclusive)} inconclusive · ${count(log.anomaly)} anomalies · ${count(log.validated_violation)} verified-rule contradictions.</p>${count(log.dropped) ? `<p class="notice">${count(log.dropped)} evidence records omitted by the 128-record limit; counts include them.</p>` : ''}${count(log.invalid) ? `<p class="notice">${count(log.invalid)} malformed diagnostic payloads rejected.</p>` : ''}<div class="physics-table" tabindex="0" aria-label="Scrollable mechanics assessments"><table><thead><tr><th>Kind / result / interval</th><th>Reason / inputs / rules</th><th>Review</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No observable transition was assessed. Missing evidence does not establish fair play.</td></tr>'}</tbody></table></div></section>`;
+    return `<section class="catch-log"><h3>Mechanics assessments</h3><p class="notice">These diagnostics do not score or automatically punish players. “Consistent” is not a fair-play certificate. Related checks of one release share an event identity, not independent cheating incidents. An unknown engine build or error bound is not a verified rule. Confirmed sampled possession is not confirmed cheating; stun candidates are not identified attackers.</p>${gameRuleProfileDetails(p?.coverage?.game_rule_profile)}<p class="summary-note">${count(log.total)} assessed transitions · ${count(log.consistent)} consistent · ${count(log.inconclusive)} inconclusive · ${count(log.anomaly)} anomalies · ${count(log.validated_violation)} verified-rule contradictions.</p>${count(log.dropped) ? `<p class="notice">${count(log.dropped)} evidence records omitted by the 128-record limit; counts include them.</p>` : ''}${count(log.invalid) ? `<p class="notice">${count(log.invalid)} malformed diagnostic payloads rejected.</p>` : ''}<div class="physics-table" tabindex="0" aria-label="Scrollable mechanics assessments"><table><thead><tr><th>Kind / result / interval</th><th>Reason / inputs / rules</th><th>Review</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No observable transition was assessed. Missing evidence does not establish fair play.</td></tr>'}</tbody></table></div></section>`;
   }
 
   function decisionTraceDetails(m, p, detectorID = '') {
@@ -1709,7 +1720,7 @@
     }
     if (mark.kind === 'throw') {
       const th = s.throws[mark.primary];
-      const over = mark.over ? `, over the ${fmtNum(L.cap, 1)} metres per second engine cap, marked for review` : '';
+      const over = mark.over ? `, over the ${fmtNum(L.cap, 1)} metres per second configured reference, marked for review` : '';
       return `${mark.count > 1 ? `${mark.count} throws, fastest` : 'Throw,'} ${fmtNum(th.speed, 2)} metres per second${over}, ${th.player || th.player_id || 'unknown player'}, ${tlSpan(mark)} into the recording${mark.goal ? ', linked to a goal' : ''}`;
     }
     if (mark.kind === 'signal') {
@@ -1744,7 +1755,7 @@
         ['Player', esc(th.player || th.player_id || '—')], ['Team', team(th.team)], ['Speed', speedCell(th.speed, L.cap)],
         ['Result', th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'], ['Frame', fmtInt(th.frame_index)]);
       if (mark.phase) rows.push(['Game phase', tlPhaseCell(mark.phase)]);
-      if (mark.over) note = `Sampled above the ${fmtNum(L.cap, 1)} m/s engine cap and marked for review. A sample speed is not an independently validated violation.`;
+      if (mark.over) note = `Sampled above the ${fmtNum(L.cap, 1)} m/s configured reference and marked for review. A sample speed is not an independently validated violation.`;
     } else if (mark.kind === 'signal') {
       const e = m.events[mark.primary];
       const phaseRow = mark.phase ? [['Game phase', tlPhaseCell(mark.phase)]] : [];
@@ -1839,7 +1850,7 @@
     const throwsDrawn = has((mark) => mark.kind === 'throw'), signalsDrawn = has((mark) => mark.kind === 'signal');
     const items = [
       has((mark) => mark.kind === 'goal') ? `${sw('<g class="tl-goal tl-blue"><circle cx="5" cy="8" r="4.5"/></g><g class="tl-goal tl-orange"><circle cx="16" cy="8" r="4.5"/></g>', 22)}Goal, with the running score` : '',
-      throwsDrawn ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="2" y="9" width="2" height="5" fill-opacity=".55"/><rect class="tl-tick" x="7" y="6" width="2" height="8" fill-opacity=".75"/><rect class="tl-tick" x="12" y="3" width="2" height="11"/></g>')}Throw: taller and stronger is faster${L.cap ? `; the dotted rule is the ${fmtNum(L.cap, 1)} m/s engine cap` : ', relative to the fastest release here'}` : '',
+      throwsDrawn ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="2" y="9" width="2" height="5" fill-opacity=".55"/><rect class="tl-tick" x="7" y="6" width="2" height="8" fill-opacity=".75"/><rect class="tl-tick" x="12" y="3" width="2" height="11"/></g>')}Throw: taller and stronger is faster${L.cap ? `; the dotted rule is the ${fmtNum(L.cap, 1)} m/s configured reference` : ', relative to the fastest release here'}` : '',
       has((mark) => mark.over) ? `${sw('<g class="tl-throw tl-over"><rect class="tl-tick" x="7.8" y="1" width="2.4" height="13"/><rect class="tl-tick" x="5" y="1" width="8" height="2.4"/></g>')}Sampled over the cap, marked for review` : '',
       has((mark) => mark.kind === 'throw' && mark.goal) ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="8" y="6" width="2" height="8" fill-opacity=".8"/><circle class="tl-linked tl-blue" cx="9" cy="3" r="2.4"/></g>')}Throw linked to a goal` : '',
       signalsDrawn && L.blind ? `${sw('<g class="tl-signal tl-concealed"><circle class="tl-glyph" cx="9" cy="8" r="3.6"/></g>')}Detector signal, conclusion hidden for blinded review` : '',
@@ -3006,8 +3017,9 @@
         <div class="health-card"><span>Raw telemetry</span><b>${fmtInt(h.raw_ticks)} ticks</b><small class="muted">${fmtBytes(h.raw_tick_bytes)}</small></div>
         <div class="health-card"><span>Normalized cache</span><b>${fmtInt(h.normalized_frames)} frames</b><small class="muted">${fmtBytes(h.normalized_bytes)}</small></div>
         <div class="health-card"><span>Raw archives</span><b>${fmtInt(h.archive_files)} files</b><small class="muted">${fmtBytes(h.archive_bytes)}</small></div>
-        <div class="health-card"><span>Physics guardrail</span><b>${fmtNum(h.disc_speed_cap, 1)} m/s</b><small class="muted">maximum disc speed</small></div>
+        <div class="health-card"><span>Configured speed reference</span><b>${fmtNum(h.disc_speed_cap, 1)} m/s</b><small class="muted">not a verified engine ceiling</small></div>
       </div>
+      ${gameRuleProfileDetails(h.game_rule_profile)}
       ${h.provenance ? `<details class="advanced-section"><summary>Build &amp; configuration identity</summary><p class="help">Current runtime only, not the original analysis behind older findings. A hash identifies a file; it is not a publisher signature or an accuracy guarantee.</p><dl class="kv"><dt>Linked build</dt><dd class="mono">${esc(h.provenance.build_commit)}</dd><dt>Source revision</dt><dd class="mono">${esc(h.provenance.source_revision || 'Not recorded')}</dd><dt>Source modified</dt><dd>${h.provenance.source_modified === true ? 'Yes · development candidate' : h.provenance.source_modified === false ? 'No' : 'Unknown'}</dd><dt>Build identity</dt><dd>${esc(h.provenance.build_identity)}</dd><dt>Executable SHA-256</dt><dd class="mono">${esc(h.provenance.executable_sha256 || 'Unavailable')}</dd><dt>Current configuration</dt><dd class="mono">${esc(h.provenance.config_fingerprint)}</dd><dt>Enforcement policy</dt><dd>${esc(h.provenance.enforcement_policy)}</dd></dl></details>` : '<p class="notice">Exact runtime provenance is unavailable in this build.</p>'}
       <p class="health-path"><strong>Database:</strong> <span class="mono">${esc(h.database_path)}</span><br><strong>Clips:</strong> <span class="mono">${esc(h.clip_directory)}</span><br><strong>Archives:</strong> <span class="mono">${esc(h.archive_directory)}</span></p>
       ${walLarge ? '<p class="notice">The write-ahead log is large. Check &amp; checkpoint verifies the database, then safely folds committed WAL data into the main evidence file.</p>' : ''}

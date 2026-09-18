@@ -37,8 +37,11 @@ func TestState001DifferentHolderTransferIsInconclusiveNeverScored(t *testing.T) 
 		if r.Result != model.MechanicsInconclusive || r.Reason != "grab_transfer_without_free_sample" || !strings.Contains(r.ReasonDescription, "legal handoff or steal") {
 			t.Fatalf("transfer misrepresented: %+v", r)
 		}
-		if r.FrameIndex != 1 || len(r.RawSamples) != 2 || r.RawSamples[0].Attachment != "held" || r.RawSamples[1].Attachment != "held" {
+		if r.FrameIndex != 1 || len(r.RawSamples) != 3 || r.RawSamples[0].Attachment != "held" || r.RawSamples[1].Attachment != "held" || r.RawSamples[2].Attachment != "held" {
 			t.Fatalf("invented a free-flight state: %+v", r)
+		}
+		if r.Metrics["sampled_possession_confirmed"] != 1 || r.Metrics["direct_holder_transfer"] != 1 {
+			t.Fatalf("sampled holder persistence lost: %+v", r.Metrics)
 		}
 		if _, ok := r.Metrics["previous_held_left_origin_to_disc_center_m"]; !ok {
 			t.Fatal("previous held geometry was not preserved descriptively")
@@ -89,6 +92,7 @@ func TestState001TransferStillRequiresKnownContinuousOwnership(t *testing.T) {
 			mutate(a, b)
 			d.Evaluate(ctx(), players(a), a.LastFrameIdx)
 			d.Evaluate(ctx(), players(b), b.LastFrameIdx)
+			d.FlushTracks(ctx(), b.LastFrameIdx)
 			if len(*records) != 0 {
 				t.Fatalf("uncertain or self transfer became an acquisition: %+v", records)
 			}

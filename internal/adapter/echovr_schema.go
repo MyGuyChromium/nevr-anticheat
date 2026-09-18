@@ -123,10 +123,12 @@ type EchoVRPlayer struct {
 	RHand EchoVRHand `json:"rhand"` // CONFIRMED: right hand/controller
 
 	// Game state booleans
-	Stunned      bool `json:"stunned"`      // CONFIRMED: player is stunned
-	Invulnerable bool `json:"invulnerable"` // CONFIRMED: post-respawn invulnerability
-	Possession   bool `json:"possession"`   // CONFIRMED: current/last carrier; may remain true after release
-	Blocking     bool `json:"blocking"`     // CONFIRMED: shield/block active
+	Stunned         bool `json:"stunned"` // CONFIRMED: player is stunned
+	stunnedObserved *bool
+	stunsObserved   *bool // presence of nested stats.stuns, independent of its value
+	Invulnerable    bool  `json:"invulnerable"` // CONFIRMED: post-respawn invulnerability
+	Possession      bool  `json:"possession"`   // CONFIRMED: current/last carrier; may remain true after release
+	Blocking        bool  `json:"blocking"`     // CONFIRMED: shield/block active
 
 	// CONFIRMED from a real Spark recording: what each hand holds, "none",
 	// "disc" (both hands report "disc" while the player carries it), "geo"

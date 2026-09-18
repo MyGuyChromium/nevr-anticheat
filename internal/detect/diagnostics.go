@@ -148,6 +148,8 @@ var decisionReasonDescriptions = map[string]string{
 	"possible_head_contact":                  "Possible intervening head contact prevented wrist-angle evaluation",
 	"release_motion_below_gate":              "Hand or disc motion was below the angle detector's minimum",
 	"release_angle_not_exceeded":             "Release angle was unavailable or did not exceed its threshold",
+	"release_angle_context_invalid":          "Supplied release identity, timing or source metadata is inconsistent or malformed",
+	"release_angle_source_changed":           "Release and confirmation observations came from different recording sources",
 	"body_translation_dominates":             "Body translation could explain the observed hand motion",
 	"release_angle_candidate":                "Attributed release angle reached the review-candidate condition",
 	"pre_release_unavailable":                "No pre-release disc snapshot was available",

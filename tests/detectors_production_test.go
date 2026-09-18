@@ -351,8 +351,13 @@ func TestDetector_STATE_001_GrabDistance(t *testing.T) {
 		t.Fatalf("acquisition diagnostics: %+v", log)
 	}
 	for _, record := range log.Records {
-		if record.Reason != "grab_geometry_unverified" || record.Metrics["legal_limit_m"] != .25 || len(record.RawSamples) != 2 {
+		// The same first-held acquisition now retains eight preceding raw
+		// observations and one separate confirmation, not just two endpoints.
+		if record.Reason != "grab_geometry_unverified" || record.Metrics["legal_limit_m"] != .25 || len(record.RawSamples) != 10 || record.Metrics["pre_acquisition_samples"] != 8 || record.Metrics["sampled_possession_confirmed"] != 1 {
 			t.Fatalf("unverified rule evidence: %+v", record)
+		}
+		if record.RawSamples[7].FrameIndex != record.FrameIndex-1 || record.RawSamples[8].FrameIndex != record.FrameIndex || record.RawSamples[9].FrameIndex != record.FrameIndex+1 || record.Metrics["confirmation_frame"] != float64(record.FrameIndex+1) {
+			t.Fatalf("original acquisition or independent confirmation frame changed: %+v", record)
 		}
 	}
 	runOnly(t, player1().NormalThrowSequence(8), "STATE_001").AssertNoDetections()

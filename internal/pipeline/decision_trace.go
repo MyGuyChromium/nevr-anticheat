@@ -18,6 +18,9 @@ func (c *coverageTracker) mechanicsRecord(detectorID, playerID string, record mo
 	if player == nil {
 		return
 	}
+	if record.RuleReference == nil {
+		record.RuleReference = model.DefaultGameRuleReference()
+	}
 	player.Detectors[index].MechanicsReview.Add(record)
 }
 

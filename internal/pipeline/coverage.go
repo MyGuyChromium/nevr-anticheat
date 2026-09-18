@@ -38,6 +38,10 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 			c.mechanicsLogs[d.ID()] = true
 		}
 	}
+	// The independent onset/candidate reviewer writes mechanics diagnostics,
+	// never events, even if a saved configuration enables the legacy detector.
+	// Set this after discovery so a missing legacy interface cannot erase it.
+	c.mechanicsLogs["STATE_007"] = true
 	ids := make(map[string]bool)
 	for id := range cfg.Detectors {
 		ids[id] = true
@@ -45,6 +49,7 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 	for id := range enabled {
 		ids[id] = true
 	}
+	ids["STATE_007"] = true // independent unscored diagnostics are always represented
 	ordered := make([]string, 0, len(ids))
 	for id := range ids {
 		ordered = append(ordered, id)
@@ -52,6 +57,9 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 	sort.Strings(ordered)
 	for _, id := range ordered {
 		d := model.DetectorCoverage{DetectorID: id, Enabled: enabled[id], Status: "not_evaluated", Limitations: []string{}}
+		if behavior, ok := model.DetectorBehavior(id); ok {
+			d.Behavior = &behavior
+		}
 		d.Capability = detect.CapabilityFor(id)
 		if d.Capability != nil {
 			d.InputCheck = true
@@ -71,6 +79,9 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 			}
 		}
 		switch id {
+		case "STATE_007":
+			d.ReviewOnlyDiagnostics = true
+			d.Limitations = append(d.Limitations, "Stun onset/counter associations are collected as unscored diagnostics independently of the disabled legacy punch-distance heuristic. No attacker or contact distance is proven.")
 		case "THROW_001":
 			d.InputCheck = true
 			d.Limitations = append(d.Limitations, "Sampled disc speed is not an independently verified release speed; intervening contact and reference-frame assumptions require review.")
@@ -101,7 +112,8 @@ func newCoverageTracker(detectors []detect.Detector, cfg *config.Config, roster 
 func (c *coverageTracker) player(id string) *model.PlayerCoverage {
 	p := c.players[id]
 	if p == nil {
-		p = &model.PlayerCoverage{Version: 1, Status: "insufficient_data", Detectors: append([]model.DetectorCoverage(nil), c.detectors...), Limitations: []string{}}
+		profile := model.DefaultGameRuleProfile()
+		p = &model.PlayerCoverage{Version: 1, Status: "insufficient_data", Detectors: append([]model.DetectorCoverage(nil), c.detectors...), Limitations: []string{}, GameRuleProfile: &profile}
 		for i := range p.Detectors {
 			d := &p.Detectors[i]
 			d.DecisionTrace = &model.DetectorDecisionTrace{Version: 1, InternalBranches: c.branches[d.DetectorID], Reasons: []model.DetectorDecisionReason{}}

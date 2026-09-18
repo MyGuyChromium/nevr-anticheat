@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -42,6 +43,9 @@ func validateMechanicsCoverage(coverage map[string]*model.PlayerCoverage) error 
 		}
 		if err := validateDataHealth(player.DataHealth); err != nil {
 			return err
+		}
+		if err := player.GameRuleProfile.Validate(); err != nil {
+			return fmt.Errorf("invalid game-rule reference profile: %w", err)
 		}
 		for _, detector := range player.Detectors {
 			log := detector.MechanicsReview
@@ -93,11 +97,11 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 		if player == nil {
 			continue
 		}
-		if player.DataHealth != nil {
+		if player.DataHealth != nil || player.GameRuleProfile != nil {
 			hasCatch = true
 		}
 		for _, detector := range player.Detectors {
-			if detector.Capability != nil {
+			if detector.Capability != nil || detector.Behavior != nil || detector.ReviewOnlyDiagnostics {
 				hasCatch = true
 			}
 			if detector.MechanicsReview != nil {
@@ -151,16 +155,21 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 		}
 		target := coverage[id]
 		freshSnapshot := target == nil || newerHealthSnapshot(target.DataHealth, player.DataHealth)
-		if target == nil && player.DataHealth != nil {
+		if target == nil && (player.DataHealth != nil || player.GameRuleProfile != nil) {
 			target = &model.PlayerCoverage{Version: 1, Status: model.ReviewStatusInsufficientData,
-				Limitations: []string{"Live health snapshot only; complete analysis input/event denominators are not retained here."}}
+				Limitations: []string{"Live reference/health metadata only; complete analysis input/event denominators are not retained here."}}
 			coverage[id], changed = target, true
 		}
 		if target != nil && mergeLiveDataHealth(target, player.DataHealth) {
 			changed = true
 		}
+		if target != nil && player.GameRuleProfile != nil && (target.GameRuleProfile == nil || freshSnapshot) && !reflect.DeepEqual(target.GameRuleProfile, player.GameRuleProfile) {
+			profile := player.GameRuleProfile.Clone()
+			target.GameRuleProfile = &profile
+			changed = true
+		}
 		for _, detector := range player.Detectors {
-			if detector.CatchReview == nil && detector.MechanicsReview == nil && detector.Capability == nil {
+			if detector.CatchReview == nil && detector.MechanicsReview == nil && detector.Capability == nil && detector.Behavior == nil && !detector.ReviewOnlyDiagnostics {
 				continue
 			}
 			target := coverage[id]
@@ -183,6 +192,18 @@ func (s *Store) MergeMatchCatchReviews(ctx context.Context, matchID string, inco
 					Status:      model.ReviewStatusInsufficientData,
 					Limitations: []string{"Partial live transition/mechanics diagnostics only; no complete input or event denominator is available."}})
 				index = len(target.Detectors) - 1
+			}
+			if detector.Behavior != nil && (target.Detectors[index].Behavior == nil || freshSnapshot) &&
+				(target.Detectors[index].Behavior == nil || *target.Detectors[index].Behavior != *detector.Behavior) {
+				behavior := *detector.Behavior
+				target.Detectors[index].Behavior = &behavior
+				changed = true
+			}
+			// This marks retained diagnostics, not a mutable enforcement switch.
+			// Missing fields in older chunks must not hide those observations.
+			if detector.ReviewOnlyDiagnostics && !target.Detectors[index].ReviewOnlyDiagnostics {
+				target.Detectors[index].ReviewOnlyDiagnostics = true
+				changed = true
 			}
 			if detector.Capability != nil && (target.Detectors[index].Capability == nil || freshSnapshot) {
 				contract := *detector.Capability

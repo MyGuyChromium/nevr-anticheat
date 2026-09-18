@@ -257,6 +257,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	ps.HeldItems = frame.HeldItems.Clone()
 	ps.IsBoostingKnown = frame.IsBoostingKnown != nil && *frame.IsBoostingKnown
 	ps.IsStunned = frame.IsStunned
+	ps.IsStunnedKnown = frame.IsStunnedKnown != nil && *frame.IsStunnedKnown
+	ps.StunsKnown = frame.StunsKnown != nil && *frame.StunsKnown && frame.Stuns >= 0
 	ps.IsBoosting = frame.IsBoosting
 	ps.ShieldActive = frame.ShieldActive
 	ps.IsImmune = frame.IsImmune

@@ -56,6 +56,7 @@ import (
 	"github.com/nevr-anticheat/nevr-anticheat/internal/config"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect/pattern"
+	"github.com/nevr-anticheat/nevr-anticheat/internal/mechanics"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/scoring"
 )
@@ -83,6 +84,12 @@ type TrackFlusher interface {
 // still pass through ordinary validation, shadow policy, deduplication and limits.
 type PhaseTrackFlusher interface {
 	FlushPhase(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent
+}
+
+// PhaseReviewObserver collects unscored observations outside active play. It
+// replaces FlushPhase for these observers; calling both would break continuity.
+type PhaseReviewObserver interface {
+	EvaluateReviewPhase(*model.MatchContext, map[string]*model.PlayerState, int, string) []model.DetectionEvent
 }
 
 // SourceTrackFlusher resolves old-source observations before the dedup window
@@ -151,6 +158,7 @@ type Pipeline struct {
 	// invalidLogged throttles per (player, reason) warnings across batches.
 	invalidLogged map[string]int
 	quality       TelemetryQualityReport
+	stunReview    *mechanics.StunReviewer
 }
 
 // SetSkipReset controls whether ProcessMatch skips resetting detector, scorer,
@@ -250,6 +258,7 @@ func (p *Pipeline) resetState(matchCtx *model.MatchContext) {
 // initMatch seeds the roster from the match context and anchors the scorer
 // on the match start so event times are match-relative, not ingest-relative.
 func (p *Pipeline) initMatch(matchCtx *model.MatchContext) {
+	p.stunReview = mechanics.NewStunReviewer()
 	p.health = make(map[string]*healthEntry)
 	p.lastFrameIdx = -1
 	p.players = make(map[string]*model.PlayerState, len(matchCtx.PlayerIDs))
@@ -370,6 +379,7 @@ func (p *Pipeline) ProcessMatch(
 				ps.Team = pf.Team
 			}
 			if !sourceReset && ps.FrameCount > 0 && !sameObservationSource(ps.Observation, pf.Observation) {
+				p.recordStunReviews(p.stunReview.Flush("stun_source_changed"))
 				// Do not combine behavioral windows from different recording
 				// sources. Prior independent incidents retain their existing score.
 				p.extractor.DrainPendingReleases("release_source_changed")
@@ -413,13 +423,16 @@ func (p *Pipeline) ProcessMatch(
 		// CONFIRMED from real replay: players teleport during round transitions, causing
 		// massive false positives from MOV_002 and other spatial detectors.
 		activePhase := true
+		phase := "active"
 		for i := range pFrames {
 			if pFrames[i].GamePhase != "" && !matchCtx.IsActivePhase(pFrames[i].GamePhase) {
 				activePhase = false
+				phase = pFrames[i].GamePhase
 				break
 			}
 		}
 		if !activePhase {
+			p.recordStunReviews(p.stunReview.Flush("stun_inactive_phase"))
 			// Feature extractor state was updated above to maintain continuity,
 			// but detectors do not run during non-active phases.
 			for pid := range framePlayers {
@@ -427,7 +440,10 @@ func (p *Pipeline) ProcessMatch(
 			}
 			var phaseEvents []model.DetectionEvent
 			for _, detector := range p.detectors {
-				if flusher, ok := detector.(PhaseTrackFlusher); ok {
+				if observer, ok := detector.(PhaseReviewObserver); ok {
+					// Non-play diagnostics never enter the scoring path.
+					_ = observer.EvaluateReviewPhase(matchCtx, framePlayers, fi, phase)
+				} else if flusher, ok := detector.(PhaseTrackFlusher); ok {
 					phaseEvents = append(phaseEvents, p.acceptEmissions(flusher.FlushPhase(matchCtx, fi), fi, result)...)
 				}
 			}
@@ -436,6 +452,7 @@ func (p *Pipeline) ProcessMatch(
 			}
 			continue
 		}
+		p.recordStunReviews(p.stunReview.Observe(matchCtx, framePlayers, fi))
 
 		// Run detectors. Warmup is per player: a detector only sees players
 		// that have accumulated more than WarmupFrames() valid frames, so a
@@ -613,6 +630,9 @@ func (p *Pipeline) dedupAndEmit(events []model.DetectionEvent, fi int, result *M
 // flushTracks asks every TrackFlusher detector to judge its open tracks as
 // of the last processed frame and routes the results like frame events.
 func (p *Pipeline) flushTracks(matchCtx *model.MatchContext, result *MatchResult) {
+	if p.stunReview != nil {
+		p.recordStunReviews(p.stunReview.Flush("stun_end_of_stream"))
+	}
 	if p.lastFrameIdx < 0 {
 		return
 	}
@@ -628,6 +648,15 @@ func (p *Pipeline) flushTracks(matchCtx *model.MatchContext, result *MatchResult
 		return
 	}
 	p.dedupAndEmit(events, p.lastFrameIdx, result)
+}
+
+func (p *Pipeline) recordStunReviews(records []model.MechanicsAssessment) {
+	if p.decisionCoverage == nil {
+		return
+	}
+	for _, record := range records {
+		p.decisionCoverage.mechanicsRecord("STATE_007", record.PlayerID, record)
+	}
 }
 
 // emit runs closed incidents through the rate limiter, scoring, the PAT_004

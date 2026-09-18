@@ -72,6 +72,8 @@ type PlayerState struct {
 
 	// Game state
 	IsStunned            bool    `json:"is_stunned"`
+	IsStunnedKnown       bool    `json:"is_stunned_known"`
+	StunsKnown           bool    `json:"stuns_known"`
 	StunStartFrame       int     `json:"stun_start_frame,omitempty"`
 	StunEndTime          float64 `json:"stun_end_time,omitempty"`
 	HasDisc              bool    `json:"has_disc"`

@@ -307,7 +307,7 @@ test('the rendered SVG escapes recording-supplied text and exposes every mark to
   assert.equal(L.marks.length, 5);
   for (const tag of groups) assert.match(tag, /data-tl-mark="\d+" tabindex="(0|-1)" role="button" aria-label="[^"]+"/);
   assert.equal(groups.filter((tag) => tag.includes('tabindex="0"')).length, 1, 'one tab stop; arrow keys reach the rest');
-  assert.match(groups.find((tag) => tag.includes('tl-over')), /over the 18\.9 metres per second engine cap, marked for review/);
+  assert.match(groups.find((tag) => tag.includes('tl-over')), /over the 18\.9 metres per second configured reference, marked for review/);
   assert.equal(groups.filter((tag) => tag.includes('tl-over')).length, 1, 'only the over-cap release is drawn as over the cap');
   assert.doesNotMatch(svg, /tl-band|tl-play|tl-phase/, 'without phase data nothing about phases is drawn');
 

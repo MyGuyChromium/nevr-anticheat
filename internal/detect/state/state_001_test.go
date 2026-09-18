@@ -48,8 +48,11 @@ func TestState001KnownAcquisitionIsInconclusiveNeverScored(t *testing.T) {
 	if r.Result != model.MechanicsInconclusive || r.Reason != "grab_geometry_unverified" || r.Metrics["legal_limit_m"] != .25 || r.Hand != "left|right" || r.FrameIndex != 1 || r.IntervalStart != 0 || r.IntervalEnd != .067 {
 		t.Fatalf("assessment: %+v", r)
 	}
-	if len(r.RawSamples) != 2 || r.RawSamples[0].Attachment != "free" || r.RawSamples[1].Attachment != "held" {
+	if len(r.RawSamples) != 3 || r.RawSamples[0].Attachment != "free" || r.RawSamples[1].Attachment != "held" || r.RawSamples[2].Attachment != "held" {
 		t.Fatalf("raw interval lost: %+v", r.RawSamples)
+	}
+	if r.Metrics["sampled_possession_confirmed"] != 1 || r.Metrics["confirmation_frame"] != 2 || r.Metrics["first_held_frame"] != 1 {
+		t.Fatalf("sampled confirmation replaced acquisition context: %+v", r.Metrics)
 	}
 	for _, key := range []string{"adjusted_distance", "closing_credit_m", "threshold"} {
 		if _, ok := r.Metrics[key]; ok {
@@ -70,6 +73,7 @@ func TestState001DoesNotInventUnknownInitialTransferOrPlayerGripCatch(t *testing
 				}
 				d.Evaluate(ctx(), players(p), frame)
 			}
+			d.FlushTracks(ctx(), len(states)-1)
 			if len(*records) != 0 {
 				t.Fatalf("invented acquisition: %+v", records)
 			}
@@ -102,6 +106,7 @@ func TestState001ContinuityAndSourceReset(t *testing.T) {
 			p := grabReviewFrame(1, "held")
 			mutate(p)
 			d.Evaluate(ctx(), players(p), p.LastFrameIdx)
+			d.FlushTracks(ctx(), p.LastFrameIdx)
 			if len(*records) != 0 {
 				t.Fatal("crossed discontinuity")
 			}
@@ -116,10 +121,13 @@ func TestState001DuplicateConflictsAndHookReset(t *testing.T) {
 	d.Evaluate(ctx(), players(free), 0)
 	d.Evaluate(ctx(), players(held), 1)
 	d.Evaluate(ctx(), players(held), 1)
-	if len(*records) != 1 {
-		t.Fatalf("duplicate count = %d", len(*records))
+	if len(*records) != 0 || len(d.pending) != 1 {
+		t.Fatalf("duplicate confirmed possession: records=%d pending=%d", len(*records), len(d.pending))
 	}
 	d.Evaluate(ctx(), players(grabReviewFrame(1, "free")), 1) // conflicting duplicate breaks continuity
+	if len(*records) != 1 || (*records)[0].Reason != "grab_possession_unconfirmed_duplicate_conflict" || (*records)[0].Metrics["sampled_possession_confirmed"] != 0 {
+		t.Fatalf("conflicting duplicate lost original uncertain transition: %+v", records)
+	}
 	d.Evaluate(ctx(), players(grabReviewFrame(2, "held")), 2)
 	if len(*records) != 1 {
 		t.Fatal("conflicting duplicate invented regrab")
@@ -132,6 +140,7 @@ func TestState001DuplicateConflictsAndHookReset(t *testing.T) {
 	d.SetMechanicsObserver(nil)
 	d.Evaluate(ctx(), players(grabReviewFrame(3, "free")), 3)
 	d.Evaluate(ctx(), players(grabReviewFrame(4, "held")), 4)
+	d.Evaluate(ctx(), players(grabReviewFrame(5, "held")), 5)
 	if len(*records) != 1 {
 		t.Fatal("detached hook leaked")
 	}
@@ -148,6 +157,10 @@ func TestState001RawOwnershipAndChunkEquivalent(t *testing.T) {
 			p.Observation.Source = "modified"
 		}
 		d.Evaluate(ctx(), players(grabReviewFrame(1, "held")), 1)
+		d.Evaluate(ctx(), players(grabReviewFrame(2, "held")), 2)
+		if len(*records) != 1 {
+			t.Fatalf("missing owned acquisition: %+v", records)
+		}
 		return *records
 	}
 	if !reflect.DeepEqual(run(false), run(true)) {
@@ -160,6 +173,9 @@ func TestState001RawOwnershipAndChunkEquivalent(t *testing.T) {
 	p = grabReviewFrame(1, "held")
 	p.CurrentDisc = nil
 	d.Evaluate(ctx(), players(p), 1)
+	p = grabReviewFrame(2, "held")
+	p.CurrentDisc = nil
+	d.Evaluate(ctx(), players(p), 2)
 	if len(*records) != 1 || (*records)[0].RawSamples[0].LeftHand != nil || (*records)[0].RawSamples[1].DiscPosition != nil {
 		t.Fatal("missing geometry was invented or acquisition discarded")
 	}

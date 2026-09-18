@@ -777,11 +777,13 @@ func sessionFingerprint(raw *EchoVRSessionResponse) uint64 {
 			writeS(p.HoldingLeft)
 			writeS(p.HoldingRight)
 			writeB(p.Stunned)
+			writeB(p.hasStunned())
 			writeB(p.Blocking)
 			writeB(p.Invulnerable)
 			writeSigned(int64(p.Ping))
 			writeSigned(int64(p.Stats.Goals))
 			writeSigned(int64(p.Stats.Stuns))
+			writeB(p.hasStuns())
 		}
 	}
 	return h.Sum64()
@@ -972,6 +974,8 @@ func (m *Mapper) mapPlayer(
 	// CONFIRMED: per-player stats
 	goals := p.Stats.Goals
 	stuns := p.Stats.Stuns
+	stunnedKnown := p.hasStunned()
+	stunsKnown := p.hasStuns()
 
 	frame := &model.PlayerTelemetryFrame{
 		Observation:            m.observation(session, frameIdx, timestamp),
@@ -993,6 +997,8 @@ func (m *Mapper) mapPlayer(
 		LeftHandRotationValid:  &leftHandRotationValid,
 		RightHandRotationValid: &rightHandRotationValid,
 		IsStunned:              isStunned,
+		IsStunnedKnown:         &stunnedKnown,
+		StunsKnown:             &stunsKnown,
 		IsBoosting:             isBoosting,
 		ShieldActive:           shieldActive,
 		IsImmune:               isImmune,
