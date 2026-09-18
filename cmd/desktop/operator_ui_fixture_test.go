@@ -230,6 +230,14 @@ func seedOperatorUIFixture(t *testing.T, engine *replay.Engine) map[string]int {
 		mc.PlayerNames[id], mc.TeamAssignments[id] = name, team
 		rows := testutil.NewFrameBuilder(id).WithTeam(team).WithStartPos(model.Vec3{float64(p) - 4, 2, -20}).NormalMovingPlayer(ticks, 2)
 		for i := range rows {
+			// Explicit synthetic onset/counter observations exercise the unscored
+			// review display. These are generated layout inputs, not validation.
+			known := true
+			rows[i].IsStunnedKnown, rows[i].StunsKnown = &known, &known
+			rows[i].IsStunned = p == 0 && i >= 45 && i < 60
+			if p == 4 && i >= 45 {
+				rows[i].Stuns = 1
+			}
 			velocity := model.Vec3{}
 			if i > 0 {
 				velocity = rows[i].Position.Sub(rows[i-1].Position).Scale(15)

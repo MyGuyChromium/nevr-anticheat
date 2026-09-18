@@ -161,12 +161,31 @@ func (p *Pipeline) observeHealth(f *model.PlayerTelemetryFrame, previous *model.
 // never a finding against a player or proof of a faulty broadcaster. Only
 // simultaneously observed actors from the SAME source/epoch can corroborate it.
 // q/-q and whole-scene rotation preserve the shortest angular displacement.
-func (p *Pipeline) sharedOrientationJumps(frames []model.PlayerTelemetryFrame) map[string]bool {
+func (p *Pipeline) sharedOrientationJumps(frames []model.PlayerTelemetryFrame, matchCtx *model.MatchContext) map[string]bool {
 	var candidates []int
+	admitted := make(map[string]bool)
 	for i := range frames {
-		f := &frames[i]
+		// This runs before histories advance. Validate a detached frame copy
+		// so a sample that will be rejected cannot corroborate a source-wide
+		// fault and quarantine usable evidence from unrelated players.
+		f := frames[i]
+		if _, err := p.validator.Validate(&f, matchCtx); err != nil {
+			continue
+		}
 		prev := p.players[f.PlayerID]
-		if prev == nil || prev.FrameCount == 0 || !f.Observation.SameSource(prev.Observation) || f.Timestamp <= prev.LastTimestamp || !f.Rotation.IsUnit() || !prev.Rotation.IsUnit() {
+		if prev != nil && prev.FrameCount > 0 && (f.FrameIndex <= prev.LastFrameIdx || f.Timestamp <= prev.LastTimestamp) {
+			continue
+		}
+		// Match stable per-player dispatch: the first usable row wins and a
+		// later duplicate will be stale. It cannot add corroboration that the
+		// admitted row itself did not supply. Invalid rows do not claim an ID.
+		if admitted[f.PlayerID] {
+			continue
+		}
+		admitted[f.PlayerID] = true
+		if prev == nil || prev.FrameCount == 0 ||
+			!f.Observation.SameSource(prev.Observation) || f.Observation.FrameIndex != f.FrameIndex || f.Observation.Timestamp != f.Timestamp ||
+			f.Timestamp <= prev.LastTimestamp || !f.Rotation.IsUnit() || !prev.Rotation.IsUnit() {
 			continue
 		}
 		if prev.Rotation.AngularDistance(f.Rotation) > .75*math.Pi {

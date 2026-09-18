@@ -77,19 +77,35 @@ func (DiscAccelerationEvidence) EvidenceType() string { return "disc_acceleratio
 
 // ReleaseAngleEvidence for THROW_003.
 type ReleaseAngleEvidence struct {
-	ReleaseAngle              float64 `json:"release_angle"`
-	HandVelocity              Vec3    `json:"hand_velocity"`
-	HandRelativeVelocity      Vec3    `json:"hand_relative_velocity"`
-	DiscVelocity              Vec3    `json:"disc_velocity"`
-	HandSpeed                 float64 `json:"hand_speed"`
-	HandRelativeSpeed         float64 `json:"hand_relative_speed"`
-	DiscSpeed                 float64 `json:"disc_speed"`
-	WristOrientation          Quat    `json:"wrist_orientation"`
-	WristOrientationValid     bool    `json:"wrist_orientation_valid"`
-	HandKinematicsValid       bool    `json:"hand_kinematics_valid"`
-	ThrowingHand              string  `json:"throwing_hand"`
-	HandAttributionConfidence float64 `json:"hand_attribution_confidence"`
-	HandAttributionAnchor     string  `json:"hand_attribution_anchor,omitempty"`
+	// This is a sampled world-velocity comparison, never a recovered controller
+	// WristAngleOffset. The rule reference is a shipped default, not an observed
+	// match configuration. A missing release window remains explicitly unknown.
+	Behavior                  string              `json:"behavior,omitempty"`
+	Measurement               string              `json:"measurement,omitempty"`
+	ReleaseFrame              int                 `json:"release_frame"`
+	ObservedFrame             int                 `json:"observed_frame"`
+	ReleaseWindow             *ReleaseObservation `json:"release_window,omitempty"`
+	SourceStatus              string              `json:"source_status,omitempty"`
+	PlayerVelocity            Vec3                `json:"player_velocity"`
+	BodyTranslationFactor     float64             `json:"body_translation_factor"`
+	HandTracked               bool                `json:"hand_tracked"`
+	ContactStatus             string              `json:"contact_status,omitempty"`
+	NativeAssistanceReference *RuleReference      `json:"native_assistance_reference,omitempty"`
+	NativeAssistanceStatus    string              `json:"native_assistance_status,omitempty"`
+	Limitations               []string            `json:"limitations,omitempty"`
+	ReleaseAngle              float64             `json:"release_angle"`
+	HandVelocity              Vec3                `json:"hand_velocity"`
+	HandRelativeVelocity      Vec3                `json:"hand_relative_velocity"`
+	DiscVelocity              Vec3                `json:"disc_velocity"`
+	HandSpeed                 float64             `json:"hand_speed"`
+	HandRelativeSpeed         float64             `json:"hand_relative_speed"`
+	DiscSpeed                 float64             `json:"disc_speed"`
+	WristOrientation          Quat                `json:"wrist_orientation"`
+	WristOrientationValid     bool                `json:"wrist_orientation_valid"`
+	HandKinematicsValid       bool                `json:"hand_kinematics_valid"`
+	ThrowingHand              string              `json:"throwing_hand"`
+	HandAttributionConfidence float64             `json:"hand_attribution_confidence"`
+	HandAttributionAnchor     string              `json:"hand_attribution_anchor,omitempty"`
 }
 
 func (ReleaseAngleEvidence) EvidenceType() string { return "release_angle" }

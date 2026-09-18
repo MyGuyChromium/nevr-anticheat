@@ -122,7 +122,8 @@ function Assert-TestReleaseDesktopReport([object]$Report, [int]$ExitCode, [strin
         }
         Assert-TestRelease (@($Report.checks | Where-Object { $_.status -ceq 'FAIL' }).Count -eq 0) 'Desktop workload summary conceals a failed check.'
         if ($Report.automated_status -ceq 'PASS') {
-            Assert-TestRelease (@($Report.checks | Where-Object { $_.id -cne 'abrupt_kill_recovery' -and $_.status -cne 'PASS' }).Count -eq 0) 'Desktop workload summary conceals an untested required check.'
+            Assert-TestRelease (@($Report.checks | Where-Object { $_.status -cne 'PASS' }).Count -eq 0) 'Desktop workload summary conceals an untested required check.'
+            Assert-TestRelease ($Report.workload_policy -ceq 'explicit_force_reanalysis') 'Desktop workload did not prove explicit reanalysis rather than cached reads.'
         }
     }
 }

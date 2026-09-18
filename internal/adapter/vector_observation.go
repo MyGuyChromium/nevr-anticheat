@@ -23,6 +23,15 @@ func vectorObserved(raw json.RawMessage) *bool {
 func (p *EchoVRPlayer) hasVelocity() bool {
 	return p != nil && (p.velocityObserved == nil || *p.velocityObserved)
 }
+
+// Typed producers supply their scalar values directly. A JSON decode supplies
+// explicit presence even for false/zero, keeping absent/null observations unknown.
+func (p *EchoVRPlayer) hasStunned() bool {
+	return p != nil && (p.stunnedObserved == nil || *p.stunnedObserved)
+}
+func (p *EchoVRPlayer) hasStuns() bool {
+	return p != nil && (p.stunsObserved == nil || *p.stunsObserved) && p.Stats.Stuns >= 0
+}
 func (d *EchoVRDisc) hasPosition() bool {
 	return d != nil && (d.positionObserved == nil || *d.positionObserved)
 }
@@ -45,11 +54,19 @@ func (p *EchoVRPlayer) UnmarshalJSON(data []byte) error {
 	decoded.Level, decoded.Ping = int(integers.Level), int(integers.Ping)
 	var fields struct {
 		Velocity json.RawMessage `json:"velocity"`
+		Stunned  *bool           `json:"stunned"`
+		Stats    *struct {
+			Stuns *integralInt `json:"stuns"`
+		} `json:"stats"`
 	}
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	decoded.velocityObserved = vectorObserved(fields.Velocity)
+	known := fields.Stunned != nil
+	decoded.stunnedObserved = &known
+	stunsKnown := fields.Stats != nil && fields.Stats.Stuns != nil && decoded.Stats.Stuns >= 0
+	decoded.stunsObserved = &stunsKnown
 	*p = EchoVRPlayer(decoded)
 	return nil
 }
@@ -58,10 +75,24 @@ func (p EchoVRPlayer) MarshalJSON() ([]byte, error) {
 	if p.hasVelocity() {
 		velocity = &p.Velocity
 	}
+	var stunned *bool
+	if p.hasStunned() {
+		stunned = &p.Stunned
+	}
+	var stuns *int
+	if p.hasStuns() {
+		stuns = &p.Stats.Stuns
+	}
+	stats := struct {
+		*playerStatsIntegralJSON
+		Stuns *int `json:"stuns,omitempty"`
+	}{(*playerStatsIntegralJSON)(&p.Stats), stuns}
 	return json.Marshal(struct {
 		*playerVectorJSON
 		Velocity *[3]float64 `json:"velocity,omitempty"`
-	}{(*playerVectorJSON)(&p), velocity})
+		Stunned  *bool       `json:"stunned,omitempty"`
+		Stats    any         `json:"stats"`
+	}{(*playerVectorJSON)(&p), velocity, stunned, stats})
 }
 
 type discVectorJSON EchoVRDisc

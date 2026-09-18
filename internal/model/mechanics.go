@@ -28,6 +28,7 @@ const (
 	MechanicsShotTargeting      = "shot_targeting_anomaly"
 	MechanicsThrowPhysics       = "throw_physics_violation"
 	MechanicsSettingsIntegrity  = "settings_integrity_violation"
+	MechanicsStunContact        = "stun_contact_review"
 	MaxMechanicsMetrics         = 24
 	MaxMechanicsRawSamples      = 128
 	MaxMechanicsLimitations     = 8
@@ -37,6 +38,10 @@ const (
 // not zero. Hand positions describe tracking origins, not verified grab points;
 // DiscPosition describes its sampled center, not a verified surface boundary.
 type MechanicsRawSample struct {
+	PlayerID     string `json:"player_id,omitempty"`
+	HeadPosition *Vec3  `json:"head_position,omitempty"`
+	IsStunned    *bool  `json:"is_stunned,omitempty"`
+	Stuns        *int   `json:"stuns,omitempty"`
 	// Supporting releases and inspected flight samples are distinguished from
 	// the latest event's context. A goal reference is inferred, not verified
 	// pocket geometry. SampledSpeedMPS preserves the scalar actually used by
@@ -63,6 +68,8 @@ type MechanicsRawSample struct {
 // MechanicsAssessment is a diagnostic, not a DetectionEvent or score. Source,
 // Authority and CoordinateSpace preserve descriptions; none grants trust.
 type MechanicsAssessment struct {
+	RuleReference       *RuleReference       `json:"rule_reference,omitempty"`
+	StunCandidates      []StunCandidate      `json:"stun_candidates,omitempty"`
 	Kind                string               `json:"kind"`
 	Result              string               `json:"result"`
 	Reason              string               `json:"reason"`
@@ -91,9 +98,28 @@ type MechanicsAssessment struct {
 
 func (r MechanicsAssessment) Validate() error {
 	switch r.Kind {
-	case MechanicsGrabGeometry, MechanicsShotTargeting, MechanicsThrowPhysics, MechanicsSettingsIntegrity:
+	case MechanicsGrabGeometry, MechanicsShotTargeting, MechanicsThrowPhysics, MechanicsSettingsIntegrity, MechanicsStunContact:
 	default:
 		return fmt.Errorf("invalid mechanics kind")
+	}
+	if err := r.RuleReference.Validate(); err != nil {
+		return err
+	}
+	if len(r.StunCandidates) > 16 {
+		return fmt.Errorf("oversized stun candidates")
+	}
+	if len(r.StunCandidates) != 0 && r.Kind != MechanicsStunContact {
+		return fmt.Errorf("stun candidates on unrelated mechanics assessment")
+	}
+	seenCandidates := make(map[string]bool)
+	for _, c := range r.StunCandidates {
+		if c.PlayerID == "" || c.PlayerID == r.PlayerID || len(c.PlayerID) > 256 || len(c.Team) > 32 || seenCandidates[c.PlayerID] || c.FrameStart < 0 || c.FrameEnd <= c.FrameStart || !mechanicsTime(c.TimeStart) || !mechanicsTime(c.TimeEnd) || c.TimeEnd <= c.TimeStart || c.CounterBefore < 0 || c.CounterAfter <= c.CounterBefore {
+			return fmt.Errorf("invalid stun candidate")
+		}
+		seenCandidates[c.PlayerID] = true
+	}
+	if r.Kind == MechanicsStunContact && r.Result != MechanicsInconclusive {
+		return fmt.Errorf("stun review cannot establish a verdict")
 	}
 	switch r.Result {
 	case MechanicsConsistent, MechanicsInconclusive, MechanicsAnomaly, MechanicsValidatedViolation:
@@ -125,7 +151,7 @@ func (r MechanicsAssessment) Validate() error {
 		}
 	}
 	for _, sample := range r.RawSamples {
-		if (sample.SampleRole != "" && sample.SampleRole != "supporting_release" && sample.SampleRole != "flight_sample") || len(sample.EventID) > 256 {
+		if !mechanicsSampleRole(sample.SampleRole) || len(sample.EventID) > 256 || len(sample.PlayerID) > 256 {
 			return fmt.Errorf("invalid mechanics raw sample role or identity")
 		}
 		if sample.SampledSpeedMPS != nil && !mechanicsTime(*sample.SampledSpeedMPS) {
@@ -134,10 +160,13 @@ func (r MechanicsAssessment) Validate() error {
 		if sample.BounceCount != nil && *sample.BounceCount < 0 {
 			return fmt.Errorf("invalid mechanics bounce count")
 		}
+		if sample.Stuns != nil && *sample.Stuns < 0 {
+			return fmt.Errorf("invalid stun counter")
+		}
 		if sample.FrameIndex < 0 || !mechanicsTime(sample.Timestamp) || len(sample.Attachment) > 256 || len(sample.LeftHolding) > 256 || len(sample.RightHolding) > 256 {
 			return fmt.Errorf("invalid mechanics raw sample")
 		}
-		for _, value := range []*Vec3{sample.DiscPosition, sample.DiscVelocity, sample.LeftHand, sample.RightHand, sample.PlayerPosition, sample.PlayerVelocity, sample.ReportedVelocity, sample.InferredReferenceGoal} {
+		for _, value := range []*Vec3{sample.DiscPosition, sample.DiscVelocity, sample.LeftHand, sample.RightHand, sample.PlayerPosition, sample.PlayerVelocity, sample.ReportedVelocity, sample.InferredReferenceGoal, sample.HeadPosition} {
 			if value != nil && (value.HasNaN() || value.HasInf()) {
 				return fmt.Errorf("non-finite mechanics raw vector")
 			}
@@ -151,6 +180,11 @@ func mechanicsTime(value float64) bool {
 }
 
 func (r MechanicsAssessment) Clone() MechanicsAssessment {
+	if r.RuleReference != nil {
+		copy := *r.RuleReference
+		r.RuleReference = &copy
+	}
+	r.StunCandidates = append([]StunCandidate(nil), r.StunCandidates...)
 	if len(r.Metrics) > 0 {
 		metrics := make(map[string]float64, len(r.Metrics))
 		for key, value := range r.Metrics {
@@ -164,6 +198,14 @@ func (r MechanicsAssessment) Clone() MechanicsAssessment {
 	r.RawSamples = append([]MechanicsRawSample(nil), r.RawSamples...)
 	for i := range r.RawSamples {
 		s := &r.RawSamples[i]
+		if s.IsStunned != nil {
+			v := *s.IsStunned
+			s.IsStunned = &v
+		}
+		if s.Stuns != nil {
+			v := *s.Stuns
+			s.Stuns = &v
+		}
 		if s.SampledSpeedMPS != nil {
 			value := *s.SampledSpeedMPS
 			s.SampledSpeedMPS = &value
@@ -172,7 +214,7 @@ func (r MechanicsAssessment) Clone() MechanicsAssessment {
 			value := *s.BounceCount
 			s.BounceCount = &value
 		}
-		for _, value := range []**Vec3{&s.DiscPosition, &s.DiscVelocity, &s.LeftHand, &s.RightHand, &s.PlayerPosition, &s.PlayerVelocity, &s.ReportedVelocity, &s.InferredReferenceGoal} {
+		for _, value := range []**Vec3{&s.DiscPosition, &s.DiscVelocity, &s.LeftHand, &s.RightHand, &s.PlayerPosition, &s.PlayerVelocity, &s.ReportedVelocity, &s.InferredReferenceGoal, &s.HeadPosition} {
 			if *value != nil {
 				copy := **value
 				*value = &copy
@@ -180,4 +222,25 @@ func (r MechanicsAssessment) Clone() MechanicsAssessment {
 		}
 	}
 	return r
+}
+
+// StunCandidate is a temporal association, never a selected or proven attacker.
+type StunCandidate struct {
+	PlayerID      string  `json:"player_id"`
+	Team          string  `json:"team,omitempty"`
+	FrameStart    int     `json:"frame_start"`
+	FrameEnd      int     `json:"frame_end"`
+	TimeStart     float64 `json:"time_start"`
+	TimeEnd       float64 `json:"time_end"`
+	CounterBefore int     `json:"counter_before"`
+	CounterAfter  int     `json:"counter_after"`
+}
+
+func mechanicsSampleRole(role string) bool {
+	switch role {
+	case "", "supporting_release", "flight_sample", "stun_before", "stun_onset", "stun_candidate_before", "stun_candidate_after":
+		return true
+	default:
+		return false
+	}
 }

@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"math"
+	"reflect"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/detect"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -68,6 +69,11 @@ type catchSample struct {
 	holder             string
 	poses              []catchPose
 	source             *model.ObservationContext
+	attachment         *model.DiscAttachment
+	// Minimal possession diagnostics also retain a bounded, value-only input
+	// identity. Degraded motion is never used as geometry, but its exact retry
+	// must be distinguishable from changed data under the same frame label.
+	inputMotion []catchInputMotion
 }
 
 type catchBaseline struct {
@@ -89,7 +95,7 @@ type catchBaseline struct {
 
 func NewState008(params map[string]any) *State008 {
 	d := &State008{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_008", DetectorVersion: "0.3.0", DetectorName: "Pre-catch Trajectory Review",
+		DetectorID: "STATE_008", DetectorVersion: "0.3.2", DetectorName: "Pre-catch Trajectory Review",
 		DetectorCategory: "state", Inputs: []string{"disc_state", "disc_attachment", "observation_context", "hand_tracking", "head_position"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false, TraceBranches: true,
 	}, baselineSamples: 4, minCorrectionSamples: 2, baselineDuration: .20, minCorrectionDuration: .12,
@@ -151,6 +157,15 @@ func (d *State008) ResetSource() {
 	d.Reset()
 }
 
+// FlushPhase closes a sampled acquisition at the actual play boundary rather
+// than waiting for a later frame gap or EOF. No non-play possession sample may
+// confirm an active-play candidate, and a later phase must build a new flight.
+func (d *State008) FlushPhase(_ *model.MatchContext, _ int) []model.DetectionEvent {
+	d.finishCatchReview(model.CatchReviewUnconfirmed, "catch_phase_changed", false)
+	d.Reset()
+	return nil
+}
+
 func (d *State008) resetTrajectory() {
 	d.previous = nil
 	d.clearFlight()
@@ -187,8 +202,14 @@ func (d *State008) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 		d.trace(players, frame, reason)
 		return nil
 	}
-	d.trace(players, frame, "catch_inputs_ready")
 	previous := d.previous
+	// A retry is not an independent observation. Ignore it without resetting
+	// the baseline or confirming pending possession; differing same-frame
+	// snapshots still fail the continuity check below.
+	if previous != nil && reflect.DeepEqual(*previous, sample) {
+		return nil
+	}
+	d.trace(players, frame, "catch_inputs_ready")
 	d.previous = &sample
 	if previous != nil {
 		dt := sample.timestamp - previous.timestamp
@@ -408,7 +429,7 @@ func catchReadSample(players map[string]*model.PlayerState, frame int) (catchSam
 	if reason != "" {
 		return identity, reason
 	}
-	s := catchSample{frame: frame, holder: identity.holder, source: identity.source}
+	s := catchSample{frame: frame, holder: identity.holder, source: identity.source, attachment: identity.attachment}
 	var disc *model.DiscState
 	for _, ps := range detect.SortedPlayers(players) {
 		if ps.LastFrameIdx != frame {
@@ -651,6 +672,6 @@ func (d *State008) finishCatchReview(outcome model.CatchReviewOutcome, reason st
 // an event from an unconfirmed attachment. Repeated flushes are idempotent.
 func (d *State008) FlushTracks(_ *model.MatchContext, _ int) []model.DetectionEvent {
 	d.finishCatchReview(model.CatchReviewUnconfirmed, "catch_confirmation_unavailable", false)
-	d.pending, d.pendingHolder, d.pendingEligible = nil, "", false
+	d.Reset() // finalized free-flight and possession samples cannot seed a later stream
 	return nil
 }

@@ -119,5 +119,13 @@ func (fe *FeatureExtractor) confirmRelease(ps *model.PlayerState, frame *model.P
 	event.ReleaseWindow = pending.event.ReleaseWindow.Clone()
 	ps.LastThrow = &event
 	ps.ThrowHistory = append(ps.ThrowHistory, event)
+	// This in-memory history is a recent context window, not the canonical
+	// match record. Total count and every LastThrow publication remain intact;
+	// detections/evidence are stored independently by the pipeline.
+	if len(ps.ThrowHistory) > fe.historyWindow {
+		copy(ps.ThrowHistory, ps.ThrowHistory[len(ps.ThrowHistory)-fe.historyWindow:])
+		clear(ps.ThrowHistory[fe.historyWindow:])
+		ps.ThrowHistory = ps.ThrowHistory[:fe.historyWindow]
+	}
 	ps.ThrowCount++
 }

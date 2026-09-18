@@ -95,9 +95,9 @@ var detectorSpecs = map[string]DetectorSpec{
 			"release_window_frames":    "detector v2.0.0 uses the last pre-release snapshot only",
 			"max_accel_ratio":          "detector v2.0.0 has no ratio tier",
 		}},
-	"THROW_003": {ID: "THROW_003", Name: "Unnatural Release Angle", Category: "throw",
+	"THROW_003": {ID: "THROW_003", Name: "Release Direction Review", Category: "throw",
 		Params: []ParamSpec{
-			f("max_release_angle_deviation", 177.0, "deg", "angle between hand velocity and disc velocity above which a release is unnatural"),
+			f("max_release_angle_deviation", 177.0, "deg", "sampled hand/disc direction disagreement retained for review; not a WristAngleOffset setting limit"),
 			f("min_hand_speed", 3.0, "m/s", "minimum hand speed for a release to be evaluated"),
 			f("min_throw_speed", 5.0, "m/s", "minimum release speed for a release to be evaluated"),
 		},

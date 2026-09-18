@@ -72,6 +72,8 @@ type PlayerState struct {
 
 	// Game state
 	IsStunned            bool    `json:"is_stunned"`
+	IsStunnedKnown       bool    `json:"is_stunned_known"`
+	StunsKnown           bool    `json:"stuns_known"`
 	StunStartFrame       int     `json:"stun_start_frame,omitempty"`
 	StunEndTime          float64 `json:"stun_end_time,omitempty"`
 	HasDisc              bool    `json:"has_disc"`
@@ -106,8 +108,10 @@ type PlayerState struct {
 	RightHandSpeedStats WelfordAccumulator `json:"-"`
 
 	// Throw tracking
-	ThrowCount   int          `json:"throw_count"`
-	LastThrow    *ThrowEvent  `json:"-"`
+	ThrowCount int         `json:"throw_count"`
+	LastThrow  *ThrowEvent `json:"-"`
+	// ThrowHistory is bounded recent context, not the persisted match record.
+	// ThrowCount counts all published releases independently of this window.
 	ThrowHistory []ThrowEvent `json:"-"`
 
 	// Disc state (shared — same for all players in same frame)

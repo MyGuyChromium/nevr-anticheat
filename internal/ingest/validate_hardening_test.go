@@ -103,7 +103,8 @@ func hardeningCases() []hardeningCase {
 			note:         "identifier hygiene is an ingest concern only"},
 		{name: "negative_frame_index", mutate: func(f *model.PlayerTelemetryFrame) { f.FrameIndex = -3 },
 			ingestReject: "negative_frame_index",
-			note:         "the pipeline indexes by frame index and accepts any integer"},
+			pipeReject:   pipeline.ReasonInvalidFrameIndex,
+			note:         "both paths reject negative identities before they can seed release history or detector warmup"},
 	}
 }
 

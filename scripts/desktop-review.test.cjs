@@ -308,7 +308,7 @@ function mechanicsFixture() {
 test('mechanics reports show precise outcomes and raw inputs without becoming score or cheating counts',()=>{
   const render=ui(),m=fixture(),p=m.players[0],log=mechanicsFixture();
   const html=render.mechanicsReviewDetails(m,p,{mechanics_review:log});
-  for(const phrase of ['4 assessed transitions','do not score','not independent cheating incidents','Disc grab geometry (mags)','Inconclusive','Rule','same-release','Open in Spark','data-replay-frame="10"','data-physics-frame="13"','legal_limit_m','Unknown build','verified_engine_build']) assert.ok(html.includes(phrase),phrase);
+  for(const phrase of ['4 assessed transitions','do not score','not independent cheating incidents','Disc acquisition review (mags)','Inconclusive','Rule','same-release','Open in Spark','data-replay-frame="10"','data-physics-frame="13"','legal_limit_m','Unknown build','verified_engine_build']) assert.ok(html.includes(phrase),phrase);
   assert.doesNotMatch(html,/NaN|Infinity|undefined/);
   render.blindReview=true;assert.equal(render.mechanicsReviewDetails(m,p,{mechanics_review:log}),'');
 });
@@ -340,4 +340,31 @@ test('mechanics raw evidence preserves full trajectory windows within the storag
   const html=render.mechanicsReviewDetails(m,m.players[0],{mechanics_review:log});
   for(const i of [0,8,50,120,127]) assert.ok(html.includes(`flight-evidence-${i}-end`));
   assert.doesNotMatch(html,/flight-evidence-12[89]-end/);
+});
+
+test('default game profile remains reference-only, escaped and bounded',()=>{
+  const render=ui();
+  const profile={reference:{profile_id:'defaults-test',source_revision:'pinned-revision'},source_repository:'test/repo',build_scope:'Unknown build',recording_configuration:'Unknown active settings',facts:Array.from({length:40},(_,i)=>({key:`literal-${i}-end`,value:'<script>not code</script>',unit:'m',source_path:'default.json'})),limitations:['Not a throw-speed ceiling']};
+  const html=render.gameRuleProfileDetails(profile);
+  for(const phrase of ['reference-only','not verified match settings','Unknown active settings','Unknown build','pinned-revision','literal-31-end','&lt;script&gt;','Not a throw-speed ceiling']) assert.ok(html.includes(phrase),phrase);
+  assert.doesNotMatch(html,/<script>|literal-32-end|undefined/);
+  assert.match(render.gameRuleProfileDetails(null),/not recorded/);
+});
+
+test('stun diagnostics preserve candidates and do not identify attackers or bypass blind review',()=>{
+  const render=ui(),m=fixture(),p=m.players[0],log=mechanicsFixture();
+  log.records=[{...log.records[0],kind:'stun_contact_review',result:'inconclusive',rule_reference:{profile_id:'pinned-reference'},stun_candidates:[{player_id:'candidate-not-attacker',counter_before:0,counter_after:1}],raw_samples:[{player_id:'victim',head_position:[0,1,2],is_stunned:false,stuns:0,sample_role:'stun_before'}]}];
+  const html=render.mechanicsReviewDetails(m,p,{mechanics_review:log});
+  for(const phrase of ['Stun onset / candidate review','candidate-not-attacker','pinned-reference','stun_before','head_position','stun candidates are not identified attackers']) assert.ok(html.includes(phrase),phrase);
+  assert.match(render.capabilityDetails({review_only_diagnostics:true}),/Separate unscored stun review/);
+  render.blindReview=true; assert.equal(render.mechanicsReviewDetails(m,p,{mechanics_review:log}),'');
+});
+
+test('release-side and catch-side observation taxonomy is visible without causal claims',()=>{
+  const render=ui();
+  const behavior={label:'Receiver-associated catch-path review',observes:'Sampled path changes',does_not_establish:'Does not prove input automation <b>or actor</b>'};
+  const html=render.capabilityDetails({behavior});
+  assert.match(html,/Receiver-associated catch-path review/);assert.match(html,/Does not prove input automation &lt;b&gt;/);assert.doesNotMatch(html,/<b>/);
+  const m=fixture();m.players[0].coverage.detectors=[{detector_id:'STATE_007',enabled:false,review_only_diagnostics:true,limitations:[]}];
+  assert.match(render.coverageDetails(m,'STATE_007'),/Scored check disabled · unscored review available/);
 });

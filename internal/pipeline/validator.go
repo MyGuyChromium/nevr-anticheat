@@ -13,9 +13,10 @@ import (
 // change that zeroes positions, a physics mismatch that rejects every frame)
 // is attributable instead of being folded into one opaque counter.
 const (
-	ReasonMissingPlayerID = "missing_player_id"
-	ReasonZeroPosition    = "zero_position"
-	ReasonInvalidPosition = "invalid_position"
+	ReasonMissingPlayerID   = "missing_player_id"
+	ReasonInvalidFrameIndex = "invalid_frame_index"
+	ReasonZeroPosition      = "zero_position"
+	ReasonInvalidPosition   = "invalid_position"
 	// ReasonInvalidTimestamp rejects a NaN, +/-Inf or negative Timestamp. It
 	// is the same code and the same rule the ingest guard applies
 	// (validateIngestFrame), so the live and offline paths agree.
@@ -140,6 +141,10 @@ func NewFrameValidator(cfg *config.Config) *FrameValidator {
 func (v *FrameValidator) Validate(frame *model.PlayerTelemetryFrame, matchCtx *model.MatchContext) ([]string, error) {
 	if frame.PlayerID == "" {
 		return nil, &ValidationError{Reason: ReasonMissingPlayerID}
+	}
+	if frame.FrameIndex < 0 {
+		return nil, &ValidationError{Reason: ReasonInvalidFrameIndex, PlayerID: frame.PlayerID,
+			Detail: "frame index must be nonnegative"}
 	}
 	// Reject zero-vector positions
 	if frame.Position.IsZero() {

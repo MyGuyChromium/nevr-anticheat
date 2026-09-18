@@ -50,6 +50,11 @@ func (s *Store) WriteMatchAnalysis(ctx context.Context, in MatchAnalysisWrite) (
 	if strings.TrimSpace(in.MatchID) == "" {
 		return out, fmt.Errorf("writing match analysis: match id required")
 	}
+	// Apply the same evidence/reference checks as live merges and reads before
+	// a replacement can delete previous output or persist an unreadable report.
+	if err := validateMechanicsCoverage(in.Coverage); err != nil {
+		return out, fmt.Errorf("writing match analysis coverage: %w", err)
+	}
 	if in.LiveAppend {
 		if in.Replace || len(in.Cases) != 0 || in.Coverage != nil {
 			return out, fmt.Errorf("live append cannot replace analysis, cases, or coverage")

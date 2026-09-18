@@ -428,6 +428,11 @@ func (d *TapeRawDecoder) session(ea *capture.EchoArenaFrame) (*EchoVRSessionResp
 		}
 		p := EchoVRPlayer{Name: info.DisplayName, UserID: int64(info.AccountNumber), PlayerID: int(np.Slot), Level: int(info.Level), Body: nativeBody(np.Body), Head: nativeBody(np.Head),
 			LHand: nativeHand(np.LeftHand), RHand: nativeHand(np.RightHand), Stunned: np.Flags&1 != 0, Invulnerable: np.Flags&2 != 0, Blocking: np.Flags&4 != 0, Ping: int(np.Ping)}
+		// A nonzero packed bitmask is observable, including a false stun bit.
+		// Proto3 cannot distinguish omitted flags from flags=0; keep that case
+		// unknown. Periodic stats also need an explicit current update below.
+		stunnedKnown, stunsKnown := np.Flags != 0, false
+		p.stunnedObserved, p.stunsObserved = &stunnedKnown, &stunsKnown
 		velocity := nativeVector(np.Velocity)
 		known := velocity != nil
 		p.velocityObserved = &known
@@ -442,6 +447,14 @@ func (d *TapeRawDecoder) session(ea *capture.EchoArenaFrame) (*EchoVRSessionResp
 		p.Possession = p.HoldsDisc()
 		if stats := d.stats[np.Slot]; stats != nil {
 			p.Stats = EchoVRPlayerStats{Points: int(stats.Points), Goals: int(stats.Goals), Stuns: int(stats.Stuns), Saves: int(stats.Saves), Assists: int(stats.Assists), Steals: int(stats.Steals), Passes: int(stats.Passes), Catches: int(stats.Catches), Blocks: int(stats.Blocks), Interceptions: int(stats.Interceptions), ShotsOnGoal: int(stats.ShotsTaken)}
+			// The scalar cache is useful context, but an old sparse update is
+			// not a fresh zero/delta observation at this frame's timestamp.
+			for _, event := range ea.Events {
+				if update := event.GetPlayerStatsUpdated(); update != nil && update.PlayerSlot == np.Slot {
+					stunsKnown = stats.Stuns >= 0
+				}
+			}
+			p.stunsObserved = &stunsKnown
 		}
 		p.Stats.Possession = float64(np.PossessionTime)
 		s.Teams[team].Players = append(s.Teams[team].Players, p)
@@ -532,6 +545,7 @@ func nativeBody(p *spatial.Pose) EchoVRBodyHead {
 func nativeHand(p *spatial.Pose) EchoVRHand {
 	return EchoVRHand(nativeBody(p))
 }
+
 // nativeGameStatus projects the native status enum onto the /session status
 // strings. UNSPECIFIED stays "unknown" in the retained projection, and
 // model.PhaseNormalizer (reached through the shared mapper call site) reads it

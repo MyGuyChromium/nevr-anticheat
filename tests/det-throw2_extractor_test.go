@@ -90,8 +90,9 @@ func TestExtractor_SetMaxFrameDt(t *testing.T) {
 
 func TestExtractor_SnapshotFrameIndexFollowsSeenFrames(t *testing.T) {
 	// Histories hold one entry per frame SEEN: with frame 98 missing
-	// (rejected by the validator, dropped poll) the snapshot labels must be
-	// the real frame indices, matching their timestamps.
+	// (rejected by the validator, dropped poll) only the fresh contiguous
+	// release suffix is evidence. Its labels must be the real frame indices,
+	// matching their timestamps, not indices invented from history length.
 	fe := pipeline.NewFeatureExtractor(30)
 	mc := dt2Ctx()
 	ps := &model.PlayerState{PlayerID: "p1", Team: "blue"}
@@ -106,20 +107,24 @@ func TestExtractor_SnapshotFrameIndexFollowsSeenFrames(t *testing.T) {
 	for idx := 90; idx <= 97; idx++ {
 		hold(idx)
 	}
-	hold(99) // frame 98 never seen (0.134 s spacing: still under the gap threshold)
-	f := dt2Frame("p1", 100, 100*dt, pos)
+	hold(99)  // frame 98 never seen (0.134 s spacing: still under the gap threshold)
+	hold(100) // two observed held samples after the hole, not borrowed old warmup
+	f := dt2Frame("p1", 101, 101*dt, pos)
 	f.Disc = &model.DiscState{Position: pos.Add(model.Vec3{1, 0.2, 0}), Velocity: model.Vec3{0, 0, 15}, Speed: 15, Attachment: &model.DiscAttachment{State: "free"}}
 	fe.UpdatePlayerState(ps, &f, mc)
 	if ps.LastThrow != nil {
 		t.Fatal("first free sample must await confirmation")
 	}
-	f.FrameIndex, f.Timestamp = 101, 101*dt
+	f.FrameIndex, f.Timestamp = 102, 102*dt
 	f.Observation.FrameIndex, f.Observation.Timestamp = f.FrameIndex, f.Timestamp
 	fe.UpdatePlayerState(ps, &f, mc)
 	if ps.LastThrow == nil {
-		t.Fatal("expected a throw at frame 100")
+		t.Fatal("expected a throw at frame 101 after two fresh held samples")
 	}
-	want := []int{94, 95, 96, 97, 99}
+	if ps.LastThrow.FrameIndex != 101 {
+		t.Fatalf("release frame=%d, want 101", ps.LastThrow.FrameIndex)
+	}
+	want := []int{99, 100}
 	snaps := ps.LastThrow.PreReleaseFrames
 	if len(snaps) != len(want) {
 		t.Fatalf("got %d snapshots, want %d", len(snaps), len(want))

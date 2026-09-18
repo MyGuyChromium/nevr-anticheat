@@ -46,6 +46,42 @@ function New-ReadinessContractReport {
         checks = @($ids | ForEach-Object { [pscustomobject]@{ id = $_; kind = 'automated'; status = 'pass' } }) }
 }
 
+# Execute the real duplicate gate against explicit response fixtures. No app,
+# HTTP client or database is launched; query/response contracts remain tested.
+function Invoke-DuplicateImportContract([string]$Mutation = '') {
+    $parseErrors = $null; $tokens = $null
+    $readiness = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'private-beta-readiness.ps1'), [ref]$tokens, [ref]$parseErrors)
+    $gates = @($readiness.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Run-Check' -and $node.CommandElements[1].Value -eq 'duplicate_import' }, $true))
+    Assert-TestRelease ($parseErrors.Count -eq 0 -and $gates.Count -eq 1) 'Expected one duplicate-import gate.'
+    $postPaths = [Collections.Generic.List[string]]::new()
+    $fixture = 'synthetic-fixture-not-read.echoreplay'
+    function Assert-Beta([bool]$Condition, [string]$Message) { Assert-TestRelease $Condition $Message }
+    function Run-Check([string]$ID, [scriptblock]$Action) { & $Action }
+    function Send-BetaRequest([string]$Method, [string]$Path, [string]$UploadPath = '') {
+        if ($Method -eq 'GET') {
+            Assert-TestRelease ($Path -ceq 'api/matches') 'Unexpected duplicate-test GET path.'
+            $matches = @([pscustomobject]@{match_id='SYN-FIXTURE-001'})
+            if ($Mutation -eq 'duplicate_history') { $matches += $matches[0] }
+            return [pscustomobject]@{status=200;body=[pscustomobject]@{matches=$matches}}
+        }
+        Assert-TestRelease ($Method -ceq 'POST' -and $UploadPath -ceq $fixture) 'Duplicate gate did not upload the fixture.'
+        $force = $postPaths.Count -eq 1
+        $expected = if ($force) { 'api/analyze?force=true' } else { 'api/analyze' }
+        Assert-TestRelease ($postPaths.Count -lt 2 -and $Path -ceq $expected) 'Duplicate gate must explicitly request ordinary then forced intake.'
+        $postPaths.Add($Path)
+        $result = [pscustomobject]@{ok=$true;error='';already_analyzed=(-not $force);source_status='identical';match_id='SYN-FIXTURE-001';
+            match=[pscustomobject]@{replaced=$force;frames_processed=120;players=@(1,2,3,4);telemetry=[pscustomobject]@{frames_inserted=480;ticks_ignored=120}}}
+        if ($Mutation -eq 'ordinary_replaced' -and -not $force) { $result.match.replaced = $true }
+        if ($Mutation -eq 'ordinary_not_identified' -and -not $force) { $result.already_analyzed = $false }
+        if ($Mutation -eq 'forced_skipped' -and $force) { $result.match.replaced = $false; $result.already_analyzed = $true }
+        if ($Mutation -eq 'forced_no_reprocessing' -and $force) { $result.match.telemetry.frames_inserted = 0 }
+        if ($Mutation -eq 'forced_error' -and $force) { $result.ok = $false; $result.error = 'Synthetic failure' }
+        return [pscustomobject]@{status=200;body=[pscustomobject]@{force=$force;results=@($result)}}
+    }
+    Invoke-Expression $gates[0].Extent.Text | Out-Null
+    Assert-TestRelease ($postPaths.Count -eq 2) 'Duplicate gate omitted explicit re-analysis.'
+}
+
 try {
     $candidate = Join-Path $testRoot 'synthetic-candidate.exe'
     [IO.File]::WriteAllText($candidate, 'synthetic verifier bytes; not an executable')
@@ -110,6 +146,21 @@ try {
             checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status=$(if ($_ -eq 'abrupt_kill_recovery') {'NOT TESTED'} else {'PASS'})} })}
         Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'isolated_state_cleanup'
     }
+    foreach ($mutation in @('untested_crash', 'cached_workload')) {
+        Test-ReleaseContract "desktop_rejects_$mutation" {
+            $ids = @('isolated_candidate_identity', 'synthetic_notes_and_security', 'long_lived_desktop_workload', 'graceful_restart_persistence', 'inputs_and_binary_unchanged', 'abrupt_kill_recovery', 'isolated_state_cleanup')
+            $report = [pscustomobject]@{schema_version='nevr-desktop-workload/v1';automated_status='PASS';expected_build_commit=('a' * 40);executable_sha256=('c' * 64);workload_policy='explicit_force_reanalysis';
+                checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status='PASS'} })}
+            Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64)
+            if ($mutation -eq 'untested_crash') {
+                $report.checks[5].status = 'NOT TESTED'
+                Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'untested'
+            } else {
+                $report.workload_policy = 'cached'
+                Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'cached'
+            }
+        }
+    }
     Test-ReleaseContract 'desktop_child_receives_user_memory_cutoff' {
         $parseErrors = $null; $tokens = $null
         $wrapper = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'verify-test-release.ps1'), [ref]$tokens, [ref]$parseErrors)
@@ -124,6 +175,17 @@ try {
                 return 0
             }
             Invoke-Expression $launches[0].Extent.Text | Out-Null
+        }
+    }
+    Test-ReleaseContract 'duplicate_gate_checks_cached_and_forced_paths' { Invoke-DuplicateImportContract }
+    foreach ($mutation in @('ordinary_replaced', 'ordinary_not_identified', 'duplicate_history')) {
+        Test-ReleaseContract "duplicate_gate_rejects_$mutation" {
+            Expect-ReleaseFailure { Invoke-DuplicateImportContract $mutation } 'ordinary identical reimport'
+        }
+    }
+    foreach ($mutation in @('forced_skipped', 'forced_no_reprocessing', 'forced_error')) {
+        Test-ReleaseContract "duplicate_gate_rejects_$mutation" {
+            Expect-ReleaseFailure { Invoke-DuplicateImportContract $mutation } 'Explicit re-analysis'
         }
     }
     if ($OutputDirectory) {

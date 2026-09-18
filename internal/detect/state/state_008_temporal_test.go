@@ -74,7 +74,7 @@ func TestState008SameContinuousTrajectoryAcrossRatesAndJitter(t *testing.T) {
 				if len(events) != 1 {
 					t.Fatalf("same analytic flight produced %d events; reasons=%v", len(events), reasons)
 				}
-				if !events[0].IsShadow || events[0].EnforcementWeight != 0 || events[0].AutoEnforce || events[0].DetectorVersion != "0.3.0" {
+				if !events[0].IsShadow || events[0].EnforcementWeight != 0 || events[0].AutoEnforce || events[0].DetectorVersion != "0.3.2" {
 					t.Fatalf("unsafe event metadata: %+v", events[0])
 				}
 				e := events[0].Evidence.(model.StateEvidence)

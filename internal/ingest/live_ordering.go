@@ -31,6 +31,10 @@ func (mm *MatchManager) freshLiveFrames(ctx context.Context, match *LiveMatch, i
 		index  int
 	}
 	seen := make(map[identity]model.PlayerTelemetryFrame, len(frames))
+	admittedPlayers := make(map[string]bool, len(match.MatchCtx.PlayerIDs))
+	for _, id := range match.MatchCtx.PlayerIDs {
+		admittedPlayers[id] = true
+	}
 	kept := make([]model.PlayerTelemetryFrame, 0, len(frames))
 	res := FrameResult{}
 	lastIndex, lastTime, haveTime := match.lastFrameIndex, match.lastTimestamp, match.haveTimestamp
@@ -38,6 +42,15 @@ func (mm *MatchManager) freshLiveFrames(ctx context.Context, match *LiveMatch, i
 		key := identity{f.PlayerID, f.FrameIndex}
 		if f.FrameIndex < 0 || f.Timestamp < 0 || math.IsNaN(f.Timestamp) || math.IsInf(f.Timestamp, 0) {
 			res.Rejected++
+			continue
+		}
+		// A player outside the bounded roster must not establish the tick
+		// clock, close a pending tick, or suppress admitted peers. Reserve a
+		// new slot only after that player's frame passes ordering below.
+		if !admittedPlayers[f.PlayerID] && len(admittedPlayers) >= mm.maxPlayersPerMatch {
+			res.Rejected++
+			mm.warnThrottled("maxplayers:"+match.MatchCtx.MatchID, "player cap reached; frames for additional players rejected",
+				"match", match.MatchCtx.MatchID, "player", f.PlayerID, "cap", mm.maxPlayersPerMatch)
 			continue
 		}
 		if prior, ok := seen[key]; ok {
@@ -79,6 +92,14 @@ func (mm *MatchManager) freshLiveFrames(ctx context.Context, match *LiveMatch, i
 				continue
 			}
 		}
+		// A restart or finalized segment has no open in-memory tick to
+		// augment. Identical stored retries above remain idempotent, but a
+		// previously unseen peer cannot reopen its last stored tick and be
+		// analyzed alone under an already-used snapshot identity.
+		if f.FrameIndex == match.lastFrameIndex && len(match.pending) == 0 {
+			res.Rejected++
+			continue
+		}
 		if f.FrameIndex < lastIndex || (haveTime &&
 			((f.FrameIndex == lastIndex && !sameLiveTickTime(f.Timestamp, lastTime)) ||
 				(f.FrameIndex > lastIndex && f.Timestamp <= lastTime))) {
@@ -86,6 +107,7 @@ func (mm *MatchManager) freshLiveFrames(ctx context.Context, match *LiveMatch, i
 			continue
 		}
 		seen[key] = f
+		admittedPlayers[f.PlayerID] = true
 		kept = append(kept, f)
 		lastIndex, lastTime, haveTime = f.FrameIndex, f.Timestamp, true
 	}

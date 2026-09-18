@@ -273,6 +273,9 @@ func TestDesktop_QoLHealthMaintenanceAndCancel(t *testing.T) {
 	if health.Version != appVersion || health.SchemaVersion != sqlite.SchemaVersion() || health.DatabasePath == "" || health.DiscSpeedCap != 18.9 {
 		t.Fatalf("health = %+v", health)
 	}
+	if err := health.GameRuleProfile.Validate(); err != nil || health.GameRuleProfile.Reference.Applicability != model.RuleReferenceOnly {
+		t.Fatalf("health must preserve pinned defaults without verifying match settings: %+v %v", health.GameRuleProfile, err)
+	}
 	if health.DatabaseBytes != health.DatabaseMainBytes+health.DatabaseWALBytes+health.DatabaseSHMBytes || health.DatabaseMainBytes == 0 {
 		t.Fatalf("database footprint = %+v", health)
 	}

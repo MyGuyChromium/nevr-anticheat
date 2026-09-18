@@ -511,7 +511,7 @@ function statusUI(state, now = 100000) {
 test('health provenance renders current identity honestly and escapes export metadata', async () => {
   async function render(provenance) {
     const element = { innerHTML: '', className: '', removeAttribute() {} };
-    const context = run(section('  async function loadHealth(', '  const fmtVec ='), {
+    const context = run(section('  function gameRuleProfileDetails(', '  function dataHealthDetails(') + section('  async function loadHealth(', '  const fmtVec ='), {
       $: () => element,
       getJSON: async () => ({ version: 'test', analysis_active: false, provenance }),
       operatorState: {}, setConnectionState() {}, fmtInt: String, fmtNum: String, fmtBytes: String, fmtAbs: String,
@@ -619,7 +619,7 @@ test('detailed storage refresh cannot replace current connection activity or dra
   const element = { innerHTML: '', className: '', removeAttribute() {} };
   const fullHealth = { version: 'test', analysis_active: false, database_path: 'isolated-evidence.db' };
   const calls = [];
-  const context = run(section('  async function loadHealth(', '  const fmtVec ='), {
+  const context = run(section('  function gameRuleProfileDetails(', '  function dataHealthDetails(') + section('  async function loadHealth(', '  const fmtVec ='), {
     $: () => element, getJSON: async url => { calls.push(url); return fullHealth; }, operatorState: current,
     setConnectionState: () => assert.fail('storage measurements are not a connection heartbeat'),
     fmtInt: String, fmtNum: String, fmtBytes: String,

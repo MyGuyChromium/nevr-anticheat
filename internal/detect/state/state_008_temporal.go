@@ -11,6 +11,35 @@ import (
 // Tolerates binary timestamp rounding, not a shorter observation window.
 const catchTimeEpsilon = 1e-9
 
+// Float bits preserve exact identity even for NaN payloads. These values are
+// ONLY a retry key, not admissible motion: the full reader still rejects
+// unavailable/nonfinite/overflowing tracking. Each snapshot has at most sixteen
+// rows and holds no aliases into caller-owned vectors or counter pointers.
+type catchInputMotion struct {
+	discPosition, discVelocity [3]uint64
+	body, head, left, right    [3]uint64
+	speed                      uint64
+	bounce                     int
+	headKnown, bounceKnown     bool
+	immune, highPing           bool
+}
+
+func catchMotionIdentity(ps *model.PlayerState) catchInputMotion {
+	bits := func(v model.Vec3) [3]uint64 {
+		return [3]uint64{math.Float64bits(v[0]), math.Float64bits(v[1]), math.Float64bits(v[2])}
+	}
+	out := catchInputMotion{discPosition: bits(ps.CurrentDisc.Position), discVelocity: bits(ps.CurrentDisc.Velocity),
+		body: bits(ps.Position), left: bits(ps.LeftHand), right: bits(ps.RightHand), speed: math.Float64bits(ps.CurrentDisc.Speed),
+		headKnown: ps.HeadPosition != nil, bounceKnown: ps.CurrentDisc.BounceCount != nil, immune: ps.IsImmune, highPing: ps.IsHighPing}
+	if out.headKnown {
+		out.head = bits(*ps.HeadPosition)
+	}
+	if out.bounceKnown {
+		out.bounce = *ps.CurrentDisc.BounceCount
+	}
+	return out
+}
+
 // catchFitReference estimates a constant free-flight reference from the
 // trapezoidal time integral of reported velocity. Every position sample must
 // agree with that reference; endpoint agreement alone can hide an excursion.
@@ -84,6 +113,7 @@ func catchReadPossession(players map[string]*model.PlayerState, frame int) (catc
 		if reference == nil {
 			reference, s.timestamp = dc, ps.LastTimestamp
 			s.holder, s.source = dc.Attachment.HolderID, ps.Observation.Clone()
+			s.attachment = dc.Attachment.Clone()
 		} else if ps.LastTimestamp != s.timestamp || dc.IsHeld != reference.IsHeld ||
 			dc.PossessorID != reference.PossessorID || dc.SampledPlayerCount != reference.SampledPlayerCount ||
 			!reflect.DeepEqual(dc.Attachment, reference.Attachment) || !s.source.SameSource(ps.Observation) {
@@ -93,6 +123,7 @@ func catchReadPossession(players map[string]*model.PlayerState, frame int) (catc
 			holderPresent = true
 		}
 		s.poses = append(s.poses, catchPose{id: ps.PlayerID})
+		s.inputMotion = append(s.inputMotion, catchMotionIdentity(ps))
 	}
 	if reference == nil || len(s.poses) != reference.SampledPlayerCount || (s.holder != "" && !holderPresent) {
 		return s, "catch_roster_incomplete"
@@ -111,6 +142,9 @@ func (d *State008) observeCatchPossession(players map[string]*model.PlayerState,
 		return
 	}
 	previous := d.diagnosticPrevious
+	if previous != nil && reflect.DeepEqual(*previous, now) {
+		return // exact degraded or usable retry is not an independent sample
+	}
 	d.diagnosticPrevious = &now
 	if previous == nil {
 		return

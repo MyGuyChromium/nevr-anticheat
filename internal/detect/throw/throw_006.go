@@ -50,7 +50,7 @@ type Throw006 struct {
 }
 
 func NewThrow006(params map[string]any) *Throw006 {
-	d := &Throw006{BaseDetector: detect.BaseDetector{DetectorID: "THROW_006", DetectorVersion: "2.0.0",
+	d := &Throw006{BaseDetector: detect.BaseDetector{DetectorID: "THROW_006", DetectorVersion: "2.0.2",
 		DetectorName: "Free-flight Trajectory Review", DetectorCategory: "throw", Inputs: []string{"disc_state", "disc_attachment"}, Warmup: 0, Weight: 0},
 		minTrajectoryChange: 8, maxCumulativeChange: 130, postReleaseFrames: 15, minDistFromThrower: 2}
 	_ = d.Configure(params)
@@ -138,6 +138,13 @@ func (d *Throw006) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			d.finishTrack(pid, "trajectory_contact_possible", false)
 			continue
 		}
+		releaseDistance := sample.position.Distance(tr.releasePos)
+		if !mechanicsFinite(releaseDistance) {
+			// Overflow is unavailable geometry, never evidence that the disc
+			// cleared the near-release exclusion distance.
+			d.finishTrack(pid, "trajectory_motion_unavailable", false)
+			continue
+		}
 		// Keep every accepted sample, including the near-release baselines
 		// used by the next measured angle. Omitting those would make the
 		// cumulative turn impossible to reproduce from retained evidence.
@@ -146,7 +153,7 @@ func (d *Throw006) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			continue
 		}
 		tr.previous = sample
-		if sample.position.Distance(tr.releasePos) >= d.minDistFromThrower {
+		if releaseDistance >= d.minDistFromThrower {
 			tr.frameCount++
 			tr.cumulativeAngle += angle
 			tr.maxFrameAngle = math.Max(tr.maxFrameAngle, angle)
@@ -192,6 +199,8 @@ func (d *Throw006) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			d.finishTrack(ps.PlayerID, "release_observation_unavailable", false)
 		case reason != "":
 			d.finishTrack(ps.PlayerID, reason, false)
+		case t.ReleasePosition.HasNaN() || t.ReleasePosition.HasInf() || !mechanicsFinite(sample.position.Distance(t.ReleasePosition)):
+			d.finishTrack(ps.PlayerID, "trajectory_motion_unavailable", false)
 		case !t.ReleaseWindow.Source.SameSource(sample.source):
 			d.finishTrack(ps.PlayerID, "trajectory_source_changed", false)
 		case t.PossibleHeadContact:
@@ -230,6 +239,14 @@ func readFlightReview(players []*model.PlayerState, frame int) (flightReviewSamp
 		}
 		if !disc.Attachment.Free() {
 			return out, "trajectory_disc_held"
+		}
+		// Explicit free attachment cannot overrule conflicting possession or
+		// contact fields supplied in the same sampled snapshot.
+		if ps.HasDisc || disc.IsHeld || disc.PossessionConflict || disc.PossessorID != "" {
+			return out, "trajectory_attachment_conflict"
+		}
+		if ps.LegalContext.PossibleHeadContact {
+			return out, "trajectory_contact_possible"
 		}
 		if ps.DiscAttachment != nil && !reflect.DeepEqual(ps.DiscAttachment, disc.Attachment) {
 			return out, "trajectory_attachment_unknown"

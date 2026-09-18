@@ -5,28 +5,31 @@ package model
 // internal guards may still skip them. InputFrames is only a necessary-input
 // check for the named detector, never an independent ground-truth opportunity.
 type PlayerCoverage struct {
-	DataHealth     *DataHealth        `json:"data_health,omitempty"`
-	Version        int                `json:"version"`
-	Status         string             `json:"status"`
-	ValidFrames    int                `json:"valid_frames"`
-	RejectedFrames int                `json:"rejected_frames"`
-	QualityGated   bool               `json:"quality_gated"`
-	Limitations    []string           `json:"limitations"`
-	Detectors      []DetectorCoverage `json:"detectors"`
+	GameRuleProfile *GameRuleProfile   `json:"game_rule_profile,omitempty"`
+	DataHealth      *DataHealth        `json:"data_health,omitempty"`
+	Version         int                `json:"version"`
+	Status          string             `json:"status"`
+	ValidFrames     int                `json:"valid_frames"`
+	RejectedFrames  int                `json:"rejected_frames"`
+	QualityGated    bool               `json:"quality_gated"`
+	Limitations     []string           `json:"limitations"`
+	Detectors       []DetectorCoverage `json:"detectors"`
 }
 
 type DetectorCoverage struct {
-	Capability      *DetectorCapability    `json:"capability,omitempty"`
-	DetectorID      string                 `json:"detector_id"`
-	Enabled         bool                   `json:"enabled"`
-	Status          string                 `json:"status"`
-	CandidateFrames int                    `json:"candidate_frames"`
-	InputFrames     int                    `json:"input_frames"`
-	InputCheck      bool                   `json:"input_check"`
-	Limitations     []string               `json:"limitations"`
-	DecisionTrace   *DetectorDecisionTrace `json:"decision_trace,omitempty"`
-	CatchReview     *CatchReviewLog        `json:"catch_review,omitempty"`
-	MechanicsReview *MechanicsReviewLog    `json:"mechanics_review,omitempty"`
+	Behavior              *BehaviorDescriptor    `json:"behavior,omitempty"`
+	ReviewOnlyDiagnostics bool                   `json:"review_only_diagnostics,omitempty"`
+	Capability            *DetectorCapability    `json:"capability,omitempty"`
+	DetectorID            string                 `json:"detector_id"`
+	Enabled               bool                   `json:"enabled"`
+	Status                string                 `json:"status"`
+	CandidateFrames       int                    `json:"candidate_frames"`
+	InputFrames           int                    `json:"input_frames"`
+	InputCheck            bool                   `json:"input_check"`
+	Limitations           []string               `json:"limitations"`
+	DecisionTrace         *DetectorDecisionTrace `json:"decision_trace,omitempty"`
+	CatchReview           *CatchReviewLog        `json:"catch_review,omitempty"`
+	MechanicsReview       *MechanicsReviewLog    `json:"mechanics_review,omitempty"`
 }
 
 // DetectorDecisionTrace is a bounded summary of branches actually visited,

@@ -57,7 +57,11 @@ func TestThrow003TracesContactAttributionAndBodyGuards(t *testing.T) {
 		{"slap with unknown hand", "release_hand_unavailable", func(e *model.ThrowEvent) { e.ThrowingHand = "unknown" }},
 		{"untracked hand", "release_hand_unavailable", func(e *model.ThrowEvent) { e.HandKinematicsValid = false }},
 		{"hand choice ambiguous", "release_hand_unavailable", func(e *model.ThrowEvent) { e.HandTracked = true; e.HandAttributionConfidence = 0 }},
-		{"body translation", "body_translation_dominates", func(e *model.ThrowEvent) { e.PlayerVelocity = model.Vec3{0, 0, e.HandSpeed} }},
+		{"body translation", "body_translation_dominates", func(e *model.ThrowEvent) {
+			e.PlayerVelocity = model.Vec3{0, 0, e.HandSpeed}
+			e.HandRelativeVelocity = e.HandVelocity.Sub(e.PlayerVelocity)
+			e.HandRelativeSpeed = e.HandRelativeVelocity.Magnitude()
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d := NewThrow003(nil)

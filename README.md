@@ -32,6 +32,11 @@ configuration before preparing preservation-test data. See the
 
 ## Architecture
 
+For source-aware mags, release-direction and unscored stun evidence, see
+[mechanics evidence foundations](docs/game_evidence_foundations.md) and the
+[controlled comparison recording protocol](docs/controlled_comparison_recordings.md).
+Pinned default game files are references, not verified active match settings.
+
 ```
 LIVE PATH
   Echo VR broadcaster (/session HTTP API, ~15 Hz)
@@ -250,7 +255,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 |----|------|----------|--------|--------|
 | THROW_001 | Reported Release Speed Review | throw | 0.8 | Sampled review only; configured 18.9 m/s reference, not a verified engine ceiling |
 | THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |
-| THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data; skips possible sampled headbutts |
+| THROW_003 | Release Direction Review | throw | 0.5 | Unverified sampled motion, not WristAngleOffset; retains legal-assist/contact uncertainty |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |
 | THROW_005 | Shot Targeting Review | throw | 0.0 | Diagnostic only — descriptive release statistics, no accuracy violation |
 | THROW_006 | Free-flight Trajectory Review | throw | 0.0 | Diagnostic only — sampled bend/contact model remains unvalidated |

@@ -178,6 +178,14 @@ func TestReleaseLocalReportRequiresBoundProvenance(t *testing.T) {
 			fe.UpdatePlayerState(ps, &f, feTestCtx())
 			f = releaseFrame(4, "free")
 			fe.UpdatePlayerState(ps, &f, feTestCtx())
+			if tc.name == "stale_frame_context" {
+				// A supplied context for another sample invalidates the release
+				// interval itself, not only its optional local throw report.
+				if ps.LastThrow != nil || ps.ThrowCount != 0 {
+					t.Fatal("unbound frame context published a throw")
+				}
+				return
+			}
 			if ps.LastThrow == nil || (ps.LastThrow.GameLastThrow != nil) != tc.accepted || ps.LastThrow.ReleaseSpeed != 19 || ps.LastThrow.Attribution.Confidence >= 1 {
 				t.Fatalf("invalid trust boundary: %+v", ps.LastThrow)
 			}

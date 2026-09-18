@@ -11,6 +11,8 @@ type PlayerTelemetryFrame struct {
 	HeldItems               *HandAttachments    `json:"held_items,omitempty"`
 	GameLastThrowProvenance *ObservationContext `json:"game_last_throw_provenance,omitempty"`
 	IsBoostingKnown         *bool               `json:"is_boosting_known,omitempty"`
+	IsStunnedKnown          *bool               `json:"is_stunned_known,omitempty"`
+	StunsKnown              *bool               `json:"stuns_known,omitempty"`
 	PlayerID                string              `json:"player_id"`
 	// Team is "blue" or "orange" when known, empty otherwise. Producers
 	// (adapter.Mapper, cmd/bridge) populate it; ingest uses it to build

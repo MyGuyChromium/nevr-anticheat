@@ -67,9 +67,11 @@ const (
 // PlayerState has no disc position history, so the extractor keeps one here,
 // pushed in lockstep with PlayerState.DiscVelocityHistory.
 type discSample struct {
-	pos      model.Vec3
-	missing  bool
-	frameIdx int // frame index of the sample (histories are per frame SEEN)
+	pos         model.Vec3
+	missing     bool
+	activePhase bool
+	sourceBound bool
+	frameIdx    int // frame index of the sample (histories are per frame SEEN)
 }
 
 // goalSides records which goal the blue team scores into for one match.
@@ -190,6 +192,9 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	frame *model.PlayerTelemetryFrame,
 	matchCtx *model.MatchContext,
 ) {
+	if frame.PlayerID != ps.PlayerID {
+		return
+	}
 	// Rejected samples must not rewind attachment state or become a new
 	// derivative/release baseline for direct extractor callers.
 	if ps.FrameCount > 0 && (frame.FrameIndex <= ps.LastFrameIdx || frame.Timestamp <= ps.LastTimestamp) {
@@ -224,6 +229,12 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	wasBoosting := ps.IsBoosting
 	wasBoostingKnown := ps.IsBoostingKnown
 	firstFrame := ps.FrameCount == 0
+	phaseActive := matchCtx.IsActivePhase(frame.GamePhase)
+	previousPhaseActive, previousPhaseKnown := false, false
+	if history := fe.discHistory[ps.PlayerID]; len(history) > 0 {
+		previousPhaseActive = history[len(history)-1].activePhase
+		previousPhaseKnown = true
+	}
 
 	if firstFrame {
 		// Fresh PlayerState (new match or new player): drop any side history
@@ -257,6 +268,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	ps.HeldItems = frame.HeldItems.Clone()
 	ps.IsBoostingKnown = frame.IsBoostingKnown != nil && *frame.IsBoostingKnown
 	ps.IsStunned = frame.IsStunned
+	ps.IsStunnedKnown = frame.IsStunnedKnown != nil && *frame.IsStunnedKnown
+	ps.StunsKnown = frame.StunsKnown != nil && *frame.StunsKnown && frame.Stuns >= 0
 	ps.IsBoosting = frame.IsBoosting
 	ps.ShieldActive = frame.ShieldActive
 	ps.IsImmune = frame.IsImmune
@@ -282,11 +295,13 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	maxDt := fe.MaxFrameDtSeconds()
 	rawDt := frame.Timestamp - prevTimestamp
 	sourceContinuous := sameObservationSource(prevObservation, ps.Observation)
+	observationsBound := observationMatchesSample(prevObservation, prevFrameIndex, prevTimestamp) &&
+		observationMatchesSample(ps.Observation, frame.FrameIndex, frame.Timestamp)
 	if !firstFrame && !sourceContinuous {
 		fe.rejectRelease(ps.PlayerID, "release_source_changed")
 		fe.clearSourceHistory(ps)
 	}
-	dtKnown := !firstFrame && sourceContinuous && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
+	dtKnown := !firstFrame && sourceContinuous && observationsBound && rawDt > 0 && !math.IsNaN(rawDt) && !math.IsInf(rawDt, 0)
 	largeGap := dtKnown && rawDt > maxDt
 	dt := 0.0
 	if dtKnown {
@@ -465,8 +480,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	// speed, signature, spread, trajectory anchor) would be fed the wrong
 	// moment. Such a release is skipped, consistent with "gap = no
 	// kinematics"; the next possession starts a fresh track.
-	continuousRelease := !firstFrame && dtKnown && !largeGap && frame.FrameIndex == prevFrameIndex+1 && sourceContinuous
-	fe.confirmRelease(ps, frame, continuousRelease, matchCtx.IsActivePhase(frame.GamePhase))
+	continuousRelease := !firstFrame && dtKnown && !largeGap && frame.FrameIndex == prevFrameIndex+1 && sourceContinuous && previousPhaseKnown
+	fe.confirmRelease(ps, frame, continuousRelease, phaseActive && previousPhaseActive)
 	if !sourceContinuous {
 		delete(fe.discHistory, ps.PlayerID)
 	}
@@ -486,7 +501,7 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		immediateReason := ""
 		if !continuousRelease {
 			immediateReason = "release_observation_gap"
-		} else if !matchCtx.IsActivePhase(frame.GamePhase) {
+		} else if !phaseActive || !previousPhaseActive {
 			immediateReason = "release_inactive_phase"
 		} else if wasStunned || frame.IsStunned {
 			// The holder was stunned on the last held or the first free sample:
@@ -530,10 +545,14 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 	model.PushQuatHistory(&ps.LeftHandRotHistory, ps.LeftHandRot, fe.historyWindow)
 	model.PushQuatHistory(&ps.RightHandRotHistory, ps.RightHandRot, fe.historyWindow)
 	model.PushFloat64History(&ps.TimestampHistory, frame.Timestamp, fe.historyWindow)
-	fe.pushDiscHistory(ps, frame.Disc, frame.FrameIndex)
+	fe.pushDiscHistory(ps, frame.Disc, frame.FrameIndex, phaseActive,
+		observationMatchesSample(ps.Observation, frame.FrameIndex, frame.Timestamp))
 
-	// Possession start tracking
-	if (!prevAttachment.HeldBy(ps.PlayerID) || !sourceContinuous) && ps.DiscAttachment.HeldBy(ps.PlayerID) {
+	// Possession warmup counts only an uninterrupted active-play sequence.
+	// A held sample after a missing interval or phase reset cannot borrow the
+	// old start index: the next free sample would otherwise pass the two-held
+	// sample guard even though possession was observed only once after the gap.
+	if (!prevAttachment.HeldBy(ps.PlayerID) || !continuousRelease || !phaseActive || !previousPhaseActive) && ps.DiscAttachment.HeldBy(ps.PlayerID) {
 		ps.PossessionStartFrame = frame.FrameIndex
 		ps.PossessionStartTime = frame.Timestamp
 	}
@@ -576,7 +595,8 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 		ps.LastBoostFrame = frame.FrameIndex
 	}
 
-	ps.LegalContext = buildLegalMotionContext(ps, frame, prevReportedVelocity, dtKnown, rawDt)
+	ps.LegalContext = buildLegalMotionContext(ps, frame, prevReportedVelocity,
+		kinematicsValid && continuousRelease && prevHasReportedVelocity && phaseActive && previousPhaseActive, rawDt)
 
 	ps.FrameCount++
 }
@@ -584,13 +604,13 @@ func (fe *FeatureExtractor) UpdatePlayerState(
 // buildLegalMotionContext centralizes legitimate-motion interpretation for
 // every detector. The source cannot identify the object or player involved in
 // a collision, so contact flags are intentionally phrased as candidates.
-func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetryFrame, previousReported model.Vec3, dtKnown bool, dt float64) model.LegalMotionContext {
+func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetryFrame, previousReported model.Vec3, reportedIntervalKnown bool, dt float64) model.LegalMotionContext {
 	ctx := model.LegalMotionContext{
 		Boosting:       ps.IsBoostingKnown && ps.IsBoosting,
 		BoostingKnown:  ps.IsBoostingKnown,
 		GameLocomotion: ps.HasReportedVelocity && ps.ReportedVelocity.Magnitude() >= 0.25,
 		TrackingLimited: frame.LeftHandPosition.IsZero() || frame.RightHandPosition.IsZero() ||
-			!frame.LeftHandRotation.IsUnit() || !frame.RightHandRotation.IsUnit(),
+			!ps.LeftHandRotationValid || !ps.RightHandRotationValid,
 		Confidence: 1,
 	}
 	if ps.IsHighPing {
@@ -603,7 +623,9 @@ func buildLegalMotionContext(ps *model.PlayerState, frame *model.PlayerTelemetry
 		ctx.Leaning = ps.PlayspaceDistance >= 0.08 && ps.PlayspaceDistance <= 0.65 && ps.PlayspaceSpeed < 0.35
 		ctx.PlayspaceStep = ps.IsBoostingKnown && !ps.IsBoosting && ps.PlayspaceSpeed >= 0.35 && ps.PlayspaceSpeed <= 2.2
 	}
-	if dtKnown && dt > 0 && ps.IsBoostingKnown && !ps.IsBoosting && ps.HasReportedVelocity {
+	// Absence of a previous report is not a measured zero velocity. A contact
+	// candidate needs both reports and a continuous, active interval.
+	if reportedIntervalKnown && dt > 0 && ps.IsBoostingKnown && !ps.IsBoosting && ps.HasReportedVelocity {
 		reportedAcceleration := ps.ReportedVelocity.Sub(previousReported).Magnitude() / dt
 		handBurst := math.Max(ps.LeftHandRelativeSpeed, ps.RightHandRelativeSpeed)
 		ctx.PossibleSlapOrPush = reportedAcceleration >= 6 && handBurst >= 1.2
@@ -663,11 +685,11 @@ func playspaceRigCoherence(bodyResidual, prevLeft, left, prevRight, right, expec
 // extractor-side disc position history (which also records the frame index
 // of every sample). A frame without disc state pushes a zero placeholder
 // (flagged missing) so both stay index-aligned with PositionHistory.
-func (fe *FeatureExtractor) pushDiscHistory(ps *model.PlayerState, disc *model.DiscState, frameIdx int) {
-	sample := discSample{missing: true, frameIdx: frameIdx}
+func (fe *FeatureExtractor) pushDiscHistory(ps *model.PlayerState, disc *model.DiscState, frameIdx int, activePhase, sourceBound bool) {
+	sample := discSample{missing: true, frameIdx: frameIdx, activePhase: activePhase, sourceBound: sourceBound}
 	vel := model.Vec3{}
 	if disc != nil {
-		sample = discSample{pos: disc.Position, frameIdx: frameIdx}
+		sample.pos, sample.missing = disc.Position, false
 		vel = disc.Velocity
 	}
 	model.PushVec3History(&ps.DiscVelocityHistory, vel, fe.historyWindow)
@@ -796,15 +818,31 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 	discHist := fe.discHistory[ps.PlayerID]
 
 	maxDt := fe.MaxFrameDtSeconds()
+	// Pre-release evidence is a contiguous active suffix, not simply the last
+	// N poses seen. Do not splice pre-gap/round-reset motion into the wrist
+	// window or invent consecutive frame labels when metadata was evicted.
+	nextFrame, nextTime := frame.FrameIndex, frame.Timestamp
+	continuousCount := 0
+	for i := histLen - 1; i >= histLen-n; i-- {
+		di := tailIndex(len(discHist), histLen, i)
+		ti := tailIndex(len(ps.TimestampHistory), histLen, i)
+		if di < 0 || ti < 0 || !discHist[di].activePhase || !discHist[di].sourceBound || discHist[di].frameIdx != nextFrame-1 {
+			break
+		}
+		dt := nextTime - ps.TimestampHistory[ti]
+		if dt <= 0 || dt > maxDt || math.IsNaN(dt) || math.IsInf(dt, 0) {
+			break
+		}
+		continuousCount++
+		nextFrame, nextTime = discHist[di].frameIdx, ps.TimestampHistory[ti]
+	}
+	n = continuousCount
 	snaps := make([]model.ThrowFrameSnapshot, 0, n)
 	for i := histLen - n; i < histLen; i++ {
 		snap := model.ThrowFrameSnapshot{
 			// Histories hold one entry per frame SEEN for this player (a
 			// rejected frame or a missed poll leaves a hole), so the label
-			// comes from the recorded frame index of the sample; the
-			// consecutive-frames arithmetic is only the fallback when the
-			// extractor-side history was evicted.
-			FrameIndex:     frame.FrameIndex - (histLen - i),
+			// comes from the recorded frame index of the sample.
 			PlayerPosition: ps.PositionHistory[i],
 		}
 		if di := tailIndex(len(discHist), histLen, i); di >= 0 {
@@ -816,7 +854,8 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 		}
 		if hi := tailIndex(len(handHist), histLen, i); hi >= 0 {
 			snap.HandPosition = handHist[hi]
-			if hi > 0 && ti > 0 && !handHist[hi].IsZero() && !handHist[hi-1].IsZero() {
+			if hi > 0 && ti > 0 && !handHist[hi].IsZero() && !handHist[hi-1].IsZero() &&
+				fe.snapshotIntervalContinuous(discHist, histLen, i) {
 				hdt := ps.TimestampHistory[ti] - ps.TimestampHistory[ti-1]
 				if hdt > 0 && hdt <= maxDt {
 					snap.HandVelocity = handHist[hi].Sub(handHist[hi-1]).Scale(1.0 / model.Clamp(hdt, MinFrameDt, maxDt))
@@ -843,6 +882,25 @@ func (fe *FeatureExtractor) buildPreReleaseSnapshots(ps *model.PlayerState, fram
 		snaps = append(snaps, snap)
 	}
 	return snaps
+}
+
+// snapshotIntervalContinuous also guards the derivative of the first retained
+// snapshot; its preceding pose may exist in general history but be across the
+// boundary that truncated this release-evidence suffix.
+func (fe *FeatureExtractor) snapshotIntervalContinuous(history []discSample, refLen, i int) bool {
+	current := tailIndex(len(history), refLen, i)
+	previous := tailIndex(len(history), refLen, i-1)
+	return current >= 0 && previous >= 0 && history[current].activePhase && history[previous].activePhase &&
+		history[current].sourceBound && history[previous].sourceBound &&
+		history[current].frameIdx == history[previous].frameIdx+1
+}
+
+// observationMatchesSample binds a supplied context to this exact normalized
+// sample. Source identity alone is insufficient: an old context with matching
+// source strings must not legitimize a new release/derivative. Legacy nil
+// contexts remain unchanged; they gain no provenance from this check.
+func observationMatchesSample(observation *model.ObservationContext, frame int, timestamp float64) bool {
+	return observation == nil || (observation.Valid() && observation.FrameIndex == frame && observation.Timestamp == timestamp)
 }
 
 // throwHandAnchor returns the best observed disc position for choosing the

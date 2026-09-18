@@ -14,7 +14,8 @@ param(
 )
 
 # Actual supplied desktop only: no compilation, installer, updater, browser,
-# Spark launch, external service, pre-existing database, or automatic recovery.
+# Spark launch, external service or pre-existing database. Deliberate termination
+# and automatic recovery are tested only on this invocation's disposable child.
 # ReplayManifest is an explicitly selected JSON array, not directory discovery.
 $ErrorActionPreference = 'Stop'
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $PSScriptRoot '..\dist\desktop-workload' }
@@ -250,7 +251,7 @@ function Pump-Workload {
 }
 function Invoke-WorkloadUpload([string]$Path, [int]$Ordinal, [int]$Round) {
     $script:checkpoint = "upload round $Round input $Ordinal"
-    $script:activeUpload = Start-WorkloadRequest 'POST' 'api/analyze' -Upload $Path -TimeoutSeconds $UploadTimeoutSeconds
+    $script:activeUpload = Start-WorkloadRequest 'POST' 'api/analyze?force=true' -Upload $Path -TimeoutSeconds $UploadTimeoutSeconds
     while (-not $script:activeUpload.task.IsCompleted) { Pump-Workload; Start-Sleep -Milliseconds 50 }
     Pump-Workload
     $operation = $script:activeUpload
@@ -258,10 +259,11 @@ function Invoke-WorkloadUpload([string]$Path, [int]$Ordinal, [int]$Round) {
     $result = Finish-WorkloadRequest $operation
     Assert-Workload ($result.status -eq 200 -and @($result.body.results).Count -eq 1) 'upload response was not a successful one-file analysis'
     $entry = $result.body.results[0]
-    Assert-Workload ($entry.ok -and -not $entry.error -and -not $entry.already_stored) 'upload returned an error or skipped a previously stored replay'
+    Assert-Workload ($result.body.force -eq $true -and $entry.ok -and -not $entry.error -and -not $entry.already_stored -and -not $entry.already_analyzed) 'upload returned an error or a cached analysis instead of fresh processing'
     $count = 0L
     foreach ($item in @($entry.matches)) {
-        Assert-Workload ($item.ok -and -not $item.error -and -not $item.already_stored) 'an uploaded session failed or was skipped'
+        Assert-Workload ($item.ok -and -not $item.error -and -not $item.already_stored -and -not $item.already_analyzed) 'an uploaded session failed or was cached'
+        if ($Round -gt 1) { Assert-Workload ($item.match.replaced -eq $true) 'repeat workload did not confirm explicit reprocessing' }
         $sessionFrames = [long]$item.match.frames_processed
         Assert-Workload ($sessionFrames -gt 0) 'an uploaded session reported no processed frames'
         $count += $sessionFrames
@@ -269,6 +271,87 @@ function Invoke-WorkloadUpload([string]$Path, [int]$Ordinal, [int]$Round) {
     Assert-Workload ($count -gt 0) 'successful upload reported no processed frames'
     $runs.Add([pscustomobject]@{ round = $Round; input = $Ordinal; frames = $count; elapsed_ms = [math]::Round($result.elapsed_ms, 2); frames_per_second = [math]::Round($count / ($result.elapsed_ms / 1000), 2) })
     return $count
+}
+function Assert-CrashObservation($Status, $Queue, [bool]$UploadCompleted) {
+    Assert-Workload (-not $UploadCompleted -and $Status.status -eq 200 -and $Status.body.analysis_active -ceq $true -and
+        $Queue.status -eq 200 -and $Queue.body.running -eq 1 -and
+        @($Queue.body.items | Where-Object { $_.source -ceq 'upload' -and $_.status -ceq 'running' }).Count -eq 1) 'no unacknowledged active upload was observed before deliberate termination'
+}
+function Assert-CrashRecovery($Recovery, $Queue, $Health, $Status, [int]$ExpectedMatches) {
+    Assert-ConnectionStatusResponse $Status.body $ExpectedCommit $binaryHash
+    Assert-Workload ($Recovery.status -eq 200 -and $Recovery.body.recovering -ceq $false -and $Recovery.body.pending -eq 0 -and
+        $Recovery.body.recovered -eq 1 -and -not $Recovery.body.error -and $Status.status -eq 200 -and $Status.body.analysis_active -ceq $false) 'crash recovery did not finish exactly one durable upload'
+    Assert-Workload ($Queue.status -eq 200 -and $Queue.body.running -eq 0 -and $Queue.body.failed -eq 0 -and
+        @($Queue.body.items).Count -eq 1 -and $Queue.body.items[0].source -ceq 'crash recovery' -and
+        $Queue.body.items[0].status -ceq 'complete' -and $Queue.body.items[0].matches -gt 0) 'crash recovery queue is failed, stale or missing completion'
+    Assert-Workload ($Health.status -eq 200 -and $Health.body.stored_matches -eq $ExpectedMatches -and
+        [IO.Path]::GetFullPath($Health.body.database_path) -eq $db) 'crash recovery lost, duplicated or changed stored match storage'
+}
+function Test-WorkloadCrashRecovery {
+    $script:checkpoint = 'deliberate isolated active-analysis termination'
+    $beforeNotes = Send-WorkloadRequest 'GET' 'api/match/SYN-FIXTURE-001/notes'
+    Assert-Workload ($beforeNotes.status -eq 200 -and @($beforeNotes.body.notes).Count -eq 3) 'pre-crash note snapshot is missing'
+    # Prefer the longest measured first-pass analysis; tiny inputs may finish
+    # before activity can be observed. No test hook or replacement app is used.
+    $longest = @($runs | Where-Object { $_.round -eq 1 } | Sort-Object elapsed_ms -Descending)[0]
+    $chosen = @($inputs | Where-Object { $_.ordinal -eq $longest.input })[0]
+    $script:activeUpload = Start-WorkloadRequest 'POST' 'api/analyze?force=true' -Upload $chosen.private_path -TimeoutSeconds $UploadTimeoutSeconds
+    $deadline = [DateTime]::UtcNow.AddSeconds([math]::Min(60, $UploadTimeoutSeconds))
+    do {
+        $status = Send-WorkloadRequest 'GET' 'api/status'
+        Assert-ConnectionStatusResponse $status.body $ExpectedCommit $binaryHash
+        $queue = Send-WorkloadRequest 'GET' 'api/queue'
+        if ($status.body.analysis_active -and $queue.body.running -eq 1) { break }
+        Start-Sleep -Milliseconds 10
+    } while (-not $script:activeUpload.task.IsCompleted -and [DateTime]::UtcNow -lt $deadline)
+    Assert-CrashObservation $status $queue $script:activeUpload.task.IsCompleted
+    # Never select a process by name or kill a tree. This is the exact Process
+    # object returned by Start-WorkloadDesktop, using newly created app-data.
+    Assert-Workload (-not $script:app.HasExited -and [IO.Path]::GetFullPath($script:app.StartInfo.FileName) -eq $binary -and
+        [IO.Path]::GetFullPath($script:app.StartInfo.WorkingDirectory) -eq $scratch) 'deliberate termination refused for an unowned process'
+    $script:app.Kill()
+    Assert-Workload ($script:app.WaitForExit(10000)) 'deliberately terminated child did not exit'
+    $script:app.Dispose(); $script:app = $null
+    $operation = $script:activeUpload; $script:activeUpload = $null
+    $interrupted = $false
+    try { $null = Finish-WorkloadRequest $operation } catch { $interrupted = $operation.failure_kind -ceq 'transport_failure' }
+    Assert-Workload $interrupted 'terminated upload returned a completed response; interruption was not demonstrated'
+    $script:checkpoint = 'automatic recovery of deliberately interrupted analysis'
+    Start-WorkloadDesktop
+    $deadline = [DateTime]::UtcNow.AddSeconds($UploadTimeoutSeconds)
+    do {
+        $recovery = Send-WorkloadRequest 'GET' 'api/recovery'
+        Assert-Workload ($recovery.status -eq 200 -and -not $recovery.body.error) 'automatic recovery reported failure'
+        if ($recovery.body.recovered -eq 1 -and -not $recovery.body.recovering -and $recovery.body.pending -eq 0) { break }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $queue = Send-WorkloadRequest 'GET' 'api/queue'
+    $health = Send-WorkloadRequest 'GET' 'api/health'
+    $status = Send-WorkloadRequest 'GET' 'api/status'
+    Assert-CrashRecovery $recovery $queue $health $status $storedMatches
+    $listed = Send-WorkloadRequest 'GET' 'api/match/SYN-FIXTURE-001/notes'
+    Assert-Workload ($notes.Count -eq 3 -and $listed.status -eq 200 -and @($listed.body.notes).Count -eq 3) 'crash recovery did not preserve all synthetic notes'
+    foreach ($id in $notes) {
+        $original = @($beforeNotes.body.notes | Where-Object { $_.note_id -eq $id })
+        $restored = @($listed.body.notes | Where-Object { $_.note_id -eq $id })
+        Assert-Workload ($original.Count -eq 1 -and $restored.Count -eq 1 -and
+            $restored[0].body -ceq $original[0].body -and $restored[0].kind -ceq $original[0].kind -and
+            $restored[0].frame_index -eq $original[0].frame_index) 'crash recovery changed a saved note identity, body, kind or frame'
+    }
+    $integrity = Finish-WorkloadRequest (Start-WorkloadRequest 'POST' 'api/maintenance/checkpoint' -TimeoutSeconds $UploadTimeoutSeconds)
+    Assert-Workload ($integrity.status -eq 200 -and $integrity.body.ok -eq $true -and $integrity.body.integrity -ceq 'ok') 'recovered database quick-check failed'
+    # Recovery may correctly reuse the last committed analysis. Separately
+    # prove this same input can still be explicitly reprocessed after recovery.
+    $retry = Finish-WorkloadRequest (Start-WorkloadRequest 'POST' 'api/analyze?force=true' -Upload $chosen.private_path -TimeoutSeconds $UploadTimeoutSeconds)
+    Assert-Workload ($retry.status -eq 200 -and $retry.body.force -eq $true -and @($retry.body.results).Count -eq 1 -and
+        $retry.body.results[0].ok -and -not $retry.body.results[0].already_analyzed -and -not $retry.body.results[0].error) 'post-recovery forced reanalysis failed or returned cached data'
+    Assert-Workload (@($retry.body.results[0].matches).Count -gt 0) 'post-recovery reanalysis returned no matches'
+    foreach ($item in $retry.body.results[0].matches) {
+        Assert-Workload ($item.ok -and -not $item.error -and -not $item.already_analyzed -and $item.match.replaced -eq $true -and $item.match.frames_processed -gt 0) 'post-recovery session did not confirm reprocessing'
+    }
+    $final = Send-WorkloadRequest 'GET' 'api/health'
+    Assert-Workload ($final.status -eq 200 -and $final.body.stored_matches -eq $storedMatches) 'post-recovery reanalysis changed stored match count'
+    Add-WorkloadCheck 'abrupt_kill_recovery' 'PASS' 'Owned child terminated after active upload/queue observation and before HTTP acknowledgment. One durable upload recovered automatically; match count and three synthetic notes survived; SQLite quick-check passed and explicit post-recovery reanalysis completed. Not power-loss or arbitrary instruction-point coverage.'
 }
 function Test-WorkloadNotes {
     $script:checkpoint = 'synthetic note and HTTP security checks'
@@ -369,6 +452,7 @@ try {
         foreach ($id in $notes) { Assert-Workload (@($listed.body.notes | Where-Object { $_.note_id -eq $id }).Count -eq 1) 'restart lost a saved note identity' }
         Add-WorkloadCheck 'graceful_restart_persistence' 'PASS' 'Stored match count and all three synthetic notes survived graceful shutdown/reopen of the same isolated database.'
     } else { Add-WorkloadCheck 'graceful_restart_persistence' 'NOT TESTED' 'Match count survived restart, but required synthetic note fixture was absent.' }
+    if ($notes.Count -eq 3) { Test-WorkloadCrashRecovery }
     Stop-WorkloadDesktop
     $script:exitCode = if ($notes.Count -eq 3) { 0 } else { 2 }
 } catch {
@@ -405,7 +489,9 @@ try {
     if ($binary) { try { $binaryUnchanged = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binaryHash } catch { } }
     if (-not $binaryUnchanged) { $script:exitCode = 1 }
     Add-WorkloadCheck 'inputs_and_binary_unchanged' $(if ($binaryUnchanged -and @($inputs | Where-Object { -not $_.unchanged }).Count -eq 0) { 'PASS' } else { 'FAIL' }) 'Source and executable SHA-256 before/after recorded; inputs were opened read-only.'
-    Add-WorkloadCheck 'abrupt_kill_recovery' 'NOT TESTED' 'No deliberate active-analysis kill or crash recovery was exercised. Graceful restart is not crash recovery.'
+    if (@($checks | Where-Object { $_.id -eq 'abrupt_kill_recovery' }).Count -eq 0) {
+        Add-WorkloadCheck 'abrupt_kill_recovery' 'NOT TESTED' 'Complete deliberate interruption/recovery sequence was not demonstrated; see any workload failure. Graceful restart is not crash recovery.'
+    }
     $resolvedScratch = [IO.Path]::GetFullPath($scratch)
     $requiredScratch = [IO.Path]::GetFullPath((Join-Path $runRoot 'isolated-state'))
     try {
@@ -435,9 +521,10 @@ try {
         automated_status = if ($script:exitCode -eq 0) { 'PASS' } elseif ($script:exitCode -eq 2) { 'BLOCKED' } else { 'FAIL' }
         expected_build_commit = $ExpectedCommit; executable_sha256 = $binaryHash; executable_unchanged = $binaryUnchanged; provenance = $provenance
         limits = @{ minimum_rounds = $MinRounds; minimum_seconds = $MinDurationSeconds; maximum_seconds = $MaxDurationSeconds; upload_timeout_seconds = $UploadTimeoutSeconds; maximum_working_set_mib = $MaxWorkingSetMiB; probe_interval_ms = 500; probe_timeout_seconds = 2 }
+        workload_policy = 'explicit_force_reanalysis'; recovery_metrics_included_in_timed_workload = $false
         metrics = $metrics; checks = @($checks.ToArray()); uploads = @($runs.ToArray()); probes = @($samples.ToArray())
         inputs = @($inputs | Select-Object ordinal, bytes, sha256_before, sha256_after, unchanged)
-        interpretation = @('Operational repeated-upload measurements, not detector accuracy, real-time latency or a production capacity guarantee.', 'Timed 2-second connection/activity probes use api/status, the current periodic UI endpoint. Earlier failed api/health baselines measure a different, detailed endpoint and remain failures. Full api/health still runs initially, after each round and finally; its detailed scans are not claimed to meet the connection polling deadline.', 'Working-set peaks are sampled; CPU seconds are cumulative CPU time of the long-lived workload process. Successful connection_status latency measures HttpClient send through full response-body completion inside the async task, excluding PowerShell completion polling. Percentiles exclude failed requests, which remain separately counted and fail the gate. Failed-request elapsed times are observation times including runner polling. Scheduling lag belongs to this runner.', 'Null final database metrics mean the final snapshot was not measured; they are not evidence of empty or lost data.', 'Only explicit replay paths were read. Reports omit paths, filenames, raw telemetry, player identities and per-run URL tokens; output remains private.', 'No browser, updater, Spark, installer or external integration was invoked. Abrupt crash recovery and arbitrary third-party enforcement integrations remain untested.')
+        interpretation = @('Explicit forced reanalysis measurements, not detector accuracy, real-time latency or a production capacity guarantee. Historical workloads without workload_policy may have reused cached results and do not prove sustained detector processing.', 'Timed 2-second connection/activity probes use api/status, the current periodic UI endpoint. Earlier failed api/health baselines measure a different, detailed endpoint and remain failures. Full api/health still runs initially, after each round and finally; its detailed scans are not claimed to meet the connection polling deadline.', 'Working-set peaks are sampled; CPU seconds are cumulative CPU time of the long-lived workload process, excluding the later restart and crash experiment. Successful connection_status latency measures HttpClient send through full response-body completion inside the async task, excluding PowerShell completion polling. Percentiles exclude failed requests, which remain separately counted and fail the gate. Failed-request elapsed times are observation times including runner polling. Scheduling lag belongs to this runner.', 'Null final database metrics mean the final snapshot was not measured; they are not evidence of empty or lost data.', 'Only explicit replay paths were read. Reports omit paths, filenames, raw telemetry, player identities and per-run URL tokens; output remains private.', 'Crash gate describes only the observed process-termination scenario. It does not cover physical power loss, filesystem failure, every transaction instruction, or migrations. No browser, updater, Spark, installer or external integration was invoked.')
     }
     $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runRoot 'desktop-workload-report.json') -Encoding utf8
     @($checks | ForEach-Object { "$($_.status) $($_.id) - $($_.detail)" }) | Set-Content -LiteralPath (Join-Path $runRoot 'workload.log') -Encoding utf8

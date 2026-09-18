@@ -14,6 +14,10 @@
 //   - with the "Larger" text size the match timeline's player names still end
 //     before the plot begins and the page still does not overflow,
 //   - the top navigation follows the section being read.
+//   - pinned default-file references render from the actual health API without
+//     implying verified match settings,
+//   - Explain checks exposes the fixture's unscored stun candidate evidence,
+//     with bounded dialog scrolling and no attacker attribution.
 // It runs at 1280 and 1440 px wide, in the light and the dark theme, plus one
 // 1024 px pass where the wide tables must scroll inside their container, which
 // is what exercises the pinned first column.
@@ -322,6 +326,110 @@ async function main() {
           if (shotsDir) { const reply = await send('Page.captureScreenshot', { format: 'png' }); if (reply.result?.data) fs.writeFileSync(path.join(shotsDir, `${shotLabel}-physics-${tag}.png`), Buffer.from(reply.result.data, 'base64')); }
         } catch (error) { console.log('  physics inspector not measured: ' + error.message); }
         await evaluate(`document.getElementById('physics-dialog').close()`);
+      }
+
+      // Exercise the real API-backed rule profile, not copied frontend fixture
+      // data. Open the disclosure via its control and inspect visible content.
+      await waitFor(`!!document.querySelector('#health details.sub > summary') && !document.querySelector('#health.skeleton')`, 'the default game-file reference');
+      const ruleProfile = await evaluate(`(async () => {
+        const response = await fetch('api/health', { cache: 'no-store' });
+        if (!response.ok) throw new Error('health API did not answer');
+        const profile = (await response.json()).game_rule_profile;
+        const summary = [...document.querySelectorAll('#health details.sub > summary')].find((s) => s.textContent.includes('Default game-file reference'));
+        if (!summary || !profile?.reference) return { missing: true };
+        if (!summary.parentElement.open) summary.click();
+        summary.scrollIntoView({ block: 'start' });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const panel = summary.parentElement, rect = panel.getBoundingClientRect(), text = panel.innerText;
+        const cells = [...panel.querySelectorAll('tbody tr')].map((row) => [...row.cells].map((cell) => cell.innerText.trim()));
+        return {
+          facts: cells.length,
+          matchesAPI: cells.length === profile.facts.length && profile.facts.every((fact, i) => cells[i][0] === fact.key && cells[i][1] === (fact.value + ' ' + (fact.unit || '')).trim() && cells[i][2] === fact.source_path),
+          identityVisible: text.includes(profile.reference.profile_id) && text.includes(profile.reference.source_revision),
+          unknownConfig: /Unknown: this recording has no verified active-config\\/build binding/.test(text),
+          referenceOnly: /not verified match settings/.test(text) && profile.reference.applicability === 'reference_only_recording_configuration_unverified',
+          panelOverflow: Math.max(0, -rect.left, rect.right - innerWidth),
+          overflow: document.documentElement.scrollWidth - innerWidth
+        };
+      })()`);
+      console.log('  game-rule profile ' + JSON.stringify(ruleProfile));
+      if (ruleProfile.missing || !ruleProfile.matchesAPI || !ruleProfile.identityVisible || !ruleProfile.unknownConfig || !ruleProfile.referenceOnly) {
+        violations.push(`[${tag}] default rule profile is missing, differs from its API, or hides reference-only/unknown-match context`);
+      }
+      if (ruleProfile.panelOverflow > 1 || ruleProfile.overflow > 1) violations.push(`[${tag}] expanded default rule reference overflows its page bounds`);
+      await shot(`profile-${tag}`, '#health details.sub');
+
+      // Find a retained onset/candidate from the stored match API, then use the
+      // actual visible Explain checks control. No detector evidence is injected.
+      const candidate = await evaluate(`(async () => {
+        const first = document.querySelector('#results button[data-decision-match]');
+        if (!first) return null;
+        const response = await fetch('api/match/' + encodeURIComponent(first.dataset.decisionMatch), { cache: 'no-store' });
+        if (!response.ok) throw new Error('stored match API did not answer');
+        const match = await response.json();
+        for (const player of (match.players || [])) {
+          const detector = (player.coverage?.detectors || []).find((d) => d.detector_id === 'STATE_007');
+          const record = (detector?.mechanics_review?.records || []).find((r) => r.kind === 'stun_contact_review' && r.stun_candidates?.length);
+          if (record) return { match: match.match_id, player: player.player_id, candidates: record.stun_candidates.map((c) => c.player_id), reviewOnly: detector.review_only_diagnostics, result: record.result };
+        }
+        return null;
+      })()`);
+      if (!candidate) {
+        if (!externalURL) violations.push(`[${tag}] synthetic fixture has no stored stun onset/candidate, so its rendered review was not exercised`);
+        else console.log('  stun mechanics panel NOT TESTED: this external recording has no retained candidate');
+      } else {
+        const explainOpened = await evaluate(`(() => {
+          const button = [...document.querySelectorAll('#results button[data-decision-match]')].find((b) => b.dataset.decisionMatch === ${JSON.stringify(candidate.match)} && b.dataset.decisionPlayer === ${JSON.stringify(candidate.player)});
+          if (!button) return false;
+          button.scrollIntoView({ block: 'center' }); button.click(); return true;
+        })()`);
+        if (!explainOpened) violations.push(`[${tag}] retained stun diagnostics have no reachable Explain checks control`);
+        else {
+          await waitFor(`!!document.querySelector('#lab-dialog[open] #lab-dialog-content details.sub')`, 'Explain checks');
+          const mechanics = await evaluate(`(async () => {
+            const dialog = document.getElementById('lab-dialog');
+            const panel = [...dialog.querySelectorAll('#lab-dialog-content > details.sub')].find((d) => d.querySelector(':scope > summary')?.textContent.includes('STATE_007'));
+            if (!panel) return { missing: true };
+            const control = panel.querySelector(':scope > summary'); if (!panel.open) control.click();
+            for (const summary of panel.querySelectorAll('details > summary')) {
+              if (summary.textContent.includes('Default game-file reference') || summary.textContent.includes('Reproducible evidence')) {
+                if (!summary.parentElement.open) summary.click();
+              }
+            }
+            panel.scrollIntoView({ block: 'start' });
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const text = panel.innerText, rect = dialog.getBoundingClientRect(), p = panel.getBoundingClientRect();
+            const raw = [...panel.querySelectorAll('pre')].map((e) => e.innerText).join('\\n');
+            return {
+              rows: panel.querySelectorAll('.catch-log > .physics-table > table > tbody > tr').length,
+              unscoredVisible: text.includes('Separate unscored stun review') && text.includes('do not score or automatically punish'),
+              candidateVisible: text.includes('Stun onset / candidate review') && text.includes('stun candidates are not identified attackers'),
+              rawCandidatesVisible: raw.includes('"stun_candidates"') && ${JSON.stringify(candidate.candidates)}.every((id) => raw.includes(JSON.stringify(id))),
+              noAttackerField: !/"(?:attacker_id|identified_attacker)"/.test(raw),
+              unknownConfig: text.includes('Unknown: this recording has no verified active-config/build binding'),
+              overflow: document.documentElement.scrollWidth - innerWidth,
+              dialogOverflow: dialog.scrollWidth - dialog.clientWidth,
+              panelOverflow: Math.max(0, rect.left - p.left, p.right - rect.right),
+              dialogWithinViewport: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1
+            };
+          })()`);
+          console.log('  stun mechanics ' + JSON.stringify(mechanics));
+          if (candidate.reviewOnly !== true || candidate.result !== 'inconclusive' || mechanics.missing || !mechanics.rows || !mechanics.unscoredVisible || !mechanics.candidateVisible || !mechanics.rawCandidatesVisible || !mechanics.noAttackerField || !mechanics.unknownConfig) {
+            violations.push(`[${tag}] expanded stun review omits retained evidence or its unscored/candidate/unknown-config limitations`);
+          }
+          if (mechanics.overflow > 1 || mechanics.dialogOverflow > 1 || mechanics.panelOverflow > 1 || !mechanics.dialogWithinViewport) violations.push(`[${tag}] expanded stun mechanics exceeds the bounded dialog/page layout`);
+          // The profile has its own screenshot. Keep the mechanics capture on
+          // the actual candidate row rather than the long reference table.
+          await evaluate(`(() => {
+            const dialog = document.getElementById('lab-dialog');
+            for (const summary of dialog.querySelectorAll('details > summary')) {
+              if (summary.textContent.includes('Default game-file reference') && summary.parentElement.open) summary.click();
+            }
+            dialog.querySelector('.catch-log > .physics-table')?.scrollIntoView({ block: 'start' });
+          })()`);
+          await shot(`mechanics-${tag}`, '#lab-dialog');
+          await evaluate(`document.getElementById('close-lab-dialog').click()`);
+        }
       }
     }
     for (const error of client.pageErrors) violations.push('uncaught page exception: ' + String(error).slice(0, 300));

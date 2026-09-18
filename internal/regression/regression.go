@@ -36,11 +36,12 @@ type Manifest struct {
 }
 
 type ReplayCase struct {
-	ID       string     `json:"id"`
-	Path     string     `json:"path"`
-	SHA256   string     `json:"sha256"`
-	Expected []Snapshot `json:"expected"`
-	Windows  []Window   `json:"windows,omitempty"`
+	Capture  *CaptureProvenance `json:"capture_provenance,omitempty"`
+	ID       string             `json:"id"`
+	Path     string             `json:"path"`
+	SHA256   string             `json:"sha256"`
+	Expected []Snapshot         `json:"expected"`
+	Windows  []Window           `json:"windows,omitempty"`
 }
 
 // Signal deliberately excludes random event IDs and heuristic confidence.
@@ -111,20 +112,21 @@ type WindowResult struct {
 }
 
 type CaseResult struct {
-	ID               string            `json:"id"`
-	SourceSHA256     string            `json:"source_sha256"`
-	Passed           bool              `json:"passed"`
-	StructureMatch   bool              `json:"structure_match"`
-	Actual           []Snapshot        `json:"actual"`
-	Missing          []Signal          `json:"missing_signals"`
-	Unexpected       []Signal          `json:"unexpected_signals"`
-	Windows          []WindowResult    `json:"windows"`
-	DetectorVersions map[string]string `json:"detector_versions"`
-	Quality          map[string]string `json:"quality_grade_by_match"`
-	WindowSamples    map[string]int    `json:"window_samples,omitempty"`
-	Errors           []string          `json:"errors"`
-	DurationMS       int64             `json:"duration_ms"`
-	SourceBytes      int64             `json:"source_bytes"`
+	Capture          *CaptureProvenance `json:"capture_provenance,omitempty"`
+	ID               string             `json:"id"`
+	SourceSHA256     string             `json:"source_sha256"`
+	Passed           bool               `json:"passed"`
+	StructureMatch   bool               `json:"structure_match"`
+	Actual           []Snapshot         `json:"actual"`
+	Missing          []Signal           `json:"missing_signals"`
+	Unexpected       []Signal           `json:"unexpected_signals"`
+	Windows          []WindowResult     `json:"windows"`
+	DetectorVersions map[string]string  `json:"detector_versions"`
+	Quality          map[string]string  `json:"quality_grade_by_match"`
+	WindowSamples    map[string]int     `json:"window_samples,omitempty"`
+	Errors           []string           `json:"errors"`
+	DurationMS       int64              `json:"duration_ms"`
+	SourceBytes      int64              `json:"source_bytes"`
 }
 
 type Report struct {
@@ -357,7 +359,7 @@ func (manifest Manifest) Validate() error {
 			}
 		}
 	}
-	return nil
+	return manifest.validateCaptureProtocol()
 }
 
 func newReport(cfg *config.Config) (Report, error) {
@@ -440,6 +442,9 @@ func Check(ctx context.Context, cfg *config.Config, manifest Manifest, baseDir, 
 		if err := verifyFile(ctx, ResolvePath(baseDir, item.Path), item.SHA256); err != nil {
 			return report, fmt.Errorf("case %s: %w", item.ID, err)
 		}
+		if err := verifyCaptureEvidence(ctx, item, baseDir); err != nil {
+			return report, err
+		}
 		for _, window := range item.Windows {
 			for _, artifact := range window.Provenance.Artifacts {
 				if err := verifyFile(ctx, ResolvePath(baseDir, artifact.Path), artifact.SHA256); err != nil {
@@ -481,7 +486,7 @@ func verifyFile(ctx context.Context, path, expected string) error {
 
 func runCase(ctx context.Context, cfg *config.Config, item ReplayCase, source, dir string) (out CaseResult, retErr error) {
 	started := time.Now()
-	out = CaseResult{ID: item.ID, SourceSHA256: item.SHA256, Passed: true, StructureMatch: true,
+	out = CaseResult{ID: item.ID, SourceSHA256: item.SHA256, Capture: item.Capture.clone(), Passed: true, StructureMatch: true,
 		Actual: []Snapshot{}, Missing: []Signal{}, Unexpected: []Signal{}, Windows: []WindowResult{},
 		DetectorVersions: map[string]string{}, Quality: map[string]string{}, WindowSamples: map[string]int{}, Errors: []string{}}
 	defer func() {
