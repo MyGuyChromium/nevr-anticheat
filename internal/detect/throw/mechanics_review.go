@@ -67,6 +67,10 @@ func mechanicsFinite(value float64) bool { return !math.IsNaN(value) && !math.Is
 func mechanicsReleaseKnown(ps *model.PlayerState, t *model.ThrowEvent) bool {
 	w := t.ReleaseWindow
 	return w != nil && w.PlayerID == ps.PlayerID && t.ThrowerID == ps.PlayerID && w.FirstFreeFrame == t.FrameIndex &&
-		w.StartFrame < w.EndFrame && w.EndFrame == t.FrameIndex && w.EndTime == t.Timestamp && w.StartTime >= 0 && w.StartTime < w.EndTime &&
-		mechanicsFinite(w.StartTime) && mechanicsFinite(w.EndTime) && w.Source.Valid() && w.Source.FrameIndex == t.FrameIndex && w.Source.Timestamp == t.Timestamp
+		w.StartFrame >= 0 && w.StartFrame+1 == w.EndFrame && w.EndFrame == t.FrameIndex && w.EndTime == t.Timestamp && w.StartTime >= 0 && w.StartTime < w.EndTime &&
+		mechanicsFinite(w.StartTime) && mechanicsFinite(w.EndTime) && w.Source.Valid() && w.Source.FrameIndex == t.FrameIndex && w.Source.Timestamp == t.Timestamp &&
+		t.ObservedAt(ps.LastFrameIdx) && t.FrameIndex <= ps.LastFrameIdx && ps.LastFrameIdx-t.FrameIndex <= 1 &&
+		ps.Observation.Valid() && ps.Observation.FrameIndex == ps.LastFrameIdx && ps.Observation.Timestamp == ps.LastTimestamp &&
+		((ps.LastFrameIdx == t.FrameIndex && ps.LastTimestamp == t.Timestamp) || (ps.LastFrameIdx > t.FrameIndex && ps.LastTimestamp > t.Timestamp)) &&
+		w.Source.SameSource(ps.Observation)
 }

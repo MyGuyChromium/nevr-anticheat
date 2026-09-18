@@ -50,7 +50,7 @@ type Throw006 struct {
 }
 
 func NewThrow006(params map[string]any) *Throw006 {
-	d := &Throw006{BaseDetector: detect.BaseDetector{DetectorID: "THROW_006", DetectorVersion: "2.0.0",
+	d := &Throw006{BaseDetector: detect.BaseDetector{DetectorID: "THROW_006", DetectorVersion: "2.0.1",
 		DetectorName: "Free-flight Trajectory Review", DetectorCategory: "throw", Inputs: []string{"disc_state", "disc_attachment"}, Warmup: 0, Weight: 0},
 		minTrajectoryChange: 8, maxCumulativeChange: 130, postReleaseFrames: 15, minDistFromThrower: 2}
 	_ = d.Configure(params)
@@ -230,6 +230,14 @@ func readFlightReview(players []*model.PlayerState, frame int) (flightReviewSamp
 		}
 		if !disc.Attachment.Free() {
 			return out, "trajectory_disc_held"
+		}
+		// Explicit free attachment cannot overrule conflicting possession or
+		// contact fields supplied in the same sampled snapshot.
+		if ps.HasDisc || disc.IsHeld || disc.PossessionConflict || disc.PossessorID != "" {
+			return out, "trajectory_attachment_conflict"
+		}
+		if ps.LegalContext.PossibleHeadContact {
+			return out, "trajectory_contact_possible"
 		}
 		if ps.DiscAttachment != nil && !reflect.DeepEqual(ps.DiscAttachment, disc.Attachment) {
 			return out, "trajectory_attachment_unknown"

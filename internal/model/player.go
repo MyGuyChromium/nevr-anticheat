@@ -108,8 +108,10 @@ type PlayerState struct {
 	RightHandSpeedStats WelfordAccumulator `json:"-"`
 
 	// Throw tracking
-	ThrowCount   int          `json:"throw_count"`
-	LastThrow    *ThrowEvent  `json:"-"`
+	ThrowCount int         `json:"throw_count"`
+	LastThrow  *ThrowEvent `json:"-"`
+	// ThrowHistory is bounded recent context, not the persisted match record.
+	// ThrowCount counts all published releases independently of this window.
 	ThrowHistory []ThrowEvent `json:"-"`
 
 	// Disc state (shared — same for all players in same frame)

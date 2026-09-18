@@ -39,7 +39,7 @@ type Throw005 struct {
 }
 
 func NewThrow005(_ map[string]any) *Throw005 {
-	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.1.0",
+	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.1.1",
 		DetectorName: "Shot Targeting Review", DetectorCategory: "throw", Inputs: []string{"throw_event"}, Warmup: 0, Weight: 0}}
 	d.Reset()
 	return d

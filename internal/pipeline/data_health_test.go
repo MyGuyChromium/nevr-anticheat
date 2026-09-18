@@ -105,7 +105,7 @@ func TestHealthSharedJumpIsReviewOnlyAndQuaternionSignInvariant(t *testing.T) {
 	for i := range f.Rotation {
 		f.Rotation[i] = -f.Rotation[i]
 	}
-	if len(p.sharedOrientationJumps([]model.PlayerTelemetryFrame{f})) != 0 {
+	if len(p.sharedOrientationJumps([]model.PlayerTelemetryFrame{f}, mc)) != 0 {
 		t.Fatal("q/-q manufactured a discontinuity")
 	}
 }

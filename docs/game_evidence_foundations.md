@@ -4,6 +4,9 @@ This update improves review evidence, not detector calibration or enforcement.
 The 18.9 m/s project reference is unchanged. Playspace checks remain paused.
 Production punishment remains unavailable under the backend review-only policy.
 
+See [detection evidence hardening](detection_evidence_hardening.md) for the
+follow-up continuity, contradiction and retry fixes and their regression checks.
+
 ## What changed
 
 | Area | Recorded evidence | What it does not establish |

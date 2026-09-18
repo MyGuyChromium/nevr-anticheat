@@ -330,7 +330,7 @@ func (p *Pipeline) ProcessMatch(
 
 	for _, fi := range indices {
 		pFrames := frameGroups[fi]
-		sharedJumps := p.sharedOrientationJumps(pFrames)
+		sharedJumps := p.sharedOrientationJumps(pFrames, matchCtx)
 
 		select {
 		case <-ctx.Done():
@@ -342,6 +342,7 @@ func (p *Pipeline) ProcessMatch(
 		// players that produced a valid frame at this index.
 		framePlayers := make(map[string]*model.PlayerState, len(pFrames))
 		sourceReset := false
+		activePhase, phase := true, "active"
 		sort.SliceStable(pFrames, func(i, j int) bool { return pFrames[i].PlayerID < pFrames[j].PlayerID })
 		for i := range pFrames {
 			pf := &pFrames[i]
@@ -410,6 +411,12 @@ func (p *Pipeline) ProcessMatch(
 			p.extractor.UpdatePlayerState(ps, pf, matchCtx)
 			p.reviewRelease(ps, fi)
 			framePlayers[pf.PlayerID] = ps
+			// Only an admitted observation can supply the phase context for
+			// this tick. A rejected/stale peer must not suppress other players'
+			// checks or flush their pending evidence with an unusable phase.
+			if activePhase && pf.GamePhase != "" && !matchCtx.IsActivePhase(pf.GamePhase) {
+				activePhase, phase = false, pf.GamePhase
+			}
 		}
 		if len(framePlayers) == 0 {
 			continue
@@ -422,15 +429,6 @@ func (p *Pipeline) ProcessMatch(
 		// Skip detectors during non-active game phases (round_start, score, pre_match, post_match).
 		// CONFIRMED from real replay: players teleport during round transitions, causing
 		// massive false positives from MOV_002 and other spatial detectors.
-		activePhase := true
-		phase := "active"
-		for i := range pFrames {
-			if pFrames[i].GamePhase != "" && !matchCtx.IsActivePhase(pFrames[i].GamePhase) {
-				activePhase = false
-				phase = pFrames[i].GamePhase
-				break
-			}
-		}
 		if !activePhase {
 			p.recordStunReviews(p.stunReview.Flush("stun_inactive_phase"))
 			// Feature extractor state was updated above to maintain continuity,

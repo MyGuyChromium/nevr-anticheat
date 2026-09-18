@@ -84,6 +84,7 @@ func catchReadPossession(players map[string]*model.PlayerState, frame int) (catc
 		if reference == nil {
 			reference, s.timestamp = dc, ps.LastTimestamp
 			s.holder, s.source = dc.Attachment.HolderID, ps.Observation.Clone()
+			s.attachment = dc.Attachment.Clone()
 		} else if ps.LastTimestamp != s.timestamp || dc.IsHeld != reference.IsHeld ||
 			dc.PossessorID != reference.PossessorID || dc.SampledPlayerCount != reference.SampledPlayerCount ||
 			!reflect.DeepEqual(dc.Attachment, reference.Attachment) || !s.source.SameSource(ps.Observation) {

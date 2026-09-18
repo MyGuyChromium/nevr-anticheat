@@ -34,7 +34,7 @@ type Throw003 struct {
 func NewThrow003(params map[string]any) *Throw003 {
 	return &Throw003{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_003", DetectorVersion: "1.4.0",
+			DetectorID: "THROW_003", DetectorVersion: "1.4.1",
 			TraceBranches: true,
 			DetectorName:  "Release Direction Review", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
@@ -75,7 +75,7 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 			d.TraceDecision(pid, frameIdx, contextReason)
 			continue
 		}
-		if t.ThrowingHand == "unknown" || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
+		if (t.ThrowingHand != "left" && t.ThrowingHand != "right") || !t.HandKinematicsValid || (t.HandTracked && t.HandAttributionConfidence == 0) {
 			d.TraceDecision(pid, frameIdx, "release_hand_unavailable")
 			continue
 		}
@@ -92,6 +92,14 @@ func (d *Throw003) Evaluate(matchCtx *model.MatchContext, players map[string]*mo
 		}
 		if t.HandSpeed < d.minHandSpeed || t.ReleaseSpeed < d.minThrowSpeed {
 			d.TraceDecision(pid, frameIdx, "release_motion_below_gate")
+			continue
+		}
+		// These fields are cached measurements, not independent evidence.
+		// Reject contradictions instead of allowing a stale scalar angle or
+		// speed to manufacture an otherwise unsupported candidate. The small
+		// tolerance only covers floating-point round trips, not game physics.
+		if !releaseAngleMeasurementsConsistent(t) {
+			d.TraceDecision(pid, frameIdx, "release_measurement_inconsistent")
 			continue
 		}
 		if math.IsNaN(t.ReleaseAngle) || t.ReleaseAngle <= d.maxAngleDev {
@@ -172,6 +180,13 @@ func releaseAngleContext(ps *model.PlayerState, t *model.ThrowEvent, pid string,
 		!mechanicsFinite(t.Timestamp) || t.Timestamp < 0 {
 		return nil, "", "release_angle_context_invalid"
 	}
+	// Validate supplied confirmation metadata even when the release's source
+	// is absent. Missing one side cannot make a contradictory other side valid.
+	if ps.Observation != nil && (!ps.Observation.Valid() || ps.Observation.FrameIndex != frame || ps.Observation.Timestamp != ps.LastTimestamp ||
+		ps.Observation.Timestamp < t.Timestamp || (frame == t.FrameIndex && ps.Observation.Timestamp != t.Timestamp) ||
+		(frame > t.FrameIndex && ps.Observation.Timestamp == t.Timestamp)) {
+		return nil, "", "release_angle_context_invalid"
+	}
 	w := t.ReleaseWindow
 	if w == nil {
 		return nil, "release_window_unavailable", ""
@@ -200,10 +215,6 @@ func releaseAngleContext(ps *model.PlayerState, t *model.ThrowEvent, pid string,
 		}
 		status = "release_source_recorded_confirmation_source_unavailable"
 		if ps.Observation != nil {
-			if !ps.Observation.Valid() || ps.Observation.FrameIndex != frame || ps.Observation.Timestamp != ps.LastTimestamp ||
-				ps.Observation.Timestamp < t.Timestamp || (frame > t.FrameIndex && ps.Observation.Timestamp == t.Timestamp) {
-				return nil, "", "release_angle_context_invalid"
-			}
 			if !w.Source.SameSource(ps.Observation) {
 				return nil, "", "release_angle_source_changed"
 			}
@@ -215,4 +226,23 @@ func releaseAngleContext(ps *model.PlayerState, t *model.ThrowEvent, pid string,
 		out.Source.SourceID = ""
 	}
 	return out, status, ""
+}
+
+func releaseAngleMeasurementsConsistent(t *model.ThrowEvent) bool {
+	if !mechanicsFinite(t.Attribution.Confidence) || t.Attribution.Confidence <= 0 || t.Attribution.Confidence > 1 ||
+		!mechanicsFinite(t.HandAttributionConfidence) || t.HandAttributionConfidence < 0 || t.HandAttributionConfidence > 1 ||
+		!mechanicsFinite(t.ReleaseAngle) || t.ReleaseAngle < 0 || t.ReleaseAngle > 180 {
+		return false
+	}
+	handSpeed, discSpeed := t.HandVelocity.Magnitude(), t.ReleaseVelocity.Magnitude()
+	if !mechanicsFinite(handSpeed) || !mechanicsFinite(discSpeed) || handSpeed <= 0 || discSpeed <= 0 ||
+		!measurementClose(t.HandSpeed, handSpeed) || !measurementClose(t.HandRelativeSpeed, t.HandRelativeVelocity.Magnitude()) {
+		return false
+	}
+	return measurementClose(t.ReleaseAngle, t.HandVelocity.AngleBetweenDeg(t.ReleaseVelocity))
+}
+
+func measurementClose(reported, derived float64) bool {
+	return mechanicsFinite(reported) && mechanicsFinite(derived) &&
+		math.Abs(reported-derived) <= 1e-8*math.Max(1, math.Max(math.Abs(reported), math.Abs(derived)))
 }

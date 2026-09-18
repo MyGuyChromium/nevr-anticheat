@@ -27,6 +27,9 @@ func newState(pid string, frameIdx int) *model.PlayerState {
 }
 
 func mkThrow(pid string, frameIdx int, speed, angle float64) model.ThrowEvent {
+	// Keep the requested cached angle consistent with its underlying vectors.
+	// Tests that deliberately corrupt either measurement do so explicitly.
+	handVelocity := model.Vec3{speed * .5 * math.Cos(angle*math.Pi/180), speed * .5 * math.Sin(angle*math.Pi/180), 0}
 	return model.ThrowEvent{
 		ThrowerID:             pid,
 		Attribution:           model.ThrowAttribution{PlayerID: pid, Confidence: 0.9, Method: "possession_track"},
@@ -37,8 +40,10 @@ func mkThrow(pid string, frameIdx int, speed, angle float64) model.ThrowEvent {
 		ReleaseSpeed:          speed,
 		ThrowingHand:          "right",
 		HandPosition:          model.Vec3{5.3, 0.3, 0},
-		HandVelocity:          model.Vec3{speed * 0.5, 0, 0},
+		HandVelocity:          handVelocity,
 		HandSpeed:             speed * 0.5,
+		HandRelativeVelocity:  handVelocity,
+		HandRelativeSpeed:     speed * 0.5,
 		HandKinematicsValid:   true,
 		WristOrientation:      model.QuatIdentity(),
 		WristOrientationValid: true,

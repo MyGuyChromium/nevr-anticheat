@@ -64,7 +64,7 @@ type grabReviewSample struct {
 
 func NewState001(_ map[string]any) *State001 {
 	d := &State001{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_001", DetectorVersion: "3.1.0", DetectorName: "Disc Grab Geometry Review",
+		DetectorID: "STATE_001", DetectorVersion: "3.1.1", DetectorName: "Disc Grab Geometry Review",
 		DetectorCategory: "state", Inputs: []string{"disc_attachment", "hand_tracking", "disc_state"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false,
 	}}
@@ -114,9 +114,19 @@ func (d *State001) evaluateReview(mc *model.MatchContext, players map[string]*mo
 		return nil
 	}
 	present := make(map[string]bool, len(active))
+	// Validate the entire identity set before consuming any row. Otherwise one
+	// of two conflicting copies can confirm a pending acquisition simply by
+	// being visited first (equal-ID ordering is not a reliable tie breaker).
+	for _, ps := range active {
+		if ps.PlayerID == "" || present[ps.PlayerID] {
+			d.finishAllGrabs("grab_possession_unconfirmed_roster_unavailable", frame)
+			d.Reset()
+			return nil
+		}
+		present[ps.PlayerID] = true
+	}
 	for _, ps := range active {
 		id := ps.PlayerID
-		present[id] = true
 		now := readGrabReview(ps, frame)
 		previous, exists := d.previous[id]
 		if exists && now.raw.FrameIndex == previous.raw.FrameIndex && now.raw.Timestamp == previous.raw.Timestamp && reflect.DeepEqual(now, previous) {
@@ -290,7 +300,7 @@ func grabUnconfirmedDescription(reason string) string {
 	case "grab_possession_unconfirmed_phase_changed":
 		return "The game phase changed before sampled possession could be confirmed; phase intervals were not combined."
 	case "grab_possession_unconfirmed_roster_unavailable":
-		return "The sampled roster exceeded the bounded review capacity before possession confirmation."
+		return "The sampled roster had missing or duplicate identities, or exceeded the bounded review capacity before possession confirmation."
 	case "grab_possession_unconfirmed_player_unavailable":
 		return "The player had no fresh sample before possession confirmation."
 	case "grab_possession_unconfirmed_end_of_stream":
@@ -339,6 +349,9 @@ func readGrabReview(ps *model.PlayerState, frame int) grabReviewSample {
 			s.attachment = ps.CurrentDisc.Attachment.Clone()
 		} else if ps.CurrentDisc.Attachment != nil && !reflect.DeepEqual(s.attachment, ps.CurrentDisc.Attachment) {
 			s.attachment = nil // conflicting explicit observations are unknown
+		}
+		if ps.CurrentDisc.PossessionConflict {
+			s.attachment = nil // explicit unresolved ownership cannot confirm possession
 		}
 		s.raw.DiscPosition = grabVector(ps.CurrentDisc.Position, false)
 		s.raw.DiscVelocity = grabVector(ps.CurrentDisc.Velocity, false)
