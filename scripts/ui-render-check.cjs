@@ -13,10 +13,7 @@
 //   - the physics inspector's per-frame rows stay compact,
 //   - with the "Larger" text size the match timeline's player names still end
 //     before the plot begins and the page still does not overflow,
-//   - the top navigation follows the section being read,
-//   - setup and the review workspace remain bounded, with keyboard focus,
-//     working disclosures and independently scrollable long throw logs,
-//   - search-empty and deliberately failed setup states retain recovery actions.
+//   - the top navigation follows the section being read.
 // It runs at 1280 and 1440 px wide, in the light and the dark theme, plus one
 // 1024 px pass where the wide tables must scroll inside their container, which
 // is what exercises the pinned first column. The 640/390 px passes exercise
@@ -46,6 +43,8 @@
 //
 // Exit code: 0 = all metrics within budget, 1 = violation, 2 = could not run.
 // Synthetic fixture data only; this proves layout, not detector accuracy.
+// Setup/review checks also cover keyboard focus, disclosures, independently
+// scrollable long throw logs, search-empty recovery and failed setup/retry.
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
