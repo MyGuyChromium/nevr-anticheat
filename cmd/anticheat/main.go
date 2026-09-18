@@ -570,14 +570,6 @@ func printCountMap(title string, m map[string]int) {
 func runBatch(configPath, dir string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
-	if force {
-		// The batch analyzer has its own persistence path and does not compare
-		// an incoming file with the stored recording the way analyze does.
-		fmt.Fprintln(os.Stderr, "Warning: batch --force does not check that each file is the recording already stored under its match id.")
-		fmt.Fprintln(os.Stderr, "  A different recording of a stored match (another observer, a clip) would replace its analysis while the stored")
-		fmt.Fprintln(os.Stderr, "  raw ticks stay the first recording's. Use `analyze --force <file>` for matches that may have been recorded twice.")
-	}
-
 	analyzer := replay.NewBatchAnalyzer(a.newPipeline(), a.store,
 		func() replay.FrameParser { return replay.NewJSONFrameParser() },
 		a.cfg.General.MaxWorkers, logging.NewLogger(a.cfg.General.LogLevel, a.cfg.General.LogFormat))
@@ -593,6 +585,13 @@ func runBatch(configPath, dir string, force bool) {
 		result.Processed, result.TotalFiles, result.Skipped, result.Errors, result.IgnoredFiles, result.Duration)
 	fmt.Printf("Stored: %d telemetry frames (%d already present), %d detection events, %d players flagged\n",
 		result.FramesInserted, result.FramesIgnored, result.EventsStored, len(result.FlaggedPlayers))
+	if result.SourceConflicts > 0 {
+		fmt.Fprintf(os.Stderr, "Kept the stored recording for %d match(es): the file is a different recording of a stored match (another observer, a late joiner or a clip)."+"\n", result.SourceConflicts)
+		for _, detail := range result.ConflictDetails {
+			fmt.Fprintf(os.Stderr, "  %s"+"\n", detail)
+		}
+		fmt.Fprintln(os.Stderr, "  To replace a stored recording deliberately: anticheat analyze --force --replace-source <file>")
+	}
 	if result.PersistFailed > 0 {
 		fmt.Fprintf(os.Stderr, "Error: %d analyzed match(es) could not be persisted (see log); the store may be read-only, locked or full\n",
 			result.PersistFailed)

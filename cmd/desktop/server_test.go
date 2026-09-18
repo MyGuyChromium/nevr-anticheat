@@ -666,8 +666,13 @@ func TestDesktop_IndexIncludesFullMatchReport(t *testing.T) {
 			t.Errorf("desktop page does not contain %q", marker)
 		}
 	}
-	if strings.Contains(page, `id="force"`) || strings.Contains(page, "fd.append('force'") || strings.Contains(page, "queueForce") {
-		t.Error("desktop replay refresh is server-enforced and must not expose a force toggle")
+	// Re-analysis and replacement are explicit moderator actions (the engine keeps a
+	// stored recording unless asked): the page must offer both, send exactly the
+	// engine's intake flags, and never pre-tick the destructive acknowledgement.
+	for _, marker := range []string{"data-reanalyze", "data-replace-source", "'replace_source'", "'force'", "No automatic backup is taken", "Back up database now"} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("desktop page lost the explicit intake control %q", marker)
+		}
 	}
 }
 

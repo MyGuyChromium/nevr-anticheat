@@ -944,11 +944,20 @@ func (a *fileAnalysis) storedSourceRelation(run *matchRun) (SourceRelation, stri
 	} else {
 		next = rawMapIterator(run.pending)
 	}
+	return compareStoredTicks(a.ctx, a.store, stored, mc, next, run.rawTicks)
+}
+
+// compareStoredTicks walks the raw ticks stored under incoming's match id and
+// compares them, index by index, with the incoming recording's ticks (next
+// yields them in index order; incomingTicks is how many there are). It is the
+// one comparison both the single-file engine and the batch analyzer use, so a
+// different recording of a stored match is recognised on every intake path.
+func compareStoredTicks(ctx context.Context, store *sqlite.Store, stored, incoming *model.MatchContext, next rawTickNext, incomingTicks int) (SourceRelation, string, error) {
 	position, candidate := -1, ""
 	var differ string
 	errDiffer := errors.New("recordings differ")
-	n, err := a.store.ForEachMatchTick(a.ctx, mc.MatchID, func(idx int, raw string) error {
-		if err := a.ctx.Err(); err != nil {
+	n, err := store.ForEachMatchTick(ctx, incoming.MatchID, func(idx int, raw string) error {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		for position < idx {
@@ -978,9 +987,9 @@ func (a *fileAnalysis) storedSourceRelation(run *matchRun) (SourceRelation, stri
 	case err != nil:
 		return "", "", err
 	case n == 0:
-		return contextSourceRelation(stored, mc)
-	case run.rawTicks > n:
-		return SourceExtends, fmt.Sprintf("all %d stored ticks match and this file holds %d more", n, run.rawTicks-n), nil
+		return contextSourceRelation(stored, incoming)
+	case incomingTicks > n:
+		return SourceExtends, fmt.Sprintf("all %d stored ticks match and this file holds %d more", n, incomingTicks-n), nil
 	default:
 		return SourceIdentical, fmt.Sprintf("all %d stored ticks match", n), nil
 	}
