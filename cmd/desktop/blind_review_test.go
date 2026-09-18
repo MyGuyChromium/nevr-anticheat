@@ -176,3 +176,64 @@ func TestBlindReviewMatchPickerOmitsFindingsAndSourcePaths(t *testing.T) {
 		t.Fatal("picker missing safe source/window bounds")
 	}
 }
+
+// Deleting the annotation a revealed blind review produced is refused by the
+// store (it would allow re-voting the same window). That refusal is a conflict
+// the reviewer can act on, not an internal error. Mutation: remove the
+// errors.Is branch in handleDeleteCalibrationOpportunity and the status is 500.
+func TestDeleteBoundBlindReviewAnnotationIsAConflictNotAServerError(t *testing.T) {
+	s, ts := newTestServer(t)
+	root := ts.URL + "/" + testToken
+	base := root + "/api/blind-review"
+	if resp, out := upload(t, ts, true, map[string]string{"fixture.echoreplay": fixturePath}); resp.StatusCode != 200 || !out.Results[0].OK {
+		t.Fatal("fixture upload failed")
+	}
+	status, artifact := uploadBlindArtifactTest(t, base+"/artifacts", "trial.bin", "true", []byte("controlled reproduction capture"))
+	if status != 201 {
+		t.Fatalf("artifact: %d", status)
+	}
+	var session sqlite.BlindReviewSession
+	binding := sqlite.BlindReviewBinding{MatchID: "SYN-FIXTURE-001", PlayerID: "echovr:1001", DetectorID: "THROW_001", Kind: sqlite.OpportunityThrow,
+		FrameStart: 10, FrameEnd: 12, EvidenceMethod: "controlled_reproduction", ArtifactSHA256: artifact.SHA256, LegalContext: "normal"}
+	if resp := postJSONTest(t, base+"/sessions", binding, &session); resp.StatusCode != 201 {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+	for _, reviewer := range []string{"Alice", "Bob"} {
+		if resp := postJSONTest(t, base+"/sessions/"+session.SessionID+"/ballots", map[string]any{"reviewer_id": reviewer, "ground_truth": "negative", "pre_reveal_attestation": true}, nil); resp.StatusCode != 201 {
+			t.Fatalf("ballot: %d", resp.StatusCode)
+		}
+	}
+	if resp := postJSONTest(t, base+"/sessions/"+session.SessionID+"/reveal", map[string]any{}, nil); resp.StatusCode != 200 {
+		t.Fatalf("reveal: %d", resp.StatusCode)
+	}
+	items, err := s.engine.Store().ListCalibrationOpportunities(t.Context(), "SYN-FIXTURE-001", "")
+	if err != nil || len(items) != 1 || items[0].ReviewSessionID == "" {
+		t.Fatalf("bound annotation fixture: %+v %v", items, err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, root+"/api/calibration/opportunities/"+items[0].OpportunityID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d %s, want 409", resp.StatusCode, body)
+	}
+	for _, want := range []string{"cannot be deleted", "hash-bound review annotations are immutable", "create a new session"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("refusal %s does not say %q", body, want)
+		}
+	}
+	if after, _ := s.engine.Store().ListCalibrationOpportunities(t.Context(), "SYN-FIXTURE-001", ""); len(after) != 1 {
+		t.Fatalf("the bound annotation was deleted: %+v", after)
+	}
+	// An unknown id is still "not found", not a conflict.
+	if resp := deleteJSONTest(t, root+"/api/calibration/opportunities/does-not-exist"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown annotation status = %d, want 404", resp.StatusCode)
+	}
+}

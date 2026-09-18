@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -913,6 +914,11 @@ func (s *server) buildCalibrationDashboard(ctx context.Context, candidateEvents 
 	if err != nil {
 		return calibrationDashboard{}, err
 	}
+	// Every re-analysis gives an unchanged observation a new event id while the
+	// earlier label row is kept. A moderator who labels it again must not add a
+	// second gate sample. The rule is the storage layer's, shared with
+	// ComputeCalibration: one observation counts once, with its newest verdict.
+	reviews = sqlite.LatestEventReviewPerObservation(reviews)
 	opportunities, err := store.ListCalibrationOpportunities(ctx, "", "")
 	if err != nil {
 		return calibrationDashboard{}, err
@@ -1098,6 +1104,13 @@ func (s *server) handleStoreCalibrationOpportunity(w http.ResponseWriter, r *htt
 
 func (s *server) handleDeleteCalibrationOpportunity(w http.ResponseWriter, r *http.Request) {
 	ok, err := s.engine.Store().DeleteCalibrationOpportunity(r.Context(), r.PathValue("id"))
+	// A revealed blind-review consensus is permanent by design. Refusing to
+	// delete it is a conflict with the stored state, not a server fault, and the
+	// store's own sentence already tells the reviewer what to do instead.
+	if errors.Is(err, sqlite.ErrBoundOpportunityImmutable) {
+		writeError(w, http.StatusConflict, "this annotation cannot be deleted: %v", err)
+		return
+	}
 	if err != nil {
 		writeError(w, 500, "deleting calibration opportunity: %v", err)
 		return

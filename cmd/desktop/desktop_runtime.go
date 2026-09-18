@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/replay"
@@ -640,24 +642,85 @@ func (s *server) handleRecoveryDiscard(w http.ResponseWriter, _ *http.Request) {
 }
 
 type updateStatus struct {
-	CurrentVersion   string `json:"current_version"`
-	CurrentCommit    string `json:"current_commit"`
-	BuildTime        string `json:"build_time"`
-	LatestCommit     string `json:"latest_commit,omitempty"`
-	Available        bool   `json:"available"`
+	CurrentVersion string `json:"current_version"`
+	CurrentCommit  string `json:"current_commit"`
+	// CurrentCommitTime is when the installed build's source was committed, or,
+	// when CurrentCommitTimeExact is false, when it was built (an upper bound).
+	CurrentCommitTime      string `json:"current_commit_time,omitempty"`
+	CurrentCommitTimeExact bool   `json:"current_commit_time_exact,omitempty"`
+	BuildTime              string `json:"build_time"`
+	LatestCommit           string `json:"latest_commit,omitempty"`
+	LatestCommitTime       string `json:"latest_commit_time,omitempty"`
+	// Available is true only when the published release is a different revision
+	// AND the monotonicity rule in updater.go would install it.
+	Available bool `json:"available"`
+	// Downgrade is true when the published release is a different revision that
+	// refuseUpdateDowngrade refuses: it is older than this build, or the two
+	// cannot be ordered. Available is then always false.
+	Downgrade        bool   `json:"downgrade"`
+	DowngradeReason  string `json:"downgrade_reason,omitempty"`
 	InstallSupported bool   `json:"install_supported"`
-	InstallReason    string `json:"install_reason,omitempty"`
-	ReleaseURL       string `json:"release_url"`
-	CheckedAt        string `json:"checked_at"`
-	Error            string `json:"error,omitempty"`
-	LastInstallError string `json:"last_install_error,omitempty"`
+	// InstallReason is the original name of InstallUnsupportedReason and always
+	// carries the same text; pages older than the new field still read it.
+	InstallReason            string `json:"install_reason,omitempty"`
+	InstallUnsupportedReason string `json:"install_unsupported_reason,omitempty"`
+	ReleaseURL               string `json:"release_url"`
+	CheckedAt                string `json:"checked_at"`
+	Error                    string `json:"error,omitempty"`
+	LastInstallError         string `json:"last_install_error,omitempty"`
+}
+
+// plainSentence turns an error's lower-case clause into a sentence the page can
+// show as it is.
+func plainSentence(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	first, size := utf8.DecodeRuneInString(text)
+	text = string(unicode.ToUpper(first)) + text[size:]
+	if !strings.HasSuffix(text, ".") && !strings.HasSuffix(text, "!") && !strings.HasSuffix(text, "?") {
+		text += "."
+	}
+	return text
+}
+
+// installSupport answers "would one-click install be refused right now, and
+// why?" before the user clicks. It asks the same questions, through the same
+// functions, that handleInstallUpdate and downloadVerifiedUpdate ask before any
+// network traffic: a packaged build, the installed (not portable) copy, the
+// trusted staging directory (refused for a relocated database path), and no
+// other NEVR program running from the installation folder. Nothing is
+// downloaded, staged or terminated.
+func (rt *desktopRuntime) installSupport() (bool, string) {
+	if buildCommit == "" || buildCommit == "development" {
+		return false, "This is a development build without a release revision, so it cannot replace itself. Install a packaged release with NEVR-Anticheat-Setup.exe first."
+	}
+	if ok, reason := rt.updateReady(); !ok {
+		if strings.TrimSpace(reason) == "" {
+			reason = "one-click updates are unavailable for this copy of NEVR"
+		}
+		return false, plainSentence(reason)
+	}
+	if err := verifyUpdateStagingDir(rt.updateDir); err != nil {
+		return false, plainSentence(err.Error())
+	}
+	if err := updatePreflight(); err != nil {
+		return false, plainSentence(err.Error())
+	}
+	return true, ""
 }
 
 func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	status := updateStatus{CurrentVersion: appVersion, CurrentCommit: buildCommit, BuildTime: buildTime,
 		ReleaseURL: "https://github.com/MyGuyChromium/nevr-anticheat/releases/tag/windows-latest", CheckedAt: fmtTime(time.Now()),
 		LastInstallError: s.runtime.lastUpdateError()}
-	status.InstallSupported, status.InstallReason = s.runtime.updateReady()
+	installed := installedBuildMoment()
+	if !installed.Time.IsZero() {
+		status.CurrentCommitTime, status.CurrentCommitTimeExact = installed.Time.Format(time.RFC3339), installed.Exact
+	}
+	status.InstallSupported, status.InstallUnsupportedReason = s.runtime.installSupport()
+	status.InstallReason = status.InstallUnsupportedReason
 	// Follow the rolling-release tag instead of master. The workflow only moves
 	// this tag after every executable, the installer, and the portable ZIP are ready, so
 	// the desktop never advertises an un-downloadable commit as an update.
@@ -668,7 +731,34 @@ func (s *server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status.LatestCommit = commit
-	status.Available = buildCommit != "" && buildCommit != "development" && !sameCommit(buildCommit, commit)
+	if buildCommit == "" || buildCommit == "development" || sameCommit(buildCommit, commit) {
+		writeJSON(w, 200, status)
+		return
+	}
+	// "The tag names another commit" is not evidence of a NEWER build: the
+	// rolling tag can be moved backwards. Ask the install path's own rule, on
+	// the same verified manifest, so the check never offers what install refuses.
+	manifest, _, _, err := s.runtime.verifiedReleaseManifest(r.Context(), commit)
+	if err != nil {
+		status.Error = "could not confirm that the published Windows release is newer than this build: " + err.Error()
+		writeJSON(w, 200, status)
+		return
+	}
+	if published, ok := parseUpdateTime(manifest.CommitTime); ok {
+		status.LatestCommitTime = published.Format(time.RFC3339)
+	}
+	if err := refuseUpdateDowngrade(manifest, installed, *allowUpdateDowngrade); err != nil {
+		status.Downgrade = true
+		var refusal *updateDowngradeRefusal
+		if errors.As(err, &refusal) {
+			status.DowngradeReason = plainSentence(refusal.Reason)
+		} else {
+			status.DowngradeReason = plainSentence(err.Error())
+		}
+		writeJSON(w, 200, status)
+		return
+	}
+	status.Available = true
 	writeJSON(w, 200, status)
 }
 

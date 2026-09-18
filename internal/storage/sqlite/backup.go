@@ -84,6 +84,73 @@ func VerifyDatabase(ctx context.Context, path string) error {
 	return nil
 }
 
+// ErrNotEvidenceDatabase is matched (errors.Is) by the error
+// VerifyEvidenceDatabase returns for a healthy SQLite file that is not a
+// NEVR-Anticheat evidence database.
+var ErrNotEvidenceDatabase = errors.New("sqlite: not a NEVR-Anticheat evidence database")
+
+// evidenceCoreTables exist in every NEVR-Anticheat database since schema
+// version 1. requiredTables cannot be used here: it is the CURRENT schema
+// surface, and a backup written by an older build legitimately lacks the tables
+// later migrations add (NewStore migrates it after the restore).
+var evidenceCoreTables = []string{"detection_events", "match_summaries", "review_cases"}
+
+// VerifyEvidenceDatabase is VerifyDatabase plus proof that the file is a NEVR
+// evidence database this build can open. It is the check for anything that is
+// about to REPLACE the live database.
+//
+// An integrity check alone is not enough for that. A zero-byte file is a valid,
+// empty SQLite database, and so is any other application's database; both pass
+// PRAGMA quick_check, and restoring either would leave the moderator with an
+// empty library. The file must therefore record at least one applied migration
+// and hold the version-1 core tables. A database written by a NEWER build is
+// refused too: NewStore would refuse to open it after the swap, which is worse
+// than refusing the restore while the current database is still in place.
+//
+// The file is opened read-only; nothing is migrated or written.
+func VerifyEvidenceDatabase(ctx context.Context, path string) error {
+	if err := VerifyDatabase(ctx, path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite3", sqliteFileURI(path)+"?mode=ro&_busy_timeout=5000")
+	if err != nil {
+		return fmt.Errorf("sqlite: opening database for schema verification: %w", err)
+	}
+	defer db.Close()
+	hasTable := func(name string) (bool, error) {
+		var n int
+		err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n)
+		return n > 0, err
+	}
+	ok, err := hasTable("schema_migrations")
+	if err != nil {
+		return fmt.Errorf("sqlite: reading database schema: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("%w: it records no NEVR schema version (an empty file or another program's database)", ErrNotEvidenceDatabase)
+	}
+	var applied sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&applied); err != nil {
+		return fmt.Errorf("%w: its schema version cannot be read: %v", ErrNotEvidenceDatabase, err)
+	}
+	if applied.Int64 < 1 {
+		return fmt.Errorf("%w: its schema version is %d", ErrNotEvidenceDatabase, applied.Int64)
+	}
+	if int(applied.Int64) > SchemaVersion() {
+		return &NewerSchemaError{Applied: int(applied.Int64), Supported: SchemaVersion()}
+	}
+	for _, table := range evidenceCoreTables {
+		ok, err := hasTable(table)
+		if err != nil {
+			return fmt.Errorf("sqlite: reading database schema: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("%w: table %q is missing", ErrNotEvidenceDatabase, table)
+		}
+	}
+	return nil
+}
+
 // sqliteFileURI renders a filesystem path as the path part of a SQLite file:
 // URI. SQLite decodes %HH escapes and ends the path at '?' (query) or '#'
 // (fragment), so a literal path containing them would open a different file:

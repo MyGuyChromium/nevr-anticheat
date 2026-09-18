@@ -138,7 +138,7 @@ func applyPendingRestoreWithRename(dbPath string, rename func(string, string) er
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("restore source is outside the backup directory")
 	}
-	if err := sqlite.VerifyDatabase(context.Background(), source); err != nil {
+	if err := sqlite.VerifyEvidenceDatabase(context.Background(), source); err != nil {
 		return fmt.Errorf("verifying restore source: %w", err)
 	}
 	stageDir, err := os.MkdirTemp(filepath.Dir(target), ".nevr-restore-stage-*")
@@ -151,7 +151,7 @@ func applyPendingRestoreWithRename(dbPath string, rename func(string, string) er
 	if err := copyRestoreFile(source, tmp); err != nil {
 		return err
 	}
-	if err := sqlite.VerifyDatabase(context.Background(), tmp); err != nil {
+	if err := sqlite.VerifyEvidenceDatabase(context.Background(), tmp); err != nil {
 		return fmt.Errorf("verifying staged restore: %w", err)
 	}
 	// Keep each recovery set together in an exclusively-created directory.
