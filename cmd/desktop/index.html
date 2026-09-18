@@ -1417,7 +1417,7 @@
         <td><span class="action-stack"><button class="btn btn-sm" data-replay-match="${esc(matchID)}" data-replay-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}">Open throw</button>
         <button class="btn btn-sm" data-physics-match="${esc(matchID)}" data-physics-frame="${Number.isInteger(th.frame_index) ? th.frame_index : 0}" data-physics-player="${esc(th.player_id)}">Inspect physics</button>
         <a class="btn btn-sm" href="api/match/${encodeURIComponent(matchID)}/diagnostic/frame/${Number.isInteger(th.frame_index) ? th.frame_index : 0}?player=${encodeURIComponent(th.player_id || '')}">Diagnostic ZIP</a></span></td></tr>`).join('') +
-      `</tbody></table></div></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}. Speeds above the ${fmtNum(discSpeedCap, 1)} m/s engine cap are marked for review; the player-relative breakdown is stored with THROW_001 evidence. A throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
+      `</tbody></table></div></div><p class="summary-note">${fmtInt(throws.length)} release${throws.length === 1 ? '' : 's'} detected from ${esc(s.throw_source || 'available telemetry')}. First-free speeds above the ${fmtNum(discSpeedCap, 1)} m/s configured threshold are marked for review, not confirmed violations. THROW_001 evidence distinguishes raw samples, repeated observations, and the separate local-client report. A throw is linked to a goal when the same scorer scores within ${fmtNum(s.throw_goal_window_seconds, 0)} seconds.</p>`;
   }
 
   // ---- match timeline --------------------------------------------------------

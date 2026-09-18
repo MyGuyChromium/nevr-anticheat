@@ -58,7 +58,9 @@ type PhysicsConstants struct {
 	GoalZ float64 `json:"goal_z" toml:"goal_z"`
 }
 
-// DefaultPhysics returns the default physics constants for Echo VR.
+// DefaultPhysics returns project reference values, not independently verified
+// engine limits. In particular, the owner retained the 18.9 m/s review threshold;
+// available default game config files do not establish a throw-speed ceiling.
 func DefaultPhysics() PhysicsConstants {
 	return PhysicsConstants{
 		DiscSpeedCap:   18.9,

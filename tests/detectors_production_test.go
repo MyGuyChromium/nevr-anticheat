@@ -65,8 +65,10 @@ func TestDetectorStatus_MatchesDefaultConfig(t *testing.T) {
 // THROW
 // ---------------------------------------------------------------------
 
-func TestDetector_THROW_001_ImpossibleReleaseVelocity(t *testing.T) {
-	hr := runOnly(t, player1().AimbotThrows(8), "THROW_001")
+func TestDetector_THROW_001_ReportedReleaseSpeedReview(t *testing.T) {
+	// The generator's historical name is not ground truth. Explicit synthetic
+	// source/roster/contact-counter data exercises repeated sampled speeds.
+	hr := runOnly(t, mechanicsObservedFrames(player1().AimbotThrows(8)), "THROW_001")
 	hr.AssertDetectorFiredN("THROW_001", 8)
 	for _, ev := range hr.Events {
 		if ev.CausalKey.AnomalyType != "disc_speed" || ev.Severity < 0.99 || ev.Confidence < 0.89 {
@@ -74,6 +76,20 @@ func TestDetector_THROW_001_ImpossibleReleaseVelocity(t *testing.T) {
 		}
 		if ev.AutoEnforce {
 			t.Error("auto-enforce must stay off at the default config")
+		}
+		evidence := ev.Evidence.(model.ThrowEvidence)
+		if evidence.SpeedReview == nil || evidence.SpeedReview.Status != "corroborated" || len(evidence.SpeedReview.Samples) != 3 || evidence.SpeedReview.AboveCapSamples != 3 {
+			t.Fatalf("missing three-sample evidence: %+v", evidence.SpeedReview)
+		}
+	}
+	// The original fixture omits the bounce counter. It must still be retained,
+	// but missing contact data must not pass as sampled corroboration.
+	hr = runOnly(t, player1().AimbotThrows(8), "THROW_001")
+	hr.AssertDetectorFiredN("THROW_001", 8)
+	for _, ev := range hr.Events {
+		evidence := ev.Evidence.(model.ThrowEvidence)
+		if evidence.SpeedReview == nil || evidence.SpeedReview.Status != "uncorroborated" || evidence.SpeedReview.Reason != "release_speed_contact_unavailable" || ev.EnforcementWeight != 0 || ev.Severity != 0.2 || ev.AutoEnforce {
+			t.Fatalf("missing contact data was promoted: %+v", ev)
 		}
 	}
 	// Releases over twice the physics cap are observations, not drops.

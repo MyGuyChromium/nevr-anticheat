@@ -44,7 +44,9 @@ max_events_per_player_per_detector = 50   # lower than default to bound noise fr
 # ==============================================================================
 
 [detector.THROW_001]
-# Impossible Release Velocity: engine cap 18.9 m/s; direct velocity, no default tolerance.
+# Reported Release Speed Review: configured reference 18.9 m/s, not a verified
+# engine ceiling. Three consecutive free samples support sampled corroboration;
+# incomplete/isolated observations stay zero-weight. No default tolerance.
 enabled            = true
 enforcement_weight = 0.8
 auto_enforce       = false

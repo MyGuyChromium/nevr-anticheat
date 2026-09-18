@@ -1,7 +1,7 @@
 # THROW_001 measurement verification and limits
 
 This note records what can be established from the available source and tests,
-not a validated universal Echo VR throw-speed law. The configured 18.9 m/s cap,
+not a validated universal Echo VR throw-speed law. The configured 18.9 m/s review threshold,
 detector thresholds, shadow posture and enforcement defaults are unchanged.
 
 ## Runtime source checked
@@ -25,13 +25,20 @@ symbol name or tune the cap to make unlabeled recordings agree.
 
 ## Distinguish the measurements
 
-THROW_001 checks the sampled game-reported disc velocity magnitude, optionally
-corroborated by a valid attributed engine `last_throw.total_speed`. The larger
-scalar is retained by existing detection logic. Movement-aligned velocity and
-player-relative disc speed are separate review context, not additional speed
-allowances and not substitutes for a verified release law. Replay sampling still
-affects whether the true release/contact was captured and who caused it, even
-when the velocity itself is game-reported.
+THROW_001 version 2.0.0 keeps the first-free game-reported disc velocity magnitude,
+subsequent sampled velocities and a bound local-client `last_throw.total_speed`
+as separate measurements. It no longer selects the larger scalar as release
+speed. Three consecutive known-free, above-threshold samples can corroborate a
+sampled-speed observation, subject to source, continuity and contact checks;
+they do not establish exact launch velocity, independent authority or cheating.
+An isolated spike or interrupted window remains uncorroborated evidence. A local
+client report is separate context, never an independent witness.
+
+Movement-aligned velocity and player-relative disc speed are also review context,
+not additional speed allowances or substitutes for a verified release law.
+Replay sampling still affects whether the true release/contact was captured and
+who caused it, even when velocity itself is game-reported. See
+[default settings and the current evidence contract](default_game_config_reference.md).
 
 A reproduced evidence-only arithmetic bug was fixed in detector version 1.5.1:
 when a valid engine scalar exceeded the sampled disc magnitude, the body-velocity
@@ -39,15 +46,17 @@ projection was divided by that unrelated scalar. For a sampled `(18,0,0)` m/s
 disc vector, a 24 m/s engine scalar and `(4,0,0)` m/s player velocity, it displayed
 3 m/s aligned movement instead of 4 m/s. The projection now uses the normalized
 sampled disc vector. Parallel, opposing and perpendicular movement tests preserve
-the independent sampled/engine values and do not mutate the tracked throw or
-change the decision, threshold, severity, confidence or enforcement permission.
+the separate sampled/engine values and do not mutate the tracked throw. That
+historical arithmetic fix did not change the decision, threshold, severity,
+confidence or enforcement permission; the version 2.0.0 evidence-handling change
+is described above.
 
 ## Evidence still required
 
 Before promoting this signal, independently review positive and negative release
 windows, not only emitted events. Preserve the source hash, raw timestamp/frame,
 nearest held and released samples, sample interval/gaps, possessor and attribution
-confidence, disc vector and independent engine throw fields when present. Include
+confidence, disc vector and separately reported local-client throw fields when present. Include
 moving and stationary throws, different relative directions, legal block/slap
 boosts, headbutts/slaps, deflections, and recorder/runtime variants. Missing
 engine fields are unavailable evidence, not zero or proof of cheating.

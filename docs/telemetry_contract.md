@@ -249,12 +249,17 @@ invent a hand.
 Echo VR's top-level `last_throw` belongs only to `client_name`. The bridge
 compares that record with the preceding snapshot, copies it to
 `game_last_throw` only when it changes, and attaches it only to the matching
-local player's frame. THROW_001 evaluates the higher of `total_speed` and the
-simultaneous disc-velocity magnitude, so one source cannot conceal a faster
-reading; both are retained in evidence. The remaining twelve fields are preserved,
+local player's frame. THROW_001 keeps `total_speed` separate from the first-free
+disc-velocity magnitude and subsequent free-flight samples. Selecting the larger
+number would mix measurements without establishing launch authority. The local
+report remains visible as contextual evidence, not independent corroboration.
+The remaining twelve fields are preserved,
 including the engine's arm, movement and wrist contributions and its alignment
 and penalty values. Remote players do not have this engine breakdown; their
-release speed continues to use `|disc.velocity|`.
+release speed continues to use `|disc.velocity|`. A three-sample review can
+corroborate repeated above-configured-threshold speeds; interruptions and isolated
+spikes stay explicitly uncorroborated. This does not reconstruct the unobserved
+release instant. See [default settings and evidence](default_game_config_reference.md).
 
 ### 5. Game phase values
 
