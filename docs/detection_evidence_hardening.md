@@ -49,10 +49,47 @@ authoritative release/catch timing remain limitations. A conservative abstention
 means insufficient evidence, not proof of fair play. Backend review-only policy
 and the outstanding installer, viewer and recovery acceptance gates are unchanged.
 
-Nonblocking backlog: an identical retry with already-degraded motion input can
-still close an insufficient-data catch diagnostic as a sample gap. This cannot
-confirm a catch candidate or create a scored finding; the usable-snapshot retry
-path is covered separately. Do not interpret that diagnostic as a new incident.
+The follow-up adversarial pass also makes degraded-motion retries idempotent.
+Its bounded value-only identity preserves nonfinite bit patterns solely for
+retry equality; those values never become admissible geometry. Changed retries
+still interrupt continuity. End-of-stream finalization now clears catch/grab
+history even when an instance is reused; invalid negative frames cannot form
+unprovenanced acquisition windows.
+
+Release integrity additionally checks the body-relative **vector**, not only
+its length. Shot and free-flight checks reject overflowing derived geometry and
+numerically degenerate directions instead of turning math fallbacks into
+measured alignment or distance. Adversarial tests include rigid-coordinate
+invariance, positive controls, caller/observer aliasing, and conflicting retries.
+No legal-motion threshold was changed.
+
+Live ingest now applies roster admission before tick-clock ordering, prevents
+late peers reopening a closed stored tick, recovers roster occupancy from durable
+telemetry after restart, and publishes roster/team changes only after a successful
+raw transaction. Exact retries and fresh partial-roster assembly remain supported.
+This is input integrity, not approval of a live enforcement deployment.
+Existing live-ingest limitation: restart restores durable telemetry bookkeeping,
+not the pending tick or detector history. A last acknowledged tick can need
+offline reanalysis after a crash; ignored duplicate retries do not reconstruct
+that analysis. Closed-tick admission tests do not prove uninterrupted live
+detection. Keep this separate from desktop replay-queue recovery below.
+
+Additional focused suites are `./internal/ingest` and the tests in
+`adversarial_evidence_test.go`, `catch_adversarial_test.go`, and
+`admission_integrity_test.go`. Each corrected defect was reproduced before its
+fix; these fixtures remain synthetic implementation tests.
+
+The packaged workload verifier now explicitly requests `force=true` and rejects
+cached results. Historical reports without `workload_policy` may include cached
+imports and **must not be cited as sustained detector-processing evidence**.
+Ordinary duplicate-import acceptance is still tested independently. The verifier
+also requires deliberate owned-child termination while upload activity is
+observed, transport interruption, automatic durable-queue recovery, preserved
+match count and exact synthetic note content, SQLite quick-check, and successful
+forced reprocessing after recovery. The process and state are disposable; no
+installed user database or original replay is modified. Harness contract tests
+are mocked; only a separately executed candidate run proves this operational gate.
+This does not simulate physical power loss or every possible transaction point.
 
 Two older regression contracts were deliberately tightened: negative indices
 now require rejection on both ingest and offline paths, and the snapshot-label

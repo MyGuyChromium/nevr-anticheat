@@ -64,7 +64,7 @@ type grabReviewSample struct {
 
 func NewState001(_ map[string]any) *State001 {
 	d := &State001{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_001", DetectorVersion: "3.1.1", DetectorName: "Disc Grab Geometry Review",
+		DetectorID: "STATE_001", DetectorVersion: "3.1.2", DetectorName: "Disc Grab Geometry Review",
 		DetectorCategory: "state", Inputs: []string{"disc_attachment", "hand_tracking", "disc_state"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false,
 	}}
@@ -318,6 +318,7 @@ func (d *State001) finishAllGrabs(reason string, frame int) {
 
 func (d *State001) FlushTracks(_ *model.MatchContext, frame int) []model.DetectionEvent {
 	d.finishAllGrabs("grab_possession_unconfirmed_end_of_stream", frame)
+	d.Reset() // finalization is a continuity boundary, even if this instance is reused
 	return nil
 }
 func (d *State001) FlushSource(_ *model.MatchContext, frame int) []model.DetectionEvent {
@@ -389,7 +390,8 @@ func grabVector(value model.Vec3, zeroUnavailable bool) *model.Vec3 {
 func grabReviewContinuous(previous, now grabReviewSample) bool {
 	dt := now.raw.Timestamp - previous.raw.Timestamp
 	// This is an engineering sampling continuity gate, NOT a legal grab bound.
-	if now.raw.FrameIndex != previous.raw.FrameIndex+1 || math.IsNaN(dt) || math.IsInf(dt, 0) || dt <= 0 || dt > .2 || previous.raw.Timestamp < 0 {
+	if !grabRawTimeValid(previous.raw) || !grabRawTimeValid(now.raw) ||
+		now.raw.FrameIndex != previous.raw.FrameIndex+1 || math.IsNaN(dt) || math.IsInf(dt, 0) || dt <= 0 || dt > .2 {
 		return false
 	}
 	if previous.observation == nil && now.observation == nil {

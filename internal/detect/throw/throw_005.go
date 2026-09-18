@@ -39,7 +39,7 @@ type Throw005 struct {
 }
 
 func NewThrow005(_ map[string]any) *Throw005 {
-	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.1.1",
+	d := &Throw005{BaseDetector: detect.BaseDetector{DetectorID: "THROW_005", DetectorVersion: "2.1.2",
 		DetectorName: "Shot Targeting Review", DetectorCategory: "throw", Inputs: []string{"throw_event"}, Warmup: 0, Weight: 0}}
 	d.Reset()
 	return d
@@ -102,8 +102,15 @@ func (d *Throw005) Evaluate(mc *model.MatchContext, players map[string]*model.Pl
 			if goal.IsZero() && t.TargetPosition != nil {
 				goal = *t.TargetPosition
 			}
+			velocityMagnitude, goalDistance := t.ReleaseVelocity.Magnitude(), goal.Distance(t.ReleasePosition)
+			// Finite components can still overflow derived norms or their
+			// product. An orthogonal dot product then returns a plausible 90
+			// degrees despite unusable geometry; do not count that as direction.
+			// AngleBetween treats norms below 1e-12 as degenerate and returns
+			// zero. That numeric fallback is not measured perfect alignment.
 			if !goal.IsZero() && !goal.HasNaN() && !goal.HasInf() && !t.ReleasePosition.HasNaN() && !t.ReleasePosition.HasInf() &&
-				!t.ReleaseVelocity.HasNaN() && !t.ReleaseVelocity.HasInf() && t.ReleaseVelocity.Magnitude() > 0 && goal.Distance(t.ReleasePosition) > 0 {
+				!t.ReleaseVelocity.HasNaN() && !t.ReleaseVelocity.HasInf() && mechanicsFinite(velocityMagnitude) && mechanicsFinite(goalDistance) &&
+				mechanicsFinite(velocityMagnitude*goalDistance) && velocityMagnitude >= 1e-12 && goalDistance >= 1e-12 {
 				s.deviation = t.ReleaseVelocity.AngleBetweenDeg(goal.Sub(t.ReleasePosition))
 				s.hasDirection = mechanicsFinite(s.deviation)
 				if s.hasDirection {

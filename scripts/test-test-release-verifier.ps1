@@ -146,6 +146,21 @@ try {
             checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status=$(if ($_ -eq 'abrupt_kill_recovery') {'NOT TESTED'} else {'PASS'})} })}
         Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'isolated_state_cleanup'
     }
+    foreach ($mutation in @('untested_crash', 'cached_workload')) {
+        Test-ReleaseContract "desktop_rejects_$mutation" {
+            $ids = @('isolated_candidate_identity', 'synthetic_notes_and_security', 'long_lived_desktop_workload', 'graceful_restart_persistence', 'inputs_and_binary_unchanged', 'abrupt_kill_recovery', 'isolated_state_cleanup')
+            $report = [pscustomobject]@{schema_version='nevr-desktop-workload/v1';automated_status='PASS';expected_build_commit=('a' * 40);executable_sha256=('c' * 64);workload_policy='explicit_force_reanalysis';
+                checks=@($ids | ForEach-Object { [pscustomobject]@{id=$_;status='PASS'} })}
+            Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64)
+            if ($mutation -eq 'untested_crash') {
+                $report.checks[5].status = 'NOT TESTED'
+                Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'untested'
+            } else {
+                $report.workload_policy = 'cached'
+                Expect-ReleaseFailure { Assert-TestReleaseDesktopReport $report 0 ('a' * 40) ('c' * 64) } 'cached'
+            }
+        }
+    }
     Test-ReleaseContract 'desktop_child_receives_user_memory_cutoff' {
         $parseErrors = $null; $tokens = $null
         $wrapper = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'verify-test-release.ps1'), [ref]$tokens, [ref]$parseErrors)

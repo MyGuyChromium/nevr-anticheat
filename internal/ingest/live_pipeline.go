@@ -255,39 +255,6 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 		return res
 	}
 
-	// Player roster: cap, then register new players and team assignments.
-	kept := make([]model.PlayerTelemetryFrame, 0, len(frames))
-	rosterChanged := false
-	for _, f := range frames {
-		if !containsString(match.MatchCtx.PlayerIDs, f.PlayerID) {
-			if len(match.MatchCtx.PlayerIDs) >= mm.maxPlayersPerMatch {
-				res.Rejected++
-				mm.warnThrottled("maxplayers:"+matchID, "player cap reached; frames for additional players rejected",
-					"match", matchID, "player", f.PlayerID, "cap", mm.maxPlayersPerMatch)
-				continue
-			}
-			match.MatchCtx.PlayerIDs = append(match.MatchCtx.PlayerIDs, f.PlayerID)
-			rosterChanged = true
-			sort.Strings(match.MatchCtx.PlayerIDs)
-		}
-		if team := normalizeTeam(f.Team); team != "" {
-			match.MatchCtx.TeamAssignments[f.PlayerID] = team
-		}
-		kept = append(kept, f)
-	}
-	frames = kept
-	if len(frames) == 0 {
-		return res
-	}
-	// A conflicting identity in the first batch is discovered before its
-	// bounded roster exists. Persist that already-latched suspension once
-	// real accepted player IDs are available (also covers later raw joiners).
-	if rosterChanged && match.AnalysisIncomplete {
-		if err := mm.store.MarkLiveAnalysisIncompleteForReason(ctx, matchID, match.MatchCtx.PlayerIDs, match.AnalysisSuspensionReason); err != nil {
-			mm.logger.Error("could not persist incomplete-analysis marker after roster registration", "match", matchID, "error", err)
-		}
-	}
-
 	// Persist raw telemetry first: it is the source of truth for reprocessing.
 	// Ack accounting (contract 3): every frame of the batch is counted
 	// exactly once. Accepted = rows the store inserted, Ignored = rows it
@@ -314,6 +281,30 @@ func (mm *MatchManager) HandleFramesWithRaw(matchID, serverID string, frames []m
 		}
 		res.Rejected += len(frames)
 		return res
+	}
+	// Admission already reserved the bounded roster before clock ordering.
+	// Publish roster/team changes only once their raw rows are durable: a
+	// failed write must not consume a player slot or change pending context.
+	rosterChanged := false
+	for _, f := range frames {
+		if !containsString(match.MatchCtx.PlayerIDs, f.PlayerID) {
+			match.MatchCtx.PlayerIDs = append(match.MatchCtx.PlayerIDs, f.PlayerID)
+			rosterChanged = true
+		}
+		if team := normalizeTeam(f.Team); team != "" {
+			match.MatchCtx.TeamAssignments[f.PlayerID] = team
+		}
+	}
+	if rosterChanged {
+		sort.Strings(match.MatchCtx.PlayerIDs)
+	}
+	// A conflicting identity in the first batch is discovered before its
+	// bounded roster exists. Persist that already-latched suspension once
+	// real accepted player IDs are available (also covers later raw joiners).
+	if rosterChanged && match.AnalysisIncomplete {
+		if err := mm.store.MarkLiveAnalysisIncompleteForReason(ctx, matchID, match.MatchCtx.PlayerIDs, match.AnalysisSuspensionReason); err != nil {
+			mm.logger.Error("could not persist incomplete-analysis marker after roster registration", "match", matchID, "error", err)
+		}
 	}
 	match.RowsStored += storeResult.Inserted
 	res.Accepted += storeResult.Inserted
@@ -569,7 +560,12 @@ func (mm *MatchManager) resumeFromStore(ctx context.Context, match *LiveMatch) {
 		match.RowsStored = span.rows
 		for pid, idx := range span.playerMax {
 			match.lastPlayerIndex[pid] = idx
+			// Raw rows are committed before the periodic context refresh. A
+			// crash in that interval must not erase an admitted player or free
+			// its roster slot for a different player after restart.
+			matchCtx.PlayerIDs = append(matchCtx.PlayerIDs, pid)
 		}
+		sort.Strings(matchCtx.PlayerIDs)
 		if span.haveTS {
 			match.firstTimestamp, match.lastTimestamp, match.haveTimestamp = span.minTS, span.maxTS, true
 		}

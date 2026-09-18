@@ -70,6 +70,10 @@ type catchSample struct {
 	poses              []catchPose
 	source             *model.ObservationContext
 	attachment         *model.DiscAttachment
+	// Minimal possession diagnostics also retain a bounded, value-only input
+	// identity. Degraded motion is never used as geometry, but its exact retry
+	// must be distinguishable from changed data under the same frame label.
+	inputMotion []catchInputMotion
 }
 
 type catchBaseline struct {
@@ -91,7 +95,7 @@ type catchBaseline struct {
 
 func NewState008(params map[string]any) *State008 {
 	d := &State008{BaseDetector: detect.BaseDetector{
-		DetectorID: "STATE_008", DetectorVersion: "0.3.1", DetectorName: "Pre-catch Trajectory Review",
+		DetectorID: "STATE_008", DetectorVersion: "0.3.2", DetectorName: "Pre-catch Trajectory Review",
 		DetectorCategory: "state", Inputs: []string{"disc_state", "disc_attachment", "observation_context", "hand_tracking", "head_position"},
 		Warmup: 0, Weight: 0, IsAutoEnforce: false, TraceBranches: true,
 	}, baselineSamples: 4, minCorrectionSamples: 2, baselineDuration: .20, minCorrectionDuration: .12,
@@ -668,6 +672,6 @@ func (d *State008) finishCatchReview(outcome model.CatchReviewOutcome, reason st
 // an event from an unconfirmed attachment. Repeated flushes are idempotent.
 func (d *State008) FlushTracks(_ *model.MatchContext, _ int) []model.DetectionEvent {
 	d.finishCatchReview(model.CatchReviewUnconfirmed, "catch_confirmation_unavailable", false)
-	d.pending, d.pendingHolder, d.pendingEligible = nil, "", false
+	d.Reset() // finalized free-flight and possession samples cannot seed a later stream
 	return nil
 }

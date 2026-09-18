@@ -170,19 +170,37 @@ Assert-Runner ($serverSource -match 'FramesProcessed\s+int\s+`json:"frames_proce
     $uploadFunction = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-WorkloadUpload' }, $true)
     Assert-Runner ($null -ne $uploadFunction) 'Actual upload consumer is missing.'
     Invoke-Expression $uploadFunction.Extent.Text
-    function Start-WorkloadRequest { return [pscustomobject]@{ task = [Threading.Tasks.Task]::CompletedTask } }
+    function Start-WorkloadRequest($Method, $Path) {
+        Assert-Runner ($Method -ceq 'POST' -and $Path -ceq 'api/analyze?force=true') 'Timed workload did not explicitly request reprocessing.'
+        return [pscustomobject]@{ task = [Threading.Tasks.Task]::CompletedTask }
+    }
     function Finish-WorkloadRequest { return $responseFixture }
     function Pump-Workload { }
     $UploadTimeoutSeconds = 5
     $runs = [Collections.Generic.List[object]]::new()
     $responseFixture = [pscustomobject]@{
         status = 200; elapsed_ms = 1000
-        body = ('{"results":[{"file":"workload-input.echoreplay","ok":true,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12},"matches":[{"ok":true,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12}},{"ok":true,"match_id":"SYN-FIXTURE-002","match":{"match_id":"SYN-FIXTURE-002","frames_processed":8}}]}]}' | ConvertFrom-Json)
+        body = ('{"force":true,"results":[{"file":"workload-input.echoreplay","ok":true,"already_analyzed":false,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12},"matches":[{"ok":true,"already_analyzed":false,"match_id":"SYN-FIXTURE-001","match":{"match_id":"SYN-FIXTURE-001","frames_processed":12,"replaced":true}},{"ok":true,"already_analyzed":false,"match_id":"SYN-FIXTURE-002","match":{"match_id":"SYN-FIXTURE-002","frames_processed":8,"replaced":true}}]}]}' | ConvertFrom-Json)
     }
     $frames = Invoke-WorkloadUpload 'synthetic-not-opened.echoreplay' 2 3
     Assert-Runner ($frames -eq 20 -and $runs.Count -eq 1 -and $runs[0].frames -eq 20 -and $runs[0].frames_per_second -eq 20 -and $runs[0].round -eq 3 -and $runs[0].input -eq 2) 'Actual multi-session frames_processed payload did not aggregate once into upload metrics.'
     Pass-Runner 'Actual upload consumer aggregates server frames_processed shape'
-    foreach ($invalidMatch in @('{"frames_processed":0}', '{"frames_processed":-1}', '{}', '{"frames":99}')) {
+    $validResponse = $responseFixture | ConvertTo-Json -Depth 10
+    foreach ($mutation in @('no_force', 'cached_file', 'cached_session', 'not_replaced')) {
+        $responseFixture = $validResponse | ConvertFrom-Json
+        switch ($mutation) {
+            'no_force' { $responseFixture.body.force = $false }
+            'cached_file' { $responseFixture.body.results[0].already_analyzed = $true }
+            'cached_session' { $responseFixture.body.results[0].matches[1].already_analyzed = $true }
+            'not_replaced' { $responseFixture.body.results[0].matches[1].match.replaced = $false }
+        }
+        $rejected = $false
+        try { $null = Invoke-WorkloadUpload 'synthetic-not-opened.echoreplay' 2 3 } catch { $rejected = $true }
+        Assert-Runner ($rejected -and $runs.Count -eq 1) 'Cached or unacknowledged reprocessing was counted as timed detector work.'
+    }
+    Pass-Runner 'Timed workload rejects cached or unacknowledged reanalysis'
+    $responseFixture = $validResponse | ConvertFrom-Json
+    foreach ($invalidMatch in @('{"frames_processed":0,"replaced":true}', '{"frames_processed":-1,"replaced":true}', '{"replaced":true}', '{"frames":99,"replaced":true}')) {
         # Keep the first session valid: a positive total must not hide missing
         # or zero processed-frame evidence for the second uploaded session.
         $responseFixture.body.results[0].matches[1].match = $invalidMatch | ConvertFrom-Json
@@ -191,6 +209,46 @@ Assert-Runner ($serverSource -match 'FramesProcessed\s+int\s+`json:"frames_proce
         Assert-Runner ($rejected -and $runs.Count -eq 1) 'Missing/zero/wrong-key session frames were accepted or appended as a successful run.'
     }
     Pass-Runner 'Upload consumer rejects missing zero negative and wrong-key frame counts'
+}
+
+# Exercise real crash evidence predicates with synthetic responses only. No
+# process is created or killed by these contract tests.
+& {
+    foreach ($name in @('Assert-CrashObservation', 'Assert-CrashRecovery')) {
+        $helper = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        Assert-Runner ($null -ne $helper) 'Crash evidence predicate missing.'
+        Invoke-Expression $helper.Extent.Text
+    }
+    $ExpectedCommit = 'a' * 40; $binaryHash = 'c' * 64; $db = Join-Path ([IO.Path]::GetTempPath()) 'synthetic-not-created.db'
+    $status = [pscustomobject]@{status=200;body=[pscustomobject]@{schema_version='nevr-desktop-status/v1';version='0.14.0';analysis_active=$true;provenance=[pscustomobject]@{version='nevr-runtime-provenance/v1';app_version='0.14.0';build_commit=$ExpectedCommit;source_revision=$ExpectedCommit;source_modified=$false;build_identity='verified_clean_revision';executable_sha256=$binaryHash;review_only=$true;enforcement_policy='review-only-v1'}}}
+    $queue = '{"status":200,"body":{"running":1,"failed":0,"items":[{"source":"upload","status":"running","matches":1}]}}' | ConvertFrom-Json
+    Assert-CrashObservation $status $queue $false
+    foreach ($mutation in @('already_acknowledged', 'inactive', 'not_running', 'wrong_source')) {
+        $s = $status | ConvertTo-Json -Depth 8 | ConvertFrom-Json; $q = $queue | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        switch ($mutation) { 'inactive' {$s.body.analysis_active=$false}; 'not_running' {$q.body.running=0}; 'wrong_source' {$q.body.items[0].source='watch'} }
+        $rejected = $false
+        try { Assert-CrashObservation $s $q ($mutation -eq 'already_acknowledged') } catch { $rejected = $true }
+        Assert-Runner $rejected 'Termination was allowed without an unacknowledged active upload.'
+    }
+    Pass-Runner 'Deliberate termination requires observed active unacknowledged upload'
+    $status.body.analysis_active = $false
+    $queue.body.running = 0; $queue.body.items[0].source = 'crash recovery'; $queue.body.items[0].status = 'complete'
+    $health = [pscustomobject]@{status=200;body=[pscustomobject]@{stored_matches=4;database_path=$db}}
+    $recovery = '{"status":200,"body":{"recovering":false,"pending":0,"recovered":1,"error":""}}' | ConvertFrom-Json
+    Assert-CrashRecovery $recovery $queue $health $status 4
+    foreach ($mutation in @('no_recovery','pending','recovering','error','queue_failure','queue_running','queue_empty','queue_wrong_source','queue_incomplete','lost_matches','other_database','active','identity')) {
+        $s = $status | ConvertTo-Json -Depth 8 | ConvertFrom-Json; $q = $queue | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $r = $recovery | ConvertTo-Json -Depth 8 | ConvertFrom-Json; $h = $health | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        switch ($mutation) {
+            'no_recovery' {$r.body.recovered=0}; 'pending' {$r.body.pending=1}; 'recovering' {$r.body.recovering=$true}; 'error' {$r.body.error='failed'}
+            'queue_failure' {$q.body.failed=1}; 'queue_running' {$q.body.running=1}; 'queue_empty' {$q.body.items=@()}; 'queue_wrong_source' {$q.body.items[0].source='upload'}; 'queue_incomplete' {$q.body.items[0].status='running'}
+            'lost_matches' {$h.body.stored_matches=3}; 'other_database' {$h.body.database_path=$db+'.other'}; 'active' {$s.body.analysis_active=$true}; 'identity' {$s.body.provenance.build_commit='b'*40}
+        }
+        $rejected = $false
+        try { Assert-CrashRecovery $r $q $h $s 4 } catch { $rejected = $true }
+        Assert-Runner $rejected 'Failed, incomplete or wrong-candidate recovery passed.'
+    }
+    Pass-Runner 'Crash recovery fails closed on incomplete queue storage and identity evidence'
 }
 
 # ListInvestigationNotes starts with a nil Go slice: its real empty response
@@ -254,4 +312,6 @@ Assert-Runner ($source.Contains('$script:activeHealthSamples -gt 0') -and $sourc
 Pass-Runner 'Sustained-workload and active-analysis evidence floors'
 Assert-Runner ($source.Contains("Start-WorkloadRequest 'GET' 'api/status' -TimeoutSeconds 2") -and -not $source.Contains("Start-WorkloadRequest 'GET' 'api/health' -TimeoutSeconds 2") -and [regex]::Matches($source, "Send-WorkloadRequest 'GET' 'api/health'").Count -ge 4 -and $source.Contains("connection_status_endpoint = 'api/status'")) 'Timed status polling or explicit detailed-health checks no longer match the actual UI split.'
 Pass-Runner 'Current UI status polling keeps 2-second deadline and detailed health checks separate'
+Assert-Runner ($source.Contains("`$interrupted = `$operation.failure_kind -ceq 'transport_failure'") -and $source.Contains('$restored[0].body -ceq $original[0].body')) 'A parse failure/timeout must not masquerade as kill evidence, and saved note content must be compared exactly.'
+Pass-Runner 'Crash interruption requires transport loss and unchanged saved note text'
 Write-Host "$passed workload runner regressions passed; no actual candidate or replay was exercised."

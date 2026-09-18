@@ -34,7 +34,7 @@ type Throw003 struct {
 func NewThrow003(params map[string]any) *Throw003 {
 	return &Throw003{
 		BaseDetector: detect.BaseDetector{
-			DetectorID: "THROW_003", DetectorVersion: "1.4.1",
+			DetectorID: "THROW_003", DetectorVersion: "1.4.2",
 			TraceBranches: true,
 			DetectorName:  "Release Direction Review", DetectorCategory: "throw",
 			Inputs: []string{"throw_event"}, Warmup: 5, Weight: 0.5,
@@ -238,6 +238,14 @@ func releaseAngleMeasurementsConsistent(t *model.ThrowEvent) bool {
 	if !mechanicsFinite(handSpeed) || !mechanicsFinite(discSpeed) || handSpeed <= 0 || discSpeed <= 0 ||
 		!measurementClose(t.HandSpeed, handSpeed) || !measurementClose(t.HandRelativeSpeed, t.HandRelativeVelocity.Magnitude()) {
 		return false
+	}
+	// The relative vector is another derived cache. Equal magnitudes do not
+	// establish that its direction agrees with the reported hand/body pair.
+	relative := t.HandVelocity.Sub(t.PlayerVelocity)
+	for axis := range relative {
+		if !measurementClose(t.HandRelativeVelocity[axis], relative[axis]) {
+			return false
+		}
 	}
 	return measurementClose(t.ReleaseAngle, t.HandVelocity.AngleBetweenDeg(t.ReleaseVelocity))
 }

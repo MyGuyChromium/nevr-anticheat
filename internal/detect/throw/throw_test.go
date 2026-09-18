@@ -343,11 +343,15 @@ func TestThrow003_BodyMotionGuard(t *testing.T) {
 
 	// Body moving as fast as the hand: the world-frame angle is meaningless.
 	players["p1"].LastThrow.PlayerVelocity = model.Vec3{0, 0, 6}
+	players["p1"].LastThrow.HandRelativeVelocity = players["p1"].LastThrow.HandVelocity.Sub(players["p1"].LastThrow.PlayerVelocity)
+	players["p1"].LastThrow.HandRelativeSpeed = players["p1"].LastThrow.HandRelativeVelocity.Magnitude()
 	if ev := d.Evaluate(mc, players, 100); len(ev) != 0 {
 		t.Fatal("body speed >= hand speed must suppress the release-angle event")
 	}
 	// Partial body motion scales confidence down.
 	players["p1"].LastThrow.PlayerVelocity = model.Vec3{0, 0, 2.5}
+	players["p1"].LastThrow.HandRelativeVelocity = players["p1"].LastThrow.HandVelocity.Sub(players["p1"].LastThrow.PlayerVelocity)
+	players["p1"].LastThrow.HandRelativeSpeed = players["p1"].LastThrow.HandRelativeVelocity.Magnitude()
 	ev := d.Evaluate(mc, players, 100)
 	if len(ev) != 1 || !near(ev[0].Confidence, events[0].Confidence*0.5, 1e-9) {
 		t.Fatalf("expected confidence halved at body/hand = 0.5, got %+v", ev)
@@ -356,6 +360,8 @@ func TestThrow003_BodyMotionGuard(t *testing.T) {
 	// New reconstructed events mark a geometrically ambiguous left/right
 	// choice explicitly; hand-dependent evidence must not use an arbitrary tie.
 	players["p1"].LastThrow.PlayerVelocity = model.Vec3{}
+	players["p1"].LastThrow.HandRelativeVelocity = players["p1"].LastThrow.HandVelocity
+	players["p1"].LastThrow.HandRelativeSpeed = players["p1"].LastThrow.HandRelativeVelocity.Magnitude()
 	players["p1"].LastThrow.HandTracked = true
 	players["p1"].LastThrow.HandAttributionConfidence = 0
 	if ev := d.Evaluate(mc, players, 100); len(ev) != 0 {
