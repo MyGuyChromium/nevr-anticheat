@@ -279,8 +279,14 @@ try {
                 Run-Check "duplicate_import" {
                     $reply = Send-BetaRequest "POST" "api/analyze" $fixture
                     $history = Send-BetaRequest "GET" "api/matches"
-                    Assert-Beta ($reply.status -eq 200 -and $reply.body.results[0].ok -and -not $reply.body.results[0].error -and $reply.body.results[0].match.replaced -and $history.status -eq 200 -and $history.body.matches.Count -eq 1) "Reimport did not refresh the existing match without an error/duplicate."
-                    "The identical replay was accepted again, refreshed and retained as one stored match."
+                    Assert-Beta ($reply.status -eq 200 -and $reply.body.results.Count -eq 1 -and $reply.body.results[0].ok -and -not $reply.body.results[0].error -and $reply.body.results[0].already_analyzed -and $reply.body.results[0].source_status -eq "identical" -and -not $reply.body.results[0].match.replaced -and $reply.body.results[0].match_id -eq "SYN-FIXTURE-001" -and $reply.body.results[0].match.frames_processed -eq 120 -and $reply.body.results[0].match.players.Count -eq 4 -and $history.status -eq 200 -and $history.body.matches.Count -eq 1) "An ordinary identical reimport did not return the existing current analysis without an error/duplicate."
+                    # A cached duplicate and an explicitly requested re-analysis
+                    # are different successful outcomes. Verify both; never call
+                    # the cached path a refresh or drop the replacement check.
+                    $forced = Send-BetaRequest "POST" "api/analyze?force=true" $fixture
+                    $history = Send-BetaRequest "GET" "api/matches"
+                    Assert-Beta ($forced.status -eq 200 -and $forced.body.force -and $forced.body.results.Count -eq 1 -and $forced.body.results[0].ok -and -not $forced.body.results[0].error -and -not $forced.body.results[0].already_analyzed -and $forced.body.results[0].source_status -eq "identical" -and $forced.body.results[0].match.replaced -and $forced.body.results[0].match_id -eq "SYN-FIXTURE-001" -and $forced.body.results[0].match.frames_processed -eq 120 -and $forced.body.results[0].match.players.Count -eq 4 -and $forced.body.results[0].match.telemetry.frames_inserted -eq 480 -and $forced.body.results[0].match.telemetry.ticks_ignored -eq 120 -and $history.status -eq 200 -and $history.body.matches.Count -eq 1) "Explicit re-analysis did not refresh the identical recording without an error/duplicate."
+                    "An ordinary identical reimport returned its current stored analysis; explicit force re-analyzed it and replaced derived output. Both succeeded and retained one match, four players and 120 frames."
                 }
                 Run-Check "corrupt_upload_isolation" {
                     $reply = Send-BetaRequest "POST" "api/analyze" $corrupt
