@@ -69,3 +69,5 @@ can remove the deliberately invalid file first. The standalone desktop suite
 and 20 isolated repetitions passed. Backend/test files were not changed here;
 a follow-up should synchronize startup before staging the discard fixture,
 preserving the exact `removed == 1` assertion rather than accepting zero.
+After the rendered fixture was stopped, `go test ./... -count=1` passed in full.
+That successful rerun does not erase the earlier intermittent-test finding.
