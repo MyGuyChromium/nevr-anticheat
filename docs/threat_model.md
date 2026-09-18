@@ -81,9 +81,13 @@ endpoint) and `data/captures/PROTOCOL_FLOW.md` (client HTTP API).
 
 **Consequence.** Internally consistent engine throw values are not proof of
 legitimacy: the same client that would forge a throw also writes the numbers
-that describe it. THROW_001 therefore takes the higher of the engine value and
-the sampled world-frame disc speed, and an engine value that agrees with itself
-must never be used to clear a release.
+that describe it. THROW_001 version 2.0.0 therefore retains the local-client
+report separately from sampled world-frame disc velocities; it does not select
+the higher scalar or treat agreement as independent corroboration. Its
+three-sample comparison describes repeated observed speeds, not client honesty
+or a verified launch law. Neither an internally consistent report nor a missing
+review event proves a release legitimate. See the
+[current evidence contract](default_game_config_reference.md).
 
 ## 4. Direct holder-to-holder transfer is a native path
 

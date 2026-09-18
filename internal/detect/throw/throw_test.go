@@ -72,11 +72,11 @@ func TestThrow001_OverCapFiresAtReplayRate(t *testing.T) {
 	if ev.CausalKey.AnomalyType != "disc_speed" {
 		t.Fatalf("anomaly type %q", ev.CausalKey.AnomalyType)
 	}
-	if ev.Severity < 0.99 || ev.AutoEnforce {
-		t.Fatalf("severity=%v autoEnforce=%v; want ~1 and auto-enforce off by default", ev.Severity, ev.AutoEnforce)
+	if ev.Severity != artifactSeverity || ev.AutoEnforce || ev.EnforcementWeight != 0 {
+		t.Fatalf("one uncorroborated sample must remain visible but unscored: %+v", ev)
 	}
-	if ev.DetectorVersion != d.Version() || ev.EnforcementWeight != d.Weight {
-		t.Fatalf("event must carry the detector's version/weight")
+	if ev.DetectorVersion != d.Version() || ev.Evidence.(model.ThrowEvidence).SpeedReview.Status != "uncorroborated" {
+		t.Fatalf("event must carry the revised evidence contract")
 	}
 }
 
@@ -127,7 +127,7 @@ func TestThrow001_Observed1991FiresEvenAtHighPing(t *testing.T) {
 	}
 }
 
-func TestThrow001_EngineTotalSpeedOverridesUnderCapDiscSample(t *testing.T) {
+func TestThrow001_BoundLocalTotalNeverOverridesUnderCapDiscSample(t *testing.T) {
 	d := NewThrow001(nil)
 	players := withThrow("p1", 100, 18.7, 0)
 	th := players["p1"].LastThrow
@@ -136,13 +136,17 @@ func TestThrow001_EngineTotalSpeedOverridesUnderCapDiscSample(t *testing.T) {
 		ArmSpeed: 12.4, TotalSpeed: 19.91, SpeedFromArm: 12,
 		SpeedFromMovement: 4.2, SpeedFromWrist: 3.71,
 	}
+	bindSpeedTestLocalReport(th)
 	events := d.Evaluate(testCtx(), players, 100)
 	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" {
 		t.Fatalf("engine-reported 19.91 m/s must fire over an 18.7 m/s sample: %+v", events)
 	}
 	evidence := events[0].Evidence.(model.ThrowEvidence)
-	if evidence.ReleaseSpeed != 19.91 || evidence.SampledDiscSpeed != 18.7 || evidence.GameLastThrow == nil {
+	if evidence.ReleaseSpeed != 18.7 || evidence.SampledDiscSpeed != 18.7 || evidence.GameLastThrow == nil || evidence.GameLastThrow.TotalSpeed != 19.91 {
 		t.Fatalf("engine and sampled evidence were not both preserved: %+v", evidence)
+	}
+	if evidence.SpeedReview.Status != "uncorroborated" || events[0].EnforcementWeight != 0 || events[0].AutoEnforce {
+		t.Fatal("a separate client-authored scalar must not corroborate sampled speed")
 	}
 	if evidence.GameLastThrow.SpeedFromMovement != 4.2 {
 		t.Fatalf("movement contribution missing from evidence: %+v", evidence.GameLastThrow)
@@ -157,6 +161,7 @@ func TestThrow001_MovementProjectionUsesSampledDirectionNotEngineScalar(t *testi
 		th.PlayerVelocity = movement
 		th.SampledDiscSpeed = 18
 		th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 24, SpeedFromMovement: 3}
+		bindSpeedTestLocalReport(th)
 		events := d.Evaluate(testCtx(), players, 100)
 		if len(events) != 1 {
 			t.Fatalf("engine over-cap evidence missing: %+v", events)
@@ -165,7 +170,7 @@ func TestThrow001_MovementProjectionUsesSampledDirectionNotEngineScalar(t *testi
 		if !near(evidence.AlignedMovementSpeed, movement[0], 1e-9) {
 			t.Errorf("movement=%v: aligned projection=%v, want %v from sampled direction", movement, evidence.AlignedMovementSpeed, movement[0])
 		}
-		if evidence.ReleaseSpeed != 24 || evidence.SampledDiscSpeed != 18 || evidence.GameLastThrow.SpeedFromMovement != 3 || th.ReleaseSpeed != 18 {
+		if evidence.ReleaseSpeed != 18 || evidence.SampledDiscSpeed != 18 || evidence.GameLastThrow.TotalSpeed != 24 || evidence.GameLastThrow.SpeedFromMovement != 3 || th.ReleaseSpeed != 18 {
 			t.Fatalf("projection changed independent measurements or input throw: %+v, %+v", evidence, th)
 		}
 		if events[0].AutoEnforce {
@@ -174,14 +179,18 @@ func TestThrow001_MovementProjectionUsesSampledDirectionNotEngineScalar(t *testi
 	}
 }
 
-func TestThrow001_CorroboratedExtremeSpeedIsNotDowngradedToArtifact(t *testing.T) {
+func TestThrow001_ExtremeLocalReportIsNotIndependentCorroboration(t *testing.T) {
 	d := NewThrow001(nil)
 	players := withThrow("p1", 100, 20, 0)
 	th := players["p1"].LastThrow
 	th.GameLastThrow = &model.GameThrowDetails{TotalSpeed: 50, SpeedFromArm: 40, SpeedFromMovement: 5, SpeedFromWrist: 5}
+	bindSpeedTestLocalReport(th)
 	events := d.Evaluate(testCtx(), players, 100)
-	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" || events[0].Severity < 0.99 {
-		t.Fatalf("engine-corroborated impossible speed was downgraded: %+v", events)
+	if len(events) != 1 || events[0].CausalKey.AnomalyType != "disc_speed" || events[0].Severity != artifactSeverity || events[0].EnforcementWeight != 0 {
+		t.Fatalf("a client report must not promote one sampled speed: %+v", events)
+	}
+	if e := events[0].Evidence.(model.ThrowEvidence); e.ReleaseSpeed != 20 || e.GameLastThrow.TotalSpeed != 50 || e.SpeedReview.Status != "uncorroborated" {
+		t.Fatalf("independent measurements were mixed: %+v", e)
 	}
 }
 
@@ -245,7 +254,7 @@ func TestThrow001_RepeatedNearCapThrowsRemainLegal(t *testing.T) {
 	}
 }
 
-func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
+func TestThrow001_ReviewEvidenceCannotAutoEnforceEvenWhenEnabled(t *testing.T) {
 	mc := testCtx()
 	d := NewThrow001(nil)
 	if d.AutoEnforce() {
@@ -253,8 +262,8 @@ func TestThrow001_AutoEnforceOnlyWhenEnabled(t *testing.T) {
 	}
 	d.IsAutoEnforce = true
 	events := d.Evaluate(mc, withThrow("p1", 100, 30.0, 0), 100)
-	if len(events) != 1 || !events[0].AutoEnforce {
-		t.Fatalf("with auto-enforce enabled, a 30 m/s possession-tracked release should carry AutoEnforce: %+v", events)
+	if len(events) != 1 || events[0].AutoEnforce || events[0].EnforcementWeight != 0 {
+		t.Fatalf("enabling an old config must not promote one sampled observation: %+v", events)
 	}
 	// Marginal over-cap (< 5 m/s excess) never auto-enforces.
 	events = d.Evaluate(mc, withThrow("p1", 200, 23.0, 0), 200)

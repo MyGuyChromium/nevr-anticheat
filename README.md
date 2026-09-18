@@ -240,7 +240,7 @@ enabled = true
 
 keeps MOV_001 in shadow mode with its calibrated params, and a `[detector.X.params]` section changes only the keys it names. Unknown keys, unknown detector IDs, unknown params and wrong value types are startup errors; keys documented by earlier versions but no longer read are dropped with a warning (the renamed/removed list is at the end of `default.toml`). To see what an edit did, read the effective per-detector table (id, enabled, mode, weight, auto_enforce, resolved params): `nevr-server` always reports it at startup; `nevr-ac` only with `--verbose` / `-v` or `NEVR_AC_VERBOSE=1` (report output on stdout stays clean otherwise). With `log_format = "json"` the table is one JSON log record per detector (`"msg":"effective detector"`), with `"text"` a fixed-width block; both go to stderr. `[server]` durations must be strings (`"5m"`, `"300s"`): a bare number is rejected at startup because it would be read as nanoseconds.
 
-Per detector: `enabled`, `enforcement_weight` (0-1, multiplies every event's score contribution, this is the weight scoring uses), `auto_enforce` (only THROW_001 has a rule that can stamp `AutoEnforce` on an event, and only when this is true), `mode` (`shadow` = stored, never scored; `review`/`enforce` both mean scored, nothing else is wired), `params` (units per key, frames not milliseconds). `configs/shadow_deploy.toml` is the first-deployment overlay.
+Per detector: `enabled`, `enforcement_weight` (0-1, multiplies every event's score contribution, this is the weight scoring uses), `auto_enforce` (requests event eligibility where supported; THROW_001 always refuses and the backend review-only policy denies punishment), `mode` (`shadow` = stored, never scored; `review`/`enforce` both mean scored, nothing else is wired), `params` (units per key, frames not milliseconds). `configs/shadow_deploy.toml` is the first-deployment overlay.
 
 ## Detector Catalog
 
@@ -248,7 +248,7 @@ Weight is the `enforcement_weight` from `configs/default.toml`, which is what sc
 
 | ID | Name | Category | Weight | Status |
 |----|------|----------|--------|--------|
-| THROW_001 | Impossible Release Velocity | throw | 0.8 | Physics-grounded |
+| THROW_001 | Reported Release Speed Review | throw | 0.8 | Sampled review only; configured 18.9 m/s reference, not a verified engine ceiling |
 | THROW_002 | Impossible Disc Acceleration | throw | 0.7 | Unverified — v2.0.0 single-delta approach, needs real-data calibration |
 | THROW_003 | Unnatural Release Angle | throw | 0.5 | Unverified — needs wrist-flick data; skips possible sampled headbutts |
 | THROW_004 | Repeated Release Signatures | throw | 0.6 | **UNSAFE** — FPs on regrab playstyle |

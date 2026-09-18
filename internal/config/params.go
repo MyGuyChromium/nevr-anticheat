@@ -75,11 +75,11 @@ const sigmoidDoc = "steepness of the severity/confidence sigmoid"
 // the effective table prints. Defaults are the constructor fallbacks copied
 // from internal/detect/**.
 var detectorSpecs = map[string]DetectorSpec{
-	"THROW_001": {ID: "THROW_001", Name: "Impossible Release Velocity", Category: "throw",
+	"THROW_001": {ID: "THROW_001", Name: "Reported Release Speed Review", Category: "throw",
 		Params: []ParamSpec{
 			f("base_tolerance", 0.0, "m/s", "optional tolerance added to physics.disc_speed_cap before a release is over-cap"),
 			f("ping_tolerance_scalar", 0.0, "m/s per s of ping", "optional legacy tolerance per second of estimated ping; zero by default because release speed comes from disc.velocity"),
-			f("max_speed_ratio", 3.0, "ratio", "release/cap ratio at which severity saturates"),
+			f("max_speed_ratio", 3.0, "ratio", "disc/hand speed ratio diagnostic threshold; never raises severity"),
 			f("sigmoid_steepness", 2.0, "", sigmoidDoc),
 		},
 		Removed: map[string]string{

@@ -18,9 +18,7 @@ func TestThrow001_HandRatioNeverRaisesSeverity(t *testing.T) {
 		t.Fatalf("fixture no longer barely over the cap: %.3f", want)
 	}
 	for _, hand := range []float64{15, 4.2, 2} {
-		players := withThrow("p1", 100, 19.0, 0)
-		players["p1"].LastThrow.HandSpeed = hand
-		events := NewThrow001(nil).Evaluate(testCtx(), players, 100)
+		events := runSpeedTestWindow(t, NewThrow001(nil), []float64{19, 19, 19}, func(release *model.ThrowEvent) { release.HandSpeed = hand })
 		if len(events) != 1 {
 			t.Fatalf("hand %.1f: events=%d, want 1", hand, len(events))
 		}

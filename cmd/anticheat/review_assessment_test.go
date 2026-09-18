@@ -13,7 +13,7 @@ func TestPrintReviewAssessmentsIncludesShadowForAnyPlayer(t *testing.T) {
 		events = append(events, model.DetectionEvent{PlayerID: "synthetic-player", DetectorID: "THROW_001", IsShadow: true, MergedCount: 8})
 	}
 	out := captureStdout(t, func() { printReviewAssessments(events) })
-	for _, want := range []string{"review needed", "not cheating verdicts", "Player synthetic-player: 5 signals (5 observation-only, 0 scored)", "THROW_001 - Impossible Release Velocity: 5"} {
+	for _, want := range []string{"review needed", "not cheating verdicts", "Player synthetic-player: 5 signals (5 observation-only, 0 scored)", "THROW_001 - Reported Release Speed Review: 5"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in output: %s", want, out)
 		}

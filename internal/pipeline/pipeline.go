@@ -78,6 +78,20 @@ type TrackFlusher interface {
 	FlushTracks(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent
 }
 
+// PhaseTrackFlusher closes already-observed evidence when play becomes inactive.
+// It must not evaluate the inactive frame as a new detection opportunity. Events
+// still pass through ordinary validation, shadow policy, deduplication and limits.
+type PhaseTrackFlusher interface {
+	FlushPhase(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent
+}
+
+// SourceTrackFlusher resolves old-source observations before the dedup window
+// is closed. Deferring them until the next Evaluate could merge independent
+// recordings into one incident and discard one source's retained evidence.
+type SourceTrackFlusher interface {
+	FlushSource(matchCtx *model.MatchContext, frameIdx int) []model.DetectionEvent
+}
+
 // MatchResult holds the complete output of a match analysis.
 type MatchResult struct {
 	MatchID         string                          `json:"match_id"`
@@ -359,6 +373,15 @@ func (p *Pipeline) ProcessMatch(
 				// Do not combine behavioral windows from different recording
 				// sources. Prior independent incidents retain their existing score.
 				p.extractor.DrainPendingReleases("release_source_changed")
+				var sourceEvents []model.DetectionEvent
+				for _, detector := range p.detectors {
+					if flusher, ok := detector.(SourceTrackFlusher); ok {
+						sourceEvents = append(sourceEvents, p.acceptEmissions(flusher.FlushSource(matchCtx, fi), fi, result)...)
+					}
+				}
+				if len(sourceEvents) != 0 {
+					p.dedupAndEmit(sourceEvents, fi, result)
+				}
 				p.emit(p.dedup.Flush(), result)
 				for _, d := range p.detectors {
 					if resetter, ok := d.(interface{ ResetSource() }); ok {
@@ -401,6 +424,15 @@ func (p *Pipeline) ProcessMatch(
 			// but detectors do not run during non-active phases.
 			for pid := range framePlayers {
 				coverage.allEnabled(pid, fi, "inactive_phase")
+			}
+			var phaseEvents []model.DetectionEvent
+			for _, detector := range p.detectors {
+				if flusher, ok := detector.(PhaseTrackFlusher); ok {
+					phaseEvents = append(phaseEvents, p.acceptEmissions(flusher.FlushPhase(matchCtx, fi), fi, result)...)
+				}
+			}
+			if len(phaseEvents) != 0 {
+				p.dedupAndEmit(phaseEvents, fi, result)
 			}
 			continue
 		}

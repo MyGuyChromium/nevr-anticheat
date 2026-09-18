@@ -19,7 +19,7 @@ The file is an overlay on `configs/default.toml`; every param keeps its calibrat
 
 | Detector | Weight | What it catches | Physics basis | UNVERIFIED aspect |
 |----------|--------|-----------------|---------------|-------------------|
-| THROW_001 | 0.8 | Release speed above the 18.9 m/s cap | Engine-enforced cap | Direct `disc.velocity`; releases > 37.8 m/s are `disc_speed_artifact` at severity 0.2 |
+| THROW_001 | 0.8 | Reported release-speed review against the configured 18.9 m/s threshold | Sampled `disc.velocity`, not a verified engine-enforced ceiling | Three continuous above-threshold free samples corroborate only sampled speed; interrupted or isolated observations remain uncorroborated. Samples > 2× the configured cap retain the low-severity artifact classification. |
 | THROW_006 | 0.8 | Disc bending in free flight | Zero-G straight-line physics | Angle thresholds; needs 5 sustained violation frames |
 | BIO_002 | 0.6 | Hand speed above 50 m/s | Human limit ~12 m/s | Threshold is 4× the limit |
 | MOV_001 | 0.7 | Sustained speed above 55 m/s | Physics speed cap | Median window on real variable-dt data |
@@ -27,6 +27,11 @@ The file is an overlay on `configs/default.toml`; every param keeps its calibrat
 | STATE_002 | 0.7 | Stun shorter than 20 frames (1.33 s at 15 Hz) | Game stun mechanic | Real stun duration |
 | PAT_004 | 0.9 | 3+ detector categories in one match | Meta-detector | Receives nothing while everything upstream is shadow |
 | PAT_005 | 0.5 | Hand-to-head distance > 1.6 m for 30 frames | Physical arm reach ~0.8 m | Threshold is 2× reach |
+
+For THROW_001's current measurement separation and limits, see
+[default settings and evidence](default_game_config_reference.md). A local
+`last_throw` report is separate client-authored context, not an independent
+witness; neither sampled corroboration nor this table grants promotion approval.
 
 ### Enabled for observation only, weight 0.0 (8)
 

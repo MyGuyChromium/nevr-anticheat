@@ -81,7 +81,7 @@ Failed/cancelled analysis is not a completed trace.
 
 | Detector | Actual branches named |
 | --- | --- |
-| THROW_001 | Current release, usable speed, attributed engine measurement availability, hand-ratio availability, sampled artifact band, above/below effective cap |
+| THROW_001 | Current release, usable speed, sampled source/roster/attachment/continuity/contact checks, repeated above-threshold samples versus uncorroborated observations, phase/source/EOF termination, sampled artifact band, above/below effective cap |
 | THROW_002 | Current release, pre-release snapshot availability/ordering, configured speed-delta condition |
 | THROW_003 | Current release, hand attribution/kinematics, possible head contact, minimum motion, angle condition, body-translation guard |
 | BIO_001 | Stun/immunity/interval guards, per-hand threshold and streak/emission conditions |
@@ -91,6 +91,11 @@ Failed/cancelled analysis is not a completed trace.
 Every detector has pipeline-stage accounting when dispatched. The stable code
 descriptions live in `internal/detect/diagnostics.go`; new detailed branch support
 must set `TraceBranches` only when actual evaluation paths are instrumented.
+
+THROW_001's structured `speed_review` evidence retains the sampled values and
+separate local-client report status. Its corroboration label means repeated
+above-configured-threshold observations, not independently verified launch
+physics or cheating. See the [current evidence contract](default_game_config_reference.md).
 
 ## Conservative continuity fix
 
