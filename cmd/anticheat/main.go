@@ -59,12 +59,13 @@ func main() {
 		return
 	case "analyze":
 		fs := flag.NewFlagSet("analyze", flag.ExitOnError)
-		force := fs.Bool("force", false, "Re-analyze a match that is already stored (replaces its events/scores)")
+		force := fs.Bool("force", false, "Re-analyze a match that is already stored, from the same recording (replaces its events/scores)")
+		replaceSource := fs.Bool("replace-source", false, "Let this file replace a DIFFERENT recording stored under the same match id: deletes the stored recording's raw ticks, frames, findings and scores for that match (implies --force)")
 		pos := parseSub(fs, sub)
 		if len(pos) < 1 {
-			fatalUsage("anticheat analyze <replay-file> [--force]")
+			fatalUsage("anticheat analyze <replay-file> [--force] [--replace-source]")
 		}
-		runAnalyze(*configPath, pos[0], *force)
+		runAnalyze(*configPath, pos[0], analyzeIntake{Force: *force, ReplaceSource: *replaceSource})
 	case "batch":
 		fs := flag.NewFlagSet("batch", flag.ExitOnError)
 		force := fs.Bool("force", false, "Re-analyze matches that are already stored")
@@ -214,8 +215,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: anticheat [--config <path>] [--verbose|-v] <command> [args]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  analyze <file> [--force]   Analyze a replay file (stores telemetry + results; skips stored matches)")
+	fmt.Fprintln(os.Stderr, "  analyze <file> [--force] [--replace-source]")
+	fmt.Fprintln(os.Stderr, "                             Analyze a replay file (stores telemetry + results; skips stored matches)")
 	fmt.Fprintln(os.Stderr, "                             Supports .echoreplay, completed native .tape, and legacy .json")
+	fmt.Fprintln(os.Stderr, "                             --force re-analyzes the stored recording only; a different recording of a")
+	fmt.Fprintln(os.Stderr, "                             stored match is refused unless --replace-source (which deletes the stored one)")
 	fmt.Fprintln(os.Stderr, "  batch <dir> [--force]      Batch analyze replays (stores telemetry + results; skips stored matches)")
 	fmt.Fprintln(os.Stderr, "  flagged                    List pending review cases")
 	fmt.Fprintln(os.Stderr, "  report <case-id>           Human-readable single-match case report with evidence")
@@ -367,10 +371,21 @@ func printReviewAssessments(events []model.DetectionEvent, runCoverage ...map[st
 	}
 }
 
-func runAnalyze(configPath, replayPath string, force bool) {
+// analyzeIntake is what the operator asked `analyze` to do with a match that
+// is already stored. It mirrors the desktop upload's force / replace_source.
+type analyzeIntake struct {
+	// Force re-analyzes a stored match from the same recording.
+	Force bool
+	// ReplaceSource lets a different recording of a stored match take its
+	// place; the stored recording's raw ticks, frames, findings and scores for
+	// that match are deleted. It implies Force, as on the desktop.
+	ReplaceSource bool
+}
+
+func runAnalyze(configPath, replayPath string, intake analyzeIntake) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
-	if err := analyzeReplay(context.Background(), a, replayPath, force); err != nil {
+	if err := analyzeReplay(context.Background(), a, replayPath, intake); err != nil {
 		fatal("Error: %v", err)
 	}
 }
@@ -387,8 +402,17 @@ func runAnalyze(configPath, replayPath string, force bool) {
 // replace. A failure part-way through the file is returned after the
 // matches finished before it were printed, and any persistence failure is
 // returned, so the command exits non-zero.
-func analyzeReplay(ctx context.Context, a *app, replayPath string, force bool) error {
-	results, err := a.engine.AnalyzeFileAll(ctx, replayPath, force)
+//
+// Force never lets a different recording take over a stored match id: the
+// engine refuses it and nothing is written. That refusal is printed with the
+// engine's comparison and, because the operator asked for a re-analysis that
+// did not happen, returned as an error. ReplaceSource (which implies Force)
+// is the explicit way to analyze the other recording instead.
+func analyzeReplay(ctx context.Context, a *app, replayPath string, intake analyzeIntake) error {
+	if intake.ReplaceSource {
+		intake.Force = true
+	}
+	results, err := a.engine.AnalyzeFileAllWith(ctx, replayPath, intake.Force, intake.ReplaceSource)
 	printAnalyzeResults(results)
 	if err != nil {
 		return err
@@ -398,8 +422,26 @@ func analyzeReplay(ctx context.Context, a *app, replayPath string, force bool) e
 		if perr := res.PersistError(); perr != nil {
 			errs = append(errs, fmt.Errorf("match %s: %w", res.MatchCtx.MatchID, perr))
 		}
+		if intake.Force && res.AlreadyStored {
+			errs = append(errs, fmt.Errorf("match %s was not re-analyzed: %s", res.MatchCtx.MatchID, refusedSourceSummary(res)))
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// refusedSourceSummary is the one-line reason a forced analysis was refused.
+func refusedSourceSummary(res *replay.AnalyzeResult) string {
+	if res.StoredSource == replay.SourceDifferent {
+		return "a different recording of this match is stored and was kept (" + sourceDetailOr(res, "no comparison detail") + ")"
+	}
+	return "the match is already stored (" + sourceDetailOr(res, "source not compared") + ")"
+}
+
+func sourceDetailOr(res *replay.AnalyzeResult, fallback string) string {
+	if detail := strings.TrimSpace(res.SourceDetail); detail != "" {
+		return detail
+	}
+	return fallback
 }
 
 // printAnalyzeResults prints what AnalyzeFileAll did: the parse and the
@@ -431,8 +473,7 @@ func printAnalyzeResults(results []*replay.AnalyzeResult) {
 // warning.
 func printAnalyzeResult(res *replay.AnalyzeResult) {
 	if res.AlreadyStored {
-		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", res.MatchCtx.MatchID)
-		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+		printStoredMatchRefusal(res)
 		return
 	}
 	if res.TelemetryErr == nil {
@@ -446,6 +487,7 @@ func printAnalyzeResult(res *replay.AnalyzeResult) {
 		fmt.Printf("Cleared previous analysis for %s (%d events, %d score snapshots)\n",
 			res.MatchCtx.MatchID, res.ClearedEvents, res.ClearedScores)
 	}
+	printSourceOutcome(res)
 
 	result := res.Result
 	fmt.Printf("Match: %s\nFrames: %d processed, %d invalid\nDetections: %d (%d stored)\nReview cases: %d (%d stale closed)\nDuration: %v\n",
@@ -455,6 +497,53 @@ func printAnalyzeResult(res *replay.AnalyzeResult) {
 	printCountMap("Sanitized frames by reason", result.SanitizedFrames)
 	printReviewAssessments(result.DetectionEvents, result.PlayerCoverage)
 	printPlayerScores(result.PlayerScores)
+}
+
+// printStoredMatchRefusal says why a stored match was left alone, using the
+// engine's comparison of this file with the stored recording. "Already
+// stored" alone is misleading when the file is another recording of the
+// match (another observer, a late joiner, a clip): nothing in the store
+// describes this file, and --force will not change that.
+func printStoredMatchRefusal(res *replay.AnalyzeResult) {
+	id := res.MatchCtx.MatchID
+	switch res.StoredSource {
+	case replay.SourceDifferent:
+		fmt.Printf("Match %s: a DIFFERENT recording of this match is already stored. This file was not analyzed and nothing was changed.\n", id)
+		fmt.Printf("  Comparison: %s\n", sourceDetailOr(res, "no detail reported"))
+		fmt.Println("  --force re-analyzes the stored recording only; it never mixes two recordings of one match.")
+		fmt.Println("  To analyze this file instead, re-run with --replace-source. That deletes the stored recording's raw ticks,")
+		fmt.Println("  frames, findings and scores for this match; labels on its findings stay in the library but are not attached")
+		fmt.Println("  to the new findings. No backup is taken automatically (see the backup command).")
+	case replay.SourceIdentical, replay.SourceSameCapture:
+		fmt.Printf("Match %s is already stored and this file is the stored recording (%s); derived outputs left unchanged.\n", id, sourceDetailOr(res, "verified"))
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+	case replay.SourceExtends:
+		fmt.Printf("Match %s is already stored from a shorter copy of this recording (%s); derived outputs left unchanged.\n", id, sourceDetailOr(res, "this file holds more ticks"))
+		fmt.Println("Re-run with --force to store the additional ticks and re-analyze the complete recording.")
+	case replay.SourceUnverified:
+		fmt.Printf("Match %s is already stored; this file could not be compared with the stored recording (%s). Derived outputs left unchanged.\n", id, sourceDetailOr(res, "no detail reported"))
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+	default:
+		fmt.Printf("Match %s is already stored; derived outputs left unchanged.\n", id)
+		fmt.Println("Re-run with --force to replace its detection events and scores, or use reprocess-match.")
+	}
+}
+
+// printSourceOutcome reports, for a match that was analyzed over a stored
+// one, how this file related to the stored recording and what that did.
+func printSourceOutcome(res *replay.AnalyzeResult) {
+	switch {
+	case res.SourceReplaced:
+		fmt.Printf("Replaced the stored recording of %s with this file (--replace-source): %s\n", res.MatchCtx.MatchID, sourceDetailOr(res, "a different recording was stored"))
+		fmt.Println("  The previous recording's raw ticks, frames, findings and scores for this match were deleted; labels on its findings were not carried over.")
+	case res.StoredSource == replay.SourceUnverified:
+		fmt.Printf("Warning: re-analyzed without verifying that this file is the stored recording: %s\n", sourceDetailOr(res, "no detail reported"))
+	case res.StoredSource != "":
+		fmt.Printf("Source check: %s (%s)\n", res.StoredSource, sourceDetailOr(res, "no detail reported"))
+	}
+	if res.EventIDsKept > 0 {
+		fmt.Printf("Kept the event id of %d unchanged finding(s), so moderator labels stay attached\n", res.EventIDsKept)
+	}
 }
 
 // printCountMap prints a reason -> count map sorted by count, largest first.
@@ -481,6 +570,13 @@ func printCountMap(title string, m map[string]int) {
 func runBatch(configPath, dir string, force bool) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
+	if force {
+		// The batch analyzer has its own persistence path and does not compare
+		// an incoming file with the stored recording the way analyze does.
+		fmt.Fprintln(os.Stderr, "Warning: batch --force does not check that each file is the recording already stored under its match id.")
+		fmt.Fprintln(os.Stderr, "  A different recording of a stored match (another observer, a clip) would replace its analysis while the stored")
+		fmt.Fprintln(os.Stderr, "  raw ticks stay the first recording's. Use `analyze --force <file>` for matches that may have been recorded twice.")
+	}
 
 	analyzer := replay.NewBatchAnalyzer(a.newPipeline(), a.store,
 		func() replay.FrameParser { return replay.NewJSONFrameParser() },
@@ -504,8 +600,8 @@ func runBatch(configPath, dir string, force bool) {
 
 	// Post-batch cross-match aggregation: compute cumulative scores across all matches
 	fmt.Println("\nRunning cross-match aggregation...")
-	aggregated, cases := runCrossMatchAggregation(a)
-	fmt.Printf("Cross-match: %d players aggregated, %d review cases\n", aggregated, cases)
+	xm := runCrossMatchAggregation(a)
+	fmt.Printf("Cross-match: %d players aggregated, %s\n", xm.Players, xm.caseSummary())
 	if result.Errors > 0 {
 		fmt.Fprintf(os.Stderr, "Batch finished with %d error(s)\n", result.Errors)
 		os.Exit(1)
@@ -851,8 +947,53 @@ func runCrossMatchAnalysis(configPath string) {
 	a := mustOpen(configPath)
 	defer a.store.Close()
 
-	aggregated, cases := runCrossMatchAggregation(a)
-	fmt.Printf("Cross-match aggregation complete: %d players analyzed, %d review cases created/refreshed\n", aggregated, cases)
+	xm := runCrossMatchAggregation(a)
+	fmt.Printf("Cross-match aggregation complete: %d players analyzed, %s\n", xm.Players, xm.caseSummary())
+}
+
+// crossMatchRun is what one aggregation pass did. Only a case that was really
+// written as a reviewable case counts as created/refreshed: the store ignores
+// an aggregate that still contains evidence a current human review rejected,
+// and may record such an aggregate closed (an audit row) instead of pending.
+type crossMatchRun struct {
+	Players int
+	// Created, Refreshed and NewCase are the store's written outcomes
+	// (sqlite.CrossMatchCaseCreated / Refreshed / NewCase).
+	Created, Refreshed, NewCase int
+	// Revoked aggregates were recorded closed, never pending; Ignored ones
+	// wrote nothing.
+	Revoked, Ignored int
+}
+
+// Cases is the number of review cases created or refreshed.
+func (r crossMatchRun) Cases() int { return r.Created + r.Refreshed + r.NewCase }
+
+func (r *crossMatchRun) count(outcome string) {
+	switch outcome {
+	case sqlite.CrossMatchCaseCreated:
+		r.Created++
+	case sqlite.CrossMatchCaseRefreshed:
+		r.Refreshed++
+	case sqlite.CrossMatchCaseNewCase:
+		r.NewCase++
+	case sqlite.CrossMatchCaseRevoked:
+		r.Revoked++
+	default:
+		// CrossMatchCaseIgnored, and any outcome this build does not know:
+		// never claim a case was written.
+		r.Ignored++
+	}
+}
+
+func (r crossMatchRun) caseSummary() string {
+	out := fmt.Sprintf("%d review cases created/refreshed (%d new, %d refreshed, %d successor)", r.Cases(), r.Created, r.Refreshed, r.NewCase)
+	if r.Revoked > 0 {
+		out += fmt.Sprintf("; %d recorded closed because a human review rejected part of the evidence", r.Revoked)
+	}
+	if r.Ignored > 0 {
+		out += fmt.Sprintf("; %d not written because a human review rejected part of the evidence (existing case kept)", r.Ignored)
+	}
+	return out
 }
 
 // runCrossMatchAggregation queries all stored non-shadow events, computes
@@ -861,7 +1002,7 @@ func runCrossMatchAnalysis(configPath string) {
 // refreshes cross-match review cases for players at or above the review
 // threshold. Only players with events in at least
 // scoring.min_matches_for_cross_match (floor 2) matches are aggregated.
-func runCrossMatchAggregation(a *app) (int, int) {
+func runCrossMatchAggregation(a *app) crossMatchRun {
 	ctx := context.Background()
 	levels := a.levels()
 	minMatches := a.cfg.Scoring.MinMatchesForCrossMatch
@@ -874,11 +1015,10 @@ func runCrossMatchAggregation(a *app) (int, int) {
 	players, err := a.store.GetDistinctPlayersWithEvents(ctx, since)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting players: %v\n", err)
-		return 0, 0
+		return crossMatchRun{}
 	}
 
-	playerCount := 0
-	caseCount := 0
+	var run crossMatchRun
 	for _, pid := range players {
 		events, err := a.store.GetAllPlayerEvents(ctx, pid)
 		if err != nil {
@@ -900,7 +1040,7 @@ func runCrossMatchAggregation(a *app) (int, int) {
 			fmt.Fprintf(os.Stderr, "Error storing cross-match score for %s: %v\n", pid, err)
 			continue
 		}
-		playerCount++
+		run.Players++
 
 		// The review tier is high_risk (scoring.review_threshold) in the
 		// same table the summary's Level was classified with.
@@ -910,14 +1050,15 @@ func runCrossMatchAggregation(a *app) (int, int) {
 				summary.DistinctMatches, summary.TotalEvents)
 		}
 		if rc := sqlite.BuildCrossMatchReviewCase(summary, levels); rc != nil {
-			if err := a.store.StoreCrossMatchReviewCase(ctx, *rc); err != nil {
+			stored, err := a.store.StoreCrossMatchReviewCaseResult(ctx, *rc)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error storing cross-match case for %s: %v\n", pid, err)
 			} else {
-				caseCount++
+				run.count(stored.Outcome)
 			}
 		}
 	}
-	return playerCount, caseCount
+	return run
 }
 
 func runCrossMatchReport(configPath, caseID string) {
@@ -1362,7 +1503,7 @@ func runDropMode(configPath string, paths []string) {
 		if info.IsDir() {
 			runBatch(configPath, p, false)
 		} else {
-			runAnalyze(configPath, p, false)
+			runAnalyze(configPath, p, analyzeIntake{})
 		}
 		fmt.Println()
 	}

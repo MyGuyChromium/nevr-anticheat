@@ -16,7 +16,7 @@ func TestExportEvidenceCaseHTMLAndShadowMatchJSON(t *testing.T) {
 	a := testApp(t)
 	ctx := context.Background()
 	captureStdout(t, func() {
-		if err := analyzeReplay(ctx, a, fixtureReplay, false); err != nil {
+		if err := analyzeReplay(ctx, a, fixtureReplay, analyzeIntake{}); err != nil {
 			t.Fatal(err)
 		}
 	})

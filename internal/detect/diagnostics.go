@@ -81,6 +81,7 @@ var decisionReasonDescriptions = map[string]string{
 	"quality_forced_shadow":             "Source quality forced observation-only handling",
 	"source_health_abstention":          "Affected source observations are degraded or blind; evidence retained without scoring or automatic enforcement",
 	"unsupported_input_abstention":      "Required state/input edges are not observable from this feed; descriptive evidence is not scored",
+	"server_respawn":                    "The game placed the disc back on a team's nest outside live play (after a goal); this disc jump is game choreography, not lost data and not a finding about any player",
 	"context_tracking_limited":          "Tracking uncertainty reduced emission confidence",
 	"context_possible_head_contact":     "Possible head contact reduced emission confidence",
 	"context_possible_slap_or_push":     "Possible slap or push reduced emission confidence",

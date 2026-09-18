@@ -11,7 +11,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nevr-anticheat/nevr-anticheat/internal/adapter"
 	"github.com/nevr-anticheat/nevr-anticheat/internal/model"
@@ -19,8 +21,19 @@ import (
 )
 
 // SummaryVersion is stamped on every MatchSummary document so a reader can
-// tell which builder produced a stored row.
-const SummaryVersion = 1
+// tell which builder produced a stored row. Version 2 added Phases; a stored
+// document with a lower version is rebuilt once from the raw ticks when they
+// are still in the store (see LoadMatchSummary).
+const SummaryVersion = 2
+
+// MaxSummaryPhases caps MatchSummary.Phases. A real match has a handful of
+// runs per goal; a recording whose status flaps (or was written to flap) has
+// its shortest runs folded into their neighbours until the list fits.
+const MaxSummaryPhases = 400
+
+// maxPhaseStatusLen bounds the status text of one phase run: it is copied
+// from the recording, which is untrusted.
+const maxPhaseStatusLen = 40
 
 // ThrowGoalWindow is how long after a release a goal is still credited to
 // that throw (a long shot from the far end flies for about two seconds).
@@ -67,6 +80,29 @@ type MatchSummary struct {
 	// either).
 	ThrowSource            string  `json:"throw_source"`
 	ThrowGoalWindowSeconds float64 `json:"throw_goal_window_seconds"`
+	// Phases is the match as contiguous runs of one game phase, in match
+	// order, on the same clock as Goals[].Time and Throws[].Time. It is
+	// omitted when no snapshot named a game status (the source carries none),
+	// so "no phase data" is never drawn as "all live play". At most
+	// MaxSummaryPhases entries.
+	Phases []PhaseRun `json:"phases,omitempty"`
+	// PhasesMerged counts the short runs that were folded into a neighbour to
+	// keep Phases within MaxSummaryPhases (0, and omitted, for a real match).
+	PhasesMerged int `json:"phases_merged,omitempty"`
+}
+
+// PhaseRun is one contiguous run of a single game phase. A run ends where
+// the next one starts; the last run ends at the last snapshot.
+type PhaseRun struct {
+	Start float64 `json:"start"` // match-relative seconds, as GoalEvent.Time
+	End   float64 `json:"end"`
+	// Status is the normalised game phase (model.PhaseNormalizer): the
+	// status the game named ("score" reads "round_over"), or
+	// model.PhasePostScoreGap / model.PhasePreRoundGap for the unnamed gaps.
+	Status string `json:"status"`
+	// Playing is model.IsActiveGamePhase(Status): the run is live play, the
+	// only time detectors and the throw log look at.
+	Playing bool `json:"playing"`
 }
 
 // PlayerStats are the per-player counters the game reports (teams[].players[].stats).
@@ -241,6 +277,12 @@ type SummaryBuilder struct {
 	// live play (an unnamed status inside a goal cycle is not).
 	phases model.PhaseNormalizer
 	phase  string
+	// runs are the phase runs so far (the last one is still open and ends at
+	// runEnd); namedStatus records that the source named a status at all.
+	runs        []PhaseRun
+	runEnd      float64
+	runsMerged  int
+	namedStatus bool
 }
 
 // NewSummaryBuilder starts a summary for the match mc describes.
@@ -305,6 +347,7 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 	s.Ticks++
 	b.lastTime = t
 	b.phase = b.phases.Normalize(session.SessionID, session.GameStatus, t)
+	b.addPhase(session.GameStatus, t)
 	if s.Ticks == 1 {
 		b.lastScoreKey = lastScoreKey(session.LastScore)
 	}
@@ -421,6 +464,102 @@ func (b *SummaryBuilder) Add(session *adapter.EchoVRSessionResponse, frameIndex 
 			b.pendingGoal = -1
 		}
 	}
+}
+
+// addPhase extends the current phase run to t or opens the next one. Time is
+// kept monotonic (a sample that runs backwards does not move the clock), so
+// the runs stay ordered and contiguous whatever the recording claims.
+func (b *SummaryBuilder) addPhase(sourceStatus string, t float64) {
+	if math.IsNaN(t) || math.IsInf(t, 0) {
+		return
+	}
+	if !model.IsUnnamedGameStatus(sourceStatus) {
+		b.namedStatus = true
+	}
+	if len(b.runs) > 0 && t < b.runEnd {
+		t = b.runEnd
+	}
+	status := phaseStatusText(b.phase)
+	if n := len(b.runs); n > 0 && b.runs[n-1].Status == status {
+		b.runEnd = t
+		return
+	}
+	if n := len(b.runs); n > 0 {
+		b.runs[n-1].End = t
+	}
+	b.runs = append(b.runs, PhaseRun{Start: t, End: t, Status: status, Playing: model.IsActiveGamePhase(b.phase)})
+	b.runEnd = t
+	// Bound memory while streaming, not only the stored document.
+	if len(b.runs) > 2*MaxSummaryPhases {
+		open := b.runs[len(b.runs)-1]
+		open.End = t
+		b.runs[len(b.runs)-1] = open
+		var merged int
+		b.runs, merged = capPhaseRuns(b.runs, MaxSummaryPhases)
+		b.runsMerged += merged
+	}
+}
+
+// phaseStatusText bounds a normalised phase for storage and display.
+func phaseStatusText(phase string) string {
+	if len(phase) <= maxPhaseStatusLen {
+		return phase
+	}
+	cut := maxPhaseStatusLen
+	for cut > 0 && !utf8.RuneStart(phase[cut]) {
+		cut--
+	}
+	return phase[:cut]
+}
+
+// finishPhases closes the open run and returns the capped list, or nil when
+// the source never named a status.
+func (b *SummaryBuilder) finishPhases() ([]PhaseRun, int) {
+	if !b.namedStatus || len(b.runs) == 0 {
+		return nil, 0
+	}
+	runs := b.runs
+	runs[len(runs)-1].End = b.runEnd
+	// A status first seen on the very last snapshot has no extent.
+	if last := runs[len(runs)-1]; len(runs) > 1 && last.End <= last.Start {
+		runs = runs[:len(runs)-1]
+	}
+	if len(runs) == 1 && runs[0].End <= runs[0].Start {
+		return nil, b.runsMerged
+	}
+	runs, merged := capPhaseRuns(runs, MaxSummaryPhases)
+	return runs, b.runsMerged + merged
+}
+
+// capPhaseRuns folds the shortest runs into the run before them (the first
+// run into the one after it), joining equal neighbours, until at most limit
+// remain. The minimum kept length starts at half a second and doubles, so a
+// real match is never touched and the result stays contiguous and ordered.
+// It returns the runs and how many were folded away.
+func capPhaseRuns(runs []PhaseRun, limit int) ([]PhaseRun, int) {
+	merged := 0
+	for minLen := 0.5; len(runs) > limit && limit > 0; minLen *= 2 {
+		out := runs[:0]
+		for i, r := range runs {
+			n := len(out)
+			switch {
+			case n > 0 && out[n-1].Status == r.Status:
+				out[n-1].End = r.End
+				merged++
+			case n > 0 && r.End-r.Start < minLen:
+				out[n-1].End = r.End
+				merged++
+			case n == 0 && r.End-r.Start < minLen && i+1 < len(runs):
+				// The first run is short: the next run starts where it did.
+				runs[i+1].Start = r.Start
+				merged++
+			default:
+				out = append(out, r)
+			}
+		}
+		runs = out
+	}
+	return runs, merged
 }
 
 func (b *SummaryBuilder) release(pid string, session *adapter.EchoVRSessionResponse, frameIndex int, t, speed float64) {
@@ -554,6 +693,7 @@ func (b *SummaryBuilder) Finish() *MatchSummary {
 		}
 	}
 	s.Teams["blue"].Score, s.Teams["orange"].Score = s.BlueScore, s.OrangeScore
+	s.Phases, s.PhasesMerged = b.finishPhases()
 	return s
 }
 
@@ -817,6 +957,16 @@ func RebuildSummary(ctx context.Context, store *sqlite.Store, mc *model.MatchCon
 	return s, nil
 }
 
+// summaryUpgradeFailed remembers, per engine and match, a stored summary
+// that could not be rebuilt to the current SummaryVersion although raw ticks
+// exist, so reopening the match does not re-read every tick each time.
+var summaryUpgradeFailed sync.Map
+
+type summaryUpgradeKey struct {
+	engine  *Engine
+	matchID string
+}
+
 // LoadMatchSummary returns the stored summary of a match, rebuilding and
 // storing it from the raw ticks when the match was analyzed before
 // summaries existed. The suspicion verdicts are (re)applied from the given
@@ -842,6 +992,25 @@ func (e *Engine) LoadMatchSummary(ctx context.Context, mc *model.MatchContext, s
 			return nil, err
 		}
 		rebuilt = true
+	} else if s.Version < SummaryVersion {
+		// Stored by an older builder (no phases). Rebuild it once from the raw
+		// ticks; the whole document is replaced so goals, throws and phases
+		// share one clock. When the ticks are archived or cannot be read the
+		// stored document is kept as it is, and a failed attempt is not
+		// repeated on every reopen of the match by this process.
+		key := summaryUpgradeKey{engine: e, matchID: mc.MatchID}
+		if _, failed := summaryUpgradeFailed.Load(key); !failed {
+			if up, err := RebuildSummary(ctx, e.store, mc); err == nil {
+				s, rebuilt = up, true
+			} else if ctx.Err() != nil {
+				return nil, ctx.Err()
+			} else if !errors.Is(err, ErrNoRawTicks) {
+				// Without raw ticks the attempt costs nothing and must be
+				// retried after an archive restore; any other failure is
+				// remembered.
+				summaryUpgradeFailed.Store(key, struct{}{})
+			}
+		}
 	}
 	s.ApplySuspicion(mc, scores, events, e.Levels())
 	coverage, err := e.store.GetMatchAnalysisCoverage(ctx, mc.MatchID)
