@@ -19,6 +19,10 @@ assert.equal(page.indexOf('// TIMELINE-LAYOUT-BEGIN', begin + 1), -1, 'the block
 const context = vm.createContext({});
 vm.runInContext(page.slice(begin, end) + '\nthis.api = { timelineLayout, timelineNeighbor, tlClock, tlAxisStep, TL };', context);
 const { timelineLayout, timelineNeighbor, tlClock, TL } = context.api;
+const phase = (start, end, status, playing) => ({ start, end, status, playing });
+// One goal break as real recordings carry it: the game's "score" status, the
+// unnamed gap after it, then the round-start countdown.
+const goalBreak = (at) => [phase(at, at + 15, 'round_over', false), phase(at + 15, at + 19.6, 'post_score_gap', false), phase(at + 19.6, at + 34.6, 'round_start', false)];
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 const roster = (n) => Array.from({ length: n }, (_, i) => ({ player_id: `p${i + 1}`, name: `Synthetic ${i + 1}`, team: i % 2 ? 'orange' : 'blue', first_seen: 0, last_seen: 1200 }));
@@ -200,6 +204,86 @@ test('a narrow container keeps a usable plot and lets its own box scroll', () =>
   assert.equal(timelineLayout({ duration: 300, players: roster(2) }, 1370).label, TL.label);
 });
 
+test('phase runs become bands on the marks\' clock: joined by playing flag, named by what fills them', () => {
+  const phases = [phase(0, 100, 'playing', true), ...goalBreak(100), phase(134.6, 560, 'playing', true), phase(560, 570, 'round_over', false), phase(570, 600, 'post_match', false)];
+  const data = { duration: 600, cap: 18.9, players: roster(2), throws: [throwAt(100, 'p1', 10), throwAt(120, 'p1', 9), throwAt(300, 'p1', 9)], phases };
+  const L = timelineLayout(data, 1157);
+  assert.equal(L.hasPhases, true);
+  assert.deepEqual(plain(L.bands.map((band) => [band.playing, band.t0, band.t1, band.name])), [[true, 0, 100, 'live play'], [false, 100, 134.6, 'after goal'], [true, 134.6, 560, 'live play'], [false, 560, 600, 'post-match']]);
+  const goalThrow = L.marks.find((mark) => mark.kind === 'throw' && mark.t === 100);
+  assert.equal(L.bands[1].x0, goalThrow.x, 'a band edge and a mark at the same second share one x');
+  assert.equal(L.bands[3].x1, L.x1, 'the last band ends where the axis ends');
+  assert.deepEqual(plain(L.bands[1].parts).map((part) => [part.name, Math.round(part.seconds * 1000) / 1000]), [['after goal', 19.6], ['round start', 15]], 'the two after-goal statuses count as one part');
+  assert.ok(Math.abs(L.phaseSeconds.playing - 525.4) < 1e-6 && Math.abs(L.phaseSeconds.other - 74.6) < 1e-6);
+  // A throw is told which phase it fell in: its own run, not the band's headline.
+  assert.deepEqual(plain(L.marks.filter((mark) => mark.kind === 'throw').map((mark) => mark.phase)), [{ name: 'after goal', playing: false }, { name: 'round start', playing: false }, { name: 'live play', playing: true }]);
+  // The strip takes its own row: lanes move down by exactly that much, and only when there are bands.
+  const bare = timelineLayout({ ...data, phases: undefined }, 1157);
+  assert.equal(bare.hasPhases, false);
+  assert.deepEqual(plain(bare.bands), []);
+  assert.equal(L.lanesTop - bare.lanesTop, TL.phaseLane);
+  assert.equal(L.height - bare.height, TL.phaseLane);
+  assert.equal(L.lanes[0].y - bare.lanes[0].y, TL.phaseLane);
+  assert.ok(L.phaseY > L.scoreY && L.phaseY < L.lanesTop, 'the strip sits between the score lane and the first player');
+  assert.equal(bare.marks[0].phase, null, 'no phase data is not reported as live play');
+  assertFinite(plain(L));
+});
+
+test('a break is only named when its band can hold the name; a long match keeps the shading', () => {
+  const short = timelineLayout({ duration: 300, players: roster(2), phases: [phase(0, 100, 'playing', true), ...goalBreak(100), phase(134.6, 300, 'playing', true)] }, 1157);
+  assert.equal(short.bands[1].label, 'after goal');
+  const long = timelineLayout({ duration: 3600, players: roster(2), phases: [phase(0, 100, 'playing', true), ...goalBreak(100), phase(134.6, 3600, 'playing', true)] }, 1157);
+  assert.equal(long.bands[1].label, '', 'a 9 px band carries no text');
+  assert.ok(long.bands[1].x1 > long.bands[1].x0, 'but it is still drawn');
+  assert.ok(short.bands.every((band) => !band.playing || band.label === ''), 'live play is never labelled: it is the default reading');
+  const large = timelineLayout({ duration: 300, textScale: 1.125, players: roster(2), phases: [phase(0, 100, 'playing', true), phase(100, 124, 'round_over', false), phase(124, 300, 'playing', true)] }, 1157);
+  const normal = timelineLayout({ duration: 300, players: roster(2), phases: [phase(0, 100, 'playing', true), phase(100, 124, 'round_over', false), phase(124, 300, 'playing', true)] }, 1157);
+  assert.deepEqual([normal.bands[1].label, large.bands[1].label], ['after goal', ''], 'larger text needs a wider band');
+});
+
+test('untrusted phase runs: holes stay holes, overlaps are clipped, garbage is counted and never drawn', () => {
+  const phases = [
+    phase(0, 50, 'playing', true), phase(40, 60, 'playing', true), // overlap: clipped to 50..60 and joined
+    phase(90, 120, 'paused_by_admin', false), // hole 60..90: the recording named nothing
+    phase(120, 130, 'x'.repeat(500), false),
+    phase(NaN, 10, 'playing', true), phase(10, 5, 'playing', true), phase(-5, 10, 'playing', true), phase(20, 1e12, 'playing', true),
+    phase(130, 140, 'playing', 'true'), phase(130, 140, 'playing'), null, 'junk', phase(20, 30, 'playing', true), // wholly inside an earlier run
+  ];
+  const L = timelineLayout({ duration: 200, players: roster(1), phases }, 1157);
+  assert.deepEqual(plain(L.bands.map((band) => [band.playing, band.t0, band.t1])), [[true, 0, 60], [false, 90, 130]]);
+  assert.equal(L.phasesSkipped, 9);
+  assert.equal(L.duration, 200, 'a wild phase end does not stretch the axis');
+  assert.equal(L.bands[1].name, 'paused by admin', 'an unknown status is shown in its own words');
+  assert.ok(L.bands[1].parts.every((part) => part.name.length <= 40), 'status text is bounded');
+  assert.ok(Math.abs(L.phaseSeconds.playing - 60) < 1e-9 && Math.abs(L.phaseSeconds.other - 40) < 1e-9, 'a clipped overlap is not counted twice');
+  assertFinite(plain(L));
+  for (const junk of [null, 'phases', 7, {}, [null], [{}], [phase(0, 0, 'playing', true)]]) {
+    const quiet = timelineLayout({ duration: 200, players: roster(1), phases: junk }, 1157);
+    assert.equal(quiet.hasPhases, false);
+    assert.equal(quiet.lanesTop, TL.top + TL.scoreLane);
+  }
+  const holed = timelineLayout({ duration: 100, players: roster(1), phases: [phase(0, 40, 'playing', true), phase(60, 100, 'playing', true)] }, 1157);
+  assert.deepEqual(plain(holed.bands.map((band) => [band.t0, band.t1])), [[0, 40], [60, 100]], 'a hole between two live runs is not bridged into live play');
+  const tie = timelineLayout({ duration: 100, players: roster(1), phases: [phase(0, 15, 'round_over', false), phase(15, 30, 'round_start', false), phase(30, 100, 'playing', true)] }, 1157);
+  assert.equal(tie.bands[0].name, 'after goal', 'on a tie a break is named after what started it');
+  const late = timelineLayout({ duration: 100, players: roster(1), phases: [phase(0, 130, 'playing', true)] }, 1157);
+  assert.equal(late.duration, 130, 'a run shortly after the stated end stretches the axis like a mark does');
+  const flood = timelineLayout({ duration: 4000, players: roster(1), phases: Array.from({ length: 3000 }, (_, i) => phase(i, i + 1, i % 2 ? 'playing' : 'round_start', i % 2 === 1)) }, 1157);
+  assert.equal(flood.bands.length, TL.maxPhases);
+  assert.equal(flood.phasesSkipped, 2000);
+});
+
+test('larger text gets a wider label column and keeps the drawing inside its container', () => {
+  const data = { duration: 1200, cap: 18.9, players: roster(4), cases: [{ case_id: 'c1', player_id: 'p1', level: 'high_risk' }], goals: [{ time: 300, team: 'blue', blue_score: 2, orange_score: 0 }, { time: 356, team: 'orange', blue_score: 2, orange_score: 2 }] };
+  const normal = timelineLayout(data, 1157), large = timelineLayout({ ...data, textScale: 1.125 }, 1157);
+  assert.equal(large.label, Math.round(TL.label * 1.125));
+  assert.ok(large.label > normal.label && large.width <= 1157 && large.x1 - large.x0 < normal.x1 - normal.x0);
+  assert.equal(large.textScale, 1.125);
+  for (const bad of [0, -1, NaN, Infinity, '1.5', 9]) assert.equal(timelineLayout({ ...data, textScale: bad }, 1157).label, TL.label, `textScale ${bad} is ignored`);
+  // 56 s apart is about 40 px here: room for a second score label at standard size, not at 1.125x.
+  assert.deepEqual([normal.marks.filter((mark) => mark.kind === 'goal').map((mark) => mark.showLabel), large.marks.filter((mark) => mark.kind === 'goal').map((mark) => mark.showLabel)].map(plain), [[true, true], [true, false]]);
+});
+
 // The renderer is not pure (it uses the page's formatters), but what it writes
 // into the document must be inert whatever an untrusted recording calls a player.
 test('the rendered SVG escapes recording-supplied text and exposes every mark to the keyboard', () => {
@@ -225,4 +309,16 @@ test('the rendered SVG escapes recording-supplied text and exposes every mark to
   assert.equal(groups.filter((tag) => tag.includes('tabindex="0"')).length, 1, 'one tab stop; arrow keys reach the rest');
   assert.match(groups.find((tag) => tag.includes('tl-over')), /over the 18\.9 metres per second engine cap, marked for review/);
   assert.equal(groups.filter((tag) => tag.includes('tl-over')).length, 1, 'only the over-cap release is drawn as over the cap');
+  assert.doesNotMatch(svg, /tl-band|tl-play|tl-phase/, 'without phase data nothing about phases is drawn');
+
+  // Phase names come from the recording too.
+  const phased = render.api.timelineLayout({ duration: 60, cap: 18.9, players: [{ player_id: 'p1', name: 'P1', team: 'blue' }], phases: [{ start: 0, end: 20, status: 'playing', playing: true }, { start: 20, end: 60, status: '<img src=x onerror=alert(1)>', playing: false }] }, 1157);
+  const phasedSVG = render.api.timelineSVG({ summary: {}, events: [], cases: [] }, phased);
+  assert.equal(phased.bands[1].label, '<img src=x onerror=alert(1)>', 'the layout keeps the text; escaping is the renderer\'s job');
+  assert.doesNotMatch(phasedSVG, /<img/);
+  assert.equal((phasedSVG.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length, 2, 'once as the band label and once in its title');
+  assert.equal((phasedSVG.match(/<rect class="tl-band"/g) || []).length, 1, 'only the break is shaded');
+  assert.equal((phasedSVG.match(/<line class="tl-play"/g) || []).length, 1, 'live play is the solid part of the strip');
+  assert.ok(phasedSVG.indexOf('tl-band') < phasedSVG.indexOf('tl-grid'), 'bands are drawn first, behind the grid, lanes and marks');
+  assert.match(phasedSVG, /Not live play · 0:20–1:00 into the recording/);
 });

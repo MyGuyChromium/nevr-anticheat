@@ -105,6 +105,8 @@
   .btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); background: var(--neutral-bg); border-color: var(--line); cursor: not-allowed; }
   .btn-primary { color: var(--accent-ink); background: var(--action); border-color: var(--action); }
   .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--accent-ink); background: var(--action-hover); border-color: var(--action-hover); }
+  .btn-danger:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+  .btn-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
   .btn-text { border-color: transparent; padding-inline: 6px; color: var(--accent); background: transparent; }
   .btn-text:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
   .btn-sm { font-size: var(--text-xs); min-height: 32px; padding: 5px 9px; }
@@ -438,6 +440,34 @@
   .automatic-review, .match-tools, .throw-log, .physics-table, .playlist, .chart-shell { border-radius: var(--radius); }
   .notice { background: var(--warn-bg); padding: 12px 14px; border-radius: var(--radius-sm); overflow-wrap: anywhere; }
   .notice.bad { background: var(--bad-bg); }
+  .notice.info { background: var(--neutral-bg); border-left-color: var(--line-2); }
+  .notice.info .btn { margin-left: 6px; }
+  .import-result { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .import-result h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .import-result .explain { display: block; color: var(--ink-2); font-size: var(--text-xs); margin-top: 2px; }
+  .bad-text { color: var(--bad); font-weight: 600; }
+  .lab-entries { list-style: none; margin: 8px 0 0; padding: 0; }
+  .lab-entries li { padding: 12px 0; border-top: 1px solid var(--line); min-width: 0; }
+  .lab-entries p { margin: 4px 0 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .lab-entries .lab-now { color: var(--ink-2); font-size: var(--text-xs); max-width: 70ch; }
+  .lab-entries .lab-now b { color: var(--ink); font-weight: 600; }
+  .lab-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+  .lab-entry-head .who { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0; }
+  .lab-entry-head .who .name { font-weight: 600; }
+  .conflict-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 48px; margin-top: 16px; }
+  .conflict-grid h4, .conflict-confirm h4 { font-size: var(--text-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .conflict-confirm { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--bad); border-radius: var(--radius-sm); background: var(--bad-bg); }
+  .conflict-confirm h4 { color: var(--bad); }
+  .conflict-confirm ul { margin: 0 0 12px; padding-left: 18px; font-size: 13px; }
+  .conflict-confirm li + li { margin-top: 4px; }
+  .conflict-confirm .help.err { color: var(--bad); }
+  .conflict .help { max-width: none; }
+  .restore-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px clamp(16px, 3vw, 48px); background: var(--warn-bg); color: var(--ink); border-bottom: 1px solid var(--warn); }
+  .restore-banner.bad { background: var(--bad-bg); border-bottom-color: var(--bad); }
+  .restore-banner div { display: grid; gap: 4px; min-width: 0; }
+  .restore-banner span { color: var(--ink-2); overflow-wrap: anywhere; }
+  .restore-banner .btn { flex: none; }
+  @media (max-width: 820px) { .conflict-grid { grid-template-columns: 1fr; } .restore-banner { align-items: flex-start; flex-direction: column; } }
   .notice-history { margin-top: 18px; max-height: 240px; overflow: auto; }
   .notice-history ol { padding-left: 22px; }
   .notice-history li { padding-block: 6px; overflow-wrap: anywhere; }
@@ -645,12 +675,16 @@
   .tl-sum { margin: 0; color: var(--muted); font-size: var(--text-xs); }
   .tl-plot { max-width: 100%; overflow-x: auto; overflow-y: hidden; border-block: 1px solid var(--line); padding-block: 6px; }
   .tl-svg { display: block; overflow: visible; }
-  .tl-svg text { font: 500 11px/1 var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
-  .tl-svg .tl-cap { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; fill: var(--ink-2); }
-  .tl-svg .tl-name { font-size: 12px; fill: var(--ink); }
-  .tl-svg .tl-num { font-family: var(--mono); font-size: 10.5px; }
-  .tl-svg .tl-quiet { font-size: 12px; }
-  .tl-svg .tl-score { font: 700 11.5px/1 var(--sans); }
+  /* rem, not px: the text follows the text-size preference; timelineLayout gets the same scale to make room. */
+  .tl-svg text { font: 500 .6875rem/1 var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .tl-svg .tl-cap { font-size: .65625rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; fill: var(--ink-2); }
+  .tl-svg .tl-name { font-size: .75rem; fill: var(--ink); }
+  .tl-svg .tl-num { font-family: var(--mono); font-size: .65625rem; }
+  .tl-svg .tl-quiet { font-size: .75rem; }
+  .tl-svg .tl-score { font: 700 .71875rem/1 var(--sans); }
+  .tl-svg .tl-phase { font-size: .65625rem; fill: var(--muted); }
+  .tl-band { fill: var(--ink); fill-opacity: .055; }
+  .tl-play { stroke: var(--ink-2); stroke-width: 3; }
   .tl-svg .tl-dash { fill: var(--muted); font-weight: 400; }
   .tl svg .tl-blue { fill: var(--blue); } .tl svg .tl-orange { fill: var(--orange); } .tl svg .tl-none { fill: var(--ink-2); }
   .tl-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 1 5; }
@@ -667,7 +701,7 @@
   .tl-signal .tl-glyph { fill: currentColor; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
   .tl-signal.tl-shadow .tl-glyph, .tl-signal.tl-concealed .tl-glyph { fill: var(--bg); }
   .tl-signal .tl-more { fill: var(--bg); stroke: currentColor; stroke-width: 1.2; opacity: .75; }
-  .tl-svg .tl-casetext { font-size: 11px; fill: var(--muted); }
+  .tl-svg .tl-casetext { font-size: .6875rem; fill: var(--muted); }
   .tl-lvl-suspicious .tl-casetext { fill: var(--warn); } .tl-lvl-high_risk .tl-casetext { fill: var(--hot); }
   .tl-lvl-critical .tl-casetext, .tl-lvl-action_worthy .tl-casetext { fill: var(--bad); }
   .tl-hit { fill: transparent; stroke: none; }
@@ -730,6 +764,7 @@
   <div><strong>Analysis engine disconnected.</strong><span>This browser tab is no longer connected to its local NEVR process. Relaunch <code>nevr-desktop.exe</code>, then use the new window it opens.</span></div>
   <button id="retry" class="btn">Retry connection</button>
 </div>
+<div id="restore-banner" class="restore-banner" role="status" hidden></div>
 <main class="wrap" id="workspace" tabindex="-1">
   <section class="operator-overview" aria-labelledby="workspace-title">
     <div class="section-kicker">Offline analysis · human review</div>
@@ -768,10 +803,10 @@
         </div>
         <div class="controls">
           <div class="check">
-            <span class="check-mark" aria-hidden="true">↻</span>
+            <input type="checkbox" id="reanalyze" aria-describedby="reanalyze-help">
             <div>
-              <strong>Stored replays refresh automatically</strong>
-              <p class="help">Every upload uses the current detectors and replaces earlier derived events and scores. Raw source telemetry and human labels remain preserved.</p>
+              <label for="reanalyze">Re-analyze recordings that are already stored</label>
+              <p class="help" id="reanalyze-help">Off: a recording this PC already analyzed is recognised and its stored analysis is shown. Stored replays refresh automatically only when the build or detector configuration changed, or when the file completes a copy that was cut short. A different recording of a stored match is never mixed in.</p>
             </div>
           </div>
           <button id="clear" class="btn btn-text" hidden>Clear results</button>
@@ -1394,8 +1429,9 @@
   // coordinate, arrays may be null, and the lane count is bounded.
   const TL = {
     label: 184, labelNarrow: 124, right: 14, caseGutter: 104, minPlot: 260,
-    top: 6, scoreLane: 46, groupHead: 22, axis: 28,
+    top: 6, scoreLane: 46, phaseLane: 20, groupHead: 22, axis: 28,
     maxLanes: 32, throwJoin: 4, signalJoin: 12, goalLabelGap: 38, tickGap: 72,
+    maxPhases: 1000, phaseJoin: 0.05, phaseChar: 6, phasePad: 12,
     steps: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600],
   };
   const tlFinite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -1405,8 +1441,17 @@
     const s = total % 60;
     return `${Math.floor(total / 60)}:${s < 10 ? '0' : ''}${s}`;
   }
-  function tlAxisStep(duration, plotWidth) {
-    for (const step of TL.steps) if (plotWidth * step / duration >= TL.tickGap) return step;
+  // Reader-facing name of a normalised game status. Unknown names (a recording
+  // may use any) pass through with their underscores opened up; the renderer
+  // escapes them.
+  const tlPhaseNames = { playing: 'live play', round: 'live play', overtime: 'overtime', sudden_death: 'overtime', round_over: 'after goal', post_score_gap: 'after goal',
+    pre_round_gap: 'round start', round_start: 'round start', pre_match: 'pre-match', post_match: 'post-match', pre_sudden_death: 'before overtime', post_sudden_death: 'after overtime' };
+  function tlPhaseName(status) {
+    const key = String(status ?? '');
+    return Object.hasOwn(tlPhaseNames, key) ? tlPhaseNames[key] : (key.replace(/_/g, ' ').trim().slice(0, 40) || 'unnamed status');
+  }
+  function tlAxisStep(duration, plotWidth, tickGap) {
+    for (const step of TL.steps) if (plotWidth * step / duration >= (tickGap || TL.tickGap)) return step;
     return Math.max(TL.steps[TL.steps.length - 1], Math.ceil(duration / 4 / 3600) * 3600);
   }
   function timelineLayout(data, containerWidth) {
@@ -1415,6 +1460,9 @@
     const cap = tlFinite(d.cap) && d.cap > 0 ? d.cap : 0;
     const blind = !!d.blind;
     const cases = blind ? [] : list(d.cases);
+    // Text inside the SVG follows the page's text-size preference; the widths
+    // that make room for text scale with it, lane heights do not need to.
+    const textScale = tlFinite(d.textScale) && d.textScale >= 1 && d.textScale <= 2 ? d.textScale : 1;
     // A time far beyond the stated duration would squash the whole match into the
     // left edge, so it is counted as unusable instead of being drawn.
     const stated = tlFinite(d.duration) && d.duration > 0 ? d.duration : 0;
@@ -1448,14 +1496,26 @@
     for (const g of goalsIn) see(g ? time(g.time) : null);
     for (const th of throwsIn) see(th ? time(th.time) : null);
     for (const e of eventsIn) see(e ? time(e.timestamp) : null);
+    // Phase runs: same clock as the marks. A run with an unusable or empty span
+    // is skipped, an overlap is clipped, and a hole between runs stays a hole:
+    // "the recording named no status here" is never drawn as live play.
+    const runs = [];
+    let phasesSkipped = Math.max(0, list(d.phases).length - TL.maxPhases);
+    for (const p of list(d.phases).slice(0, TL.maxPhases)) {
+      const start = p ? time(p.start) : null, end = p ? time(p.end) : null;
+      if (start === null || end === null || end <= start || typeof p.playing !== 'boolean') { phasesSkipped++; continue; }
+      runs.push({ start, end, status: String(p.status ?? '').slice(0, 40), playing: p.playing });
+    }
+    runs.sort((a, b) => a.start - b.start || a.end - b.end);
+    for (const run of runs) if (run.end > duration) duration = run.end;
     const hasTime = duration > 0;
     if (!hasTime) duration = 1;
 
     // Geometry.
     const width = Math.max(320, Math.floor(tlFinite(containerWidth) ? containerWidth : 0));
     const hasCases = cases.some((c) => c && laneByID.get(String(c.player_id ?? '')));
-    const right = hasCases ? TL.caseGutter : TL.right;
-    let label = width >= 900 ? TL.label : TL.labelNarrow;
+    const right = hasCases ? Math.round(TL.caseGutter * textScale) : TL.right;
+    let label = Math.round((width >= 900 ? TL.label : TL.labelNarrow) * textScale);
     let plotWidth = width - label - right;
     if (plotWidth < TL.minPlot) plotWidth = TL.minPlot;
     const x0 = label, x1 = label + plotWidth;
@@ -1464,8 +1524,35 @@
     const laneHeight = lanes.length <= 8 ? 36 : lanes.length <= 12 ? 32 : 28;
     const tickZone = laneHeight - 15; // throws rise through this; signals sit in the strip below the baseline
 
+    // Bands: neighbouring runs with the same playing flag join into one band. A
+    // band is named after the status that fills most of it (the earliest on a
+    // tie), and the name is only drawn when the band is wide enough to hold it.
+    const bands = [];
+    let cursor = -Infinity;
+    for (const run of runs) {
+      const start = Math.max(run.start, cursor);
+      if (run.end <= start) { phasesSkipped++; continue; }
+      cursor = run.end;
+      let band = bands[bands.length - 1];
+      if (!band || band.playing !== run.playing || start - band.t1 > TL.phaseJoin) { band = { playing: run.playing, t0: start, t1: start, parts: [] }; bands.push(band); }
+      band.t1 = run.end;
+      const name = tlPhaseName(run.status), part = band.parts.find((candidate) => candidate.name === name);
+      if (part) part.seconds += run.end - start; else band.parts.push({ name, seconds: run.end - start });
+    }
+    const phaseSeconds = { playing: 0, other: 0 };
+    for (const band of bands) {
+      const main = band.parts.reduce((a, b) => (b.seconds > a.seconds ? b : a));
+      band.name = main.name;
+      band.x0 = round(xOf(band.t0)); band.x1 = round(xOf(band.t1));
+      band.label = !band.playing && band.x1 - band.x0 >= band.name.length * TL.phaseChar * textScale + TL.phasePad ? band.name : '';
+      phaseSeconds[band.playing ? 'playing' : 'other'] += band.t1 - band.t0;
+    }
+    const hasPhases = hasTime && bands.length > 0;
+
     const scoreY = TL.top + TL.scoreLane - 14;
-    let y = TL.top + TL.scoreLane;
+    const phaseTop = TL.top + TL.scoreLane, phaseY = phaseTop + 9;
+    const lanesTop = phaseTop + (hasPhases ? TL.phaseLane : 0);
+    let y = lanesTop;
     const groups = [];
     for (const l of lanes) {
       let group = groups[groups.length - 1];
@@ -1482,18 +1569,21 @@
     const height = lanesBottom + TL.axis;
     for (const c of cases) { const l = c && laneByID.get(String(c.player_id ?? '')); if (l && !l.caseID) { l.caseLevel = String(c.level || ''); l.caseID = String(c.case_id || ''); } }
 
-    const step = tlAxisStep(duration, plotWidth);
+    const step = tlAxisStep(duration, plotWidth, TL.tickGap * textScale);
     const ticks = [];
     if (hasTime) for (let t = 0; t <= duration + 1e-9 && ticks.length < 400; t += step) ticks.push({ t, x: round(xOf(t)), label: tlClock(t) });
 
     const marks = [];
+    // What the game was doing when the throw or signal a mark opens happened.
+    // Null without phase data, or where the recording named no status.
+    const phaseOf = (t) => { const run = runs.find((candidate) => t >= candidate.start && t < candidate.end) || (runs.length && t === runs[runs.length - 1].end ? runs[runs.length - 1] : null); return run ? { name: tlPhaseName(run.status), playing: run.playing } : null; };
     // Goals: every goal keeps its mark; only a label that would collide is dropped.
     let lastLabelX = -Infinity;
     goalsIn.forEach((g, i) => {
       const t = g ? time(g.time) : null;
       if (t === null) return;
       const x = round(xOf(t));
-      const showLabel = x - lastLabelX >= TL.goalLabelGap;
+      const showLabel = x - lastLabelX >= TL.goalLabelGap * textScale;
       if (showLabel) lastLabelX = x;
       marks.push({ kind: 'goal', lane: -1, t, x, y: scoreY, team: g.team === 'blue' || g.team === 'orange' ? g.team : 'none',
         blue: g.blue_score, orange: g.orange_score, showLabel, count: 1, refs: [i], primary: i });
@@ -1523,7 +1613,7 @@
         const xa = run[0].x, xb = run[run.length - 1].x;
         marks.push({ kind: 'throw', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round((xa + xb) / 2), w: round(Math.max(2, xb - xa + 2)),
           y: l.baseY, h: round(over ? tickZone + 4 : Math.max(0.25, ratio) * tickZone), shade: Math.round((0.5 + 0.5 * ratio * ratio) * 100) / 100,
-          over, goal: run.some((r) => r.goal), speed: best.speed, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+          over, goal: run.some((r) => r.goal), speed: best.speed, count: run.length, refs: run.map((r) => r.i), primary: best.i, phase: phaseOf(best.t) });
         run = null;
       };
       for (const item of items) {
@@ -1551,7 +1641,7 @@
         if (!run) return;
         const best = blind ? run[0] : run.reduce((a, b) => ((a.shadow - b.shadow) || (tlSevRank[b.sev] - tlSevRank[a.sev]) || (b.severity - a.severity)) > 0 ? b : a);
         marks.push({ kind: 'signal', lane: lanes.indexOf(l), t: run[0].t, t1: run[run.length - 1].t, x: round(run[0].x), y: l.signalY,
-          shadow: blind ? true : best.shadow, sev: blind ? '' : best.sev, concealed: blind, count: run.length, refs: run.map((r) => r.i), primary: best.i });
+          shadow: blind ? true : best.shadow, sev: blind ? '' : best.sev, concealed: blind, count: run.length, refs: run.map((r) => r.i), primary: best.i, phase: phaseOf(best.t) });
         run = null;
       };
       for (const item of items) {
@@ -1567,8 +1657,9 @@
     lanes.forEach((l, i) => { if (l.caseID) marks.push({ kind: 'case', lane: i, t: Infinity, x: x1 + 10, y: l.baseY, level: l.caseLevel, caseID: l.caseID, count: 1, refs: [], primary: -1 }); });
     marks.forEach((mark, i) => { mark.i = i; });
 
-    return { width: x1 + right, height, x0, x1, label, duration, hasTime, cap, scale, scoreY, scoreTop: TL.top, lanesTop: TL.top + TL.scoreLane, lanesBottom,
-      laneHeight, tickZone, groups, lanes, ticks, step, marks, undated, lanesDropped, blind,
+    return { width: x1 + right, height, x0, x1, label, duration, hasTime, cap, scale, scoreY, scoreTop: TL.top, lanesTop, lanesBottom,
+      laneHeight, tickZone, groups, lanes, ticks, step, marks, undated, lanesDropped, blind, textScale,
+      hasPhases, bands: hasPhases ? bands : [], phaseTop, phaseY, phaseSeconds, phasesSkipped,
       counts: { goals: goalsIn.length, throws: throwsIn.length, signals: eventsIn.length } };
   }
   // Keyboard neighbour of mark i: Left/Right walk time order, Up/Down go to the
@@ -1600,9 +1691,11 @@
     return {
       duration: m.duration_seconds, cap: m.disc_speed_cap, blind: blindReview,
       players: (m.players || []).map((p) => ({ player_id: p.player_id, name: p.name, team: p.team, first_seen: seen.get(p.player_id)?.first_seen, last_seen: seen.get(p.player_id)?.last_seen })),
-      goals: s.goals, throws: s.throws, events: m.events, cases: m.cases,
+      goals: s.goals, throws: s.throws, events: m.events, cases: m.cases, phases: s.phases,
     };
   }
+  const tlSeconds = (sec) => (sec < 90 ? `${fmtNum(sec, sec < 10 ? 1 : 0)} s` : tlClock(sec));
+  const tlBandTitle = (band) => `${band.playing ? 'Live play' : 'Not live play'} · ${tlClock(band.t0)}–${tlClock(band.t1)} into the recording · ${band.parts.map((part) => `${part.name} ${tlSeconds(part.seconds)}`).join(', ')}`;
   const tlTeamName = (t) => (t === 'blue' ? 'Blue' : t === 'orange' ? 'Orange' : 'No team');
   const tlClip = (text, max) => { const chars = Array.from(String(text)); return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : chars.join(''); };
   const tlSpan = (mark) => (mark.count > 1 && mark.t1 > mark.t ? `${tlClock(mark.t)}–${tlClock(mark.t1)}` : tlClock(mark.t));
@@ -1629,6 +1722,7 @@
     return `Review case, ${lvlName(c.level)}, ${c.player_name || c.player_id}. Not a verdict.`;
   }
 
+  const tlPhaseCell = (phase) => `${esc(phase.name)}${phase.playing ? '' : ' <span class="muted">· not live play</span>'}`;
   // Tooltip rows reuse the column labels and cell formatters of the tables below.
   function timelineTip(m, L, mark) {
     const s = m.summary || {};
@@ -1649,17 +1743,19 @@
       rows.push(['Clock', `<span class="mono">${esc(th.clock || fmtClock(th.time))}</span> <span class="muted">game clock · ${tlSpan(mark)} into the recording</span>`],
         ['Player', esc(th.player || th.player_id || '—')], ['Team', team(th.team)], ['Speed', speedCell(th.speed, L.cap)],
         ['Result', th.goal ? '<span class="goal-yes">Goal</span>' : '<span class="muted">—</span>'], ['Frame', fmtInt(th.frame_index)]);
+      if (mark.phase) rows.push(['Game phase', tlPhaseCell(mark.phase)]);
       if (mark.over) note = `Sampled above the ${fmtNum(L.cap, 1)} m/s engine cap and marked for review. A sample speed is not an independently validated violation.`;
     } else if (mark.kind === 'signal') {
       const e = m.events[mark.primary];
+      const phaseRow = mark.phase ? [['Game phase', tlPhaseCell(mark.phase)]] : [];
       const when = `<span class="mono">${fmtClock(e.timestamp)}</span> <span class="muted">${e.frame_range_start === e.frame_range_end ? `frame ${fmtInt(e.frame_range_start)}` : `frames ${fmtInt(e.frame_range_start)}–${fmtInt(e.frame_range_end)}`}</span>`;
       head = mark.count > 1 ? `${fmtInt(mark.count)} signals <span class="muted">· ${mark.concealed ? 'earliest' : 'strongest'} shown · Detections</span>` : 'Signal <span class="muted">· Detections</span>';
       if (mark.concealed) {
-        rows.push(['Detector', '<span class="blind-mask">Detector hidden</span>'], ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ['Severity', '<span class="blind-mask">hidden</span>']);
+        rows.push(['Detector', '<span class="blind-mask">Detector hidden</span>'], ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ...phaseRow, ['Severity', '<span class="blind-mask">hidden</span>']);
         note = 'Blinded review is enabled. Record your observation before revealing the detector.';
       } else {
         rows.push(['Detector', `<span class="mono">${esc(e.detector_id)}</span>${e.is_shadow ? ' <span class="tag">shadow</span>' : ''} <span class="muted">${esc(e.detector_name || '')}</span>`],
-          ['Player', esc(e.player_name || e.player_id)], ['Match time', when],
+          ['Player', esc(e.player_name || e.player_id)], ['Match time', when], ...phaseRow,
           ['Severity · confidence', `${sevBadge(e.severity_label)} <span class="muted">${fmtNum(e.severity, 2)} · ${fmtNum(e.confidence, 2)} confidence</span>`]);
         if (e.observed_value) rows.push(['Observed', esc(tlClip(e.observed_value, 120))]);
         note = e.is_shadow ? 'Observation-only (shadow): adds zero score. A detector observation, not a cheating verdict.' : 'A detector observation, not a cheating verdict.';
@@ -1676,6 +1772,16 @@
   function timelineSVG(m, L) {
     const n = (v) => Math.round(v * 10) / 10;
     const parts = [];
+    // Game phases, behind everything: a quiet band wherever the game was not in
+    // live play, and a strip under the score lane that names the long breaks.
+    if (L.hasPhases) {
+      for (const band of L.bands) if (!band.playing) parts.push(`<rect class="tl-band" x="${band.x0}" y="${L.phaseTop}" width="${n(Math.max(0.5, band.x1 - band.x0))}" height="${L.lanesBottom - L.phaseTop}"><title>${esc(tlBandTitle(band))}</title></rect>`);
+      parts.push(`<text class="tl-cap" x="12" y="${L.phaseY + 4}">${L.label >= 180 ? 'Live play' : 'Play'}</text><line class="tl-absent" x1="${L.x0}" x2="${L.x1}" y1="${L.phaseY}" y2="${L.phaseY}"/>`);
+      for (const band of L.bands) {
+        if (band.playing) parts.push(`<line class="tl-play" x1="${band.x0}" x2="${band.x1}" y1="${L.phaseY}" y2="${L.phaseY}"><title>${esc(tlBandTitle(band))}</title></line>`);
+        else if (band.label) parts.push(`<text class="tl-phase" x="${n((band.x0 + band.x1) / 2)}" y="${L.phaseY + 3.5}" text-anchor="middle">${esc(band.label)}</text>`);
+      }
+    }
     // Grid and axis.
     for (const tick of L.ticks) parts.push(`<line class="tl-grid" x1="${tick.x}" x2="${tick.x}" y1="${L.scoreTop + 6}" y2="${L.lanesBottom}"/>`);
     parts.push(`<line class="tl-axis" x1="${L.x0}" x2="${L.x1}" y1="${L.lanesBottom}" y2="${L.lanesBottom}"/>`);
@@ -1742,6 +1848,8 @@
       has((mark) => mark.kind === 'signal' && !mark.concealed && !mark.shadow) ? `${sw(diamond(9, 'tl-signal tl-sev-medium'))}Filled: scoring signal` : '',
       has((mark) => mark.count > 1) ? `${sw('<g class="tl-throw"><rect class="tl-tick" x="1" y="5" width="6" height="9" fill-opacity=".8"/></g><g class="tl-signal tl-sev-low tl-shadow"><path class="tl-more" d="M21.5 3.4L26.1 8L21.5 12.6L16.9 8Z"/><path class="tl-glyph" d="M17 3.4L21.6 8L17 12.6L12.4 8Z"/></g>', 28)}Widened or doubled: several events too close to separate` : '',
       L.lanes.length ? `${sw('<line class="tl-base" x1="1" x2="10" y1="8" y2="8"/><line class="tl-absent" x1="10" x2="18" y1="8" y2="8"/>')}Player present in the recording` : '',
+      L.hasPhases ? `${sw('<line class="tl-play" x1="1" x2="17" y1="8" y2="8"/>')}Live play` : '',
+      L.hasPhases ? `${sw('<rect class="tl-band" x="1" y="1" width="16" height="14"/>')}Shaded: the game was not in play (after a goal, round start, before or after the match)` : '',
     ].filter(Boolean);
     return `<ul class="tl-legend">${items.map((item) => `<li>${item}</li>`).join('')}</ul>`;
   }
@@ -1758,13 +1866,16 @@
     const width = Math.floor(plot.clientWidth);
     if (!width || (!force && fig.tlWidth === width)) return;
     fig.tlWidth = width;
-    const L = timelineLayouts[idx] = timelineLayout(timelineData(m), width);
+    // SVG text is sized in rem, so the layout needs the same scale to make room for it.
+    const textScale = Math.min(2, Math.max(1, (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16) / 16));
+    const L = timelineLayouts[idx] = timelineLayout({ ...timelineData(m), textScale }, width);
     const active = document.activeElement, focused = active && fig.contains(active) ? active.getAttribute('data-tl-mark') : null;
     const s = m.summary;
     const clustered = L.marks.filter((mark) => mark.count > 1).length;
     fig.querySelector('[data-tl-sum]').innerHTML = [
       `${fmtInt(L.counts.goals)} goal${L.counts.goals === 1 ? '' : 's'}`, `${fmtInt(L.counts.throws)} throw${L.counts.throws === 1 ? '' : 's'}`,
       `${fmtInt(L.counts.signals)} signal${L.counts.signals === 1 ? '' : 's'}`, `${fmtInt(L.lanes.length)} player${L.lanes.length === 1 ? '' : 's'}`, L.hasTime ? esc(fmtDur(L.duration)) : '',
+      L.hasPhases ? `${tlClock(L.phaseSeconds.playing)} live play` : '',
     ].filter(Boolean).join(sep);
     if (!L.hasTime && !L.marks.length) {
       plot.innerHTML = '<p class="empty">This recording carried no timed goals, throws or detector signals to place on a timeline. That is not proof of fair play.</p>';
@@ -1775,6 +1886,9 @@
       s ? (L.counts.throws ? '' : (s.throw_source ? 'No disc release was observed during live play.' : 'This recording did not carry a reliable disc-release signal.')) : 'Goals and throws are unavailable for this stored match; only detector signals are drawn.',
       clustered ? `${fmtInt(clustered)} mark${clustered === 1 ? ' stands' : 's stand'} for several events too close to separate at this width; every event stays in the tables.` : '',
       L.undated ? `${fmtInt(L.undated)} event${L.undated === 1 ? '' : 's'} had no usable time and appear only in the tables.` : '',
+      L.hasPhases ? '' : (s && L.hasTime ? 'Game phases are not drawn: this match carries no game-status runs (the recording named no game status, or its raw ticks were archived before phases were recorded). An unshaded timeline is not a claim of continuous live play.' : ''),
+      L.hasPhases && s && s.phases_merged > 0 ? `Phase bands are approximate: ${fmtInt(s.phases_merged)} very short status run${s.phases_merged === 1 ? ' was' : 's were'} folded into a neighbour.` : '',
+      L.phasesSkipped ? `${fmtInt(L.phasesSkipped)} game-status run${L.phasesSkipped === 1 ? '' : 's'} had no usable span and ${L.phasesSkipped === 1 ? 'is' : 'are'} not drawn.` : '',
       L.lanesDropped ? `${fmtInt(L.lanesDropped)} further player${L.lanesDropped === 1 ? ' is' : 's are'} not drawn; the tables list everyone.` : '',
     ].filter(Boolean);
     plot.innerHTML = timelineSVG(m, L);
@@ -2005,7 +2119,17 @@
     return `<details class="sub"><summary>Native capture provenance and limitations</summary><p class="help">This describes the recorded source, not authenticated gameplay. Original protobuf records are retained alongside derived session views.</p><dl class="kv">${fields.map(([key, value]) => `<dt>${esc(key)}</dt><dd class="mono">${esc(value || 'Unknown')}</dd>`).join('')}</dl>${Array.isArray(n.limitations) && n.limitations.length ? `<ul class="health-list">${n.limitations.map(value => `<li>${esc(value)}</li>`).join('')}</ul>` : ''}</details>`;
   }
 
-  function matchSection(m, source) {
+  // What the upload did with a recording whose match was already stored. The
+  // engine's own sentences (intake_note, source_detail) are shown as written.
+  function intakeNotices(m, intake) {
+    const again = intake && intake.token ? `<button class="btn btn-sm" data-reanalyze="${esc(intake.token)}">Re-analyze this recording</button>` : '';
+    if (m.already_analyzed) return [`<p class="notice info" data-intake-note><strong>Already analyzed.</strong> ${esc(m.intake_note || 'This recording was already analyzed; the stored analysis is shown and nothing was changed.')}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}${again}</p>`];
+    if (intake && intake.replacedSource) return [`<p class="notice" data-intake-note><strong>Stored recording replaced.</strong> The previous recording's raw ticks, findings and scores for this match were deleted (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots) and this file was analyzed instead. Labels on the previous findings stay in the evidence library and are not attached to the new findings. Replacing takes no backup of its own.</p>`];
+    if (m.replaced) return [`<p class="notice" data-intake-note>Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).${m.source_status === 'extends' ? ' This file completes the stored copy, which was cut short.' : ''}${m.source_detail ? ` <span class="muted">Compared with the stored recording: ${esc(m.source_detail)}.</span>` : ''}</p>`];
+    return [];
+  }
+
+  function matchSection(m, source, intake) {
     const idx = views.push(m) - 1;
     viewState[idx] = { detector: '', all: false };
     noteMatchRendered(m);
@@ -2020,7 +2144,7 @@
       ? `<div class="score"><div class="pts"><span style="color:var(--blue)">${fmtInt(m.blue_score)}</span><span class="dash">–</span><span style="color:var(--orange)">${fmtInt(m.orange_score)}</span></div><div class="lbl"><span>Blue</span><span>Orange</span></div></div>`
       : '<div class="score none">No final score in this replay</div>';
     const notices = (m.source === 'tape' ? ['<p class="notice">Native tape capture. Session JSON and Spark clips are derived viewing representations; keep the original .tape as source evidence. Captured events and a valid file do not establish authoritative gameplay or confirmed cheating.</p>'] : [])
-      .concat(m.replaced ? [`<p class="notice">Re-analyzed: the previous analysis of this match was cleared (${fmtInt(m.cleared_events)} events, ${fmtInt(m.cleared_scores)} score snapshots).</p>`] : [])
+      .concat(intakeNotices(m, intake))
       .concat(m.warnings.map((w) => `<p class="notice bad">${esc(w)}</p>`)).join('');
     const tel = m.telemetry ? `${sep}Stored ${fmtInt(m.telemetry.frames_inserted)} frames${m.telemetry.frames_ignored ? ` (${fmtInt(m.telemetry.frames_ignored)} already present)` : ''}${m.telemetry.ticks_inserted || m.telemetry.ticks_ignored ? `, ${fmtInt(m.telemetry.ticks_inserted)} raw ticks${m.telemetry.ticks_ignored ? ` (${fmtInt(m.telemetry.ticks_ignored)} present)` : ''}` : ''}` : '';
     return `<details class="match" id="${secId(m.match_id)}" open>
@@ -2049,7 +2173,55 @@
 
   // ---- failure card ---------------------------------------------------------
   const diagTexts = [];
+  // A result card can send its file again (Re-analyze, Replace stored recording).
+  // Only the File handle is kept, by token; nothing is read until it is asked for.
+  const intakeFiles = new Map();
+  let intakeSeq = 0;
+  function rememberIntakeFile(file) {
+    const token = String(++intakeSeq);
+    intakeFiles.set(token, file);
+    if (intakeFiles.size > 200) intakeFiles.delete(intakeFiles.keys().next().value);
+    return token;
+  }
+  // A different recording of a stored match arrived. Nothing was written; show
+  // both sides and make replacing an explicit, confirmed, separate step.
+  function conflictCard(res) {
+    const c = res.source_conflict || {}, id = String(res.match_id || c.match_id || '');
+    const token = String(res.intake_token ?? ''), file = intakeFiles.get(token);
+    const kv = (rows) => `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+    const none = (text) => `<span class="muted">${esc(text)}</span>`;
+    const stored = kv([
+      ['Recording', c.stored_source_file ? esc(c.stored_source_file) : none('File name not recorded')],
+      ['Analyzed', c.stored_analyzed_at ? timeAgo(c.stored_analyzed_at) : none('Unknown')],
+      ['Match start', c.stored_start_time ? esc(fmtStart(c.stored_start_time)) : none('Unknown')],
+      ['Raw ticks', Number.isFinite(c.stored_raw_ticks) && c.stored_raw_ticks > 0 ? fmtInt(c.stored_raw_ticks) : none('None active (archived, or a legacy recording)')],
+    ]);
+    const arrived = kv([
+      ['File', esc(res.file || (file && file.name) || 'Unknown')],
+      ['Size', file && Number.isFinite(file.size) ? esc(fmtBytes(file.size)) : none('Unknown')],
+      ['SHA-256', res.sha256 ? `<span class="mono">${esc(String(res.sha256).slice(0, 16))}…</span>` : none('Not reported')],
+      ['How it differs', c.detail ? esc(c.detail) : none('The engine gave no detail')],
+    ]);
+    const consequence = c.consequence || "Replacing deletes the stored recording's raw ticks, frames, findings and scores for this match and analyzes this file instead. Labels on the previous recording's findings stay in the library but will not be attached to the new findings.";
+    const replace = file
+      ? `<button class="btn" data-replace-ask aria-expanded="false">Replace stored recording…</button>`
+      : '<span class="help">To replace the stored recording, choose this file again.</span>';
+    return `<section class="fail conflict" id="conflict-${esc(secId(id))}" data-conflict-card>
+      <div class="ftitle"><span>${esc(res.file)}</span><span class="tag warn">different recording · stored analysis kept</span></div>
+      <p>A different recording of match <span class="mono">${esc(id)}</span> is already stored. Nothing was changed: the stored analysis was kept and this file was not analyzed.</p>
+      <div class="conflict-grid"><div><h4>Stored on this PC</h4>${stored}</div><div><h4>This upload</h4>${arrived}</div></div>
+      <p class="help">A match id names a match, not a recording: two observers, a late joiner and a clip all carry the same id. Keep the recording that covers the match best.</p>
+      <div class="studio-actions"><button class="btn" data-open="${esc(id)}">Open the stored match</button>${replace}</div>
+      <div class="conflict-confirm" data-replace-confirm hidden>
+        <h4>Replace the stored recording of this match?</h4>
+        <ul><li>${esc(consequence)}</li><li><strong>No automatic backup is taken.</strong> Back up the database first if you may want the stored recording, its findings or its scores back.</li><li>This cannot be undone from the app except by restoring a backup.</li></ul>
+        <label class="check-inline"><input type="checkbox" data-replace-ack> I understand that the stored recording of this match will be deleted</label>
+        <div class="studio-actions"><button class="btn" data-replace-backup>Back up database now</button><button class="btn btn-danger" data-replace-source="${esc(token)}" disabled>Delete stored recording and analyze this file</button><button class="btn btn-text" data-replace-cancel>Keep the stored recording</button></div>
+        <p class="help" data-replace-status role="status" aria-live="polite"></p>
+      </div></section>`;
+  }
   function failCard(res) {
+    if (res.already_stored && res.source_conflict) return conflictCard(res);
     const d = res.diagnostic;
     let body = '';
     if (d) {
@@ -2068,7 +2240,8 @@
         <div><h4>First 160 bytes</h4><pre>${esc(d.head_text) || '<span class="muted">(empty)</span>'}</pre><pre>${esc(d.head_hex) || '<span class="muted">(empty)</span>'}</pre></div>
         <div class="full"><button class="btn btn-text btn-sm" data-copy="${n}">Copy this diagnostic</button></div></div>`;
     } else if (res.already_stored) {
-      body = `<p class="muted">This direct API request did not enable replacement. Upload through the desktop page to re-analyze automatically, or <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">open the stored match</button>.</p>`;
+      const token = String(res.intake_token ?? '');
+      body = `<p class="muted">Nothing was changed: the stored analysis was kept and this file was not analyzed. <button class="btn btn-text btn-sm" data-open="${esc(res.match_id)}">Open the stored match</button>${intakeFiles.has(token) ? `, or, if this is the same recording, <button class="btn btn-text btn-sm" data-reanalyze="${esc(token)}">re-analyze it</button>` : ''}.</p>`;
     }
     return `<section class="fail"><div class="ftitle"><span>${esc(res.file)}</span><span class="tag ${res.already_stored ? '' : 'bad'}">${res.already_stored ? 'already stored' : 'not analyzed'}</span></div>
       ${res.already_stored ? `<p>${esc(res.error)}</p>${body}` : `<p>Analysis could not finish. Your original recording was not modified.</p><p class="help">Check the details below, then <a href="#h-upload">choose another recording</a> or retry after resolving the problem.</p><details class="sub"><summary>Analysis error &amp; file diagnostics</summary><p class="err">${esc(res.error)}</p>${body}</details>`}</section>`;
@@ -2119,17 +2292,35 @@
   };
   const overall = (text, sub = '') => { const el = $('overall'); if (el) el.innerHTML = `${esc(text)}<span class="muted">${esc(sub)}</span>`; };
   const responseItems = (res) => (res.matches && res.matches.length ? res.matches : [res]);
-  function showResponse(res) {
-    const fileError = res.matches && res.matches.length && res.error ? { file: res.file, error: res.error } : null;
+  // item is the queue entry the response belongs to: its file token lets a card
+  // send the same file again, and its flags say what was asked for.
+  function showResponse(res, item = {}) {
+    // The engine mirrors the first match's error into the file entry when no match
+    // was analyzed; only an error of the file itself gets its own card.
+    const fileError = res.matches && res.matches.length && res.error && !res.matches.some((m) => m.error === res.error) ? { file: res.file, error: res.error } : null;
     if (fileError) prepend(failCard(fileError));
-    responseItems(res).slice().reverse().forEach((m) => prepend(m.ok ? matchSection(m.match, 'from upload') : failCard({ ...res, ...m, match: null })));
-    let analyzed = 0, stored = 0, failed = fileError ? 1 : 0;
-    responseItems(res).forEach((m) => { if (m.ok) analyzed++; else if (m.already_stored) stored++; else failed++; });
-    return { analyzed, stored, failed };
+    const counts = { analyzed: 0, known: 0, conflicts: 0, stored: 0, failed: fileError ? 1 : 0 };
+    responseItems(res).slice().reverse().forEach((m) => {
+      if (m.ok && m.match) {
+        const known = !!(m.already_analyzed || m.match.already_analyzed);
+        const replacedSource = !known && !!item.replaceSource && m.match.replaced === true;
+        document.getElementById('conflict-' + secId(m.match.match_id))?.remove();
+        prepend(matchSection(m.match, known ? 'already analyzed · stored analysis' : 'from upload', { token: item.token, replacedSource }));
+        counts[known ? 'known' : 'analyzed']++;
+      } else {
+        prepend(failCard({ ...res, ...m, match: null, intake_token: item.token }));
+        counts[m.already_stored ? (m.source_conflict ? 'conflicts' : 'stored') : 'failed']++;
+      }
+    });
+    return counts;
   }
   function processQueueItem(item, i) {
     return new Promise((resolve) => {
       const fd = new FormData(); fd.append('files', item.file, item.file.name);
+      // One intake flag at most. replace_source implies force on the engine and is
+      // only ever set by the confirmed Replace action, never by the Re-analyze switch.
+      const intakeFlag = item.replaceSource ? 'replace_source' : item.force ? 'force' : '';
+      if (intakeFlag) fd.append(intakeFlag, '1');
       const xhr = currentXHR = new XMLHttpRequest();
       xhr.open('POST', 'api/analyze'); xhr.responseType = 'json'; xhr.timeout = 30 * 60 * 1000;
       setQueueState(i, 'uploading 0%'); setQueueBar(i, 0);
@@ -2160,7 +2351,7 @@
     if (busy) return;
     busy = true; queueStopped = false; drop.setAttribute('aria-busy', 'true');
     $('queue-actions').innerHTML = '<button id="cancel-queue" class="btn">Stop queue</button><a class="btn btn-text" href="#h-history">Browse stored results</a><span class="help">Analysis progress is indeterminate. Stopping requests cancellation; the current file may finish.</span>';
-    const totals = { analyzed: 0, stored: 0, failed: 0, cancelled: 0 };
+    const totals = { analyzed: 0, known: 0, conflicts: 0, stored: 0, failed: 0, cancelled: 0 };
     for (const i of indices) {
       if (queueStopped) { queue[i].state = 'cancelled'; setQueueState(i, 'not started · queue stopped', '', true); totals.cancelled++; continue; }
       const item = queue[i]; item.state = 'running';
@@ -2169,24 +2360,31 @@
       if (result.error || !result.response) {
         item.state = 'failed'; item.error = result.error || 'empty response'; setQueueState(i, 'failed · '+item.error, 'bad', true); totals.failed++;
       } else {
-        const counts = showResponse(result.response);
-        Object.keys(counts).forEach((key) => { totals[key] += counts[key]; });
-        item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : 'stored';
-        setQueueState(i, counts.analyzed ? 'complete · results available' : counts.failed ? 'analysis did not complete · see details' : 'stored results available', counts.failed ? 'bad' : 'ok', !!counts.failed);
-        if (counts.analyzed) { const match = responseItems(result.response).find(r => r.ok && r.match); if (match) $('ust-'+i).insertAdjacentHTML('afterend', ` <button class="btn btn-text btn-sm" data-open="${esc(match.match.match_id)}">Open results</button>`); }
+        const counts = showResponse(result.response, item);
+        Object.keys(counts).forEach((key) => { totals[key] = (totals[key] || 0) + counts[key]; });
+        item.state = counts.analyzed ? 'done' : counts.failed ? 'failed' : counts.conflicts ? 'conflict' : 'stored';
+        // Say what happened to the file, never "complete" for a file that was not analyzed.
+        const text = counts.failed ? 'analysis did not complete · see details'
+          : counts.conflicts ? 'different recording · nothing changed · see Results'
+          : counts.analyzed ? (item.replaceSource ? 'stored recording replaced · results available' : counts.known ? 'complete · part was already analyzed' : 'complete · results available')
+          : counts.known ? 'already analyzed · nothing changed' : 'already stored · nothing changed · see Results';
+        setQueueState(i, text, counts.failed ? 'bad' : counts.conflicts ? '' : 'ok', !!counts.failed);
+        if (counts.analyzed || counts.known) { const match = responseItems(result.response).find(r => r.ok && r.match); if (match) $('ust-'+i).insertAdjacentHTML('afterend', ` <button class="btn btn-text btn-sm" data-open="${esc(match.match.match_id)}">Open results</button>${!counts.analyzed && item.token ? ` <button class="btn btn-text btn-sm" data-reanalyze="${esc(item.token)}">Re-analyze</button>` : ''}`); }
       }
     }
     busy = false; drop.removeAttribute('aria-busy');
     $('files').value = ''; $('folder').value = '';
     const failed = queue.filter((item) => item.state === 'failed' || item.state === 'cancelled').length;
     $('queue-actions').innerHTML = `${failed ? '<button id="retry-failed" class="btn">Retry failed / not started</button>' : ''}<button id="clear-queue" class="btn btn-text">Clear queue</button>`;
-    const parts = [`${totals.analyzed} analyzed`]; if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} did not complete`); if (totals.cancelled) parts.push(`${totals.cancelled} not started`);
+    const parts = [`${totals.analyzed} analyzed`]; if (totals.known) parts.push(`${totals.known} already analyzed`); if (totals.conflicts) parts.push(`${totals.conflicts} different recording${totals.conflicts === 1 ? '' : 's'} of a stored match (nothing changed)`); if (totals.stored) parts.push(`${totals.stored} already stored`); if (totals.failed) parts.push(`${totals.failed} did not complete`); if (totals.cancelled) parts.push(`${totals.cancelled} not started`);
     overall(queueStopped ? 'Queue stopped' : 'Queue complete', parts.join(' · '));
-    setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : 'ok');
+    setStatus(`${queueStopped ? 'Stopped' : 'Done'}: ${parts.join(', ')}.`, totals.failed || totals.cancelled ? 'err' : totals.conflicts ? '' : 'ok');
     refreshPanels();
-    if (totals.analyzed) $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    if (totals.analyzed || totals.known || totals.conflicts) $('results-block').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
   }
-  function analyze(fileList) {
+  // flags: { force, replaceSource } for every file of this queue. Without flags
+  // the Re-analyze switch decides; replaceSource never comes from a switch.
+  function analyze(fileList, flags) {
     if (busy) return;
     const all = Array.from(fileList || []);
     const supported = all.filter((f) => /\.(echoreplay|tape|json)$/i.test(f.name));
@@ -2197,7 +2395,8 @@
       else if (all.length) setStatus('No supported .echoreplay, native .tape, or legacy .json files were found.', 'err');
       return;
     }
-    queue = files.map((file) => ({ file, state: 'waiting' }));
+    const force = flags ? !!flags.force : !!$('reanalyze')?.checked;
+    queue = files.map((file) => ({ file, state: 'waiting', token: rememberIntakeFile(file), force, replaceSource: !!(flags && flags.replaceSource) }));
     if (queuePanel) queuePanel.remove();
     queuePanel = document.createElement('div'); queuePanel.innerHTML = uploadList(files); drop.appendChild(queuePanel);
     drop.classList.add('busy'); $('drop-idle').hidden = true;
@@ -2216,7 +2415,7 @@
   $('files').addEventListener('change', (e) => analyze(e.target.files));
   $('folder').addEventListener('change', (e) => analyze(e.target.files));
   $('clear').addEventListener('click', () => {
-    $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0;
+    $('results').innerHTML = ''; views.length = 0; diagTexts.length = 0; intakeFiles.clear();
     $('results-block').hidden = true; $('clear').hidden = true; $('nav-results').hidden = true;
     setStatus('Results cleared. Stored matches stay in the history below.');
   });
@@ -2550,6 +2749,31 @@
     } finally { if (request === investigationRequest) $('lab-dialog-content').removeAttribute('aria-busy'); }
   }
 
+  // Result of the last portable-library import (POST api/library). Rows this PC
+  // kept are the merge working as designed, so they are reported as "kept
+  // local", never as rejected, and never turn the import into a failure.
+  let lastLibraryImport = null;
+  function libraryImportView(result) {
+    const r = result || {};
+    const sum = (o) => Object.values(o && typeof o === 'object' ? o : {}).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+    const singular = { labels: 'label', reviews: 'review', opportunities: 'opportunity', notes: 'note', filters: 'filter' };
+    const kinds = (o) => Object.entries(o && typeof o === 'object' ? o : {}).filter(([, n]) => Number.isFinite(n) && n > 0).map(([kind, n]) => `${fmtInt(n)} ${esc(n === 1 && Object.hasOwn(singular, kind) ? singular[kind] : kind)}`).join(', ');
+    const imported = sum(r.imported), rejected = sum(r.rejected);
+    // kept_local is the superset; an engine from before it only reports the newer-local subset.
+    const keptAll = r.kept_local ? sum(r.kept_local) : sum(r.kept_newer_local), newer = Math.min(keptAll, sum(r.kept_newer_local));
+    const examples = (Array.isArray(r.kept_local_examples) ? r.kept_local_examples : Array.isArray(r.kept_newer_local_examples) ? r.kept_newer_local_examples : []).slice(0, 20);
+    const parts = [`Imported ${fmtInt(imported)} evidence record${imported === 1 ? '' : 's'}`];
+    if (keptAll) parts.push(`${fmtInt(keptAll)} kept local (newer label on this PC)`);
+    if (rejected) parts.push(`rejected ${fmtInt(rejected)}`);
+    const status = `${parts.join(' · ')}.${rejected ? ` ${r.first_error || 'Inspect the library for invalid or overlapping records.'}` : ''}`;
+    const tone = rejected || r.ok === false ? 'err' : 'ok';
+    const keptDetail = keptAll > newer ? ` <span class="muted">${fmtInt(newer)} newer on this PC; ${fmtInt(keptAll - newer)} where the imported row is equally old but different, or carries no review time.</span>` : '';
+    const html = `<div class="import-result" data-library-result><h4>Last import</h4><dl class="kv"><dt>Imported</dt><dd>${fmtInt(imported)}${kinds(r.imported) ? ` <span class="muted">${kinds(r.imported)}</span>` : ''}</dd>
+      <dt>Kept local</dt><dd>${keptAll ? `${fmtInt(keptAll)} <span class="muted">${kinds(r.kept_local || r.kept_newer_local)}</span><span class="explain">Kept local (newer label on this PC): this PC's own label or review stayed and the imported row was not applied. This is not an error.${keptDetail}</span>` : '0'}</dd>
+      <dt>Rejected</dt><dd>${rejected ? `<span class="bad-text">${fmtInt(rejected)}</span> <span class="muted">${kinds(r.rejected)}</span>${r.first_error ? `<span class="explain">${esc(r.first_error)}</span>` : ''}` : '0'}</dd></dl>
+      ${examples.length ? `<details class="sub"><summary>Rows kept local${keptAll > examples.length ? ` · first ${fmtInt(examples.length)} of ${fmtInt(keptAll)}` : ''}</summary><ul class="health-list">${examples.map((text) => `<li>${esc(text)}</li>`).join('')}</ul></details>` : ''}</div>`;
+    return { imported, keptLocal: keptAll, rejected, status, tone, html };
+  }
   async function loadStudio() {
     if (deferUntilOpen('advanced-tools')) return;
     const el = $('studio');
@@ -2572,7 +2796,7 @@
         <div class="studio-card"><h3>Side-by-side players</h3><div class="form-row"><label class="form-field">Player A<select id="compare-a">${playerOptions}</select></label><label class="form-field">Player B<select id="compare-b">${playerOptions}</select></label></div><div class="studio-actions"><button class="btn" id="compare-players" ${players.length<2?'disabled':''}>Compare</button></div></div>
         <div class="studio-card wide"><h3>Queue &amp; performance</h3><div class="health-grid"><div class="health-card"><span>Running</span><b>${fmtInt(q.running)}</b></div><div class="health-card"><span>Failed</span><b>${fmtInt(q.failed)}</b></div><div class="health-card"><span>Average duration</span><b>${fmtInt(q.average_duration_ms)} ms</b></div></div><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Duration</th></tr></thead><tbody>${queueRows || '<tr><td colspan="4" class="muted">No queue jobs yet.</td></tr>'}</tbody></table></div>
         <div class="studio-card"><h3>First-run readiness</h3><p><span class="tag ${s.ready?'ok':'warn'}">${s.ready?'ready':'attention needed'}</span></p><p>Evidence folder ${s.writable?'writable':'not writable'} · Spark ${s.spark_installed?'ready':'not found'} · ${fmtInt(s.stored_matches)} matches</p><div class="studio-actions"><button class="btn" id="show-setup">Setup guide</button></div></div>
-        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports match labels, blinded event reviews, ground-truth opportunities, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div></div>
+        <div class="studio-card"><h3>Portable evidence library</h3><p>Exports match labels, blinded event reviews, ground-truth opportunities, notes, bookmarks, and saved filters—never raw player telemetry.</p><input id="library-file" type="file" accept=".json"><div class="studio-actions"><a class="btn" href="api/library">Export library</a><button class="btn" id="import-library">Import selected</button></div>${lastLibraryImport ? libraryImportView(lastLibraryImport).html : ''}</div>
         <div class="studio-card"><h3>Saved investigation views</h3><div class="studio-actions">${filters.map(x=>`<button class="btn btn-sm" data-load-filter="${esc(x.filter_json)}">${esc(x.name)}</button>`).join('') || '<span class="muted">No saved filters.</span>'}</div><div class="studio-actions"><button class="btn" id="save-filter">Save current History filter</button></div></div>
         <div class="studio-card"><h3>Backup &amp; restore</h3><label class="form-field">Verified backup<select id="restore-backup">${backups.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} · ${fmtBytes(x.bytes)}</option>`).join('')}</select></label><div class="studio-actions"><button class="btn" id="backup-db-studio">Create backup</button><button class="btn" id="restore-db" ${backups.length?'':'disabled'}>Restore on restart</button></div><p class="metric-note">Restore first creates a safety backup and preserves the replaced database.</p></div>
         <div class="studio-card"><h3>Adversarial probes</h3><p>${(synth.probes||[]).map(x=>`<span class="tag" title="${esc(x.expected)}">${esc(x.id)}</span>`).join(' ')}</p><p class="metric-note">Deterministic synthetic scenarios cover legal motion, contact ambiguity, tracking loss, clock corruption, and disc-cap breaches.</p></div>
@@ -2591,20 +2815,37 @@
     }).join('')}</tbody></table></div>`;
   }
 
+  // The Regression Lab keeps two different absences apart. A tested label whose
+  // detector no longer fires is detector behaviour ("stayed quiet"). A label whose
+  // match has no current analysis on this PC was never tested: it is neither a
+  // pass nor a failure, and it is listed on its own with what to do about it.
+  function regressionHTML(r) {
+    const items = Array.isArray(r.items) ? r.items : [], untested = Array.isArray(r.no_current_analysis_items) ? r.no_current_analysis_items : [];
+    const untestedCount = Number.isFinite(r.no_current_analysis) ? r.no_current_analysis : untested.length;
+    if (!r.total && !untestedCount) return '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
+    const failed = items.filter((x) => !x.passed);
+    // The lab sits in a half-width card, where a table with a player column does
+    // not fit (its last column, the only way to open the match, was cut off).
+    // Each label is a list entry instead: who and where, the expectation, the outcome.
+    const entry = (x, outcome, stored = true) => `<li><div class="lab-entry-head"><span class="mono">${esc(x.detector_id)}</span>${who(x.player_name, x.player_id)}<span class="spacer"></span>${where(x, stored)}</div><p>${esc(x.expectation)}${x.comment ? ` <span class="muted">· ${esc(x.comment)}</span>` : ''}</p><p class="lab-now">${outcome}</p></li>`;
+    const where = (x, stored = true) => (stored ? `<button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button>` : `<span class="mono">${esc(x.match_id)}</span> · ${fmtInt(x.frame_index)}`);
+    const now = (x) => (x.current
+      ? `<b>Detector fires here.</b> Severity ${fmtNum(x.current.severity, 2)} · confidence ${fmtNum(x.current.confidence, 2)}${x.current.observed_value ? ` · ${esc(x.current.observed_value)}` : ''}`
+      : '<b>Detector stayed quiet.</b> The match was analyzed here and no signal was raised near this frame.');
+    const matchesCount = Number.isFinite(r.no_current_analysis_matches) ? r.no_current_analysis_matches : new Set(untested.map((x) => x.match_id)).size;
+    const state = (x) => (x.analysis_state === 'match_not_stored' ? 'Match not stored on this PC' : x.analysis_state === 'not_analyzed' ? 'Stored, never analyzed here' : 'No current analysis');
+    return `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div>${untestedCount ? `<div class="health-card"><span>Not tested</span><b>${fmtInt(untestedCount)}</b><small class="muted">no current analysis for ${fmtInt(matchesCount)} match${matchesCount === 1 ? '' : 'es'}</small></div>` : ''}</div>
+      ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><ul class="lab-entries">${failed.map((x) => entry(x, now(x))).join('')}</ul></details>` : (r.total ? '<p class="summary-note regression-pass">Every tested expectation currently passes.</p>' : '<p class="summary-note">No label could be tested yet.</p>')}
+      ${untestedCount ? `<details class="sub" ${failed.length ? '' : 'open'} data-regression-untested><summary><span class="tog"></span><h3>No current analysis for this match<span class="count">${fmtInt(untestedCount)}</span></h3></summary><p class="summary-note">These labels were not tested, so they are neither passing nor failing. This is not the detector staying quiet: there is no analysis on this PC to compare them with.</p>${untested.length ? `<ul class="lab-entries">${untested.map((x) => entry(x, `<b>${esc(state(x))}.</b>${x.analysis_note ? ` ${esc(x.analysis_note)}` : ''}`, x.analysis_state !== 'match_not_stored')).join('')}</ul>` : ''}</details>` : ''}
+      <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.${r.superseded_labels > 0 ? ` ${fmtInt(r.superseded_labels)} older label${r.superseded_labels === 1 ? '' : 's'} of a re-analyzed observation ${r.superseded_labels === 1 ? 'was' : 'were'} folded into the newest one, so each observation counts once.` : ''}</p>`;
+  }
   async function loadRegression() {
     if (deferUntilOpen('advanced-calibration')) return;
     const el = $('regression');
     try {
       const r = await getJSON('api/lab/regression');
       el.className = '';
-      if (!r.total) {
-        el.innerHTML = '<p class="empty">No expectations yet. Label detector rows Correct or False positive to build the suite.</p>';
-        return;
-      }
-      const failed = (r.items || []).filter((x) => !x.passed);
-      el.innerHTML = `<div class="health-grid"><div class="health-card"><span>Passing</span><b class="regression-pass">${fmtInt(r.passed)}</b></div><div class="health-card"><span>Failing</span><b class="regression-fail">${fmtInt(r.failed)}</b></div></div>
-        ${failed.length ? `<details class="sub" open><summary><span class="tog"></span><h3>Needs attention<span class="count">${fmtInt(failed.length)}</span></h3></summary><table><thead><tr><th>Detector</th><th>Player</th><th>Expectation</th><th>Match / frame</th></tr></thead><tbody>${failed.map((x) => `<tr><td class="mono">${esc(x.detector_id)}</td><td>${who(x.player_name, x.player_id)}</td><td>${esc(x.expectation)}${x.comment ? `<span class="explain">${esc(x.comment)}</span>` : ''}</td><td><button class="btn btn-text btn-sm" data-open="${esc(x.match_id)}">${esc(x.match_id)} · ${fmtInt(x.frame_index)}</button></td></tr>`).join('')}</tbody></table></details>` : '<p class="summary-note regression-pass">Every reviewed expectation currently passes.</p>'}
-        <p class="summary-note">${esc(r.notice)} ${fmtInt(r.excluded_unsure)} unsure label(s) excluded.</p>`;
+      el.innerHTML = regressionHTML(r);
     } catch (e) { panelError(el, 'the replay regression suite', e); }
   }
 
@@ -2640,6 +2881,24 @@
     } catch (e) { $('threshold-result').textContent = `Could not load detector settings: ${e.message}`; $('threshold-result').className = 'status err'; }
   }
 
+  // What the update card says and whether its button works, from GET api/update.
+  // Decided before the click: a refused downgrade is not "up to date", and a copy
+  // that cannot install in one click says why instead of failing afterwards.
+  function updateView(update) {
+    const u = update || {};
+    const blocked = u.install_supported === false;
+    const why = u.install_unsupported_reason || u.install_reason || '';
+    const notes = [];
+    let tag = 'up to date', tone = 'ok', button = 'Up to date';
+    if (u.error) { tag = 'check unavailable'; tone = 'bad'; button = 'Unavailable'; notes.push({ text: u.error }); }
+    else if (u.downgrade) {
+      tag = 'published release is not newer'; tone = ''; button = 'Nothing to install';
+      notes.push({ strong: 'Nothing will be installed.', text: u.downgrade_reason || 'The published Windows release is not newer than this build.' });
+      notes.push({ text: 'Manual download opens that release; installing it by hand would replace this build with one that is not newer.' });
+    } else if (u.available) { tag = 'update available'; tone = 'warn'; button = blocked ? 'One-click install unavailable' : 'Install update'; }
+    if (blocked && !u.downgrade) notes.push({ strong: u.available ? 'One-click install is not available on this copy.' : '', text: `${u.available ? '' : 'One-click install is not available on this copy: '}${why || 'The engine gave no reason.'}${u.available ? ' The verified installer can still be downloaded and run manually.' : ''}` });
+    return { tag, tone, button, notes, canInstall: !!(u.available && !u.downgrade && u.install_supported === true && !u.error) };
+  }
   async function loadAutomation(forceUpdate = false) {
     const el = $('automation');
     try {
@@ -2649,14 +2908,13 @@
       let update = { error: 'Automatic checks are off.', available: false, current_version: '—' };
       if (settings.automatic_update_checks || forceUpdate) update = await getJSON('api/update');
       const suggestions = settings.suggested_watch_folders || [];
-      const canInstall = !!(update.available && update.install_supported && !update.error);
-      const installNote = update.install_reason || (update.available ? 'The verified installer can still be downloaded and run manually.' : '');
+      const uv = updateView(update);
       el.className = ''; el.removeAttribute('aria-busy');
       el.innerHTML = `<div class="lab-grid"><div class="lab-card"><h3>Replay watch folder</h3><p class="help">New stable .echoreplay and native .tape files are detected recursively and reanalyzed once. Native captures must be complete. The folder and file fingerprints stay on this PC.</p>
         <div class="form-row"><label class="form-field path">Folder<input id="watch-folder" value="${esc(settings.watch_folder || suggestions[0] || '')}" placeholder="C:\\path\\to\\Spark recordings"></label><label class="check-inline"><input id="watch-enabled" type="checkbox" ${settings.watch_enabled ? 'checked' : ''}> Watch automatically</label></div>
         <div class="maintenance"><button id="save-watch" class="btn">Save watch folder</button><button id="scan-watch" class="btn">Scan now</button></div><p class="summary-note">Status: ${esc(settings.watch_status)}${settings.watch_last_scan ? ` · last scan ${timeAgo(settings.watch_last_scan)} · ${fmtInt(settings.watch_last_count)} new` : ''}${settings.watch_error ? ` · ${esc(settings.watch_error)}` : ''}</p></div>
         <div class="lab-card"><h3>Crash recovery</h3><div class="health-grid"><div class="health-card"><span>Recovered</span><b>${fmtInt(recovery.recovered)}</b></div><div class="health-card"><span>Pending</span><b>${fmtInt(recovery.pending)}</b></div></div><p class="help">Uploads are durably spooled before analysis. A restart resumes files that survived a crash or power loss.</p><div class="maintenance"><button id="resume-recovery" class="btn" ${recovery.pending || recovery.error ? '' : 'disabled'}>Resume pending uploads</button><button id="discard-recovery" class="btn" ${recovery.pending ? '' : 'disabled'}>Discard pending</button></div>${recovery.error ? `<p class="status err">${esc(recovery.error)}</p>` : ''}</div>
-        <div class="lab-card"><h3>Windows updates</h3><p class="help">NEVR checks the last successfully packaged Windows release. One click downloads the installer, verifies its revision, size, and SHA-256, closes NEVR cleanly, updates all five tools, and reopens the app. Your database, evidence, labels, and settings stay in place.</p><p><span class="tag ${update.available ? 'warn' : update.error ? 'bad' : 'ok'}">${update.available ? 'update available' : update.error ? 'check unavailable' : 'up to date'}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.error ? `<p class="summary-note">${esc(update.error)}</p>` : ''}${update.last_install_error ? `<p class="status err">Last install failed safely: ${esc(update.last_install_error)}</p>` : ''}${installNote ? `<p class="summary-note">${esc(installNote)}</p>` : ''}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="install-update" class="btn" ${canInstall ? '' : 'disabled'}>${update.available ? 'Install update' : update.error ? 'Unavailable' : 'Up to date'}</button><button id="open-update" class="btn btn-text">Manual download</button></div></div>
+        <div class="lab-card"><h3>Windows updates</h3><p class="help">NEVR checks the last successfully packaged Windows release. One click downloads the installer, verifies its revision, size, and SHA-256, closes NEVR cleanly, updates all five tools, and reopens the app. Your database, evidence, labels, and settings stay in place.</p><p><span class="tag ${uv.tone}">${esc(uv.tag)}</span> <span class="mono muted">v${esc(update.current_version)}</span></p>${update.last_install_error ? `<p class="status err">Last install failed safely: ${esc(update.last_install_error)}</p>` : ''}${uv.notes.map((note) => `<p class="summary-note" data-update-note>${note.strong ? `<strong>${esc(note.strong)}</strong> ` : ''}${esc(note.text)}</p>`).join('')}<div class="maintenance"><label class="check-inline"><input id="auto-updates" type="checkbox" ${settings.automatic_update_checks ? 'checked' : ''}> Check automatically</label><button id="check-update" class="btn">Check now</button><button id="install-update" class="btn" ${uv.canInstall ? '' : 'disabled'}>${esc(uv.button)}</button><button id="open-update" class="btn btn-text">Manual download</button></div></div>
         <div class="lab-card"><h3>Support bundle</h3><p class="help">Creates a ZIP with app health and pseudonymized aggregate diagnostics. It excludes raw ticks, frames, the database, player identities, and your watch-folder path.</p><button id="support-bundle" class="btn">Create support bundle</button></div></div>`;
     } catch (e) { panelError(el, 'automation and recovery settings', e); }
   }
@@ -3058,9 +3316,9 @@
     if(e.target.closest('#compare-players')){try{const result=await getJSON(`api/players/compare?a=${encodeURIComponent($('compare-a').value)}&b=${encodeURIComponent($('compare-b').value)}`);openLabDialog('Player comparison',`<div class="team-grid">${result.players.map(p=>`<div class="team-card"><div class="team-title"><strong>${esc(p.name||p.player_id)}</strong></div><div class="team-stats"><div><span>Matches</span><b>${fmtInt(p.matches)}</b></div><div><span>Signals</span><b>${fmtInt(p.events)}</b></div><div><span>Throws</span><b>${fmtInt(p.throws)}</b></div><div><span>Fastest</span><b>${fmtNum(p.max_throw_speed,2)} m/s</b></div></div></div>`).join('')}</div><p class="metric-note">${esc(result.notice)}</p>`)}catch(err){setStatus(`Comparison failed: ${err.message}`,'err')}return}
     if(e.target.closest('#save-filter')){const name=prompt('Name this History filter preset:');if(!name)return;const filter={search:$('history-search').value,detector:$('history-detector').value,label:$('history-label').value,sort:$('history-sort').value,flagged:$('history-flagged').checked};try{await postJSON('api/filters',{name,filter_json:JSON.stringify(filter)});setStatus('Saved History filter preset.','ok');await loadStudio()}catch(err){setStatus(`Could not save filter: ${err.message}`,'err')}return}
     const loadFilter=e.target.closest('button[data-load-filter]');if(loadFilter){try{const f=JSON.parse(loadFilter.dataset.loadFilter);$('history-search').value=f.search||'';$('history-detector').value=f.detector||'';$('history-label').value=f.label||'';$('history-sort').value=f.sort||'newest';$('history-flagged').checked=!!f.flagged;renderHistory();$('h-history').scrollIntoView({behavior:reduced?'auto':'smooth'})}catch(err){setStatus('Saved filter is invalid.','err')}return}
-    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text())),imported=Object.values(result.imported||{}).reduce((a,b)=>a+b,0),rejected=Object.values(result.rejected||{}).reduce((a,b)=>a+b,0);setStatus(result.ok?`Imported ${imported} evidence records.`:`Imported ${imported}; rejected ${rejected}. ${result.first_error||'Inspect the library for invalid or overlapping records.'}`,result.ok?'ok':'err');refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
+    if(e.target.closest('#import-library')){const file=$('library-file').files[0];if(!file){setStatus('Choose an exported evidence-library JSON file.','err');return}try{const result=await postJSON('api/library',JSON.parse(await file.text()));lastLibraryImport=result;const view=libraryImportView(result);setStatus(view.status,view.tone);refreshPanels()}catch(err){setStatus(`Import failed: ${err.message}`,'err')}return}
     if(e.target.closest('#backup-db-studio')){try{const result=await postJSON('api/maintenance/backup');setStatus(`Backup created: ${result.path}`,'ok');await loadStudio()}catch(err){setStatus(`Backup failed: ${err.message}`,'err')}return}
-    if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok')}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
+    if(e.target.closest('#restore-db')){const name=$('restore-backup').value;if(!confirm(`Schedule ${name} for restore? A safety backup is created first, and the restore happens after you restart the app.`))return;try{await postJSON('api/maintenance/restore',{name});setStatus('Restore scheduled. Quit and relaunch the desktop app to apply it.','ok');loadRestoreState()}catch(err){setStatus(`Restore could not be scheduled: ${err.message}`,'err')}return}
     if (e.target.closest('#run-regression')) { await loadRegression(); return; }
     if (e.target.closest('#preview-threshold')) {
       const button = e.target.closest('#preview-threshold'), resultEl = $('threshold-result');
@@ -3237,6 +3495,44 @@
     const retryFile = e.target.closest('button[data-retry-file]');
     if (retryFile && !busy) {
       const i = +retryFile.dataset.retryFile; queue[i].state = 'waiting'; setQueueState(i, 'waiting'); setQueueBar(i, 0); runQueue([i]); return;
+    }
+    // Send a result card's file again: Re-analyze (force), or the confirmed Replace (replace_source).
+    const again = e.target.closest('button[data-reanalyze], button[data-replace-source]');
+    if (again) {
+      const replaceSource = again.hasAttribute('data-replace-source');
+      const file = intakeFiles.get(replaceSource ? again.dataset.replaceSource : again.dataset.reanalyze);
+      if (busy) { setStatus('Wait for the current queue to finish, then try again.', 'err'); return; }
+      if (!file) { setStatus('That file is no longer held by this window. Choose the recording again' + (replaceSource ? '.' : ' with “Re-analyze recordings that are already stored” turned on.'), 'err'); return; }
+      if (replaceSource && !again.closest('[data-replace-confirm]')?.querySelector('[data-replace-ack]')?.checked) return;
+      analyze([file], { force: true, replaceSource });
+      $('h-upload').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+      return;
+    }
+    const replaceAsk = e.target.closest('button[data-replace-ask], button[data-replace-cancel]');
+    if (replaceAsk) {
+      const card = replaceAsk.closest('[data-conflict-card]'), panel = card.querySelector('[data-replace-confirm]'), show = replaceAsk.hasAttribute('data-replace-ask') && panel.hidden;
+      panel.hidden = !show; card.querySelector('[data-replace-ask]')?.setAttribute('aria-expanded', String(show));
+      if (!show) { const ack = panel.querySelector('[data-replace-ack]'); ack.checked = false; panel.querySelector('[data-replace-source]').disabled = true; card.querySelector('[data-replace-ask]')?.focus(); }
+      else panel.querySelector('[data-replace-ack]').focus();
+      return;
+    }
+    const replaceBackup = e.target.closest('button[data-replace-backup]');
+    if (replaceBackup) {
+      const note = replaceBackup.closest('[data-replace-confirm]').querySelector('[data-replace-status]');
+      replaceBackup.disabled = true; note.className = 'help'; note.textContent = 'Creating a backup of the evidence database…';
+      try { const result = await postJSON('api/maintenance/backup'); note.textContent = `Backup created: ${result.path}`; setStatus(`Backup created: ${result.path}`, 'ok'); }
+      catch (err) { note.className = 'help err'; note.textContent = `Backup failed: ${err.message}. Nothing was replaced.`; }
+      finally { replaceBackup.disabled = false; }
+      return;
+    }
+    const restoreCancel = e.target.closest('button[data-restore-cancel]');
+    if (restoreCancel) {
+      restoreCancel.disabled = true;
+      try {
+        const result = await postJSON('api/maintenance/restore/cancel');
+        setStatus(result.cancelled_pending ? 'The scheduled restore was cancelled. The evidence database stays as it is.' : result.dismissed_failure ? 'Restore failure dismissed.' : 'There was no scheduled restore to cancel.', 'ok');
+      } catch (err) { setStatus(`Could not cancel the restore: ${err.message}`, 'err'); }
+      loadRestoreState(); return;
     }
     if (e.target.closest('#clear-queue') && !busy) {
       queue = []; if (queuePanel) queuePanel.remove(); queuePanel = null;
@@ -3427,9 +3723,10 @@
     if (e.target.id === 'case-search') { prefs.caseSearch=e.target.value; savePrefs(); renderFlagged(); }
   });
   document.addEventListener('change', e => {
+    if (e.target.matches?.('[data-replace-ack]')) { e.target.closest('[data-replace-confirm]').querySelector('[data-replace-source]').disabled = !e.target.checked; return; }
     if (e.target.id === 'case-state') { prefs.caseState=e.target.value;savePrefs();renderFlagged(); }
     const key = {'pref-theme':'theme','pref-density':'density','pref-text-size':'textSize','pref-motion':'motion','pref-shortcuts':'shortcuts'}[e.target.id];
-    if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); }
+    if (key) { prefs[key]=key==='shortcuts'?e.target.checked:e.target.value;savePrefs();applyAppearance(); if (key === 'textSize') document.querySelectorAll('figure[data-timeline]').forEach((fig) => renderTimeline(fig, true)); }
   });
   $('lab-dialog').addEventListener('close', () => { persistNoteDraft(); investigationRequest++; });
   document.addEventListener('change', async (e) => {
@@ -3463,7 +3760,25 @@
   }
   // loadCalibration, loadRegression and loadStudio return at once while their
   // advanced section is closed and run when it is opened.
-  function refreshPanels() { loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); refreshHealth(); loadStudio(); }
+  // A restore waiting for the next launch, or one that failed at the last launch
+  // (GET api/setup: restore_pending / restore_failed). Both are cleared through
+  // POST api/maintenance/restore/cancel. An engine without the fields shows nothing.
+  function restoreBannerHTML(s) {
+    const base = (p) => String(p || '').split(/[\\/]/).pop();
+    const when = (iso) => { const t = new Date(iso || ''); return isNaN(t) ? '' : fmtAbs(t); };
+    const failed = s && s.restore_failed, pending = s && s.restore_pending;
+    if (failed && failed.error) return { tone: 'bad', html: `<div><strong>The scheduled database restore did not run.</strong><span>${esc(failed.error)}${failed.source ? ` Backup: ${esc(base(failed.source))}.` : ''}${when(failed.failed_at) ? ` Tried ${esc(when(failed.failed_at))}.` : ''} The evidence database was left as it was.</span></div><button class="btn" data-restore-cancel>Dismiss</button>` };
+    if (pending) return { tone: '', html: `<div><strong>A database restore is scheduled for the next launch.</strong><span>${pending.source ? `Backup ${esc(base(pending.source))}` : 'A backup'} will replace the current evidence database when NEVR next starts${when(pending.requested_at) ? ` (scheduled ${esc(when(pending.requested_at))})` : ''}. Anything analyzed or labeled since that backup will not be in it. Cancel to keep the database as it is.</span></div><button class="btn" data-restore-cancel>Cancel the restore</button>` };
+    return null;
+  }
+  async function loadRestoreState() {
+    const el = $('restore-banner');
+    try {
+      const banner = restoreBannerHTML(await getJSON('api/setup'));
+      el.hidden = !banner; el.className = 'restore-banner' + (banner && banner.tone ? ' ' + banner.tone : ''); el.innerHTML = banner ? banner.html : '';
+    } catch (_) { /* the connection banner already reports an unreachable engine */ }
+  }
+  function refreshPanels() { loadRestoreState(); loadFlagged(); loadObservations(); loadCalibration(); loadHistory(); loadRegression(); loadLabSpecs(); loadAutomation(); refreshHealth(); loadStudio(); }
   for (const [id, loaders] of [['advanced-calibration', [loadCalibration, loadRegression]], ['advanced-tools', [loadStudio]]]) {
     $(id).addEventListener('toggle', (e) => {
       if (!e.target.open || !lazyStale[id]) return;

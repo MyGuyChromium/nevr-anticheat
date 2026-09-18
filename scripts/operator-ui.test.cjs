@@ -53,7 +53,7 @@ test('native tape is accepted consistently by pickers, drop and folder intake', 
   assert.match(page, /id="folder"[^>]*accept="\.echoreplay,\.tape,\.json"/);
   const started = [], messages = [], get = nodes();
   const context = run(section('  function analyze(', "  ['dragenter'"), {
-    busy: false, MAX_UPLOAD_FILE_BYTES: 1000, queue: [], queuePanel: null,
+    busy: false, MAX_UPLOAD_FILE_BYTES: 1000, queue: [], queuePanel: null, rememberIntakeFile: file => 'token-' + file.name,
     document: { createElement: () => ({ innerHTML: '' }) },
     drop: { appendChild() {}, classList: { add() {} } }, $: get,
     uploadList: () => '', setStatus: text => messages.push(text),
@@ -62,14 +62,15 @@ test('native tape is accepted consistently by pickers, drop and folder intake', 
   context.analyze(['capture.TAPE', 'original.echoreplay', 'legacy.json', 'old.nevrcap', 'setup.exe'].map(name => ({name,size:100})));
   assert.deepEqual(Array.from(context.queue, entry => entry.file.name), ['capture.TAPE','original.echoreplay','legacy.json']);
   assert.deepEqual(started, [[0,1,2]]);
+  assert.deepEqual(Array.from(context.queue, entry => [entry.token, entry.force, entry.replaceSource]), [['token-capture.TAPE', false, false], ['token-original.echoreplay', false, false], ['token-legacy.json', false, false]], 'a plain upload never forces or replaces');
   assert.match(messages.at(-1), /Ignored 2 unsupported/);
 });
 
 test('native source notice distinguishes compatibility views from original evidence', () => {
   const source = section('    const notices =', '    const tel =');
   for (const native of [true, false]) {
-    const context = run(source + '\nresult = notices;', {
-      m: {source: native ? 'tape' : 'replay',replaced:false,warnings:[]}, fmtInt:String,
+    const context = run(section('  function intakeNotices(', '  function matchSection(') + source + '\nresult = notices;', {
+      m: {source: native ? 'tape' : 'replay',replaced:false,warnings:[]}, fmtInt:String, intake: undefined,
     });
     if (native) {
       assert.match(context.result, /Session JSON and Spark clips are derived/);
@@ -104,6 +105,339 @@ test('analysis failures offer a next action and keep raw diagnostics collapsed a
   assert.doesNotMatch(html,/<details[^>]*\bopen\b/);
   assert.match(html,/&lt;private sample&gt;/);
   assert.doesNotMatch(html,/<private sample>|<parse failure>|<invalid>/);
+});
+
+// ---- intake honesty: what an upload did with a recording that was already stored ----
+const conflictEntry = (extra = {}) => ({
+  file: 'second-observer.echoreplay', ok: false, already_stored: true, match_id: 'SYN-MATCH-1', sha256: 'ab'.repeat(32), intake_token: '7',
+  error: 'A different recording of match SYN-MATCH-1 is already stored. The stored analysis was kept and this file was not analyzed: tick 40 differs.',
+  source_status: 'different',
+  source_conflict: { match_id: 'SYN-MATCH-1', detail: 'tick 40 differs from the stored recording', stored_source_file: 'first-observer.echoreplay', stored_analyzed_at: '2026-03-01T10:00:00Z', stored_start_time: '2026-02-28T20:00:00Z', stored_raw_ticks: 5400, replace_field: 'replace_source',
+    consequence: "Replacing deletes the stored recording's raw ticks, frames, findings and scores for this match and analyzes this file instead. Labels on the previous recording's findings stay in the library but will not be attached to the new findings." },
+  ...extra,
+});
+function failureUI(files = [['7', { name: 'second-observer.echoreplay', size: 2048 }]]) {
+  const ui = run(section('  const diagTexts =', '  function prepend('), { fmtBytes: n => `${n} B`, fmtInt: String, fmtStart: iso => `start(${iso})`, timeAgo: iso => `<time>${iso}</time>`, secId: id => 'match-' + encodeURIComponent(id) });
+  for (const [token, file] of files) vm.runInContext(`intakeFiles.set(${JSON.stringify(token)}, ${JSON.stringify(file)})`, ui);
+  return ui;
+}
+
+test('a different recording of a stored match shows both sides and keeps replacing behind an explicit confirmation', () => {
+  const html = failureUI().failCard(conflictEntry());
+  assert.doesNotMatch(html, /did not enable replacement|direct API request/, 'the old sentence blamed the API for a refusal that is now deliberate');
+  assert.match(html, /different recording · stored analysis kept/);
+  assert.match(html, /Nothing was changed: the stored analysis was kept and this file was not analyzed/);
+  assert.match(html, /Stored on this PC[\s\S]*first-observer\.echoreplay[\s\S]*<time>2026-03-01T10:00:00Z<\/time>[\s\S]*start\(2026-02-28T20:00:00Z\)[\s\S]*5400/);
+  assert.match(html, /This upload[\s\S]*second-observer\.echoreplay[\s\S]*2048 B[\s\S]*abababababababab…[\s\S]*tick 40 differs from the stored recording/);
+  assert.match(html, /data-open="SYN-MATCH-1"/);
+  // The destructive control is inside a hidden panel, disabled, and carries the file token.
+  const confirm = html.slice(html.indexOf('data-replace-confirm'));
+  assert.match(html, /<div class="conflict-confirm" data-replace-confirm hidden>/);
+  assert.match(confirm, /<button class="btn btn-danger" data-replace-source="7" disabled>Delete stored recording and analyze this file<\/button>/);
+  assert.equal((html.match(/data-replace-source=/g) || []).length, 1);
+  assert.ok(html.indexOf('data-replace-source=') > html.indexOf('data-replace-confirm'), 'no replace control outside the confirmation');
+  assert.match(confirm, /deletes the stored recording&#39;s raw ticks, frames, findings and scores/);
+  assert.match(confirm, /Labels on the previous recording&#39;s findings stay in the library but will not be attached/);
+  assert.match(confirm, /No automatic backup is taken\./);
+  assert.match(confirm, /data-replace-backup>Back up database now/);
+  assert.match(confirm, /<input type="checkbox" data-replace-ack>/);
+  assert.match(confirm, /data-replace-cancel>Keep the stored recording/);
+});
+
+test('the conflict card escapes recording-supplied text and degrades without optional fields', () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const html = failureUI([['7', { name: hostile, size: 10 }]]).failCard(conflictEntry({ file: hostile, match_id: hostile, sha256: hostile,
+    source_conflict: { match_id: hostile, detail: hostile, stored_source_file: hostile, stored_start_time: hostile, stored_analyzed_at: '', stored_raw_ticks: 0, consequence: hostile } }));
+  assert.doesNotMatch(html, /<img/);
+  assert.ok((html.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length >= 5);
+  assert.match(html, /None active \(archived, or a legacy recording\)/);
+  const bare = failureUI([]).failCard({ file: 'clip.echoreplay', already_stored: true, match_id: 'SYN-2', error: 'kept', source_conflict: {} });
+  assert.match(bare, /File name not recorded/);
+  assert.match(bare, /The engine gave no detail/);
+  assert.match(bare, /No automatic backup is taken\./, 'the consequence text never depends on the engine sending it');
+  assert.match(bare, /raw ticks, frames, findings and scores/);
+  assert.doesNotMatch(bare, /data-replace-ask/, 'without the file in hand there is nothing to send again');
+  assert.match(bare, /choose this file again/);
+  assert.match(bare, /data-replace-source="" disabled/);
+});
+
+test('an already-stored refusal without a conflict offers the stored match and a re-analysis, not a wrong explanation', () => {
+  const ui = failureUI();
+  const html = ui.failCard({ file: 'again.echoreplay', already_stored: true, match_id: 'SYN-3', intake_token: '7', error: 'match SYN-3 is already analyzed, but its stored analysis could not be loaded: <boom>' });
+  assert.match(html, /already stored/);
+  assert.match(html, /&lt;boom&gt;/);
+  assert.match(html, /Nothing was changed/);
+  assert.match(html, /data-open="SYN-3"/);
+  assert.match(html, /data-reanalyze="7"/);
+  assert.doesNotMatch(html, /did not enable replacement|data-replace-source/);
+  assert.doesNotMatch(ui.failCard({ file: 'again.echoreplay', already_stored: true, match_id: 'SYN-3', intake_token: 'gone', error: 'kept' }), /data-reanalyze/);
+});
+
+test('match notices say what intake did: already analyzed, replaced, re-analyzed, or nothing', () => {
+  const ui = run(section('  function intakeNotices(', '  function matchSection('), { fmtInt: String });
+  assert.deepEqual(Array.from(ui.intakeNotices({ replaced: false }, { token: '3' })), [], 'a first analysis carries no intake notice');
+  const known = ui.intakeNotices({ already_analyzed: true, intake_note: 'This recording was already analyzed; <b>nothing</b> was changed.', source_detail: 'all 5400 stored ticks match' }, { token: '3' }).join('');
+  assert.match(known, /class="notice info"/, 'neutral, not a warning');
+  assert.match(known, /Already analyzed\./);
+  assert.match(known, /&lt;b&gt;nothing&lt;\/b&gt; was changed/);
+  assert.match(known, /all 5400 stored ticks match/);
+  assert.match(known, /data-reanalyze="3">Re-analyze this recording/);
+  assert.doesNotMatch(ui.intakeNotices({ already_analyzed: true }, undefined).join(''), /data-reanalyze/, 'a match opened from History has no file to send again');
+  assert.match(ui.intakeNotices({ already_analyzed: true }, undefined).join(''), /stored analysis is shown and nothing was changed/);
+  const replaced = ui.intakeNotices({ replaced: true, cleared_events: 12, cleared_scores: 4, source_status: 'different' }, { token: '3', replacedSource: true }).join('');
+  assert.match(replaced, /Stored recording replaced\./);
+  assert.match(replaced, /12 events, 4 score snapshots/);
+  assert.match(replaced, /not attached to the new findings/);
+  assert.match(replaced, /Replacing takes no backup of its own/);
+  const again = ui.intakeNotices({ replaced: true, cleared_events: 2, cleared_scores: 1, source_status: 'extends', source_detail: 'all 100 stored ticks match and this file holds 50 more' }, { token: '3' }).join('');
+  assert.match(again, /Re-analyzed: the previous analysis of this match was cleared \(2 events, 1 score snapshots\)/);
+  assert.match(again, /completes the stored copy/);
+  assert.doesNotMatch(again, /Stored recording replaced/);
+});
+
+test('upload results are counted by what happened: analyzed, already analyzed, conflict, failed', () => {
+  const shown = [], removed = [];
+  const ui = run(section('  const responseItems =', '  function processQueueItem('), {
+    prepend: html => shown.push(html), secId: id => 'match-' + id,
+    matchSection: (m, source, intake) => `match(${m.match_id}|${source}|${intake.token}|${intake.replacedSource})`,
+    failCard: res => `fail(${res.file}|${res.match_id || ''}|${res.intake_token}|${res.source_conflict ? 'conflict' : res.already_stored ? 'stored' : 'failed'})`,
+    document: { getElementById: id => ({ remove: () => removed.push(id) }) },
+  });
+  const item = { token: '9', force: false, replaceSource: false };
+  assert.deepEqual({ ...ui.showResponse({ file: 'a.echoreplay', ok: true, match: { match_id: 'M1' }, match_id: 'M1' }, item) }, { analyzed: 1, known: 0, conflicts: 0, stored: 0, failed: 0 });
+  assert.equal(shown.pop(), 'match(M1|from upload|9|false)');
+  assert.deepEqual({ ...ui.showResponse({ file: 'a.echoreplay', ok: true, already_analyzed: true, match: { match_id: 'M1', already_analyzed: true }, match_id: 'M1' }, item) }, { analyzed: 0, known: 1, conflicts: 0, stored: 0, failed: 0 });
+  assert.equal(shown.pop(), 'match(M1|already analyzed · stored analysis|9|false)', 'a stored analysis is never presented as "from upload"');
+  assert.deepEqual({ ...ui.showResponse(conflictEntry(), item) }, { analyzed: 0, known: 0, conflicts: 1, stored: 0, failed: 0 });
+  assert.equal(shown.pop(), 'fail(second-observer.echoreplay|SYN-MATCH-1|9|conflict)', 'the card gets this queue item\'s file token');
+  // A rematch file: one match known, one refused, plus a file-level error.
+  const mixed = ui.showResponse({ file: 'two.echoreplay', error: 'stopped part-way', matches: [{ ok: true, match_id: 'M1', already_analyzed: true, match: { match_id: 'M1' } }, { ...conflictEntry(), match_id: 'M2' }, { ok: false, match_id: 'M3', error: 'parse' }] }, item);
+  assert.deepEqual({ ...mixed }, { analyzed: 0, known: 1, conflicts: 1, stored: 0, failed: 2 });
+  // The engine mirrors the first match's refusal into the file entry: that is one outcome, not two.
+  const refused = conflictEntry();
+  shown.length = 0;
+  assert.deepEqual({ ...ui.showResponse({ ...refused, matches: [{ ok: false, already_stored: true, match_id: refused.match_id, error: refused.error, source_status: 'different', source_conflict: refused.source_conflict }] }, item) }, { analyzed: 0, known: 0, conflicts: 1, stored: 0, failed: 0 });
+  assert.deepEqual(shown, ['fail(second-observer.echoreplay|SYN-MATCH-1|9|conflict)'], 'one card for one refusal');
+  // Only a confirmed replace that really re-analysed is reported as a replacement, and it clears the conflict card.
+  removed.length = 0;
+  ui.showResponse({ file: 'b.echoreplay', ok: true, match_id: 'M2', match: { match_id: 'M2', replaced: true } }, { token: '9', force: true, replaceSource: true });
+  assert.equal(shown.pop(), 'match(M2|from upload|9|true)');
+  assert.deepEqual(removed, ['conflict-match-M2']);
+  ui.showResponse({ file: 'b.echoreplay', ok: true, match_id: 'M2', match: { match_id: 'M2', replaced: true } }, { token: '9', force: true, replaceSource: false });
+  assert.equal(shown.pop(), 'match(M2|from upload|9|false)');
+  ui.showResponse({ file: 'b.echoreplay', ok: true, match_id: 'M4', match: { match_id: 'M4', replaced: false } }, { token: '9', force: true, replaceSource: true });
+  assert.equal(shown.pop(), 'match(M4|from upload|9|false)', 'nothing was stored before, so nothing was replaced');
+});
+
+test('force and replace_source are sent only when the queue item asks for them', () => {
+  const sent = [];
+  class FakeXHR { constructor() { this.upload = {}; } open() {} send(fd) { sent.push(fd.fields); } }
+  const context = run(section('  function processQueueItem(', '  async function runQueue('), {
+    XMLHttpRequest: FakeXHR, FormData: class { constructor() { this.fields = []; } append(name, value) { this.fields.push([name, typeof value === 'string' ? value : 'file']); } },
+    currentXHR: null, queueStopped: false, queue: [{}], setQueueState: () => {}, setQueueBar: () => {}, overall: () => {}, setStatus: () => {}, setConnectionState: () => {}, fmtBytes: String,
+  });
+  const file = { name: 'synthetic.echoreplay' };
+  context.processQueueItem({ file }, 0);
+  context.processQueueItem({ file, force: true }, 0);
+  context.processQueueItem({ file, force: true, replaceSource: true }, 0);
+  context.processQueueItem({ file, replaceSource: false, force: false }, 0);
+  assert.deepEqual(sent, [[['files', 'file']], [['files', 'file'], ['force', '1']], [['files', 'file'], ['replace_source', '1']], [['files', 'file']]]);
+});
+
+test('the queue never calls a file "complete" when it was already analyzed or refused as a different recording', async () => {
+  const outcomes = [
+    [{ analyzed: 0, known: 1, conflicts: 0, stored: 0, failed: 0 }, /already analyzed · nothing changed/, 'stored', /1 already analyzed/],
+    [{ analyzed: 0, known: 0, conflicts: 1, stored: 0, failed: 0 }, /different recording · nothing changed · see Results/, 'conflict', /1 different recording of a stored match \(nothing changed\)/],
+    [{ analyzed: 1, known: 0, conflicts: 0, stored: 0, failed: 0 }, /complete · results available/, 'done', /1 analyzed/],
+  ];
+  for (const [counts, stateText, itemState, summary] of outcomes) {
+    const get = nodes(), states = [], status = [];
+    const context = run(section('  async function runQueue(', '  function analyze('), {
+      $: get, busy: false, queueStopped: false, currentXHR: null, reduced: true, queue: [{ file: { name: 'one.echoreplay' }, token: '5' }], drop: get('drop'),
+      processQueueItem: async () => ({ response: { ok: counts.analyzed + counts.known > 0, match: { match_id: 'synthetic-match' } } }),
+      showResponse: () => counts, responseItems: result => [result], setQueueState: (index, message, cls, retry) => states.push({ message, cls, retry }),
+      overall: () => {}, setStatus: (message, tone) => status.push({ message, tone }), refreshPanels: () => {},
+    });
+    await context.runQueue([0]);
+    assert.match(states.at(-1).message, stateText);
+    assert.equal(states.at(-1).retry, false, 'neither outcome is a failure to retry');
+    assert.equal(context.queue[0].state, itemState);
+    assert.match(status.at(-1).message, summary);
+    if (counts.known) assert.match(get('ust-0').innerHTML, /data-open="synthetic-match"[\s\S]*data-reanalyze="5"/);
+    if (counts.conflicts) { assert.doesNotMatch(states.at(-1).message, /complete/); assert.notEqual(status.at(-1).tone, 'ok'); assert.doesNotMatch(get('ust-0').innerHTML, /data-reanalyze/); }
+  }
+});
+
+test('the Re-analyze switch forces every file of a queue; a result card can force one file or replace', () => {
+  const started = [];
+  const make = (checked) => run(section('  function analyze(', "  ['dragenter'"), {
+    busy: false, MAX_UPLOAD_FILE_BYTES: 1000, queue: [], queuePanel: null, rememberIntakeFile: () => 't',
+    document: { createElement: () => ({ innerHTML: '' }) }, drop: { appendChild() {}, classList: { add() {} } },
+    $: id => (id === 'reanalyze' ? { checked } : { hidden: false }), uploadList: () => '', setStatus: () => {}, runQueue: indices => started.push(indices),
+  });
+  const files = [{ name: 'a.echoreplay', size: 1 }];
+  let context = make(true); context.analyze(files);
+  assert.deepEqual([context.queue[0].force, context.queue[0].replaceSource], [true, false], 'the switch never replaces a stored recording');
+  context = make(false); context.analyze(files, { force: true });
+  assert.deepEqual([context.queue[0].force, context.queue[0].replaceSource], [true, false]);
+  context = make(false); context.analyze(files, { force: true, replaceSource: true });
+  assert.deepEqual([context.queue[0].force, context.queue[0].replaceSource], [true, true]);
+  context = make(true); context.analyze(files, { force: false });
+  assert.equal(context.queue[0].force, false, 'explicit flags win over the switch');
+  // The upload console no longer claims that every upload re-analyzes and replaces.
+  const markup = page.slice(page.indexOf('<body>'), page.indexOf('<script>'));
+  assert.doesNotMatch(markup, /Every upload uses the current detectors and replaces earlier derived events/);
+  assert.match(markup, /<input type="checkbox" id="reanalyze"/);
+  assert.doesNotMatch(markup, /id="reanalyze"[^>]*checked/, 'off by default');
+});
+
+test('the update card decides before the click: a refused downgrade is not "up to date", a blocked install says why', () => {
+  const { updateView } = run(section('  function updateView(', '  async function loadAutomation('));
+  const text = view => view.notes.map(note => `${note.strong || ''} ${note.text}`).join(' | ');
+  const current = updateView({ available: false, downgrade: false, install_supported: true });
+  assert.deepEqual([current.tag, current.tone, current.button, current.canInstall, current.notes.length], ['up to date', 'ok', 'Up to date', false, 0]);
+  const ready = updateView({ available: true, downgrade: false, install_supported: true });
+  assert.deepEqual([ready.tag, ready.button, ready.canInstall], ['update available', 'Install update', true]);
+
+  const reason = 'The published Windows release (aaaaaaaaaaaa, committed 2026-02-27T09:00:00Z) is not newer than this build (bbbbbbbbbbbb, committed 2026-03-01T10:00:00Z); refusing to downgrade.';
+  const older = updateView({ available: false, downgrade: true, downgrade_reason: reason, install_supported: true });
+  assert.notEqual(older.tag, 'up to date');
+  assert.notEqual(older.tone, 'ok');
+  assert.deepEqual([older.button, older.canInstall], ['Nothing to install', false]);
+  assert.match(text(older), /^Nothing will be installed\. The published Windows release \(aaaaaaaaaaaa/);
+  assert.match(text(updateView({ downgrade: true, install_supported: true })), /Nothing will be installed\. The published Windows release is not newer than this build\./, 'a missing reason still says why');
+  assert.ok(text(older).includes(reason), 'the engine\'s sentence is shown as written');
+  assert.match(text(older), /installing it by hand would replace this build with one that is not newer/);
+  // Contract: downgrade implies available=false. If an engine ever sent both, the page still must not offer the install.
+  assert.equal(updateView({ available: true, downgrade: true, install_supported: true }).canInstall, false);
+  assert.equal(updateView({ available: true, downgrade: true, install_supported: true }).button, 'Nothing to install');
+
+  const portable = updateView({ available: true, install_supported: false, install_unsupported_reason: 'This is a portable copy.', install_reason: 'legacy text' });
+  assert.deepEqual([portable.tag, portable.button, portable.canInstall], ['update available', 'One-click install unavailable', false]);
+  assert.match(text(portable), /One-click install is not available on this copy\. This is a portable copy\. The verified installer can still be downloaded and run manually\./);
+  assert.doesNotMatch(text(portable), /legacy text/);
+  assert.match(text(updateView({ available: true, install_supported: false, install_reason: 'Older engine reason.' })), /Older engine reason\./, 'an engine without the new field still explains itself');
+  assert.match(text(updateView({ available: true, install_supported: false })), /The engine gave no reason\./);
+  const dev = updateView({ available: false, install_supported: false, install_unsupported_reason: 'This is a development build.' });
+  assert.deepEqual([dev.tag, dev.canInstall], ['up to date', false]);
+  assert.match(text(dev), /One-click install is not available on this copy: This is a development build\./);
+
+  const failed = updateView({ available: false, downgrade: false, install_supported: true, error: 'could not confirm that the published Windows release is newer than this build: timeout' });
+  assert.deepEqual([failed.tag, failed.tone, failed.button, failed.canInstall], ['check unavailable', 'bad', 'Unavailable', false]);
+  assert.match(text(failed), /could not confirm/);
+  // An engine from before this wave (no downgrade, no install_supported) and no engine at all.
+  assert.equal(updateView({ available: true, install_supported: true }).canInstall, true);
+  assert.equal(updateView({ available: true }).canInstall, false, "install support must be stated, never assumed");
+  assert.deepEqual([updateView(undefined).tag, updateView(null).canInstall], ['up to date', false]);
+  // Everything the card prints from the engine goes through esc.
+  const card = section('  async function loadAutomation(', '  let historyMatches');
+  assert.match(card, /\$\{esc\(uv\.tag\)\}/);
+  assert.match(card, /\$\{esc\(note\.strong\)\}/);
+  assert.match(card, /\$\{esc\(note\.text\)\}/);
+  assert.match(card, /\$\{uv\.canInstall \? '' : 'disabled'\}>\$\{esc\(uv\.button\)\}/);
+});
+
+test('library import reports rows this PC kept as "kept local", not as rejected or failed', () => {
+  const { libraryImportView } = run(section('  function libraryImportView(', '  async function loadStudio('), { fmtInt: String });
+  const clean = libraryImportView({ ok: true, imported: { labels: 2, reviews: 3, opportunities: 0, notes: 1, filters: 0 }, rejected: { labels: 0, reviews: 0 }, kept_local: { labels: 0, reviews: 0, opportunities: 0 }, kept_local_examples: null });
+  assert.deepEqual([clean.imported, clean.keptLocal, clean.rejected, clean.tone, clean.status], [6, 0, 0, 'ok', 'Imported 6 evidence records.']);
+  assert.doesNotMatch(clean.html, /<details/);
+
+  const kept = libraryImportView({ ok: true, imported: { labels: 1 }, rejected: { labels: 0, reviews: 0 }, first_error: '',
+    kept_newer_local: { labels: 1, reviews: 1 }, kept_local: { labels: 2, reviews: 1, opportunities: 1 },
+    kept_local_examples: ['match SYN-1: kept "clean" from 2026-03-02T10:00:00Z over imported "<b>cheat</b>" from 2026-03-01T10:00:00Z'] });
+  assert.deepEqual([kept.imported, kept.keptLocal, kept.rejected, kept.tone], [1, 4, 0, 'ok'], 'kept rows never turn the import into a failure');
+  assert.equal(kept.status, 'Imported 1 evidence record · 4 kept local (newer label on this PC).');
+  assert.doesNotMatch(kept.status, /reject/i);
+  assert.match(kept.html, /Kept local \(newer label on this PC\)/);
+  assert.match(kept.html, /4 <span class="muted">2 labels, 1 review, 1 opportunity<\/span>/);
+  assert.match(kept.html, /This is not an error\./);
+  assert.match(kept.html, /2 newer on this PC; 2 where the imported row is equally old but different, or carries no review time/);
+  assert.match(kept.html, /<dt>Rejected<\/dt><dd>0<\/dd>/);
+  assert.match(kept.html, /Rows kept local · first 1 of 4/);
+  assert.match(kept.html, /&lt;b&gt;cheat&lt;\/b&gt;/);
+  assert.doesNotMatch(kept.html, /<b>cheat/);
+
+  const mixed = libraryImportView({ ok: false, imported: { labels: 1 }, rejected: { labels: 0, reviews: 2 }, first_error: 'review <x>: overlapping', kept_local: { labels: 1 } });
+  assert.deepEqual([mixed.keptLocal, mixed.rejected, mixed.tone], [1, 2, 'err']);
+  assert.equal(mixed.status, 'Imported 1 evidence record · 1 kept local (newer label on this PC) · rejected 2. review <x>: overlapping', 'setStatus writes textContent, so the status stays raw');
+  assert.match(mixed.html, /review &lt;x&gt;: overlapping/);
+  // An engine from before kept_local only reports the newer-local subset; one from before both reports neither.
+  const older = libraryImportView({ ok: true, imported: { labels: 1 }, rejected: {}, kept_newer_local: { labels: 2, reviews: 0 }, kept_newer_local_examples: ['match SYN-2: kept'] });
+  assert.deepEqual([older.keptLocal, older.tone], [2, 'ok']);
+  assert.match(older.html, /match SYN-2: kept/);
+  assert.deepEqual([libraryImportView({ ok: true, imported: { labels: 1 } }).keptLocal, libraryImportView(undefined).imported], [0, 0]);
+  assert.equal(libraryImportView({ ok: true, imported: { labels: 'many', reviews: NaN } }).imported, 0, 'non-numeric counts are ignored, never concatenated');
+  assert.equal(libraryImportView({ ok: true, kept_local: { labels: 1 }, kept_local_examples: Array.from({ length: 50 }, (_, i) => `row ${i}`) }).html.match(/<li>/g).length, 20);
+  // The import handler shows this view and keeps it across the panel refresh it triggers.
+  assert.match(script, /lastLibraryImport=result;const view=libraryImportView\(result\);setStatus\(view\.status,view\.tone\);refreshPanels\(\)/);
+  assert.match(script, /\$\{lastLibraryImport \? libraryImportView\(lastLibraryImport\)\.html : ''\}/);
+});
+
+test('the Regression Lab keeps "no current analysis for this match" apart from "detector stayed quiet"', () => {
+  const { regressionHTML } = run(section('  function regressionHTML(', '  async function loadRegression('), { fmtInt: String, fmtNum: (n, d) => Number(n).toFixed(d), who: (name, id) => `who(${name || id})` });
+  const item = (extra) => ({ match_id: 'SYN-1', player_id: 'p1', player_name: 'Synthetic', detector_id: 'SYN_001', frame_index: 120, expectation: 'signal remains present', passed: false, analysis_state: 'analyzed', reviewed_at: '2026-03-01T10:00:00Z', ...extra });
+  const report = {
+    total: 3, passed: 1, failed: 2, excluded_unsure: 1, notice: 'Labels are expectations.', superseded_labels: 2,
+    items: [item({ passed: true, current: { severity: 0.5, confidence: 0.9 } }), item({ frame_index: 300 }), item({ frame_index: 400, expectation: 'legal play stays clear', current: { severity: 0.72, confidence: 0.8, observed_value: '<b>21 m/s</b>' } })],
+    no_current_analysis: 2, no_current_analysis_matches: 2,
+    no_current_analysis_items: [item({ match_id: 'SYN-AWAY', analysis_state: 'match_not_stored', analysis_note: 'This match is not stored on this PC. <Analyze> its recording here first.' }), item({ match_id: 'SYN-STALE', analysis_state: 'not_analyzed', analysis_note: 'Analyze its recording again.' })],
+  };
+  const html = regressionHTML(report);
+  const attention = html.slice(html.indexOf('Needs attention'), html.indexOf('data-regression-untested'));
+  const untested = html.slice(html.indexOf('data-regression-untested'));
+  assert.match(attention, /Needs attention<span class="count">2</);
+  assert.match(attention, /<b>Detector stayed quiet\.<\/b> The match was analyzed here/);
+  assert.match(attention, /<b>Detector fires here\.<\/b> Severity 0\.72 · confidence 0\.80 · &lt;b&gt;21 m\/s&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<table|<th>/, 'the lab card is half-width: entries are a list, so the match button is never pushed out of the card');
+  assert.equal((attention.match(/<li>/g) || []).length, 2);
+  assert.match(attention, /data-open="SYN-1">SYN-1 · 300</);
+  assert.doesNotMatch(attention, /SYN-AWAY|SYN-STALE|No current analysis/, 'an untested label is never listed as a failing one');
+  assert.match(untested, /No current analysis for this match<span class="count">2</);
+  assert.match(untested, /neither passing nor failing\. This is not the detector staying quiet/);
+  assert.doesNotMatch(untested, /Detector stayed quiet\./);
+  assert.match(untested, /<b>Match not stored on this PC\.<\/b> This match is not stored on this PC\. &lt;Analyze&gt; its recording here first\./);
+  assert.match(untested, /<b>Stored, never analyzed here\.<\/b> Analyze its recording again\./);
+  assert.doesNotMatch(untested, /data-open="SYN-AWAY"/, 'a match that is not stored cannot be opened');
+  assert.match(untested, /data-open="SYN-STALE"/);
+  assert.match(html, /<span>Not tested<\/span><b>2<\/b><small class="muted">no current analysis for 2 matches/);
+  assert.match(html, /2 older labels of a re-analyzed observation were folded into the newest one/);
+  assert.doesNotMatch(untested, /<details class="sub" open/, 'failures stay the open section');
+
+  // Only untested labels: the lab must not claim "No expectations yet" or "every expectation passes".
+  const only = regressionHTML({ total: 0, passed: 0, failed: 0, excluded_unsure: 0, notice: 'n', items: [], no_current_analysis: 1, no_current_analysis_matches: 1, no_current_analysis_items: [report.no_current_analysis_items[0]] });
+  assert.doesNotMatch(only, /No expectations yet|currently passes/);
+  assert.match(only, /No label could be tested yet/);
+  assert.match(only, /<details class="sub" open data-regression-untested>/);
+  assert.match(only, /no current analysis for 1 match</);
+  // An engine from before this wave: no new fields at all.
+  const legacy = regressionHTML({ total: 1, passed: 1, failed: 0, excluded_unsure: 0, notice: 'n', items: [item({ passed: true })] });
+  assert.match(legacy, /Every tested expectation currently passes/);
+  assert.doesNotMatch(legacy, /Not tested|data-regression-untested|folded/);
+  assert.match(regressionHTML({ total: 0, items: null }), /No expectations yet/);
+  assert.match(regressionHTML({ total: 0, no_current_analysis_items: [item({ analysis_state: 'match_not_stored' })] }), /Not tested<\/span><b>1</, 'the count falls back to the listed items');
+});
+
+test('a scheduled or failed restore is announced with its cancel action; an older engine shows nothing', () => {
+  const ui = run(section('  function restoreBannerHTML(', '  async function loadRestoreState('), { fmtAbs: t => `abs(${t.toISOString()})` });
+  assert.equal(ui.restoreBannerHTML({}), null);
+  assert.equal(ui.restoreBannerHTML(null), null);
+  assert.equal(ui.restoreBannerHTML({ restore_pending: null, restore_failed: null }), null);
+  const pending = ui.restoreBannerHTML({ restore_pending: { source: 'C:\\data\\backups\\<b>nightly.db', target: 'C:\\data\\nevr.db', requested_at: '2026-03-01T10:00:00Z' } });
+  assert.equal(pending.tone, '');
+  assert.match(pending.html, /A database restore is scheduled for the next launch/);
+  assert.match(pending.html, /Backup &lt;b&gt;nightly\.db will replace the current evidence database/);
+  assert.doesNotMatch(pending.html, /C:\\data/, 'the banner names the backup, not the whole path');
+  assert.match(pending.html, /scheduled abs\(2026-03-01T10:00:00\.000Z\)/);
+  assert.match(pending.html, /<button class="btn" data-restore-cancel>Cancel the restore<\/button>/);
+  assert.match(ui.restoreBannerHTML({ restore_pending: {} }).html, /A backup will replace/, 'an unreadable request is still announced and can still be cancelled');
+  const failed = ui.restoreBannerHTML({ restore_pending: { source: 'x.db' }, restore_failed: { source: '/data/backups/old.db', failed_at: '2026-03-02T08:00:00Z', error: 'backup <gone>' } });
+  assert.equal(failed.tone, 'bad', 'a failure outranks a pending request');
+  assert.match(failed.html, /did not run\./);
+  assert.match(failed.html, /backup &lt;gone&gt;/);
+  assert.match(failed.html, /Backup: old\.db\./);
+  assert.match(failed.html, /The evidence database was left as it was/);
+  assert.match(failed.html, /data-restore-cancel>Dismiss/);
 });
 
 function section(from, to) {
@@ -1653,7 +1987,7 @@ test('switching blinded review on or off re-renders every identity surface and k
   assert.equal(slots.cases.innerHTML, 'cases(blind=false)');
 
   // The match section itself records an unblinded render, and offers the cases block for re-rendering.
-  assert.match(script, /function matchSection\(m, source\) \{[\s\S]{0,200}noteMatchRendered\(m\);/);
+  assert.match(script, /function matchSection\(m, source, intake\) \{[\s\S]{0,200}noteMatchRendered\(m\);/);
   assert.match(script, /<div data-match-cases="\$\{idx\}">\$\{casesBlock\(m\)\}<\/div>/);
   assert.match(script, /activeInvestigationData = d;[^\n]*\n\s*noteMatchRendered\(d\.match\);/);
 });
