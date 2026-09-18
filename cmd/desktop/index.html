@@ -354,10 +354,14 @@
   .throw-table table { min-width: 700px; }
   .flash { animation: flash 1.4s ease-out; }
   @keyframes flash { from { background: var(--accent-bg); } to { background: transparent; } }
-  details.sub > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; }
+  details.sub > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink-2); font-size: var(--text-sm); font-weight: 600; background: var(--panel); }
   details.sub > summary::-webkit-details-marker { display: none; }
+  details.sub > summary::before { content: ''; width: 7px; height: 7px; flex: none; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .12s; }
+  details.sub[open] > summary::before { transform: rotate(45deg); }
+  details.sub > summary > .tog { display: none; }
+  details.sub > summary:hover { color: var(--ink); border-color: var(--line-2); background: var(--neutral-bg); }
   details.sub > summary h3 { margin: 0; }
-  details.sub { margin-top: 32px; }
+  details.sub { margin-top: 20px; min-width: 0; }
   details.sub > summary + * { margin-top: 8px; }
   .cases { list-style: none; margin: 0; padding: 0; }
   .cases li { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto auto auto; gap: 16px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
@@ -414,7 +418,7 @@
   .section-intro { margin: -4px 0 20px; max-width: 76ch; color: var(--ink-2); }
   .hero { min-height: 0; }
   .hero-grid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 32px; align-items: center; }
-  .hero-copy h2 { margin: 0; font-size: clamp(2.5rem, 4.6vw, 4rem); line-height: 1.04; letter-spacing: -.055em; font-weight: 600; }
+  .hero-copy h2 { margin: 0; font-size: clamp(2.25rem, 3.6vw, 3.25rem); line-height: 1.12; letter-spacing: -.045em; font-weight: 600; }
   .hero-copy h2 span { color: var(--muted); }
   .hero-deck { max-width: 54ch; margin: 20px 0 0; color: var(--ink-2); font-size: 1rem; line-height: 1.6; }
   .protocol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 24px; border-top: 1px solid var(--line); gap: 16px; }
@@ -481,14 +485,19 @@
   .workspace-nav a[aria-current], .workspace-nav a.selected { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); }
   .top .workspace-nav { min-height: 0; margin-block: 0; padding-block: 8px; border-bottom: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
   .workspace-nav a { flex: none; }
-  .operator-overview { margin-block: 20px 28px; }
-  .operator-overview h2 { font-size: 1.375rem; margin-bottom: 8px; }
+  .operator-overview { margin-block: 8px 28px; }
+  .operator-overview h2 { font-size: clamp(1.5rem, 2.3vw, 1.875rem); margin-bottom: 10px; }
+  .operator-overview .section-kicker { margin-bottom: 8px; }
+  #continue-review { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  #continue-review .btn { flex: none; }
+  #continue-review span { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-sm); }
   .status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
   a.status-card { text-decoration: none; }
   .status-card { min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); border-top: 3px solid var(--line-2); }
   .status-card .status-label, .status-card > span:first-child, .status-card dt { display: block; color: var(--muted); font-size: var(--text-xs); font-weight: 600; margin: 0 0 5px; }
   .status-card strong, .status-card b, .status-card dd { display: block; color: var(--ink); font-size: 1rem; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
   .status-card p, .status-card small { display: block; color: var(--muted); font-size: var(--text-xs); line-height: 1.55; margin: 6px 0 0; overflow-wrap: anywhere; }
+  a.status-card:hover { background: var(--panel-solid); border-inline-color: var(--line-2); border-bottom-color: var(--line-2); }
   .tone-ok { --tone: var(--ok); --tone-bg: var(--ok-bg); }
   .tone-warn { --tone: var(--warn); --tone-bg: var(--warn-bg); }
   .tone-bad { --tone: var(--bad); --tone-bg: var(--bad-bg); }
@@ -504,7 +513,7 @@
   .advanced-section > summary h2, .advanced-section > summary h3 { display: inline; font-size: 1rem; letter-spacing: normal; text-transform: none; }
   .advanced-section .block { padding-block: 24px; }
   .appearance-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 16px; margin-block: 18px; }
-  .appearance-controls label { display: grid; align-content: start; gap: 6px; min-width: 0; color: var(--ink-2); font-size: var(--text-sm); }
+  .appearance-controls label { display: grid; align-content: start; gap: 10px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink-2); font-size: var(--text-sm); font-weight: 600; }
   .appearance-controls select { width: 100%; }
   .queue-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
   .queue-toolbar > * { min-width: 0; }
@@ -513,14 +522,34 @@
   .review-workspace { min-width: 0; }
   .review-grid, .review-workspace-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.6fr) minmax(250px, 1fr); gap: 16px; align-items: start; }
   .review-queue, .review-evidence, .review-details, .review-panel { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow-wrap: anywhere; }
+  :is(.review-queue, .review-evidence, .review-details) > h3:first-child { margin-top: 0; }
+  .review-queue > .help { margin-bottom: 14px; }
+  .review-evidence > .help { margin-block: 10px 14px; }
   .review-queue { max-height: min(64vh, 640px); overflow: auto; scrollbar-gutter: stable; }
   .review-queue button, .review-queue a { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
-  .incident-option { display: grid; justify-items: start; gap: 6px; width: 100%; margin-bottom: 8px; text-align: left; }
+  .incident-option { display: grid; justify-items: start; gap: 6px; width: 100%; margin-bottom: 8px; padding: 12px; text-align: left; border-color: var(--line); border-radius: var(--radius); }
+  .incident-option span, .incident-option small { color: var(--ink-2); font-size: var(--text-xs); font-weight: 400; }
   .review-details { max-height: min(64vh, 640px); overflow: auto; scrollbar-gutter: stable; }
   .review-queue [aria-current], .review-queue [aria-selected="true"], .review-queue .selected { border-color: var(--accent); background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--accent); }
-  .review-footer { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 0 16px; padding-block: 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  /* Only the dialog title stays pinned. A second sticky bar at top:0 obscured
+     controls under it, especially with larger text or a wrapped match id. */
+  .review-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
   .review-footer .help { flex: 1; min-width: min(260px, 100%); }
-  .note-editor { display: grid; gap: 8px; margin-top: 16px; }
+  #review-position { padding: 4px; color: var(--muted); font: var(--text-xs)/1.4 var(--mono); }
+  .finding-card { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+  .finding-card h4 { margin: 0 0 10px; font-size: var(--text-base); line-height: 1.45; font-weight: 650; }
+  .finding-card p { color: var(--ink-2); font-size: var(--text-sm); line-height: 1.65; }
+  .finding-card p:last-child { margin-bottom: 0; }
+  .throw-scroll { max-height: min(48vh, 380px); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); scrollbar-gutter: stable; overscroll-behavior: contain; }
+  .throw-scroll table { min-width: 520px; }
+  .throw-scroll :is(th, td):first-child, .throw-scroll :is(th, td):nth-child(3) { white-space: nowrap; }
+  .note-editor { display: grid; gap: 10px; margin-top: 20px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+  .note-editor h3 { margin: 0; }
+  .note-editor details.sub { margin-top: 4px; }
+  .note-editor .form-row { align-items: start; }
+  .note-editor .form-field.path { flex: 4; }
+  .note-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .note-actions .note-status { flex: 1; margin: 0; min-width: min(240px, 100%); }
   .note-editor label { color: var(--ink-2); font-weight: 600; }
   .note-status { font-size: var(--text-sm); color: var(--muted); overflow-wrap: anywhere; }
   .note-status.ok { color: var(--ok); } .note-status.err { color: var(--bad); }
@@ -601,12 +630,20 @@
   .speed-chart .event-marker { stroke: var(--ink-2); stroke-width: 2; stroke-dasharray: 5 5; }
   .legend, .catch-legend { flex-wrap: wrap; font-size: var(--text-xs); }
   .catch-projections figcaption { font-size: var(--text-xs); }
+  .inspector-grid div { background: var(--bg); }
+  .inspector-grid small { display: block; margin-top: 5px; color: var(--muted); font-size: var(--text-xs); }
+  #automation > .lab-grid { gap: 18px; }
+  #automation .lab-card { padding: 20px; background: var(--bg); }
+  #automation .lab-card > h3 { color: var(--ink); font-size: 1rem; letter-spacing: -.01em; text-transform: none; margin-bottom: 10px; }
+  #automation .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-block: 16px; }
+  #automation .help { line-height: 1.65; }
+  #automation .maintenance { padding-top: 14px; border-top: 1px solid var(--line); }
 
   @media (max-width: 1100px) {
     .top .wrap { flex-wrap: wrap; gap: 10px; }
     .top .spacer { min-width: 0; }
     .hero-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 24px; }
-    .hero-copy h2 { font-size: clamp(2.5rem, 5vw, 3.5rem); }
+    .hero-copy h2 { font-size: clamp(2rem, 3.5vw, 2.75rem); }
     .review-grid, .review-workspace-grid { grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); }
     .review-details { grid-column: 1 / -1; }
     .studio-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -632,6 +669,8 @@
     .studio-card.wide, .review-details { grid-column: auto; }
     .review-queue { max-height: 300px; }
     .review-footer { position: static; }
+    #continue-review { align-items: flex-start; flex-direction: column; }
+    .note-editor { padding: 16px; }
     .offline-banner { align-items: flex-start; flex-direction: column; }
     .inspector-head { padding: 14px 16px; gap: 12px; }
     .inspector-head h2 { font-size: 1.125rem; }
@@ -2721,7 +2760,7 @@
       '<details class="sub"><summary>Throw log · '+fmtInt((d.throws||[]).length)+' reconstructed throws</summary><div class="throw-scroll table-scroll" tabindex="0" role="region" aria-label="Scrollable throw log"><table><thead><tr><th>Time</th><th>Player</th><th>Sample speed</th><th>Replay</th></tr></thead><tbody>'+(d.throws||[]).map(t => '<tr><td>'+esc(t.clock||fmtClock(t.time))+'</td><td>'+esc(t.player||t.player_id)+'</td><td>'+fmtNum(t.speed,2)+' m/s</td><td><button class="btn btn-sm" data-replay-match="'+esc(activeInvestigationMatch)+'" data-replay-frame="'+t.frame_index+'">Open throw</button></td></tr>').join('')+'</tbody></table></div><p class="help">Sample speed is not an independently validated violation. Review contact and attribution.</p></details>'+
       '<details class="sub"><summary>All replay clip anchors · '+fmtInt(activePlaylist.length)+'</summary><div class="playlist" tabindex="0" role="region" aria-label="Replay clip playlist"><table><thead><tr><th>#</th><th>Kind</th><th>Player</th><th>Signal</th><th>Frame</th><th>Replay</th></tr></thead><tbody>'+playlist+'</tbody></table></div></details></section>'+
       '<aside class="review-details" aria-label="Finding explanation and limitations">'+selectedIncidentDetails(d,incident)+'<h3>Evidence limitations</h3><ul class="health-list">'+(d.limits||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul><p class="help">Build rules and contact geometry must be verified before enforcement. No automatic action is enabled.</p></aside></div>'+
-      '<section class="note-editor"><h3>Reviewer notes &amp; bookmarks</h3><p class="help">Unsent drafts are retained on this PC when the preference store or browser storage is available. Click Save note to add evidence. This local desktop has no reviewer accounts or shared editing locks.</p><details class="sub"><summary>Saved notes · <span id="saved-note-count">'+fmtInt((d.notes||[]).length)+'</span></summary><ul class="health-list" id="investigation-notes">'+renderNotes(d.notes)+'</ul></details><div class="form-row"><label class="form-field">Frame (−1 = whole match)<input id="note-frame" type="number" value="'+(Number.isInteger(noteDraft.frame)?noteDraft.frame:-1)+'" min="-1"></label><label class="form-field path">Review note<textarea id="note-body" maxlength="8000" rows="3" placeholder="What did you verify? What remains uncertain?">'+esc(noteDraft.body)+'</textarea></label></div><p id="note-status" class="note-status" role="status" aria-live="polite">'+(noteSavePending?'Another note save is awaiting confirmation. Save controls unlock when it finishes.':noteDraft.body?'Recovered local draft · not yet saved to evidence.':'No unsaved draft.')+'</p></section>'+
+      '<section class="note-editor"><h3>Reviewer notes &amp; bookmarks</h3><p class="help">Unsent drafts are retained on this PC when the preference store or browser storage is available. Use Save review note to add the draft to evidence. This local desktop has no reviewer accounts or shared editing locks.</p><details class="sub"><summary>Saved notes · <span id="saved-note-count">'+fmtInt((d.notes||[]).length)+'</span></summary><ul class="health-list" id="investigation-notes">'+renderNotes(d.notes)+'</ul></details><div class="form-row"><label class="form-field">Frame (−1 = whole match)<input id="note-frame" type="number" value="'+(Number.isInteger(noteDraft.frame)?noteDraft.frame:-1)+'" min="-1"></label><label class="form-field path">Review note<textarea id="note-body" maxlength="8000" rows="3" placeholder="What did you verify? What remains uncertain?">'+esc(noteDraft.body)+'</textarea></label></div><div class="note-actions"><button class="btn btn-primary" data-add-note="'+esc(activeInvestigationMatch)+'" '+saveDisabled+'>Save review note</button><p id="note-status" class="note-status" role="status" aria-live="polite">'+(noteSavePending?'Another note save is awaiting confirmation. Save controls unlock when it finishes.':noteDraft.body?'Recovered local draft · not yet saved to evidence.':'No unsaved draft.')+'</p></div></section>'+
       '<details class="sub"><summary>Advanced provenance &amp; legal-action context</summary><p>'+Object.entries(d.legal_context_counts||{}).map(([k,v])=>esc(k)+': '+fmtInt(v)).join(' · ')+'</p><div class="table-scroll"><table><thead><tr><th>Source</th><th>Version / config</th><th>Profile</th><th>Analyzed</th></tr></thead><tbody>'+(d.analysis_runs||[]).map(run=>'<tr><td>'+esc(run.source)+'</td><td>v'+esc(run.app_version)+' / '+esc(run.config_fingerprint)+'</td><td>'+esc(run.profile_name||'default')+'</td><td>'+timeAgo(run.created_at)+'</td></tr>').join('')+'</tbody></table></div></details></div>';
   }
   function selectIncident(index, focus = false) {

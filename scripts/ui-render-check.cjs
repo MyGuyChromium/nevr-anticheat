@@ -13,10 +13,14 @@
 //   - the physics inspector's per-frame rows stay compact,
 //   - with the "Larger" text size the match timeline's player names still end
 //     before the plot begins and the page still does not overflow,
-//   - the top navigation follows the section being read.
+//   - the top navigation follows the section being read,
+//   - setup and the review workspace remain bounded, with keyboard focus,
+//     working disclosures and independently scrollable long throw logs,
+//   - search-empty and deliberately failed setup states retain recovery actions.
 // It runs at 1280 and 1440 px wide, in the light and the dark theme, plus one
 // 1024 px pass where the wide tables must scroll inside their container, which
-// is what exercises the pinned first column.
+// is what exercises the pinned first column. The 640/390 px passes exercise
+// stacked layouts; they retain overflow checks, without desktop row budgets.
 //
 // Run from the repository root (needs Go + a C compiler for the fixture,
 // Node >= 22 for the built-in WebSocket, and Edge or Chrome):
@@ -52,7 +56,7 @@ const FIXTURE_URL = 'http://127.0.0.1:19015/0123456789abcdef0123456789abcdef/';
 const FIXTURE_CONTROL = 'http://127.0.0.1:19016';
 // [width, theme, enforce row budgets]. Row budgets describe the supported desktop
 // widths; the narrow pass checks overflow, player cells and the pinned column only.
-const PASSES = [[1280, 'dark', true], [1280, 'light', true], [1440, 'dark', true], [1440, 'light', true], [1024, 'dark', false]];
+const PASSES = [[1280, 'dark', true], [1280, 'light', true], [1440, 'dark', true], [1440, 'light', true], [1024, 'dark', false], [640, 'dark', false], [390, 'light', false]];
 const HEIGHT = 900;
 const MIN_WHO_CELL = 160;
 // Row budgets in CSS px. A row holds at most a two-line player cell, a short
@@ -232,7 +236,28 @@ async function main() {
     const waitFor = async (expression, what, timeout = 30000) => {
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) { if (await evaluate(expression)) return; await sleep(200); }
-      throw new Error('timed out waiting for ' + what);
+      const state = await evaluate(`({active:document.activeElement?.id,dialog:document.querySelector('dialog[open]')?.textContent?.slice(0,500) || null})`);
+      throw new Error('timed out waiting for ' + what + ': ' + JSON.stringify(state));
+    };
+    const pressKey = async (key, code, windowsVirtualKeyCode, modifiers = 0) => {
+      await send('Input.dispatchKeyEvent', { type: key === 'Enter' ? 'keyDown' : 'rawKeyDown', key, code, windowsVirtualKeyCode, modifiers, ...(key === 'Enter' ? {text:'\r',unmodifiedText:'\r'} : {}) });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, modifiers });
+    };
+    const viewportShot = async (name) => {
+      if (!shotsDir) return;
+      const reply = await send('Page.captureScreenshot', { format: 'png' });
+      if (!reply.result?.data) throw new Error('browser did not return screenshot ' + name);
+      fs.writeFileSync(path.join(shotsDir, `${shotLabel}-${name}.png`), Buffer.from(reply.result.data, 'base64'));
+    };
+    const checkDialog = async (tag, selector) => {
+      const bounds = await evaluate(`(() => { const d = document.querySelector(${JSON.stringify(selector)}); if (!d?.open) return null; const r = d.getBoundingClientRect(); return { overflow: d.scrollWidth-d.clientWidth, withinViewport: r.left >= -1 && r.right <= innerWidth+1 && r.top >= -1 && r.bottom <= innerHeight+1 }; })()`);
+      if (!bounds || bounds.overflow > 1 || !bounds.withinViewport) violations.push(`[${tag}] ${selector} is missing or exceeds its viewport: ${JSON.stringify(bounds)}`);
+    };
+    // Only the fixture this process started is authorized for fault injection.
+    const setFixtureFault = async (fault) => {
+      if (!fixture) throw new Error('refusing to alter an externally supplied server');
+      const response = await fetch(FIXTURE_CONTROL + '/control', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NEVR-Fixture-Control': 'test-only' }, body: JSON.stringify(fault), signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error('synthetic fixture rejected fault control');
     };
     const shot = async (name, selector, minHeight = 200) => {
       if (!shotsDir) return;
@@ -249,6 +274,48 @@ async function main() {
       await send('Page.navigate', { url: baseURL });
       await waitFor(`!!document.getElementById('pref-theme') && !document.querySelector('#history.skeleton') && !document.querySelector('#flagged.skeleton')`, 'the history and review panels');
       await evaluate(`(() => { const s = document.getElementById('pref-theme'); s.value = ${JSON.stringify(theme)}; s.dispatchEvent(new Event('change', { bubbles: true })); return document.documentElement.dataset.theme; })()`);
+      await evaluate(`window.scrollTo(0, 0)`);
+      await viewportShot(`dashboard-${tag}`);
+      await shot(`appearance-${tag}`, '#appearance');
+      await waitFor(`!document.querySelector('#automation.skeleton')`, 'settings');
+      await shot(`settings-${tag}`, '#automation');
+
+      // Exercise the visible setup control with actual key events. Merely
+      // calling click() would not catch a missing keyboard focus indicator.
+      await evaluate(`document.getElementById('quick-setup').focus()`);
+      await pressKey('Tab', 'Tab', 9, 8);
+      await pressKey('Tab', 'Tab', 9);
+      const setupFocus = await evaluate(`(() => { const e = document.activeElement, s = getComputedStyle(e); return { id:e.id, visible:e.matches(':focus-visible'), outline:s.outlineStyle, width:parseFloat(s.outlineWidth) }; })()`);
+      if (setupFocus.id !== 'quick-setup' || !setupFocus.visible || setupFocus.outline === 'none' || setupFocus.width < 2) violations.push(`[${tag}] setup lacks visible keyboard focus: ${JSON.stringify(setupFocus)}`);
+      await pressKey('Enter', 'Enter', 13);
+      await waitFor(`!!document.querySelector('#lab-dialog[open] [data-setup-done]')`, 'setup checks');
+      await checkDialog(tag, '#lab-dialog');
+      await viewportShot(`setup-${tag}`);
+      await evaluate(`document.getElementById('close-lab-dialog').focus()`);
+      await pressKey('Tab', 'Tab', 9, 8);
+      const reverseFocus = await evaluate(`({inside:!!document.activeElement.closest('#lab-dialog'),tag:document.activeElement.tagName,id:document.activeElement.id,documentFocus:document.hasFocus()})`);
+      console.log('  setup reverse-Tab focus ' + JSON.stringify(reverseFocus));
+      // Native dialogs may let Tab leave web content for browser chrome. The
+      // BODY/HTML activeElement fallback is not a focused background control;
+      // hasFocus can still read true while Chromium transfers browser focus.
+      // Assert return into the modal, and separately test the inert background.
+      if (!reverseFocus.inside && !['BODY','HTML'].includes(reverseFocus.tag)) violations.push(`[${tag}] Shift+Tab focused a background element while setup is modal: ${JSON.stringify(reverseFocus)}`);
+      if (!reverseFocus.inside) {
+        await pressKey('Tab', 'Tab', 9);
+        if (!await evaluate(`!!document.activeElement.closest('#lab-dialog') && document.hasFocus()`)) violations.push(`[${tag}] Tab did not return from browser chrome into the setup modal`);
+      }
+      if (await evaluate(`(() => { document.getElementById('quick-setup').focus(); return document.activeElement.id === 'quick-setup'; })()`)) violations.push(`[${tag}] background Setup control accepts focus while its modal is open`);
+      await pressKey('Escape', 'Escape', 27);
+      await waitFor(`!document.getElementById('lab-dialog').open`, 'Escape to close setup');
+      if (!await evaluate(`document.activeElement.id === 'quick-setup'`)) violations.push(`[${tag}] setup did not return focus to its opener after Escape`);
+
+      // Search-empty is produced through the real filter, without replacing DOM
+      // or backend evidence. Restore via the user-facing recovery action.
+      await evaluate(`(() => { const input=document.getElementById('history-search'); input.value='NEVR-UI-NO-SUCH-MATCH-9f632'; input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+      await waitFor(`!!document.getElementById('reset-history-filters')`, 'search-empty recovery action');
+      await shot(`empty-search-${tag}`, '#history');
+      await evaluate(`document.getElementById('reset-history-filters').click()`);
+      await waitFor(`!!document.querySelector('#history tbody tr')`, 'history filter recovery');
       const upload = option('--upload');
       if (upload) {
         const { result: { root } } = await send('DOM.getDocument', {});
@@ -320,8 +387,73 @@ async function main() {
           console.log('  physics ' + JSON.stringify(physics));
           if (physics.tallest > PHYSICS_ROW_BUDGET) violations.push(`[${tag}] physics inspector row ${physics.tallest} px tall (budget ${PHYSICS_ROW_BUDGET})`);
           if (shotsDir) { const reply = await send('Page.captureScreenshot', { format: 'png' }); if (reply.result?.data) fs.writeFileSync(path.join(shotsDir, `${shotLabel}-physics-${tag}.png`), Buffer.from(reply.result.data, 'base64')); }
-        } catch (error) { console.log('  physics inspector not measured: ' + error.message); }
+        } catch (error) { violations.push(`[${tag}] physics inspector could not be measured: ${error.message}`); }
         await evaluate(`document.getElementById('physics-dialog').close()`);
+      } else violations.push(`[${tag}] report has no physics control; inspector was not exercised`);
+
+      const reviewOpened = await evaluate(`(() => { const b=document.querySelector('#results [data-investigation-match]'); if (!b) return false; b.scrollIntoView({block:'center'}); b.focus(); b.click(); return true; })()`);
+      if (!reviewOpened) violations.push(`[${tag}] report has no reachable investigation control`);
+      else {
+        await waitFor(`!!document.querySelector('#lab-dialog[open] .review-workspace')`, 'review workspace');
+        await checkDialog(tag, '#lab-dialog');
+        const reviewCounts = await evaluate(`({ incidents:document.querySelectorAll('.review-queue [data-select-incident]').length, findings:document.querySelectorAll('.finding-card').length, notes:document.querySelectorAll('#investigation-notes li').length })`);
+        console.log('  review workspace ' + JSON.stringify(reviewCounts));
+        if (!externalURL && (!reviewCounts.incidents || !reviewCounts.findings || !reviewCounts.notes)) violations.push(`[${tag}] seeded review workspace did not render incidents, findings and saved notes`);
+        await viewportShot(`review-${tag}`);
+        const reviewControls = await evaluate(`(async () => { const dialog=document.getElementById('lab-dialog'), bar=dialog.querySelector('.review-footer'), head=dialog.querySelector('.inspector-head'); dialog.scrollTop=Math.min(420,dialog.scrollHeight-dialog.clientHeight); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); const b=bar.getBoundingClientRect(), h=head.getBoundingClientRect(); const sticky=getComputedStyle(bar).position==='sticky'; const out={sticky,scrollTop:dialog.scrollTop,top:b.top,headBottom:h.bottom}; dialog.scrollTop=0; return out; })()`);
+        if (reviewControls.sticky && reviewControls.scrollTop > 0 && reviewControls.top < reviewControls.headBottom-1) violations.push(`[${tag}] sticky review controls slide beneath the modal header: ${JSON.stringify(reviewControls)}`);
+        // Enter must toggle the actual disclosure, including when no legacy
+        // chevron span is present in its markup.
+        await evaluate(`(() => { const box=document.querySelector('.review-workspace .throw-scroll'); const d=box?.closest('details'); if (!d) throw new Error('review throw disclosure missing'); d.open=false; d.querySelector('summary').focus(); })()`);
+        await pressKey('Enter', 'Enter', 13);
+        const throws = await evaluate(`(() => { const box=document.querySelector('.review-workspace .throw-scroll'); const css=getComputedStyle(box); const rows=box.querySelectorAll('tbody tr').length; const wrappedClocks=[...box.querySelectorAll('tbody tr td:first-child')].filter(cell=>{const range=document.createRange();range.selectNodeContents(cell);return range.getClientRects().length>1;}).length; const unprotectedNumbers=[...box.querySelectorAll('th:first-child, td:first-child, th:nth-child(3), td:nth-child(3)')].filter(cell=>getComputedStyle(cell).whiteSpace!=='nowrap').length; box.scrollTop=box.scrollHeight; return { open:box.closest('details').open, rows, wrappedClocks, unprotectedNumbers, height:box.clientHeight, content:box.scrollHeight, moved:box.scrollTop, overflowY:css.overflowY, maxHeight:parseFloat(css.maxHeight), dialogOverflow:document.getElementById('lab-dialog').scrollWidth-document.getElementById('lab-dialog').clientWidth }; })()`);
+        console.log('  review throw log ' + JSON.stringify(throws));
+        if (!throws.open) violations.push(`[${tag}] Enter did not open the review throw disclosure`);
+        if (throws.wrappedClocks) violations.push(`[${tag}] ${throws.wrappedClocks} review throw clocks wrap over multiple lines`);
+        if (throws.unprotectedNumbers) violations.push(`[${tag}] ${throws.unprotectedNumbers} review throw clock/speed cells lack nowrap protection`);
+        if (!externalURL && throws.rows < 100) violations.push(`[${tag}] large-log test needs the 100 seeded throws; found ${throws.rows}`);
+        if (!(throws.maxHeight > 0) || !['auto','scroll'].includes(throws.overflowY) || (throws.rows >= 100 && (throws.moved <= 0 || throws.content <= throws.height))) violations.push(`[${tag}] review throw log is not independently bounded/scrollable: ${JSON.stringify(throws)}`);
+        if (throws.dialogOverflow > 1) violations.push(`[${tag}] expanded review throws cause horizontal dialog overflow`);
+        await evaluate(`document.querySelector('.review-workspace .throw-scroll').scrollIntoView({block:'center'})`);
+        await viewportShot(`review-throws-${tag}`);
+        await evaluate(`document.getElementById('note-body').focus()`);
+        await pressKey('Tab', 'Tab', 9);
+        if (!await evaluate(`!!document.activeElement.closest('#lab-dialog')`)) violations.push(`[${tag}] Tab from review notes escaped the modal`);
+        if (fixture && width === 1280 && theme === 'dark') {
+          // The near-editor action must use the same real delegated save route
+          // and pending lock as the top toolbar. Delay only this synthetic POST
+          // so both controls can be observed while the write is in progress.
+          const noteText = 'Synthetic rendered UI verification: near-editor note save.';
+          const noteContext = await evaluate(`(async () => { const button=document.querySelector('.note-editor [data-add-note]'); if (!button) throw new Error('near-editor save action missing'); const match=button.dataset.addNote; const r=await fetch('api/match/'+encodeURIComponent(match)+'/notes'); if (!r.ok) throw new Error('notes API unavailable'); return {match,count:(await r.json()).notes.length}; })()`);
+          try {
+            await setFixtureFault({path:'/api/match/'+encodeURIComponent(noteContext.match)+'/notes',method:'POST',delay_ms:1500});
+            const locked = await evaluate(`(() => { const input=document.getElementById('note-body'); input.value=${JSON.stringify(noteText)}; input.dispatchEvent(new Event('input',{bubbles:true})); document.getElementById('note-frame').value='-1'; const local=document.querySelector('.note-editor [data-add-note]'); local.click(); const all=[...document.querySelectorAll('[data-add-note], [data-add-bookmark]')]; const out={count:all.length,allDisabled:all.every(b=>b.disabled)}; document.querySelector('.review-footer [data-add-note]').click(); return out; })()`);
+            if (locked.count < 3 || !locked.allDisabled) violations.push(`[${tag}] near-editor save does not lock all note/bookmark actions: ${JSON.stringify(locked)}`);
+            await waitFor(`document.getElementById('note-status')?.textContent.includes('Saved to the evidence database') && [...document.querySelectorAll('[data-add-note], [data-add-bookmark]')].every(b=>!b.disabled)`, 'near-editor note save');
+            const saved = await evaluate(`(async () => { const r=await fetch('api/match/'+encodeURIComponent(${JSON.stringify(noteContext.match)})+'/notes'); if (!r.ok) throw new Error('saved notes API unavailable'); const notes=(await r.json()).notes; return {count:notes.length,matches:notes.filter(n=>n.body===${JSON.stringify(noteText)}).length,draft:document.getElementById('note-body').value}; })()`);
+            if (saved.count !== noteContext.count+1 || saved.matches !== 1 || saved.draft !== '') violations.push(`[${tag}] near-editor note did not persist exactly once/clear its saved draft: ${JSON.stringify(saved)}`);
+            console.log('  near-editor saved note ' + JSON.stringify(saved));
+            await evaluate(`document.querySelector('.note-editor').scrollIntoView({block:'center'})`);
+            await viewportShot(`review-note-saved-${tag}`);
+          } finally { await setFixtureFault({}); }
+        }
+        await evaluate(`document.getElementById('close-lab-dialog').click()`);
+      }
+
+      if (fixture && (width === 1280 || width === 390)) {
+        try {
+          await setFixtureFault({path:'/api/setup',method:'GET',status:503});
+          await evaluate(`document.getElementById('quick-setup').click()`);
+          await waitFor(`!!document.querySelector('#lab-dialog[open] #retry-setup') && document.getElementById('lab-dialog-content').textContent.includes('Setup check unavailable')`, 'failed setup state');
+          await checkDialog(tag, '#lab-dialog');
+          await viewportShot(`setup-error-${tag}`);
+          await setFixtureFault({});
+          await evaluate(`document.getElementById('retry-setup').click()`);
+          await waitFor(`!!document.querySelector('#lab-dialog [data-setup-done]')`, 'setup retry recovery');
+        } finally {
+          await setFixtureFault({});
+          await evaluate(`document.getElementById('lab-dialog').close()`);
+        }
       }
     }
     for (const error of client.pageErrors) violations.push('uncaught page exception: ' + String(error).slice(0, 300));
